@@ -29,3 +29,6 @@ tqdm>=4.66.0
 # Development tools (optional)
 # watchdog>=3.0.0  # For file watching (uncomment if needed)
 
+# CORS support
+flask-cors>=4.0.0
+
