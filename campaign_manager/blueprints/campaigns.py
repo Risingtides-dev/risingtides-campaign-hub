@@ -1045,3 +1045,75 @@ def api_search():
     scored.sort(key=lambda x: x[0], reverse=True)
     results = [_campaign_summary(s[1]) for s in scored[:5]]
     return jsonify({"query": q, "results": results})
+
+
+# -------------------------------------------------------------------
+# Cobrand Integration
+# -------------------------------------------------------------------
+
+@campaigns_bp.get("/api/campaign/<slug>/cobrand")
+def get_cobrand_stats(slug: str):
+    """Fetch live stats from Cobrand for this campaign."""
+    from campaign_manager.services.cobrand import fetch_cobrand_stats
+
+    if _db.is_active():
+        meta = _db.get_campaign(slug)
+    else:
+        campaign_dir = ACTIVE_DIR / slug
+        if not campaign_dir.exists():
+            return jsonify({"error": "Campaign not found"}), 404
+        meta = load_json(campaign_dir / "campaign.json")
+
+    if not meta:
+        return jsonify({"error": "Campaign not found"}), 404
+
+    share_url = meta.get("cobrand_share_url", "")
+    if not share_url:
+        return jsonify({"error": "No Cobrand tracking link configured for this campaign"}), 404
+
+    stats = fetch_cobrand_stats(share_url)
+    if stats is None:
+        return jsonify({"error": "Failed to fetch Cobrand stats"}), 502
+
+    # Cache the stats in the database
+    if _db.is_active():
+        _db.update_cobrand_cache(slug, stats)
+
+    return jsonify(stats)
+
+
+@campaigns_bp.put("/api/campaign/<slug>/cobrand")
+def set_cobrand_links(slug: str):
+    """Set or update Cobrand share URL and upload URL for a campaign."""
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "JSON body required"}), 400
+
+    share_url = (data.get("share_url") or "").strip()
+    upload_url = (data.get("upload_url") or "").strip()
+
+    if not share_url and not upload_url:
+        return jsonify({"error": "Provide share_url and/or upload_url"}), 400
+
+    if _db.is_active():
+        if not _db.campaign_exists(slug):
+            return jsonify({"error": "Campaign not found"}), 404
+
+        meta = _db.get_campaign(slug)
+        if share_url:
+            meta["cobrand_share_url"] = share_url
+        if upload_url:
+            meta["cobrand_upload_url"] = upload_url
+        _db.save_campaign(slug, meta)
+    else:
+        campaign_dir = ACTIVE_DIR / slug
+        if not campaign_dir.exists():
+            return jsonify({"error": "Campaign not found"}), 404
+        meta = load_json(campaign_dir / "campaign.json")
+        if share_url:
+            meta["cobrand_share_url"] = share_url
+        if upload_url:
+            meta["cobrand_upload_url"] = upload_url
+        save_json(campaign_dir / "campaign.json", meta)
+
+    return jsonify({"ok": True, "message": "Cobrand links updated"})
