@@ -92,6 +92,21 @@ def save_campaign(slug: str, meta: Dict):
         c.status = meta.get("status", "active")
         c.platform = meta.get("platform", "tiktok")
 
+        c.cobrand_share_url = meta.get("cobrand_share_url", c.cobrand_share_url or "")
+        c.cobrand_upload_url = meta.get("cobrand_upload_url", c.cobrand_upload_url or "")
+        c.cobrand_promotion_id = meta.get("cobrand_promotion_id", c.cobrand_promotion_id or "")
+        c.cobrand_status = meta.get("cobrand_status", c.cobrand_status or "")
+        c.source = meta.get("source", c.source or "manual")
+        c.notion_page_id = meta.get("notion_page_id", c.notion_page_id)
+        c.insta_sound = meta.get("insta_sound", c.insta_sound or "")
+        c.campaign_stage = meta.get("campaign_stage", c.campaign_stage or "")
+        c.round = meta.get("round", c.round or "")
+        c.label = meta.get("label", c.label or "")
+        c.project_lead = meta.get("project_lead", c.project_lead or [])
+        c.client_email = meta.get("client_email", c.client_email or "")
+        c.platform_split = meta.get("platform_split", c.platform_split or {})
+        c.content_types = meta.get("content_types", c.content_types or [])
+
         stats = meta.get("stats", {})
         c.total_views = int(stats.get("total_views", 0))
         c.total_likes = int(stats.get("total_likes", 0))
@@ -530,3 +545,30 @@ def save_internal_results(data: Dict):
         )
         s.add(result)
         s.commit()
+
+
+# ── Cobrand Cache ─────────────────────────────────────────────────────
+
+def update_cobrand_cache(slug: str, stats: dict):
+    """Update cached Cobrand stats for a campaign."""
+    with get_session() as s:
+        c = s.query(Campaign).filter_by(slug=slug).first()
+        if c:
+            c.cobrand_promotion_id = stats.get("promotion_id", "")
+            c.cobrand_live_submissions = stats.get("live_submission_count", 0)
+            c.cobrand_comments = stats.get("comment_count", 0)
+            c.cobrand_status = stats.get("status", "")
+            c.cobrand_last_sync = datetime.now()
+            s.commit()
+
+
+# ── Notion Sync ───────────────────────────────────────────────────────
+
+def get_synced_notion_ids() -> set:
+    """Get all Notion page IDs that have already been synced."""
+    with get_session() as s:
+        results = s.query(Campaign.notion_page_id).filter(
+            Campaign.notion_page_id.isnot(None),
+            Campaign.notion_page_id != "",
+        ).all()
+        return {r[0] for r in results}

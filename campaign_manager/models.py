@@ -38,6 +38,31 @@ class Campaign(Base):
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
+    # Cobrand integration
+    cobrand_share_url = Column(Text, default="")
+    cobrand_upload_url = Column(Text, default="")
+    cobrand_promotion_id = Column(String(100), default="")
+    cobrand_last_sync = Column(DateTime, nullable=True)
+    cobrand_live_submissions = Column(Integer, default=0)
+    cobrand_comments = Column(Integer, default=0)
+    cobrand_status = Column(String(50), default="")
+
+    # Source tracking
+    source = Column(String(20), default="manual")
+
+    # Notion CRM integration
+    notion_page_id = Column(String(100), nullable=True, unique=True)
+
+    # Extended campaign metadata (from Notion CRM)
+    insta_sound = Column(Text, default="")
+    campaign_stage = Column(String(50), default="")
+    round = Column(String(20), default="")
+    label = Column(String(255), default="")
+    project_lead = Column(JSONB, default=list)
+    client_email = Column(String(255), default="")
+    platform_split = Column(JSONB, default=dict)
+    content_types = Column(JSONB, default=list)
+
     creators = relationship("Creator", back_populates="campaign", cascade="all, delete-orphan")
     matched_videos = relationship("MatchedVideo", back_populates="campaign", cascade="all, delete-orphan")
     scrape_logs = relationship("ScrapeLog", back_populates="campaign", cascade="all, delete-orphan")
@@ -64,6 +89,23 @@ class Campaign(Base):
                 "total_likes": self.total_likes or 0,
                 "last_scrape": self.last_scrape.isoformat() if self.last_scrape else "",
             },
+            "cobrand_share_url": self.cobrand_share_url or "",
+            "cobrand_upload_url": self.cobrand_upload_url or "",
+            "cobrand_promotion_id": self.cobrand_promotion_id or "",
+            "cobrand_last_sync": self.cobrand_last_sync.isoformat() if self.cobrand_last_sync else "",
+            "cobrand_live_submissions": self.cobrand_live_submissions or 0,
+            "cobrand_comments": self.cobrand_comments or 0,
+            "cobrand_status": self.cobrand_status or "",
+            "source": self.source or "manual",
+            "notion_page_id": self.notion_page_id or "",
+            "insta_sound": self.insta_sound or "",
+            "campaign_stage": self.campaign_stage or "",
+            "round": self.round or "",
+            "label": self.label or "",
+            "project_lead": self.project_lead or [],
+            "client_email": self.client_email or "",
+            "platform_split": self.platform_split or {},
+            "content_types": self.content_types or [],
         }
 
 
