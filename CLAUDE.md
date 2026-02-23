@@ -1,25 +1,26 @@
 # Campaign Hub
 
-> **MIGRATION IN PROGRESS.** The codebase is transitioning from a monolithic Flask/Jinja server-rendered app to a React frontend + Flask API architecture. What you see in the code RIGHT NOW does not match the target architecture described below. The current state is a single ~1,900-line `web_dashboard.py` serving Jinja HTML templates with inline CSS. Read `docs/plans/2026-02-22-campaign-hub-refinement-design.md` after finishing this document for the full migration plan and implementation details.
+> **Last updated:** 2026-02-23 02:50 EST
+> **Status:** Migration complete. Deployed. Database empty -- awaiting data migration from Jake's local disk.
+> **Handoff:** Read `docs/handoff.md` for next steps and migration plan.
 
 ## What This Is
 
 Internal campaign management platform for Rising Tides -- a social media marketing agency running TikTok/Instagram UGC influencer campaigns for major record labels. This app is where we stage campaigns, book creators, scrape for post links, track budgets/payments, and pull live performance data from Cobrand.
 
-## Current State (Pre-Migration)
+## Live Deployments
 
-- **Monolithic Flask app** -- all routes, helpers, and scraping logic in `campaign_manager/web_dashboard.py` (~1,900 lines)
-- **Server-rendered Jinja templates** -- 6 HTML templates in `campaign_manager/templates/` with inline CSS
-- **No frontend framework** -- vanilla JS for interactivity (toggle paid, approve inbox, scrape polling)
-- **Deployed on Railway** -- Flask + gunicorn serving both HTML pages and JSON API endpoints
-- **Railway Postgres** -- SQLAlchemy with file-based fallback for local dev
-- **Working features:** Campaign CRUD, creator management, TikTok scraping via yt-dlp, sound matching, budget tracking, Slack inbox integration, internal creator monitoring, Cobrand upload iframe embed
+| Component | URL | Infra |
+|---|---|---|
+| Frontend (React) | https://risingtides-campaign-hub.vercel.app | Vercel |
+| Backend (Flask API) | https://risingtides-campaign-hub-production.up.railway.app | Railway |
+| Database | PostgreSQL | Railway plugin |
 
-## Target Architecture (Post-Migration)
+## Architecture
 
-**Frontend:** Vite + React + TypeScript + shadcn/ui + Tailwind (deployed on Vercel)
-**Backend:** Flask API (Python) + SQLAlchemy + PostgreSQL (deployed on Railway)
-**Integrations:** Cobrand (live post tracking), Notion CRM (campaign intake via webhook), Slack (booking intake via agent)
+**Frontend:** Vite + React + TypeScript + shadcn/ui + Tailwind (Vercel)
+**Backend:** Flask API (Python) + SQLAlchemy + PostgreSQL (Railway)
+**Integrations:** Cobrand (live post tracking), Notion CRM (campaign intake via webhook/polling), Slack (booking intake via agent)
 
 ### Source of Truth Boundaries
 
@@ -33,72 +34,68 @@ Financial data lives here. Performance data comes from Cobrand. Client data come
 
 ## Project Structure
 
-### Current (pre-migration)
-
 ```
 risingtides-campaign-hub/
-  campaign_manager/
-    __init__.py
-    db.py                    # Database access layer (clean, keep as-is)
-    models.py                # SQLAlchemy models (clean, keep as-is)
-    web_dashboard.py         # ALL routes + helpers + scraping in one file (~1,900 lines)
-    templates/               # Jinja HTML templates (6 files, inline CSS)
+  campaign_manager/              # Flask backend (API only, 29 endpoints)
+    __init__.py                  # App factory (create_app)
+    config.py                    # Environment config
+    db.py                        # SQLAlchemy data access layer
+    models.py                    # Campaign, Creator, MatchedVideo, InboxItem, etc.
+    blueprints/
+      campaigns.py               # /api/campaigns, /api/campaign/<slug>/*, /api/creators/*
+      internal.py                # /api/internal/*
+      inbox.py                   # /api/inbox/*
+      webhooks.py                # /api/webhooks/notion, /api/webhooks/notion/sync
+      health.py                  # /health
+    services/
+      cobrand.py                 # Fetches live stats from Cobrand share pages (__NEXT_DATA__)
+      notion.py                  # Queries Notion CRM for new Client entries
+    utils/
+      helpers.py                 # slugify, extract_sound_id, TikTok URL resolution, etc.
+      budget.py                  # calc_budget, calc_stats
   src/
-    scrapers/
-      master_tracker.py      # Parallel TikTok scraping + sound matching
+    scrapers/                    # TikTok/Instagram scraping (yt-dlp based)
+      master_tracker.py          # Parallel scraping + sound matching
       scrape_external_accounts_cached.py
     utils/
       get_post_links_by_song.py  # Internal creator scraping
-  Dockerfile                 # Railway deployment config
-  requirements.txt           # Python dependencies
-```
-
-### Target (post-migration)
-
-```
-risingtides-campaign-hub/
-  campaign_manager/          # Flask backend (API only)
-    __init__.py              # App factory
-    config.py                # Environment config
-    db.py                    # Database access layer (keep existing)
-    models.py                # SQLAlchemy models (keep existing + new Cobrand fields)
-    blueprints/              # API route modules
-      campaigns.py           # /api/campaigns, /api/campaign/<slug>/*
-      internal.py            # /api/internal/*
-      inbox.py               # /api/inbox/*
-      webhooks.py            # /api/webhooks/notion
-      health.py              # /health
-    services/
-      cobrand.py             # Fetch + parse Cobrand share page stats
-      scraping.py            # Sound ID extraction, URL resolution
-      matching.py            # Sound matching logic
-    utils/
-      budget.py              # Budget/stats calculations
-      helpers.py             # slugify, date parsing, etc.
-  src/
-    scrapers/                # TikTok/Instagram scraping (keep existing)
-      master_tracker.py
-      scrape_external_accounts_cached.py
-    utils/
-      get_post_links_by_song.py
-  frontend/                  # React app (Vite) -- NEW
+  frontend/                      # React app (Vite + TypeScript)
     src/
-      components/            # shadcn/ui + custom components
-      pages/                 # Route pages
-      api/                   # API client (React Query hooks)
-      lib/                   # Utilities
+      lib/
+        api.ts                   # API client (24 endpoint functions)
+        types.ts                 # TypeScript interfaces for all API data
+        queries.ts               # React Query hooks (24 hooks)
+      pages/
+        CampaignsList.tsx        # Sortable campaign table + create form
+        CampaignDetail.tsx       # Full campaign view with creators, cobrand, stats
+        CreatorDatabase.tsx      # Cross-campaign creator roster
+        CreatorProfilePage.tsx   # Individual creator history and stats
+        InternalTikTok.tsx       # Internal creator scraping tool
+        InternalCreatorDetail.tsx # Per-creator video cache
+        SlackInbox.tsx           # Booking intake from Slack agent
+      components/
+        layout/                  # Sidebar, Layout shell (mobile hamburger menu)
+        campaigns/               # CampaignsTable, CreatorsTable, CampaignHeader, etc.
+        internal/                # CreatorSidebar, ScrapeProgress, SongsResults
+        inbox/                   # InboxCard
+        ui/                      # shadcn/ui components (table, button, card, badge, etc.)
   docs/
-    plans/                   # Design docs and implementation plans
-  Dockerfile                 # Backend Docker image for Railway
+    handoff.md                   # Current state and next steps
+    plans/                       # Design docs and implementation plans
+  Dockerfile                     # Backend Docker image for Railway
+
+  # Legacy (not used, pending removal after migration confirmed):
+  campaign_manager/web_dashboard.py   # Old monolithic Flask app (~1,900 lines)
+  campaign_manager/templates/         # Old Jinja HTML templates (6 files)
 ```
 
 ## Data Flow
 
 ```
 Notion CRM (client books)
-  |  webhook
+  |  webhook / polling sync
   v
-Campaign Hub (blank campaign created)
+Campaign Hub (campaign created)
   |
   +-- Slack Agent --> Inbox --> Jake approves --> Creators added
   |
@@ -110,35 +107,62 @@ Campaign Hub (blank campaign created)
 Campaign Hub <-- Cobrand (live performance stats)
 ```
 
-## Key Technical Decisions
+## Git Remotes
 
-- **Cobrand integration parses `__NEXT_DATA__` from share page HTML.** No official API -- we scrape the Next.js server-rendered JSON payload. We only consume performance fields (submissions, comments, engagement), never financial fields (budget, spend).
-- **Cobrand share URLs contain auth tokens.** Store the full URL in the database but never expose the token to the frontend beyond what's needed for the iframe embed.
-- **Scraping runs in background threads.** Both campaign refresh and internal scrape use ThreadPoolExecutor. Status is polled via /api endpoints. Not ideal long-term but functional. Redis + Celery is the upgrade path if needed.
-- **Dual storage mode.** The db.py layer supports both Postgres (production) and file-based JSON/CSV (local dev without a database). The `USE_DB` flag controls this. Production always uses Postgres.
+| Remote | Repo | Purpose |
+|---|---|---|
+| `origin` | https://github.com/jakebalik-bit/risingtides-campaign-hub | Jake's repo (primary) |
+| `fork` | https://github.com/Risingtides-dev/risingtides-campaign-hub | Deploy fork (Railway + Vercel deploy from here) |
+
+Push to `fork` to trigger deploys. Tag `pre-migration-backup` on both remotes points to the old codebase.
 
 ## Environment Variables
 
-| Variable | Where | Purpose |
-|---|---|---|
-| DATABASE_URL | Railway | PostgreSQL connection string |
-| SECRET_KEY | Railway | Flask session secret |
-| CORS_ORIGINS | Railway | Allowed frontend origins (Vercel URL) |
-| PORT | Railway | Auto-set by Railway |
-| VITE_API_URL | Vercel | Backend API URL for React app |
+### Railway (Backend)
+
+| Variable | Purpose |
+|---|---|
+| `DATABASE_URL` | PostgreSQL connection (auto-set by Railway Postgres plugin) |
+| `SECRET_KEY` | Flask session secret |
+| `CORS_ORIGINS` | `https://risingtides-campaign-hub.vercel.app` |
+| `NOTION_API_KEY` | Notion internal integration token |
+| `NOTION_CRM_DATABASE_ID` | `1961465b-b829-80c9-a1b5-c4cb3284149a` |
+| `PORT` | Auto-set by Railway |
+
+### Vercel (Frontend)
+
+| Variable | Purpose |
+|---|---|
+| `VITE_API_URL` | `https://risingtides-campaign-hub-production.up.railway.app` |
+
+## Key Technical Decisions
+
+- **Cobrand integration parses `__NEXT_DATA__` from share page HTML.** No official API -- we scrape the Next.js server-rendered JSON payload. Only performance fields consumed (submissions, comments), never financial (budget, spend).
+- **Cobrand share URLs contain auth tokens.** Stored in DB, not exposed beyond what's needed for iframe embed.
+- **Scraping runs in background threads.** Both campaign refresh and internal scrape use ThreadPoolExecutor with status polling. Redis + Celery is the upgrade path if needed.
+- **Dual storage mode.** db.py supports both Postgres (production) and file-based JSON/CSV (local dev). Production always uses Postgres.
+- **Creator database** aggregates stats across all campaigns -- no new DB tables needed, just cross-campaign queries on existing Creator and MatchedVideo models.
+
+## Pending Work
+
+1. **Data migration** -- Import 14 active campaigns from Jake's local disk (campaign.json + creators.csv + matched_videos.json per campaign)
+2. **Platform-aware social links** -- Creator profiles should show TikTok/IG links based on which platforms they were booked on
+3. **Notion sync test** -- Hit `POST /api/webhooks/notion/sync` with real data and verify campaigns are created correctly
+4. **Legacy cleanup** -- Remove `web_dashboard.py` and `templates/` after migration confirmed
 
 ## Development Guidelines
 
 - Backend is pure JSON API. No HTML templates, no Jinja rendering.
-- Frontend mirrors the existing UI design (colors, layout, typography from the original Jinja templates). Don't redesign -- replicate and enhance.
+- Frontend mirrors the original UI design (colors, layout, typography). Don't redesign -- replicate and enhance.
 - All tables use TanStack Table for sorting/filtering.
 - All API calls use React Query with proper loading/error states.
-- No full page refreshes for user actions (optimistic updates where possible).
-- Mobile layout: sidebar collapses to hamburger, tables become card layouts.
+- No full page refreshes for user actions.
+- Mobile layout: sidebar collapses to hamburger, tables scroll horizontally.
 
 ## What NOT To Do
 
 - Don't put financial/budget data in Cobrand sync. This app tracks money.
 - Don't scrape TikTok for view counts on existing posts. Cobrand handles that.
-- Don't add auth yet. Internal tool, small team, no auth for Phase 1.
-- Don't over-engineer the scraping infrastructure. Threads + polling works. Move to task queues only when it breaks.
+- Don't add auth yet. Internal tool, small team, no auth for now.
+- Don't over-engineer the scraping infrastructure. Threads + polling works.
+- Don't delete `web_dashboard.py` or `templates/` until data migration is confirmed working.
