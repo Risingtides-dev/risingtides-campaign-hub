@@ -37,4 +37,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 
 # Run the Flask app with gunicorn (production WSGI server)
 # 4 workers, 120s timeout for long scraping operations, bind to PORT env var
-CMD gunicorn --workers 4 --timeout 120 --bind 0.0.0.0:${PORT:-8080} --chdir campaign_manager web_dashboard:app
+CMD gunicorn --workers 4 --timeout 120 --bind 0.0.0.0:${PORT:-8080} "campaign_manager:create_app()"
