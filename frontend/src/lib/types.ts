@@ -1,0 +1,211 @@
+// Campaign types
+export interface CampaignBudget {
+  total: number
+  booked: number
+  paid: number
+  left: number
+  pct: number
+}
+
+export interface CampaignStats {
+  live_posts: number
+  total_views: number
+  cpm: number | null
+}
+
+export interface CampaignSummary {
+  slug: string
+  title: string
+  artist: string
+  song: string
+  start_date: string
+  status: string
+  budget: CampaignBudget
+  stats: CampaignStats
+  creator_count: number
+}
+
+export interface Creator {
+  username: string
+  posts_owed: number
+  posts_done: number
+  posts_matched: number
+  total_rate: number
+  per_post_rate: number
+  paypal_email: string
+  paid: string
+  payment_date: string
+  platform: string
+  added_date: string
+  status: string
+  notes: string
+}
+
+export interface CampaignDetail {
+  slug: string
+  title: string
+  artist: string
+  song: string
+  sound_id: string
+  official_sound: string
+  additional_sounds: string[]
+  cobrand_link: string
+  cobrand_share_url: string
+  cobrand_upload_url: string
+  start_date: string
+  budget: CampaignBudget
+  stats: CampaignStats
+  creators: Creator[]
+  matched_videos: MatchedVideo[]
+  platform: string
+  status: string
+  source: string
+  label: string
+  round: string
+  campaign_stage: string
+  project_lead: string[]
+  client_email: string
+  platform_split: Record<string, number>
+  content_types: string[]
+}
+
+export interface MatchedVideo {
+  url: string
+  song: string
+  artist: string
+  account: string
+  views: number
+  likes: number
+  upload_date: string
+  timestamp: string
+  music_id: string
+  platform: string
+  extracted_sound_id: string
+  extracted_song_title: string
+}
+
+// Cobrand types
+export interface CobrandSound {
+  id_platform: string
+  platform: string
+  title: string
+}
+
+export interface CobrandActivation {
+  id: string
+  name: string
+  artist_name: string
+  artist_image_url: string
+  social_sounds: CobrandSound[]
+  created_at: string
+  draft_submission_due_at: string | null
+  final_submission_due_at: string | null
+  tags: string[]
+}
+
+export interface CobrandStats {
+  promotion_id: string
+  name: string
+  status: string
+  live_submission_count: number
+  draft_submission_count: number
+  comment_count: number
+  activation_count: number
+  created_at: string
+  activations: CobrandActivation[]
+}
+
+// Internal TikTok types
+export interface InternalCreator {
+  username: string
+  total_videos: number
+  total_views: number
+}
+
+export interface InternalVideo {
+  url: string
+  song: string
+  artist: string
+  account: string
+  views: number
+  likes: number
+  upload_date: string
+}
+
+export interface InternalSongResult {
+  key: string
+  song: string
+  artist: string
+  total_views: number
+  total_likes: number
+  accounts: string[]
+  videos: InternalVideo[]
+}
+
+export interface InternalScrapeResults {
+  scraped_at: string
+  hours: number
+  start_dt: string
+  end_dt: string
+  accounts_total: number
+  accounts_successful: number
+  accounts_failed: number
+  total_videos: number
+  total_videos_unfiltered: number
+  unique_songs: number
+  songs: InternalSongResult[]
+}
+
+export interface ScrapeStatus {
+  running: boolean
+  progress: string
+  done: boolean
+}
+
+// Inbox types
+export interface InboxCreator {
+  username: string
+  posts_owed: number
+  total_rate: number
+  paypal_email?: string
+  paid?: string
+  notes?: string
+}
+
+export interface InboxItem {
+  id: string
+  created_at: string
+  status: string
+  source: string
+  raw_message: string
+  campaign_name: string
+  campaign_slug: string
+  campaign_suggested: boolean
+  creators: InboxCreator[]
+  notes: string
+  approved_at?: string
+  dismissed_at?: string
+  creators_added?: string[]
+}
+
+// API response wrappers
+export interface ApiOk {
+  ok: boolean
+  message: string
+}
+
+export interface SearchResult {
+  query: string
+  results: CampaignSummary[]
+}
+
+export interface BudgetResponse {
+  title: string
+  slug: string
+  budget_total: number
+  budget_booked: number
+  budget_paid: number
+  budget_remaining: number
+  budget_pct_used: number
+  message: string
+}
