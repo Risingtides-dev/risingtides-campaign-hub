@@ -148,6 +148,12 @@ const columns: ColumnDef<CampaignSummary>[] = [
     sortingFn: (rowA, rowB) =>
       (rowA.original.stats.cpm ?? 0) - (rowB.original.stats.cpm ?? 0),
   },
+  {
+    accessorKey: "start_date",
+    id: "start_date",
+    header: () => null,
+    cell: () => null,
+  },
 ]
 
 function SortableHeader({
@@ -183,7 +189,7 @@ interface CampaignsTableProps {
 export function CampaignsTable({ data }: CampaignsTableProps) {
   const navigate = useNavigate()
   const [sorting, setSorting] = useState<SortingState>([
-    { id: "title", desc: false },
+    { id: "start_date", desc: true },
   ])
 
   const table = useReactTable({
