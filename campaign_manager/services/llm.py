@@ -11,6 +11,12 @@ import anthropic
 log = logging.getLogger(__name__)
 
 _client: Optional[anthropic.Anthropic] = None
+_last_raw_response: str = ""
+
+
+def get_last_raw_response() -> str:
+    """Return the last raw LLM response for debugging."""
+    return _last_raw_response
 
 
 def _get_client() -> anthropic.Anthropic:
@@ -81,8 +87,10 @@ Rules:
 - Lines with "for [name]" indicate campaign bookings
 - If PayPal email or paypal.me link is present, include it
 - Slack formats links as <url|display> or <mailto:email|email> — extract the actual value
-- If a message contains a username + post count + dollar amount, it IS a booking
+- If a message contains a username + post count, it IS a booking (dollar amount is optional)
+- Rate/dollar amount may not always be present — use 0 if not mentioned
 - When in doubt, treat it as a booking — false positives are OK, they get reviewed by a human
+- NEVER return null for a message that has a username and post counts
 
 Respond with ONLY valid JSON (no markdown fences, no explanation). \
 Return null ONLY if the message clearly has no booking information at all \
@@ -103,7 +111,7 @@ Respond with JSON matching this schema:
     {{
       "username": "string (no @ prefix)",
       "posts_owed": number,
-      "total_rate": number,
+      "total_rate": number or 0 if not mentioned,
       "paypal_email": "string or empty"
     }}
   ],
@@ -155,7 +163,9 @@ def parse_booking_message(
             messages=[{"role": "user", "content": user_msg}],
         )
 
+        global _last_raw_response
         text = response.content[0].text.strip()
+        _last_raw_response = text
         log.info("LLM raw response: %.500s", text)
 
         if text.lower() == "null" or not text:

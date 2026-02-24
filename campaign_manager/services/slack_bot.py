@@ -87,7 +87,8 @@ def init_slack_app() -> Optional[App]:
             # Parse with LLM
             result = parse_booking_message(text, campaigns)
             if result is None:
-                _log_event("LLM returned null — not a booking")
+                from campaign_manager.services.llm import get_last_raw_response
+                _log_event(f"LLM returned null — raw response: {get_last_raw_response()}")
                 return
 
             _log_event(f"LLM parsed: {len(result.get('creators', []))} creator(s), "
