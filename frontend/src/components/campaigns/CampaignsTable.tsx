@@ -7,7 +7,7 @@ import {
   type SortingState,
   useReactTable,
 } from "@tanstack/react-table"
-import { useState } from "react"
+import { useState, useMemo } from "react"
 import { ArrowUpDown, ArrowUp, ArrowDown } from "lucide-react"
 import type { CampaignSummary } from "@/lib/types"
 import {
@@ -148,12 +148,6 @@ const columns: ColumnDef<CampaignSummary>[] = [
     sortingFn: (rowA, rowB) =>
       (rowA.original.stats.cpm ?? 0) - (rowB.original.stats.cpm ?? 0),
   },
-  {
-    accessorKey: "start_date",
-    id: "start_date",
-    header: () => null,
-    cell: () => null,
-  },
 ]
 
 function SortableHeader({
@@ -182,18 +176,45 @@ function SortableHeader({
   )
 }
 
+type SortOption = "start_date" | "a-z" | "cost" | "spend_pct" | "remaining"
+
+const sortOptions: { value: SortOption; label: string }[] = [
+  { value: "start_date", label: "Start Date" },
+  { value: "a-z", label: "A–Z" },
+  { value: "cost", label: "Overall Cost" },
+  { value: "spend_pct", label: "Spend %" },
+  { value: "remaining", label: "Remaining" },
+]
+
+function sortCampaigns(data: CampaignSummary[], by: SortOption): CampaignSummary[] {
+  const sorted = [...data]
+  switch (by) {
+    case "start_date":
+      return sorted.sort((a, b) => (b.start_date || "").localeCompare(a.start_date || ""))
+    case "a-z":
+      return sorted.sort((a, b) => a.title.localeCompare(b.title))
+    case "cost":
+      return sorted.sort((a, b) => b.budget.total - a.budget.total)
+    case "spend_pct":
+      return sorted.sort((a, b) => b.budget.pct - a.budget.pct)
+    case "remaining":
+      return sorted.sort((a, b) => a.budget.left - b.budget.left)
+  }
+}
+
 interface CampaignsTableProps {
   data: CampaignSummary[]
 }
 
 export function CampaignsTable({ data }: CampaignsTableProps) {
   const navigate = useNavigate()
-  const [sorting, setSorting] = useState<SortingState>([
-    { id: "start_date", desc: true },
-  ])
+  const [sortBy, setSortBy] = useState<SortOption>("start_date")
+  const [sorting, setSorting] = useState<SortingState>([])
+
+  const sortedData = useMemo(() => sortCampaigns(data, sortBy), [data, sortBy])
 
   const table = useReactTable({
-    data,
+    data: sortedData,
     columns,
     state: { sorting },
     onSortingChange: setSorting,
@@ -203,6 +224,23 @@ export function CampaignsTable({ data }: CampaignsTableProps) {
 
   return (
     <div className="bg-white border border-[#e8e8ef] rounded-[10px] overflow-hidden">
+      <div className="flex items-center gap-2 px-4 py-2.5 border-b border-[#e8e8ef]">
+        <span className="text-[#888] text-xs font-semibold uppercase tracking-[0.3px]">Sort by</span>
+        {sortOptions.map((opt) => (
+          <button
+            key={opt.value}
+            type="button"
+            onClick={() => { setSortBy(opt.value); setSorting([]) }}
+            className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
+              sortBy === opt.value
+                ? "bg-[#0b62d6] text-white"
+                : "bg-[#f4f4f8] text-[#555] hover:bg-[#e8e8ef]"
+            }`}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
       <div className="overflow-x-auto">
       <Table>
         <TableHeader>
