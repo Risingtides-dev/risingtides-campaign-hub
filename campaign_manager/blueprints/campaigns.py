@@ -443,6 +443,14 @@ def campaign_detail(slug: str):
 @campaigns_bp.post("/api/campaign/<slug>/refresh")
 def refresh_stats(slug: str):
     """Scrape creator accounts and match videos to the campaign sound."""
+    import traceback as _tb
+    try:
+        return _refresh_stats_inner(slug)
+    except Exception as e:
+        return jsonify({"error": str(e), "traceback": _tb.format_exc()}), 500
+
+
+def _refresh_stats_inner(slug: str):
     if _db.is_active():
         meta = _db.get_campaign(slug)
         if not meta:
