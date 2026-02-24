@@ -59,6 +59,23 @@ const columns: ColumnDef<CampaignSummary>[] = [
     ),
   },
   {
+    accessorKey: "start_date",
+    header: ({ column }) => (
+      <SortableHeader column={column} label="Start Date" />
+    ),
+    cell: ({ row }) => {
+      const raw = row.original.start_date
+      if (!raw) return <span className="text-[#888] text-[14px]">-</span>
+      const d = new Date(raw + "T00:00:00")
+      const formatted = d.toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      })
+      return <span className="text-[14px] whitespace-nowrap">{formatted}</span>
+    },
+  },
+  {
     accessorKey: "status",
     header: ({ column }) => (
       <SortableHeader column={column} label="Status" />
