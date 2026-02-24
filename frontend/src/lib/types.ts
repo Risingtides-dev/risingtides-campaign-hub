@@ -156,10 +156,23 @@ export interface InternalScrapeResults {
   songs: InternalSongResult[]
 }
 
+export interface ScrapeAccountLog {
+  username: string
+  status: "ok" | "failed"
+  video_count: number
+  error?: string
+}
+
 export interface ScrapeStatus {
   running: boolean
   progress: string
   done: boolean
+  accounts_total: number
+  accounts_completed: number
+  accounts_failed: number
+  videos_so_far: number
+  current_accounts: string[]
+  log: ScrapeAccountLog[]
 }
 
 // Inbox types

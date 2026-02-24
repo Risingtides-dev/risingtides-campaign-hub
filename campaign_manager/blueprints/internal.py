@@ -38,7 +38,17 @@ INTERNAL_CACHE_DIR = DATA_ROOT / "internal_cache"
 # ---------------------------------------------------------------------------
 # Background scrape state (module-level, shared by routes + worker thread)
 # ---------------------------------------------------------------------------
-_internal_scrape_status: Dict = {"running": False, "progress": "", "done": False}
+_internal_scrape_status: Dict = {
+    "running": False,
+    "done": False,
+    "progress": "",
+    "accounts_total": 0,
+    "accounts_completed": 0,
+    "accounts_failed": 0,
+    "videos_so_far": 0,
+    "current_accounts": [],
+    "log": [],
+}
 
 # ---------------------------------------------------------------------------
 # Data helpers
@@ -163,7 +173,32 @@ def _run_internal_scrape(hours: int, creators: List[str]):
     from datetime import timedelta
 
     global _internal_scrape_status
-    _internal_scrape_status = {"running": True, "progress": "Starting...", "done": False}
+    total = len(creators)
+    _internal_scrape_status = {
+        "running": True,
+        "done": False,
+        "progress": "Starting...",
+        "accounts_total": total,
+        "accounts_completed": 0,
+        "accounts_failed": 0,
+        "videos_so_far": 0,
+        "current_accounts": [],
+        "log": [],
+    }
+
+    # Thread-safe set for tracking in-flight accounts
+    _inflight_lock = threading.Lock()
+    _inflight: set = set()
+
+    def _add_inflight(account: str):
+        with _inflight_lock:
+            _inflight.add(account)
+            _internal_scrape_status["current_accounts"] = sorted(_inflight)
+
+    def _remove_inflight(account: str):
+        with _inflight_lock:
+            _inflight.discard(account)
+            _internal_scrape_status["current_accounts"] = sorted(_inflight)
 
     utils_dir = str(PROJECT_ROOT / "src" / "utils")
     if utils_dir not in sys.path:
@@ -172,7 +207,11 @@ def _run_internal_scrape(hours: int, creators: List[str]):
     try:
         from get_post_links_by_song import scrape_account_videos, normalize_song_key
     except ImportError as e:
-        _internal_scrape_status = {"running": False, "progress": f"Import error: {e}", "done": True}
+        _internal_scrape_status = {
+            "running": False, "done": True, "progress": f"Import error: {e}",
+            "accounts_total": total, "accounts_completed": 0, "accounts_failed": 0,
+            "videos_so_far": 0, "current_accounts": [], "log": [],
+        }
         return
 
     try:
@@ -182,9 +221,9 @@ def _run_internal_scrape(hours: int, creators: List[str]):
         all_videos: List[Dict] = []
         successful = 0
         failed = 0
-        total = len(creators)
 
         def _scrape_one(account):
+            _add_inflight(account)
             try:
                 videos = scrape_account_videos(account, start_datetime=start_dt, end_datetime=end_dt, limit=500)
                 return account, videos or [], None
@@ -196,9 +235,17 @@ def _run_internal_scrape(hours: int, creators: List[str]):
             futures = {executor.submit(_scrape_one, c): c for c in creators}
             for future in as_completed(futures):
                 account, videos, error = future.result()
+                _remove_inflight(account)
                 completed_count += 1
+                video_count = len(videos)
                 if error:
                     failed += 1
+                    _internal_scrape_status["log"].append({
+                        "username": account,
+                        "status": "failed",
+                        "video_count": 0,
+                        "error": error,
+                    })
                 else:
                     # Merge into per-account cache
                     serializable = []
@@ -217,7 +264,15 @@ def _run_internal_scrape(hours: int, creators: List[str]):
                     merge_into_cache(account.lstrip("@"), serializable)
                     all_videos.extend(serializable)
                     successful += 1
+                    _internal_scrape_status["log"].append({
+                        "username": account,
+                        "status": "ok",
+                        "video_count": video_count,
+                    })
 
+                _internal_scrape_status["accounts_completed"] = completed_count
+                _internal_scrape_status["accounts_failed"] = failed
+                _internal_scrape_status["videos_so_far"] = len(all_videos)
                 _internal_scrape_status["progress"] = f"Scraped {completed_count}/{total} accounts ({successful} ok, {failed} failed)"
 
         # Group by song
@@ -264,7 +319,7 @@ def _run_internal_scrape(hours: int, creators: List[str]):
         }
         save_internal_results(results)
 
-        _internal_scrape_status = {
+        _internal_scrape_status.update({
             "running": False,
             "done": True,
             "progress": (
@@ -272,13 +327,15 @@ def _run_internal_scrape(hours: int, creators: List[str]):
                 f"{len(all_videos)} videos, "
                 f"{len(songs_list)} unique sounds"
             ),
-        }
+            "current_accounts": [],
+        })
     except Exception as e:
-        _internal_scrape_status = {
+        _internal_scrape_status.update({
             "running": False,
             "done": True,
             "progress": f"Error: {e}",
-        }
+            "current_accounts": [],
+        })
 
 
 # ===================================================================
