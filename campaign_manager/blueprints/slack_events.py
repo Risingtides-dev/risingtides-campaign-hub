@@ -52,9 +52,9 @@ def slack_events():
 
 @slack_events_bp.get("/debug")
 def slack_debug():
-    """Debug endpoint to check Slack bot status."""
+    """Debug endpoint to check Slack bot status and recent event log."""
     import os
-    from campaign_manager.services.slack_bot import get_slack_app
+    from campaign_manager.services.slack_bot import get_slack_app, get_event_log
 
     slack_app = get_slack_app()
     return jsonify({
@@ -63,4 +63,5 @@ def slack_debug():
         "secret_set": bool(os.environ.get("SLACK_SIGNING_SECRET")),
         "channel_configured": os.environ.get("SLACK_BOOKING_CHANNEL", ""),
         "anthropic_key_set": bool(os.environ.get("ANTHROPIC_API_KEY")),
+        "recent_events": get_event_log(),
     })
