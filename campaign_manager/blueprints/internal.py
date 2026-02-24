@@ -250,10 +250,10 @@ def _run_internal_scrape(hours: int, creators: List[str]):
             songs_list.append(data)
 
         results = {
-            "scraped_at": datetime.now(EST).isoformat(),
+            "scraped_at": datetime.now(EST).strftime("%Y-%m-%dT%H:%M:%S"),
             "hours": hours,
-            "start_dt": start_dt.isoformat(),
-            "end_dt": end_dt.isoformat(),
+            "start_dt": start_dt.strftime("%Y-%m-%dT%H:%M:%S"),
+            "end_dt": end_dt.strftime("%Y-%m-%dT%H:%M:%S"),
             "accounts_total": total,
             "accounts_successful": successful,
             "accounts_failed": failed,

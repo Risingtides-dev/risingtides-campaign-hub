@@ -8,6 +8,9 @@ from __future__ import annotations
 import os
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
+from zoneinfo import ZoneInfo
+
+EST = ZoneInfo("America/New_York")
 
 from sqlalchemy import create_engine, desc
 from sqlalchemy.orm import Session, sessionmaker
@@ -546,7 +549,7 @@ def save_internal_results(data: Dict):
     """Save internal scrape results."""
     with get_session() as s:
         result = InternalScrapeResult(
-            scraped_at=datetime.now(),
+            scraped_at=datetime.now(EST).replace(tzinfo=None),
             hours=data.get("hours", 48),
             start_dt=datetime.fromisoformat(data["start_dt"]) if data.get("start_dt") else None,
             end_dt=datetime.fromisoformat(data["end_dt"]) if data.get("end_dt") else None,
