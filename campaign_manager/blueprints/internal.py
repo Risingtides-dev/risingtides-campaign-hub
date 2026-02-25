@@ -205,7 +205,7 @@ def _run_internal_scrape(hours: int, creators: List[str]):
         sys.path.insert(0, utils_dir)
 
     try:
-        from get_post_links_by_song import scrape_account_videos, normalize_song_key
+        from get_post_links_by_song import scrape_account_videos, normalize_song_key, ScrapeError
     except ImportError as e:
         _internal_scrape_status = {
             "running": False, "done": True, "progress": f"Import error: {e}",
@@ -227,8 +227,10 @@ def _run_internal_scrape(hours: int, creators: List[str]):
             try:
                 videos = scrape_account_videos(account, start_datetime=start_dt, end_datetime=end_dt, limit=500)
                 return account, videos or [], None
-            except Exception as e:
+            except ScrapeError as e:
                 return account, [], str(e)
+            except Exception as e:
+                return account, [], f"Unexpected error: {e}"
 
         completed_count = 0
         with ThreadPoolExecutor(max_workers=8) as executor:

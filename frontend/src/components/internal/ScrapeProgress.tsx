@@ -162,7 +162,7 @@ export function ScrapeProgress({ enabled, onComplete }: ScrapeProgressProps) {
                       <XCircle className="size-3.5 text-[#ef4444] flex-shrink-0" />
                       <span className="text-[#ef4444]">
                         @{entry.username}
-                        <span className="text-[#888]"> — failed</span>
+                        <span className="text-[#888]"> — {entry.error || "failed"}</span>
                       </span>
                     </>
                   )}

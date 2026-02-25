@@ -58,12 +58,20 @@ def build_yt_dlp_command(profile_url, limit, impersonate_target=None):
     return cmd
 
 
+class ScrapeError(Exception):
+    """Raised when yt-dlp fails to return any data for an account."""
+    pass
+
+
 def scrape_account_videos(account, start_datetime=None, end_datetime=None, limit=500):
-    """Scrape videos from a TikTok account with retry logic and impersonation fallback"""
+    """Scrape videos from a TikTok account with retry logic and impersonation fallback.
+
+    Returns a list of video dicts on success (may be empty if no videos in window).
+    Raises ScrapeError if yt-dlp could not fetch data at all (blocked, timeout, etc).
+    """
     username = get_profile_username(account)
     if not username:
-        print(f"  [ERROR] Could not extract username from: {account}")
-        return []
+        raise ScrapeError(f"Could not extract username from: {account}")
 
     profile_url = build_profile_url(username)
     print(f"  Scraping @{username}...")
@@ -104,7 +112,7 @@ def scrape_account_videos(account, start_datetime=None, end_datetime=None, limit
                     return videos
 
                 # No output - save error and try next target
-                last_error = result.stderr[:200] if result.stderr else "No output"
+                last_error = result.stderr[:300] if result.stderr else "yt-dlp returned no output (likely blocked)"
                 break  # Move to next impersonation target
 
             except subprocess.TimeoutExpired:
@@ -115,9 +123,10 @@ def scrape_account_videos(account, start_datetime=None, end_datetime=None, limit
                 last_error = str(e)
                 break  # Move to next impersonation target
 
-    # All attempts failed
-    print(f"    [ERROR] Failed to scrape after all retries: {last_error}")
-    return []
+    # All attempts failed — raise so caller knows this wasn't "0 videos in window"
+    error_msg = f"yt-dlp failed for @{username}: {last_error}"
+    print(f"    [ERROR] {error_msg}")
+    raise ScrapeError(error_msg)
 
 
 def parse_video_output(stdout, username, start_datetime, end_datetime):
@@ -164,11 +173,14 @@ def parse_video_output(stdout, username, start_datetime, end_datetime):
                         pass
 
             # Filter by datetime range if provided
+            # Strip timezone from boundaries so comparison is always naive-to-naive
             if video_dt:
-                if start_datetime and video_dt < start_datetime:
+                start_naive = start_datetime.replace(tzinfo=None) if start_datetime and start_datetime.tzinfo else start_datetime
+                end_naive = end_datetime.replace(tzinfo=None) if end_datetime and end_datetime.tzinfo else end_datetime
+                if start_naive and video_dt < start_naive:
                     skipped_old += 1
                     continue
-                if end_datetime and video_dt > end_datetime:
+                if end_naive and video_dt > end_naive:
                     skipped_old += 1
                     continue
 
