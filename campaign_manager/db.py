@@ -43,6 +43,18 @@ def init(database_url: Optional[str] = None):
     # Create all tables
     Base.metadata.create_all(_engine)
 
+    # Add completion_status column if missing (create_all won't add columns to existing tables)
+    try:
+        with _SessionLocal() as s:
+            s.execute(
+                __import__("sqlalchemy").text(
+                    "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS completion_status VARCHAR(20) DEFAULT 'none'"
+                )
+            )
+            s.commit()
+    except Exception:
+        pass
+
     # Fix: null out empty notion_page_id values so unique constraint works
     try:
         with _SessionLocal() as s:
