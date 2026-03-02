@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from campaign_manager.models import (
     Base, Campaign, Creator, MatchedVideo, ScrapeLog,
     InboxItem, PaypalMemory, InternalCreator, InternalVideoCache,
-    InternalScrapeResult,
+    InternalScrapeResult, CronLog,
 )
 
 _engine = None
@@ -616,3 +616,45 @@ def get_synced_notion_ids() -> set:
             Campaign.notion_page_id != "",
         ).all()
         return {r[0] for r in results}
+
+
+# ── Cron Logs ────────────────────────────────────────────────────────
+
+def create_cron_log(job_type: str) -> int:
+    """Create a new cron log entry with status 'running'. Returns the log ID."""
+    with get_session() as s:
+        log = CronLog(
+            job_type=job_type,
+            status="running",
+            started_at=datetime.now(EST).replace(tzinfo=None),
+        )
+        s.add(log)
+        s.commit()
+        return log.id
+
+
+def finish_cron_log(log_id: int, status: str, summary: dict):
+    """Mark a cron log as completed or failed with summary data."""
+    with get_session() as s:
+        log = s.query(CronLog).filter_by(id=log_id).first()
+        if log:
+            log.status = status
+            log.finished_at = datetime.now(EST).replace(tzinfo=None)
+            log.summary = summary
+            s.commit()
+
+
+def get_cron_logs(limit: int = 20, offset: int = 0) -> List[Dict]:
+    """Get paginated cron log history, newest first."""
+    with get_session() as s:
+        logs = s.query(CronLog)\
+            .order_by(desc(CronLog.started_at))\
+            .offset(offset).limit(limit).all()
+        return [l.to_dict() for l in logs]
+
+
+def get_cron_log_by_id(log_id: int) -> Optional[Dict]:
+    """Get a single cron log entry by ID."""
+    with get_session() as s:
+        log = s.query(CronLog).filter_by(id=log_id).first()
+        return log.to_dict() if log else None

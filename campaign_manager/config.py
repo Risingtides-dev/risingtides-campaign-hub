@@ -22,3 +22,9 @@ class Config:
 
     # Apify (TikTok scraping via clockworks/tiktok-scraper)
     APIFY_API_TOKEN = os.environ.get("APIFY_API_TOKEN", "")
+
+    # Scheduler (daily cron)
+    SCHEDULER_ENABLED = os.environ.get("SCHEDULER_ENABLED", "false").lower() == "true"
+    SLACK_CRON_CHANNEL = os.environ.get("SLACK_CRON_CHANNEL", "")
+    CRON_HOUR = int(os.environ.get("CRON_HOUR", "6"))
+    CRON_MINUTE = int(os.environ.get("CRON_MINUTE", "0"))

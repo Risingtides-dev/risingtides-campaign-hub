@@ -309,3 +309,25 @@ class InternalScrapeResult(Base):
     total_videos_unfiltered = Column(Integer, default=0)
     unique_songs = Column(Integer, default=0)
     songs = Column(JSONB, default=list)
+
+
+class CronLog(Base):
+    """Logs each scheduled cron job run."""
+    __tablename__ = "cron_log"
+
+    id = Column(Integer, primary_key=True)
+    job_type = Column(String(50), nullable=False, index=True)   # 'campaign_refresh' | 'internal_scrape'
+    status = Column(String(20), nullable=False, index=True)     # 'running' | 'completed' | 'failed'
+    started_at = Column(DateTime, nullable=False)
+    finished_at = Column(DateTime, nullable=True)
+    summary = Column(JSONB, nullable=True)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "job_type": self.job_type or "",
+            "status": self.status or "",
+            "started_at": self.started_at.isoformat() if self.started_at else "",
+            "finished_at": self.finished_at.isoformat() if self.finished_at else "",
+            "summary": self.summary or {},
+        }

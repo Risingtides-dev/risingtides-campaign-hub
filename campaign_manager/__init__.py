@@ -25,6 +25,7 @@ def create_app(config=None):
     from campaign_manager.blueprints.webhooks import webhooks_bp
     from campaign_manager.blueprints.migrate import migrate_bp
     from campaign_manager.blueprints.slack_events import slack_events_bp
+    from campaign_manager.blueprints.cron import cron_bp
 
     app.register_blueprint(health_bp)
     app.register_blueprint(campaigns_bp)
@@ -33,10 +34,31 @@ def create_app(config=None):
     app.register_blueprint(webhooks_bp)
     app.register_blueprint(migrate_bp)
     app.register_blueprint(slack_events_bp)
+    app.register_blueprint(cron_bp)
 
     # Initialize Slack bot (no-op if credentials aren't set)
     if app.config.get("SLACK_BOT_TOKEN"):
         from campaign_manager.services.slack_bot import init_slack_app
         init_slack_app()
+
+    # Initialize scheduler (only if enabled and DB is active).
+    # Use a file lock so only one gunicorn worker runs the scheduler.
+    if app.config.get("SCHEDULER_ENABLED") and db.is_active():
+        import fcntl
+        try:
+            _lock_file = open("/tmp/.scheduler.lock", "w")
+            fcntl.flock(_lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            # Got the lock — this worker runs the scheduler
+            from campaign_manager.services.scheduler import init_scheduler
+            init_scheduler(
+                database_url=app.config["DATABASE_URL"],
+                hour=app.config.get("CRON_HOUR", 6),
+                minute=app.config.get("CRON_MINUTE", 0),
+            )
+            # Keep _lock_file open (holds the lock for process lifetime)
+            app._scheduler_lock = _lock_file
+        except (IOError, OSError):
+            # Another worker already holds the lock — skip scheduler init
+            pass
 
     return app
