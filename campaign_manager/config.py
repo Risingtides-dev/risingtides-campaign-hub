@@ -19,3 +19,6 @@ class Config:
 
     # Anthropic Claude API (for Slack message parsing)
     ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+
+    # Apify (TikTok scraping via clockworks/tiktok-scraper)
+    APIFY_API_TOKEN = os.environ.get("APIFY_API_TOKEN", "")

@@ -7,7 +7,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import sys
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -167,8 +166,7 @@ def merge_into_cache(username: str, new_videos: List[Dict]) -> List[Dict]:
 # ---------------------------------------------------------------------------
 
 def _run_internal_scrape(hours: int, creators: List[str]):
-    """Background scrape worker -- runs in a thread."""
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    """Background scrape worker -- runs in a thread via Apify."""
     from collections import defaultdict
     from datetime import timedelta
 
@@ -177,105 +175,95 @@ def _run_internal_scrape(hours: int, creators: List[str]):
     _internal_scrape_status = {
         "running": True,
         "done": False,
-        "progress": "Starting...",
+        "progress": "Starting Apify scrape...",
         "accounts_total": total,
         "accounts_completed": 0,
         "accounts_failed": 0,
         "videos_so_far": 0,
-        "current_accounts": [],
+        "current_accounts": list(creators),
         "log": [],
     }
 
-    # Thread-safe set for tracking in-flight accounts
-    _inflight_lock = threading.Lock()
-    _inflight: set = set()
-
-    def _add_inflight(account: str):
-        with _inflight_lock:
-            _inflight.add(account)
-            _internal_scrape_status["current_accounts"] = sorted(_inflight)
-
-    def _remove_inflight(account: str):
-        with _inflight_lock:
-            _inflight.discard(account)
-            _internal_scrape_status["current_accounts"] = sorted(_inflight)
-
-    utils_dir = str(PROJECT_ROOT / "src" / "utils")
-    if utils_dir not in sys.path:
-        sys.path.insert(0, utils_dir)
-
     try:
-        from get_post_links_by_song import scrape_account_videos, normalize_song_key, ScrapeError
-    except ImportError as e:
-        _internal_scrape_status = {
-            "running": False, "done": True, "progress": f"Import error: {e}",
-            "accounts_total": total, "accounts_completed": 0, "accounts_failed": 0,
-            "videos_so_far": 0, "current_accounts": [], "log": [],
-        }
-        return
+        from campaign_manager.services.apify_scraper import scrape_profiles
 
-    try:
         end_dt = datetime.now(EST)
         start_dt = end_dt - timedelta(hours=hours)
 
+        _internal_scrape_status["progress"] = f"Scraping {total} accounts via Apify..."
+
+        # Single batched Apify call
+        all_apify_videos = scrape_profiles(creators, results_per_page=50)
+
+        # Filter results by time window
         all_videos: List[Dict] = []
-        successful = 0
-        failed = 0
+        for v in all_apify_videos:
+            video_dt = None
+            ts = v.get("timestamp")
+            if ts and isinstance(ts, str):
+                try:
+                    video_dt = datetime.fromisoformat(ts)
+                except Exception:
+                    pass
+            if not video_dt:
+                upload = v.get("upload_date", "")
+                if upload and len(upload) == 8:
+                    try:
+                        video_dt = datetime.strptime(upload, "%Y%m%d").replace(tzinfo=EST)
+                    except Exception:
+                        pass
+            # Keep if within time window or if we can't determine date
+            if video_dt is None or video_dt >= start_dt:
+                all_videos.append(v)
 
-        def _scrape_one(account):
-            _add_inflight(account)
-            try:
-                videos = scrape_account_videos(account, start_datetime=start_dt, end_datetime=end_dt, limit=500)
-                return account, videos or [], None
-            except ScrapeError as e:
-                return account, [], str(e)
-            except Exception as e:
-                return account, [], f"Unexpected error: {e}"
+        # Track per-account stats
+        accounts_seen: set = set()
+        for v in all_videos:
+            acct = (v.get("account", "").lstrip("@")).lower()
+            if acct:
+                accounts_seen.add(acct)
 
-        completed_count = 0
-        with ThreadPoolExecutor(max_workers=8) as executor:
-            futures = {executor.submit(_scrape_one, c): c for c in creators}
-            for future in as_completed(futures):
-                account, videos, error = future.result()
-                _remove_inflight(account)
-                completed_count += 1
-                video_count = len(videos)
-                if error:
-                    failed += 1
-                    _internal_scrape_status["log"].append({
-                        "username": account,
-                        "status": "failed",
-                        "video_count": 0,
-                        "error": error,
-                    })
-                else:
-                    # Merge into per-account cache
-                    serializable = []
-                    for v in videos:
-                        sv = {
-                            "url": v.get("url", ""),
-                            "song": v.get("song", ""),
-                            "artist": v.get("artist", ""),
-                            "account": v.get("account", ""),
-                            "views": v.get("views", 0),
-                            "likes": v.get("likes", 0),
-                            "upload_date": v.get("upload_date", ""),
-                            "timestamp": v.get("timestamp").isoformat() if isinstance(v.get("timestamp"), datetime) else str(v.get("timestamp", "")),
-                        }
-                        serializable.append(sv)
-                    merge_into_cache(account.lstrip("@"), serializable)
-                    all_videos.extend(serializable)
-                    successful += 1
-                    _internal_scrape_status["log"].append({
-                        "username": account,
-                        "status": "ok",
-                        "video_count": video_count,
-                    })
+        successful = len(accounts_seen)
+        failed = total - successful
 
-                _internal_scrape_status["accounts_completed"] = completed_count
-                _internal_scrape_status["accounts_failed"] = failed
-                _internal_scrape_status["videos_so_far"] = len(all_videos)
-                _internal_scrape_status["progress"] = f"Scraped {completed_count}/{total} accounts ({successful} ok, {failed} failed)"
+        # Merge into per-account caches
+        videos_by_account: Dict[str, List[Dict]] = {}
+        for v in all_videos:
+            acct = v.get("account", "").lstrip("@").lower()
+            if acct:
+                videos_by_account.setdefault(acct, []).append(v)
+
+        for acct, vids in videos_by_account.items():
+            merge_into_cache(acct, vids)
+            _internal_scrape_status["log"].append({
+                "username": acct,
+                "status": "ok",
+                "video_count": len(vids),
+            })
+
+        # Log accounts with no results
+        for c in creators:
+            if c.lower() not in accounts_seen:
+                _internal_scrape_status["log"].append({
+                    "username": c,
+                    "status": "failed",
+                    "video_count": 0,
+                    "error": "No results from Apify",
+                })
+
+        _internal_scrape_status.update({
+            "accounts_completed": total,
+            "accounts_failed": failed,
+            "videos_so_far": len(all_videos),
+            "progress": f"Processing {len(all_videos)} videos...",
+            "current_accounts": [],
+        })
+
+        # Normalize song key inline (avoid importing from yt-dlp based module)
+        def _normalize_song_key(song_val, artist_val):
+            s = (song_val or "").strip().lower()
+            a = (artist_val or "").strip().lower()
+            return f"{s} - {a}".strip()
 
         # Group by song
         songs_dict = defaultdict(lambda: {
@@ -284,7 +272,7 @@ def _run_internal_scrape(hours: int, creators: List[str]):
         })
 
         for video in all_videos:
-            song_key = normalize_song_key(video.get("song", ""), video.get("artist", ""))
+            song_key = _normalize_song_key(video.get("song", ""), video.get("artist", ""))
             entry = songs_dict[song_key]
             entry["song"] = video.get("song", "Unknown")
             entry["artist"] = video.get("artist", "Unknown")
@@ -315,7 +303,7 @@ def _run_internal_scrape(hours: int, creators: List[str]):
             "accounts_successful": successful,
             "accounts_failed": failed,
             "total_videos": len(all_videos),
-            "total_videos_unfiltered": len(all_videos),
+            "total_videos_unfiltered": len(all_apify_videos),
             "unique_songs": len(songs_list),
             "songs": songs_list,
         }

@@ -38,3 +38,6 @@ slack-bolt>=1.18.0
 # Anthropic Claude API (LLM parsing for Slack messages)
 anthropic>=0.40.0
 
+# Apify (TikTok scraping)
+apify-client>=2.5.0
+
