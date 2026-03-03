@@ -43,11 +43,16 @@ def create_app(config=None):
 
     # Initialize scheduler (only if enabled and DB is active).
     # Use a file lock so only one gunicorn worker runs the scheduler.
+    import logging as _logging
+    _sched_log = _logging.getLogger("campaign_manager.scheduler_init")
+    _sched_log.info("Scheduler check: SCHEDULER_ENABLED=%s, db_active=%s",
+                    app.config.get("SCHEDULER_ENABLED"), db.is_active())
     if app.config.get("SCHEDULER_ENABLED") and db.is_active():
         import fcntl
         try:
             _lock_file = open("/tmp/.scheduler.lock", "w")
             fcntl.flock(_lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            _sched_log.info("Got scheduler lock, initializing...")
             # Got the lock — this worker runs the scheduler
             from campaign_manager.services.scheduler import init_scheduler
             init_scheduler(
@@ -57,8 +62,10 @@ def create_app(config=None):
             )
             # Keep _lock_file open (holds the lock for process lifetime)
             app._scheduler_lock = _lock_file
-        except (IOError, OSError):
-            # Another worker already holds the lock — skip scheduler init
-            pass
+            _sched_log.info("Scheduler initialized successfully")
+        except (IOError, OSError) as e:
+            _sched_log.info("Scheduler lock not acquired (another worker has it): %s", e)
+        except Exception as e:
+            _sched_log.error("Scheduler init failed: %s", e, exc_info=True)
 
     return app
