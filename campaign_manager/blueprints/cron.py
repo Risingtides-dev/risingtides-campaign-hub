@@ -66,3 +66,32 @@ def cron_toggle():
 
     toggle_scheduler(enabled)
     return jsonify({"enabled": enabled})
+
+
+@cron_bp.route("/api/cron/diag")
+def cron_diag():
+    """Diagnostic endpoint: test Apify connectivity and token."""
+    import os
+    from campaign_manager.config import Config
+
+    env_token = os.environ.get("APIFY_API_TOKEN", "")
+    config_token = Config.APIFY_API_TOKEN
+
+    result = {
+        "env_token_set": bool(env_token),
+        "env_token_prefix": env_token[:8] + "..." if env_token else "",
+        "config_token_set": bool(config_token),
+        "config_token_prefix": config_token[:8] + "..." if config_token else "",
+    }
+
+    # Try a minimal Apify call
+    try:
+        from campaign_manager.services.apify_scraper import scrape_profiles
+        videos = scrape_profiles(["charlidamelio"], results_per_page=1)
+        result["apify_test"] = "ok"
+        result["apify_videos_returned"] = len(videos)
+    except Exception as e:
+        result["apify_test"] = "failed"
+        result["apify_error"] = str(e)
+
+    return jsonify(result)
