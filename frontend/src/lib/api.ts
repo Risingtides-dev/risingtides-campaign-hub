@@ -126,6 +126,13 @@ export const api = {
   getCreatorProfile: (username: string) =>
     request<CreatorProfile>(`/api/creators/${username}`),
 
+  // TidesTracker
+  createTracker: (slug: string) =>
+    request<ApiOk & { tracker_campaign_id: string; tracker_url: string }>(
+      `/api/campaign/${slug}/create-tracker`,
+      { method: "POST" }
+    ),
+
   // Cobrand
   getCobrandStats: (slug: string) =>
     request<CobrandStats>(`/api/campaign/${slug}/cobrand`),

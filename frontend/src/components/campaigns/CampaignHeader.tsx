@@ -2,7 +2,7 @@ import { useState } from "react"
 import { Link } from "react-router-dom"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Pencil, ExternalLink, BarChart3, RefreshCw, X, Plus, Loader2 } from "lucide-react"
+import { Pencil, ExternalLink, BarChart3, RefreshCw, X, Plus, Loader2, Activity } from "lucide-react"
 import type { CampaignDetail } from "@/lib/types"
 
 interface CampaignHeaderProps {
@@ -12,6 +12,8 @@ interface CampaignHeaderProps {
   isEditing: boolean
   isRefreshing: boolean
   onToggleCobrand?: () => void
+  onCreateTracker?: () => void
+  isCreatingTracker?: boolean
 }
 
 export function CampaignHeader({
@@ -21,6 +23,8 @@ export function CampaignHeader({
   isEditing: editPending,
   isRefreshing,
   onToggleCobrand,
+  onCreateTracker,
+  isCreatingTracker,
 }: CampaignHeaderProps) {
   const [isEditing, setIsEditing] = useState(false)
 
@@ -241,6 +245,36 @@ export function CampaignHeader({
               Cobrand
             </Button>
           )}
+
+          {/* TidesTracker button */}
+          {campaign.tracker_campaign_id ? (
+            <Button
+              asChild
+              className="bg-purple-600/30 hover:bg-purple-600/50 text-purple-300 border border-purple-500/40"
+            >
+              <a
+                href={campaign.tracker_url || "#"}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <Activity className="size-3.5" />
+                View Tracker
+              </a>
+            </Button>
+          ) : campaign.cobrand_share_url && onCreateTracker ? (
+            <Button
+              onClick={onCreateTracker}
+              disabled={isCreatingTracker}
+              className="bg-purple-600/30 hover:bg-purple-600/50 text-purple-300 border border-purple-500/40"
+            >
+              {isCreatingTracker ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <Activity className="size-3.5" />
+              )}
+              {isCreatingTracker ? "Creating..." : "Create Tracker"}
+            </Button>
+          ) : null}
 
           <Button
             onClick={onRefresh}

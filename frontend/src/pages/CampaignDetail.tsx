@@ -9,6 +9,7 @@ import {
   useTogglePaid,
   useRemoveCreator,
   useCobrandStats,
+  useCreateTracker,
 } from "@/lib/queries"
 import { CampaignHeader } from "@/components/campaigns/CampaignHeader"
 import { StatCards } from "@/components/campaigns/StatCards"
@@ -33,6 +34,7 @@ export default function CampaignDetail() {
   const editCreator = useEditCreator(slug!)
   const togglePaid = useTogglePaid(slug!)
   const removeCreator = useRemoveCreator(slug!)
+  const createTracker = useCreateTracker(slug!)
 
   // Loading state
   if (isLoading) {
@@ -79,6 +81,8 @@ export default function CampaignDetail() {
         onToggleCobrand={() => {
           setCobrandVisible((v) => !v)
         }}
+        onCreateTracker={() => createTracker.mutate()}
+        isCreatingTracker={createTracker.isPending}
       />
 
       {/* Refresh stats feedback */}
@@ -90,6 +94,28 @@ export default function CampaignDetail() {
       {refreshStats.isError && (
         <div className="bg-red-50 border border-red-200 rounded-[10px] px-4 py-2 text-red-600 text-sm">
           {refreshStats.error?.message || "Failed to refresh stats"}
+        </div>
+      )}
+
+      {/* Tracker feedback */}
+      {createTracker.isSuccess && (
+        <div className="bg-purple-50 border border-purple-200 rounded-[10px] px-4 py-2 text-purple-700 text-sm">
+          Tracker created successfully.{" "}
+          {createTracker.data?.tracker_url && (
+            <a
+              href={createTracker.data.tracker_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline font-medium"
+            >
+              Open Tracker
+            </a>
+          )}
+        </div>
+      )}
+      {createTracker.isError && (
+        <div className="bg-red-50 border border-red-200 rounded-[10px] px-4 py-2 text-red-600 text-sm">
+          {createTracker.error?.message || "Failed to create tracker"}
         </div>
       )}
 

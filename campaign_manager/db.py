@@ -137,6 +137,8 @@ def save_campaign(slug: str, meta: Dict):
         c.cobrand_upload_url = meta.get("cobrand_upload_url", c.cobrand_upload_url or "")
         c.cobrand_promotion_id = meta.get("cobrand_promotion_id", c.cobrand_promotion_id or "")
         c.cobrand_status = meta.get("cobrand_status", c.cobrand_status or "")
+        c.tracker_campaign_id = meta.get("tracker_campaign_id", c.tracker_campaign_id)
+        c.tracker_url = meta.get("tracker_url", c.tracker_url or "")
         c.source = meta.get("source", c.source or "manual")
         c.completion_status = meta.get("completion_status", c.completion_status or "none")
         # Use None instead of "" so the unique constraint allows multiple unset values
@@ -170,6 +172,18 @@ def save_campaign(slug: str, meta: Dict):
 
         c.updated_at = datetime.now()
         s.commit()
+
+
+def update_campaign_fields(slug: str, fields: Dict):
+    """Update specific fields on a campaign by slug."""
+    with get_session() as s:
+        c = s.query(Campaign).filter_by(slug=slug).first()
+        if c:
+            for key, value in fields.items():
+                if hasattr(c, key):
+                    setattr(c, key, value)
+            c.updated_at = datetime.now()
+            s.commit()
 
 
 def update_campaign_stats(slug: str, total_views: int, total_likes: int):

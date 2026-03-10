@@ -28,3 +28,8 @@ class Config:
     SLACK_CRON_CHANNEL = os.environ.get("SLACK_CRON_CHANNEL", "")
     CRON_HOUR = int(os.environ.get("CRON_HOUR", "6"))
     CRON_MINUTE = int(os.environ.get("CRON_MINUTE", "0"))
+
+    # TidesTracker integration
+    TIDESTRACKER_API_URL = os.environ.get("TIDESTRACKER_API_URL", "")
+    TIDESTRACKER_SERVICE_KEY = os.environ.get("TIDESTRACKER_SERVICE_KEY", "")
+    TIDESTRACKER_BASE_URL = os.environ.get("TIDESTRACKER_BASE_URL", "")

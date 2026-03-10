@@ -68,6 +68,8 @@ export interface CampaignDetail {
   client_email: string
   platform_split: Record<string, number>
   content_types: string[]
+  tracker_campaign_id?: string
+  tracker_url?: string
 }
 
 export interface MatchedVideo {

@@ -47,6 +47,10 @@ class Campaign(Base):
     cobrand_comments = Column(Integer, default=0)
     cobrand_status = Column(String(50), default="")
 
+    # TidesTracker integration
+    tracker_campaign_id = Column(String(100), nullable=True)
+    tracker_url = Column(Text, default="")
+
     # Completion tracking (none -> booked -> completed, cycles)
     completion_status = Column(String(20), default="none")
 
@@ -99,6 +103,8 @@ class Campaign(Base):
             "cobrand_live_submissions": self.cobrand_live_submissions or 0,
             "cobrand_comments": self.cobrand_comments or 0,
             "cobrand_status": self.cobrand_status or "",
+            "tracker_campaign_id": self.tracker_campaign_id or "",
+            "tracker_url": self.tracker_url or "",
             "source": self.source or "manual",
             "completion_status": self.completion_status or "none",
             "notion_page_id": self.notion_page_id or "",

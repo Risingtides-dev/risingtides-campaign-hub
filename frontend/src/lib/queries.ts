@@ -156,6 +156,18 @@ export function useCreatorProfile(username: string) {
   })
 }
 
+// --- TidesTracker ---
+
+export function useCreateTracker(slug: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => api.createTracker(slug),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: keys.campaign(slug) })
+    },
+  })
+}
+
 // --- Cobrand ---
 
 export function useCobrandStats(slug: string, enabled = true) {

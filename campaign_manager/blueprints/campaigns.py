@@ -8,11 +8,12 @@ import csv
 import json
 import os
 import re
+import requests as http_requests
 from datetime import date, datetime
 from pathlib import Path
 from typing import Dict, List
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 
 from campaign_manager import db as _db
 from campaign_manager.utils.helpers import (
@@ -438,6 +439,20 @@ def campaign_detail(slug: str):
             for c in active
         ],
         "matched_videos": matched_videos,
+        "cobrand_share_url": meta.get("cobrand_share_url", ""),
+        "cobrand_upload_url": meta.get("cobrand_upload_url", ""),
+        "tracker_campaign_id": meta.get("tracker_campaign_id", ""),
+        "tracker_url": meta.get("tracker_url", ""),
+        "platform": meta.get("platform", "tiktok"),
+        "status": meta.get("status", "active"),
+        "source": meta.get("source", "manual"),
+        "label": meta.get("label", ""),
+        "round": meta.get("round", ""),
+        "campaign_stage": meta.get("campaign_stage", ""),
+        "project_lead": meta.get("project_lead", []),
+        "client_email": meta.get("client_email", ""),
+        "platform_split": meta.get("platform_split", {}),
+        "content_types": meta.get("content_types", []),
     })
 
 
@@ -1400,4 +1415,108 @@ def creator_profile(username: str):
         },
         "campaigns": campaigns_list,
         "videos": all_videos,
+    })
+
+
+# ---------------------------------------------------------------------------
+# TidesTracker integration
+# ---------------------------------------------------------------------------
+
+@campaigns_bp.route("/api/campaign/<slug>/create-tracker", methods=["POST"])
+def create_tracker(slug: str):
+    """Create a TidesTracker campaign for this campaign's Cobrand share link.
+
+    Calls the TidesTracker API to create a tracking campaign, then stores
+    the returned campaign ID back on the Campaign record.
+
+    Requires:
+      - Campaign must have a cobrand_share_url set
+      - TIDESTRACKER_API_URL and TIDESTRACKER_SERVICE_KEY env vars configured
+    """
+    # Load campaign
+    if _db.is_active():
+        meta = _db.get_campaign(slug)
+    else:
+        cdir = ACTIVE_DIR / slug
+        if not cdir.exists():
+            cdir = COMPLETED_DIR / slug
+        if not (cdir / "campaign.json").exists():
+            return jsonify({"error": "Campaign not found"}), 404
+        meta = load_json(cdir / "campaign.json")
+
+    if not meta:
+        return jsonify({"error": "Campaign not found"}), 404
+
+    cobrand_share_url = meta.get("cobrand_share_url", "")
+    if not cobrand_share_url:
+        return jsonify({"error": "Campaign has no Cobrand share URL set. Add one first."}), 400
+
+    # Check if tracker already exists
+    tracker_id = meta.get("tracker_campaign_id", "")
+    if tracker_id:
+        return jsonify({
+            "ok": True,
+            "message": "Tracker already exists",
+            "tracker_campaign_id": tracker_id,
+            "tracker_url": meta.get("tracker_url", ""),
+        })
+
+    # Get TidesTracker config
+    tracker_api = current_app.config.get("TIDESTRACKER_API_URL", "")
+    tracker_key = current_app.config.get("TIDESTRACKER_SERVICE_KEY", "")
+    tracker_base = current_app.config.get("TIDESTRACKER_BASE_URL", "")
+
+    if not tracker_api or not tracker_key:
+        return jsonify({"error": "TidesTracker not configured. Set TIDESTRACKER_API_URL and TIDESTRACKER_SERVICE_KEY."}), 500
+
+    # Build tracker campaign name from campaign metadata
+    title = meta.get("title", slug)
+    artist = meta.get("artist", "")
+    song = meta.get("song", "")
+    tracker_name = title
+    if artist and song:
+        tracker_name = f"{artist} - {song}"
+    elif artist:
+        tracker_name = f"{artist} Campaign"
+
+    # Call TidesTracker API to create the campaign
+    try:
+        resp = http_requests.post(
+            f"{tracker_api}/campaigns",
+            json={
+                "name": tracker_name,
+                "slug": slug,
+                "cobrand_share_link": cobrand_share_url,
+                "client_id": None,  # Unassigned — assign to client later via admin UI
+            },
+            headers={
+                "Content-Type": "application/json",
+                "x-service-key": tracker_key,
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        result = resp.json()
+    except http_requests.RequestException as e:
+        return jsonify({"error": f"Failed to create tracker: {str(e)}"}), 502
+
+    tracker_campaign_id = result.get("campaign", {}).get("id", "")
+    tracker_url = f"{tracker_base}/?campaign={tracker_campaign_id}" if tracker_base else ""
+
+    # Save tracker ID back to campaign
+    if _db.is_active():
+        _db.update_campaign_fields(slug, {
+            "tracker_campaign_id": tracker_campaign_id,
+            "tracker_url": tracker_url,
+        })
+    else:
+        meta["tracker_campaign_id"] = tracker_campaign_id
+        meta["tracker_url"] = tracker_url
+        _save_meta(slug, meta, ACTIVE_DIR / slug)
+
+    return jsonify({
+        "ok": True,
+        "message": "Tracker created successfully",
+        "tracker_campaign_id": tracker_campaign_id,
+        "tracker_url": tracker_url,
     })
