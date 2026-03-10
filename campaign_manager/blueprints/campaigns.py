@@ -8,7 +8,6 @@ import csv
 import json
 import os
 import re
-import requests as http_requests
 from datetime import date, datetime
 from pathlib import Path
 from typing import Dict, List
@@ -1480,6 +1479,7 @@ def create_tracker(slug: str):
         tracker_name = f"{artist} Campaign"
 
     # Call TidesTracker API to create the campaign
+    import requests as http_requests
     try:
         resp = http_requests.post(
             f"{tracker_api}/campaigns",
