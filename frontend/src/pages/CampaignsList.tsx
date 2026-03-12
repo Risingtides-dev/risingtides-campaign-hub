@@ -6,23 +6,35 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Plus, Search, X } from "lucide-react"
 
+type Tab = "active" | "finished"
+
 export default function CampaignsList() {
   const { data: campaigns, isLoading, isError, error } = useCampaigns()
   const [showCreate, setShowCreate] = useState(false)
   const [search, setSearch] = useState("")
+  const [tab, setTab] = useState<Tab>("active")
+
+  const { active, finished } = useMemo(() => {
+    if (!campaigns) return { active: [], finished: [] }
+    return {
+      active: campaigns.filter((c) => c.completion_status !== "completed"),
+      finished: campaigns.filter((c) => c.completion_status === "completed"),
+    }
+  }, [campaigns])
+
+  const tabData = tab === "active" ? active : finished
 
   const filtered = useMemo(() => {
-    if (!campaigns) return []
-    if (!search.trim()) return campaigns
+    if (!search.trim()) return tabData
     const q = search.toLowerCase()
-    return campaigns.filter(
+    return tabData.filter(
       (c) =>
         c.title.toLowerCase().includes(q) ||
         c.artist.toLowerCase().includes(q) ||
         c.song.toLowerCase().includes(q) ||
         c.slug.toLowerCase().includes(q)
     )
-  }, [campaigns, search])
+  }, [tabData, search])
 
   return (
     <div>
@@ -41,9 +53,36 @@ export default function CampaignsList() {
       {/* Create campaign form */}
       <CreateCampaignForm open={showCreate} />
 
-      {/* Search bar */}
+      {/* Tabs + Search bar */}
       <div className="bg-white border border-[#e8e8ef] rounded-[10px] px-5 py-3.5 mb-4">
         <div className="flex items-center gap-3">
+          {/* Tabs */}
+          <div className="flex items-center gap-1 mr-3">
+            <button
+              type="button"
+              onClick={() => setTab("active")}
+              className={`px-3 py-1.5 rounded-md text-[13px] font-medium transition-colors ${
+                tab === "active"
+                  ? "bg-[#0b62d6] text-white"
+                  : "bg-[#f4f4f8] text-[#555] hover:bg-[#e8e8ef]"
+              }`}
+            >
+              Active{active.length > 0 && ` (${active.length})`}
+            </button>
+            <button
+              type="button"
+              onClick={() => setTab("finished")}
+              className={`px-3 py-1.5 rounded-md text-[13px] font-medium transition-colors ${
+                tab === "finished"
+                  ? "bg-[#0b62d6] text-white"
+                  : "bg-[#f4f4f8] text-[#555] hover:bg-[#e8e8ef]"
+              }`}
+            >
+              Finished{finished.length > 0 && ` (${finished.length})`}
+            </button>
+          </div>
+
+          {/* Search */}
           <div className="relative flex-1 max-w-[300px]">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-[#888]" />
             <Input

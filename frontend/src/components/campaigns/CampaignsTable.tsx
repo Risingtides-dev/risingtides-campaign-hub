@@ -315,6 +315,7 @@ export function CampaignsTable({ data }: CampaignsTableProps) {
     [handleToggleCompletion]
   )
 
+
   const sortedData = useMemo(() => sortCampaigns(data, sortBy), [data, sortBy])
 
   const table = useReactTable({
