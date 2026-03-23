@@ -151,7 +151,7 @@ export function CampaignHeader({
               />
             </div>
             <div className="w-full sm:w-auto">
-              <label className="block text-xs opacity-60 mb-1">Cobrand Link</label>
+              <label className="block text-xs opacity-60 mb-1">Cobrand Upload Link</label>
               <Input
                 value={cobrandLink}
                 onChange={(e) => setCobrandLink(e.target.value)}

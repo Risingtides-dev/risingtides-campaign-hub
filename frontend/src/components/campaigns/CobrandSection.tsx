@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react"
 import { Button } from "@/components/ui/button"
-import { ExternalLink, Copy, Check, Loader2, AlertCircle } from "lucide-react"
+import { Input } from "@/components/ui/input"
+import { ExternalLink, Copy, Check, Loader2, AlertCircle, Link2 } from "lucide-react"
 import type { CobrandStats, MatchedVideo } from "@/lib/types"
 
 // --- Cobrand Stats Card ---
@@ -79,6 +80,70 @@ interface CobrandUploadSectionProps {
   matchedVideos: MatchedVideo[]
   visible: boolean
 }
+
+// --- Cobrand Link Input (for connecting a tracking sheet) ---
+
+interface CobrandLinkInputProps {
+  currentShareUrl?: string
+  onSave: (data: { share_url: string }) => void
+  isPending: boolean
+}
+
+export function CobrandLinkInput({
+  currentShareUrl,
+  onSave,
+  isPending,
+}: CobrandLinkInputProps) {
+  const [url, setUrl] = useState(currentShareUrl || "")
+  const [saved, setSaved] = useState(false)
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    const trimmed = url.trim()
+    if (!trimmed) return
+    onSave({ share_url: trimmed })
+    setSaved(true)
+    setTimeout(() => setSaved(false), 2000)
+  }
+
+  return (
+    <div className="bg-white border border-[#e8e8ef] rounded-[10px] p-5">
+      <div className="flex items-center gap-2 mb-3">
+        <Link2 className="size-4 text-[#0b62d6]" />
+        <h3 className="text-[15px] font-semibold">
+          {currentShareUrl ? "Cobrand Tracking Link" : "Connect Cobrand Tracking"}
+        </h3>
+      </div>
+      {!currentShareUrl && (
+        <p className="text-[13px] text-[#888] mb-3">
+          Paste the Cobrand share URL to pull live performance data for this campaign.
+        </p>
+      )}
+      <form onSubmit={handleSubmit} className="flex items-center gap-2">
+        <Input
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+          placeholder="https://music.cobrand.com/promote/.../share/?token=..."
+          className="flex-1 text-[13px]"
+        />
+        <Button
+          type="submit"
+          disabled={isPending || !url.trim()}
+          className="bg-[#0b62d6] hover:bg-[#0951b5] text-white whitespace-nowrap"
+        >
+          {isPending ? (
+            <Loader2 className="size-3.5 animate-spin" />
+          ) : saved ? (
+            <Check className="size-3.5" />
+          ) : null}
+          {isPending ? "Saving..." : saved ? "Saved!" : currentShareUrl ? "Update" : "Connect"}
+        </Button>
+      </form>
+    </div>
+  )
+}
+
+// --- Cobrand Upload Section ---
 
 export function CobrandUploadSection({
   cobrandLink,

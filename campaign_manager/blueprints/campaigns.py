@@ -8,6 +8,8 @@ import csv
 import json
 import os
 import re
+
+import requests as _requests
 from datetime import date, datetime
 from pathlib import Path
 from typing import Dict, List
@@ -416,9 +418,21 @@ def campaign_detail(slug: str):
         "official_sound": meta.get("official_sound", ""),
         "additional_sounds": meta.get("additional_sounds", []),
         "cobrand_link": meta.get("cobrand_link", ""),
+        "cobrand_share_url": meta.get("cobrand_share_url", ""),
+        "cobrand_upload_url": meta.get("cobrand_upload_url", ""),
         "start_date": meta.get("start_date", ""),
         "budget": budget,
         "stats": stats,
+        "platform": meta.get("platform", "tiktok"),
+        "status": meta.get("status", "active"),
+        "source": meta.get("source", "manual"),
+        "label": meta.get("label", ""),
+        "round": meta.get("round", ""),
+        "campaign_stage": meta.get("campaign_stage", ""),
+        "project_lead": meta.get("project_lead", []),
+        "client_email": meta.get("client_email", ""),
+        "platform_split": meta.get("platform_split", {}),
+        "content_types": meta.get("content_types", []),
         "creators": [
             {
                 "username": c.get("username", ""),
@@ -1132,6 +1146,54 @@ def get_cobrand_stats(slug: str):
         _db.update_cobrand_cache(slug, stats)
 
     return jsonify(stats)
+
+
+@campaigns_bp.get("/api/campaign/<slug>/cobrand/raw")
+def get_cobrand_raw(slug: str):
+    """Debug: dump the full raw __NEXT_DATA__ promotion object from Cobrand."""
+    if _db.is_active():
+        meta = _db.get_campaign(slug)
+    else:
+        campaign_dir = ACTIVE_DIR / slug
+        if not campaign_dir.exists():
+            return jsonify({"error": "Campaign not found"}), 404
+        meta = load_json(campaign_dir / "campaign.json")
+
+    if not meta:
+        return jsonify({"error": "Campaign not found"}), 404
+
+    share_url = meta.get("cobrand_share_url", "")
+    if not share_url:
+        return jsonify({"error": "No Cobrand tracking link configured"}), 404
+
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/120.0.0.0 Safari/537.36"
+        }
+        resp = _requests.get(share_url, headers=headers, timeout=15)
+        if resp.status_code != 200:
+            return jsonify({"error": f"Cobrand returned {resp.status_code}"}), 502
+
+        pattern = r'<script\s+id="__NEXT_DATA__"\s+type="application/json">(.*?)</script>'
+        matches = re.findall(pattern, resp.text, re.DOTALL)
+        if not matches:
+            return jsonify({"error": "No __NEXT_DATA__ found in page"}), 502
+
+        data = json.loads(matches[0])
+        page_props = data.get("props", {}).get("pageProps", {})
+        promotion = page_props.get("promotion")
+        if not promotion:
+            return jsonify({"error": "No promotion object in __NEXT_DATA__", "keys": list(page_props.keys())}), 502
+
+        # Return full promotion with all keys listed at the top for reference
+        return jsonify({
+            "top_level_keys": sorted(promotion.keys()),
+            "promotion": promotion,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @campaigns_bp.put("/api/campaign/<slug>/cobrand")

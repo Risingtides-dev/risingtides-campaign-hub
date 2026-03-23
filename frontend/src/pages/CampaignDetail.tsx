@@ -10,10 +10,11 @@ import {
   useRemoveCreator,
   useCobrandStats,
   useCreateTracker,
+  useSetCobrandLinks,
 } from "@/lib/queries"
 import { CampaignHeader } from "@/components/campaigns/CampaignHeader"
 import { StatCards } from "@/components/campaigns/StatCards"
-import { CobrandStatsCard, CobrandUploadSection } from "@/components/campaigns/CobrandSection"
+import { CobrandStatsCard, CobrandLinkInput, CobrandUploadSection } from "@/components/campaigns/CobrandSection"
 import { AddCreatorForm } from "@/components/campaigns/AddCreatorForm"
 import { CreatorsTable } from "@/components/campaigns/CreatorsTable"
 import { ChevronRight, Loader2 } from "lucide-react"
@@ -35,6 +36,7 @@ export default function CampaignDetail() {
   const togglePaid = useTogglePaid(slug!)
   const removeCreator = useRemoveCreator(slug!)
   const createTracker = useCreateTracker(slug!)
+  const setCobrandLinks = useSetCobrandLinks(slug!)
 
   // Loading state
   if (isLoading) {
@@ -122,7 +124,12 @@ export default function CampaignDetail() {
       {/* Stat Cards */}
       <StatCards budget={campaign.budget} stats={campaign.stats} />
 
-      {/* Cobrand Stats (only if cobrand_share_url is set) */}
+      {/* Cobrand Tracking Link + Stats */}
+      <CobrandLinkInput
+        currentShareUrl={campaign.cobrand_share_url}
+        onSave={(data) => setCobrandLinks.mutate(data)}
+        isPending={setCobrandLinks.isPending}
+      />
       {hasCobrandShare && (
         <CobrandStatsCard
           stats={cobrandStats.data}
