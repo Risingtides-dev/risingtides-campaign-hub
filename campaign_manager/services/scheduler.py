@@ -191,6 +191,7 @@ def run_campaign_refresh():
         status = "completed"
         _db.finish_cron_log(log_id, status, summary)
         _post_campaign_refresh_slack(summary)
+        _post_active_sounds_slack()
         log.info("CRON: campaign_refresh done — %d/%d refreshed, %d new matches",
                  campaigns_refreshed, campaigns_total, total_new_matches)
 
@@ -534,6 +535,22 @@ def _post_internal_scrape_slack(summary: dict):
         client.chat_postMessage(channel=channel, text=text)
     except Exception as e:
         log.error("CRON: Slack post failed: %s", e)
+
+
+def _post_active_sounds_slack():
+    """Post active campaign sounds to the dedicated sounds channel."""
+    channel = os.environ.get("SLACK_SOUNDS_CHANNEL", "")
+    if not channel:
+        return
+    try:
+        from campaign_manager.services.slack_sounds import post_sounds_to_slack
+        result = post_sounds_to_slack(channel)
+        if result.get("ok"):
+            log.info("CRON: sounds posted to %s — %s", channel, result.get("message", result.get("sound_count")))
+        else:
+            log.warning("CRON: sounds post issue: %s", result.get("error"))
+    except Exception as e:
+        log.error("CRON: sounds post failed: %s", e)
 
 
 def _post_failure_slack(job_type: str, error: str):

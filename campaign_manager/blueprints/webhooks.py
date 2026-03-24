@@ -9,6 +9,27 @@ from campaign_manager.utils.helpers import slugify, extract_sound_id
 webhooks_bp = Blueprint("webhooks", __name__, url_prefix="/api/webhooks")
 
 
+@webhooks_bp.post("/slack/sounds")
+def slack_active_sounds():
+    """Post active campaign TikTok sound URLs to the #campaign-sounds Slack channel.
+
+    Can be triggered manually via API call or wired into the daily scheduler.
+    Uses the existing Slack bot to post — no additional Slack app setup needed.
+    """
+    import os
+    from campaign_manager.services.slack_sounds import post_sounds_to_slack
+
+    if not _db.is_active():
+        return jsonify({"error": "Database not configured"}), 500
+
+    channel = os.environ.get("SLACK_SOUNDS_CHANNEL", "")
+    if not channel:
+        return jsonify({"error": "SLACK_SOUNDS_CHANNEL not configured"}), 500
+
+    result = post_sounds_to_slack(channel)
+    return jsonify(result)
+
+
 @webhooks_bp.post("/notion")
 def notion_webhook():
     """Accept a campaign payload from Notion (via n8n, Make.com, or manual trigger).
