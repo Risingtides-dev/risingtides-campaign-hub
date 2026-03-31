@@ -14,6 +14,10 @@ const navItems = [
     links: [{ label: "Internal TikTok", path: "/internal" }],
   },
   {
+    section: "Outreach",
+    links: [{ label: "Outreach Hub", path: "/network" }],
+  },
+  {
     section: "Intake",
     links: [{ label: "Slack Inbox", path: "/inbox" }],
   },

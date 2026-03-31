@@ -317,6 +317,74 @@ class InternalScrapeResult(Base):
     songs = Column(JSONB, default=list)
 
 
+class NetworkCreator(Base):
+    """Creator network roster for outreach."""
+    __tablename__ = "network_creators"
+
+    id = Column(Integer, primary_key=True)
+    username = Column(String(255), unique=True, nullable=False, index=True)
+    platform = Column(String(20), default="tiktok")
+    default_rate = Column(Float, default=0.0)
+    default_posts = Column(Integer, default=1)
+    paypal_email = Column(String(255), default="")
+    manychat_subscriber_id = Column(String(100), default="")
+    niches = Column(JSONB, default=list)
+    notes = Column(Text, default="")
+    added_at = Column(DateTime, default=datetime.now)
+
+    def to_dict(self):
+        return {
+            "username": self.username or "",
+            "platform": self.platform or "tiktok",
+            "default_rate": self.default_rate or 0.0,
+            "default_posts": self.default_posts or 1,
+            "paypal_email": self.paypal_email or "",
+            "manychat_subscriber_id": self.manychat_subscriber_id or "",
+            "niches": self.niches or [],
+            "notes": self.notes or "",
+            "added_at": self.added_at.isoformat() if self.added_at else "",
+        }
+
+
+class OutreachMessage(Base):
+    """Outreach messages sent to creators for a campaign."""
+    __tablename__ = "outreach_messages"
+    __table_args__ = (
+        UniqueConstraint("campaign_id", "username", name="uq_outreach_campaign_creator"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    campaign_id = Column(Integer, ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False, index=True)
+    username = Column(String(255), nullable=False, index=True)
+    rate_offered = Column(Float, default=0.0)
+    posts_offered = Column(Integer, default=1)
+    message_text = Column(Text, default="")
+    status = Column(String(20), default="draft", index=True)  # draft|sent|responded|accepted|declined|expired
+    sent_at = Column(DateTime, nullable=True)
+    responded_at = Column(DateTime, nullable=True)
+    manychat_message_id = Column(String(100), default="")
+    reply_text = Column(Text, default="")
+    notes = Column(Text, default="")
+
+    campaign = relationship("Campaign")
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "campaign_id": self.campaign_id,
+            "username": self.username or "",
+            "rate_offered": self.rate_offered or 0.0,
+            "posts_offered": self.posts_offered or 1,
+            "message_text": self.message_text or "",
+            "status": self.status or "draft",
+            "sent_at": self.sent_at.isoformat() if self.sent_at else "",
+            "responded_at": self.responded_at.isoformat() if self.responded_at else "",
+            "manychat_message_id": self.manychat_message_id or "",
+            "reply_text": self.reply_text or "",
+            "notes": self.notes or "",
+        }
+
+
 class CronLog(Base):
     """Logs each scheduled cron job run."""
     __tablename__ = "cron_log"

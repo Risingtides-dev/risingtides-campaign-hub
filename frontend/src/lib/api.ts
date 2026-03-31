@@ -14,6 +14,9 @@ import type {
   ApiOk,
   SearchResult,
   BudgetResponse,
+  NetworkCreator,
+  OutreachResponse,
+  OutreachStatusResponse,
 } from "./types"
 
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:5055"
@@ -217,6 +220,55 @@ export const api = {
         skipped: Array<{ slug: string; reason: string }>
       }
     >("/api/webhooks/notion/sync", { method: "POST" }),
+
+  // Network
+  getNetwork: () => request<NetworkCreator[]>("/api/network"),
+
+  addNetworkCreator: (data: Record<string, unknown>) =>
+    request<ApiOk & { creator: NetworkCreator }>("/api/network", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  editNetworkCreator: (username: string, data: Record<string, unknown>) =>
+    request<ApiOk & { creator: NetworkCreator }>(`/api/network/${username}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
+
+  removeNetworkCreator: (username: string) =>
+    request<ApiOk>(`/api/network/${username}`, { method: "DELETE" }),
+
+  // Outreach
+  getOutreach: (slug: string) =>
+    request<OutreachResponse>(`/api/campaign/${slug}/outreach`),
+
+  addToOutreach: (slug: string, creators: Array<{ username: string; rate: number; posts: number }>) =>
+    request<ApiOk & { added: number }>(`/api/campaign/${slug}/outreach/add`, {
+      method: "POST",
+      body: JSON.stringify(creators),
+    }),
+
+  removeFromOutreach: (slug: string, username: string) =>
+    request<ApiOk>(`/api/campaign/${slug}/outreach/remove`, {
+      method: "POST",
+      body: JSON.stringify({ username }),
+    }),
+
+  sendOutreach: (slug: string, data: { message_template: string; reference_post?: string }) =>
+    request<{ ok: boolean; sent: string[]; errors: Array<{ username: string; error: string }> }>(
+      `/api/campaign/${slug}/outreach/send`,
+      { method: "POST", body: JSON.stringify(data) }
+    ),
+
+  getOutreachStatus: (slug: string) =>
+    request<OutreachStatusResponse>(`/api/campaign/${slug}/outreach/status`),
+
+  confirmOutreach: (slug: string, username: string) =>
+    request<ApiOk>(`/api/campaign/${slug}/outreach/confirm`, {
+      method: "POST",
+      body: JSON.stringify({ username }),
+    }),
 }
 
 export { ApiError }

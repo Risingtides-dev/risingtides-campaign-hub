@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from campaign_manager.models import (
     Base, Campaign, Creator, MatchedVideo, ScrapeLog,
     InboxItem, PaypalMemory, InternalCreator, InternalVideoCache,
-    InternalScrapeResult, CronLog,
+    InternalScrapeResult, CronLog, NetworkCreator, OutreachMessage,
 )
 
 _engine = None
@@ -700,3 +700,191 @@ def get_cron_log_by_id(log_id: int) -> Optional[Dict]:
     with get_session() as s:
         log = s.query(CronLog).filter_by(id=log_id).first()
         return log.to_dict() if log else None
+
+
+# ── Network Creators ─────────────────────────────────────────────────
+
+def get_network_creators() -> List[Dict]:
+    """Get all creators in the network roster."""
+    with get_session() as s:
+        creators = s.query(NetworkCreator).order_by(NetworkCreator.username).all()
+        return [c.to_dict() for c in creators]
+
+
+def get_network_creator(username: str) -> Optional[Dict]:
+    """Get a single network creator by username."""
+    with get_session() as s:
+        c = s.query(NetworkCreator).filter(
+            NetworkCreator.username.ilike(username)
+        ).first()
+        return c.to_dict() if c else None
+
+
+def add_network_creator(data: Dict) -> Dict:
+    """Add a creator to the network. Returns the created record."""
+    with get_session() as s:
+        c = NetworkCreator(
+            username=data["username"].strip().lstrip("@").lower(),
+            platform=data.get("platform", "tiktok"),
+            default_rate=float(data.get("default_rate", 0)),
+            default_posts=int(data.get("default_posts", 1)),
+            paypal_email=data.get("paypal_email", ""),
+            manychat_subscriber_id=data.get("manychat_subscriber_id", ""),
+            niches=data.get("niches", []),
+            notes=data.get("notes", ""),
+            added_at=datetime.now(),
+        )
+        s.add(c)
+        s.commit()
+        s.refresh(c)
+        return c.to_dict()
+
+
+def update_network_creator(username: str, data: Dict) -> Optional[Dict]:
+    """Update a network creator's fields."""
+    with get_session() as s:
+        c = s.query(NetworkCreator).filter(
+            NetworkCreator.username.ilike(username)
+        ).first()
+        if not c:
+            return None
+        for key, val in data.items():
+            if hasattr(c, key) and key not in ("id", "added_at"):
+                setattr(c, key, val)
+        s.commit()
+        s.refresh(c)
+        return c.to_dict()
+
+
+def remove_network_creator(username: str) -> bool:
+    """Remove a creator from the network."""
+    with get_session() as s:
+        count = s.query(NetworkCreator).filter(
+            NetworkCreator.username.ilike(username)
+        ).delete(synchronize_session=False)
+        s.commit()
+        return count > 0
+
+
+# ── Outreach Messages ────────────────────────────────────────────────
+
+def get_outreach_messages(campaign_id: int) -> List[Dict]:
+    """Get all outreach messages for a campaign."""
+    with get_session() as s:
+        msgs = s.query(OutreachMessage).filter_by(campaign_id=campaign_id)\
+            .order_by(OutreachMessage.id).all()
+        return [m.to_dict() for m in msgs]
+
+
+def get_outreach_message(campaign_id: int, username: str) -> Optional[Dict]:
+    """Get a single outreach message."""
+    with get_session() as s:
+        m = s.query(OutreachMessage).filter_by(
+            campaign_id=campaign_id, username=username.lower()
+        ).first()
+        return m.to_dict() if m else None
+
+
+def add_outreach_messages(campaign_id: int, creators: List[Dict]) -> List[Dict]:
+    """Add draft outreach messages for a list of creators."""
+    added = []
+    with get_session() as s:
+        for cr in creators:
+            username = cr["username"].strip().lstrip("@").lower()
+            existing = s.query(OutreachMessage).filter_by(
+                campaign_id=campaign_id, username=username
+            ).first()
+            if existing:
+                continue
+            m = OutreachMessage(
+                campaign_id=campaign_id,
+                username=username,
+                rate_offered=float(cr.get("rate", 0)),
+                posts_offered=int(cr.get("posts", 1)),
+                status="draft",
+            )
+            s.add(m)
+            added.append(m)
+        s.commit()
+        return [m.to_dict() for m in added]
+
+
+def remove_outreach_message(campaign_id: int, username: str) -> bool:
+    """Remove a draft outreach message."""
+    with get_session() as s:
+        count = s.query(OutreachMessage).filter_by(
+            campaign_id=campaign_id, username=username.lower(), status="draft"
+        ).delete(synchronize_session=False)
+        s.commit()
+        return count > 0
+
+
+def update_outreach_message(campaign_id: int, username: str, updates: Dict) -> Optional[Dict]:
+    """Update an outreach message."""
+    with get_session() as s:
+        m = s.query(OutreachMessage).filter_by(
+            campaign_id=campaign_id, username=username.lower()
+        ).first()
+        if not m:
+            return None
+        for key, val in updates.items():
+            if hasattr(m, key) and key not in ("id", "campaign_id"):
+                setattr(m, key, val)
+        s.commit()
+        s.refresh(m)
+        return m.to_dict()
+
+
+def mark_outreach_sent(campaign_id: int, usernames: List[str], message_text: str) -> List[str]:
+    """Mark draft messages as sent. Returns list of sent usernames."""
+    sent = []
+    with get_session() as s:
+        for username in usernames:
+            m = s.query(OutreachMessage).filter_by(
+                campaign_id=campaign_id, username=username.lower(), status="draft"
+            ).first()
+            if m:
+                m.status = "sent"
+                m.message_text = message_text
+                m.sent_at = datetime.now()
+                sent.append(m.username)
+        s.commit()
+    return sent
+
+
+def confirm_outreach(campaign_id: int, username: str) -> Optional[Dict]:
+    """Confirm an outreach (mark as accepted and add creator to campaign)."""
+    with get_session() as s:
+        m = s.query(OutreachMessage).filter_by(
+            campaign_id=campaign_id, username=username.lower()
+        ).first()
+        if not m:
+            return None
+        m.status = "accepted"
+        m.responded_at = datetime.now()
+
+        # Add creator to campaign if not already there
+        existing = s.query(Creator).filter_by(
+            campaign_id=campaign_id, username=m.username
+        ).first()
+        if not existing:
+            cr = Creator(
+                campaign_id=campaign_id,
+                username=m.username,
+                posts_owed=m.posts_offered,
+                total_rate=m.rate_offered,
+                per_post_rate=m.rate_offered / max(m.posts_offered, 1),
+                platform="tiktok",
+                added_date=datetime.now().strftime("%Y-%m-%d"),
+                status="active",
+            )
+            # Copy paypal from network creator if available
+            nc = s.query(NetworkCreator).filter(
+                NetworkCreator.username.ilike(m.username)
+            ).first()
+            if nc and nc.paypal_email:
+                cr.paypal_email = nc.paypal_email
+            s.add(cr)
+
+        s.commit()
+        return m.to_dict()

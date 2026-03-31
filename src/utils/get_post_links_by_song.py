@@ -199,6 +199,63 @@ def parse_video_output(stdout, username, start_datetime, end_datetime):
 
     return videos, total_fetched, skipped_old
 
+def match_videos_by_sound_id(videos, target_sound_id, max_workers=5):
+    """Match videos against a specific TikTok sound ID by fetching each video page.
+
+    Use this for original sound campaigns where song/artist metadata is ambiguous.
+    Fetches the video page HTML to extract the actual sound ID.
+
+    Args:
+        videos: List of video dicts (must have 'url' key)
+        target_sound_id: The numeric sound ID string to match against
+        max_workers: Number of parallel fetchers
+
+    Returns:
+        List of video dicts that match the target sound ID
+    """
+    import requests as _req
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    if not target_sound_id or not videos:
+        return []
+
+    def _extract_sound_id(video_url):
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                              'AppleWebKit/537.36 (KHTML, like Gecko) '
+                              'Chrome/120.0.0.0 Safari/537.36'
+            }
+            resp = _req.get(video_url, headers=headers, timeout=15)
+            if resp.status_code != 200:
+                return video_url, None
+            pattern = r'<script[^>]*id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>(.*?)</script>'
+            matches = re.findall(pattern, resp.text, re.DOTALL)
+            if not matches:
+                return video_url, None
+            data = json.loads(matches[0])
+            music = data['__DEFAULT_SCOPE__']['webapp.video-detail']['itemInfo']['itemStruct']['music']
+            return video_url, str(music.get('id', ''))
+        except Exception:
+            return video_url, None
+
+    matched = []
+    total = len(videos)
+    checked = 0
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_extract_sound_id, v['url']): v for v in videos}
+        for future in as_completed(futures):
+            video = futures[future]
+            url, sound_id = future.result()
+            checked += 1
+            if sound_id == str(target_sound_id):
+                matched.append(video)
+            if checked % 10 == 0 or checked == total:
+                print(f"    Sound ID check: {checked}/{total} checked, {len(matched)} matched")
+
+    return matched
+
+
 def normalize_song_key(song, artist):
     """Create normalized song key for grouping"""
     song_clean = song.strip() if song else 'Unknown'

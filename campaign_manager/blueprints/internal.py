@@ -503,3 +503,16 @@ def scrape_results():
     """Return the latest internal scrape results."""
     results = load_internal_results()
     return jsonify(results)
+
+
+# -------------------------------------------------------------------
+# 8. POST /api/internal/results  -- upload local scrape results
+# -------------------------------------------------------------------
+@internal_bp.post("/api/internal/results")
+def upload_results():
+    """Accept scrape results pushed from a local machine."""
+    data = request.get_json(silent=True)
+    if not data or "songs" not in data:
+        return jsonify({"error": "Invalid results payload."}), 400
+    save_internal_results(data)
+    return jsonify({"ok": True, "message": f"Saved {data.get('total_videos', 0)} videos, {data.get('unique_songs', 0)} songs."}), 201

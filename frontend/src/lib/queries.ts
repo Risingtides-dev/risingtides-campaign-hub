@@ -17,6 +17,9 @@ export const keys = {
     ["internal", "creator", username] as const,
   inbox: (status?: string) => ["inbox", status ?? "all"] as const,
   paypal: (username: string) => ["paypal", username] as const,
+  network: ["network"] as const,
+  outreach: (slug: string) => ["outreach", slug] as const,
+  outreachStatus: (slug: string) => ["outreach", slug, "status"] as const,
 }
 
 // --- Campaigns ---
@@ -297,5 +300,97 @@ export function useSyncNotion() {
   return useMutation({
     mutationFn: api.syncNotion,
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.campaigns }),
+  })
+}
+
+// --- Network ---
+
+export function useNetwork() {
+  return useQuery({ queryKey: keys.network, queryFn: api.getNetwork })
+}
+
+export function useAddNetworkCreator() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (data: Record<string, unknown>) => api.addNetworkCreator(data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.network }),
+  })
+}
+
+export function useEditNetworkCreator() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ username, data }: { username: string; data: Record<string, unknown> }) =>
+      api.editNetworkCreator(username, data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.network }),
+  })
+}
+
+export function useRemoveNetworkCreator() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (username: string) => api.removeNetworkCreator(username),
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.network }),
+  })
+}
+
+// --- Outreach ---
+
+export function useOutreach(slug: string) {
+  return useQuery({
+    queryKey: keys.outreach(slug),
+    queryFn: () => api.getOutreach(slug),
+    enabled: !!slug,
+  })
+}
+
+export function useAddToOutreach(slug: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (creators: Array<{ username: string; rate: number; posts: number }>) =>
+      api.addToOutreach(slug, creators),
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.outreach(slug) }),
+  })
+}
+
+export function useRemoveFromOutreach(slug: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (username: string) => api.removeFromOutreach(slug, username),
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.outreach(slug) }),
+  })
+}
+
+export function useSendOutreach(slug: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (data: { message_template: string; reference_post?: string }) =>
+      api.sendOutreach(slug, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: keys.outreach(slug) })
+      qc.invalidateQueries({ queryKey: keys.outreachStatus(slug) })
+    },
+  })
+}
+
+export function useOutreachStatus(slug: string, enabled = false) {
+  return useQuery({
+    queryKey: keys.outreachStatus(slug),
+    queryFn: () => api.getOutreachStatus(slug),
+    enabled: enabled && !!slug,
+    refetchInterval: enabled ? 10000 : false,
+  })
+}
+
+export function useConfirmOutreach(slug: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (username: string) => api.confirmOutreach(slug, username),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: keys.outreach(slug) })
+      qc.invalidateQueries({ queryKey: keys.outreachStatus(slug) })
+      qc.invalidateQueries({ queryKey: keys.campaign(slug) })
+      qc.invalidateQueries({ queryKey: keys.campaigns })
+    },
   })
 }

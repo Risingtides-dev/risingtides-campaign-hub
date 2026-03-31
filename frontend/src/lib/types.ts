@@ -259,6 +259,47 @@ export interface CreatorSummary {
   paypal_email: string
 }
 
+// Network & Outreach types
+export interface NetworkCreator {
+  username: string
+  platform: string
+  default_rate: number
+  default_posts: number
+  paypal_email: string
+  manychat_subscriber_id: string
+  niches: string[]
+  notes: string
+  added_at: string
+  in_outreach?: boolean
+}
+
+export interface OutreachMessage {
+  id: number
+  campaign_id: number
+  username: string
+  rate_offered: number
+  posts_offered: number
+  message_text: string
+  status: "draft" | "sent" | "responded" | "accepted" | "declined" | "expired" | "posted" | "verified"
+  sent_at: string
+  responded_at: string
+  manychat_message_id: string
+  reply_text: string
+  notes: string
+}
+
+export interface OutreachResponse {
+  campaign: Record<string, unknown>
+  messages: OutreachMessage[]
+  network_creators: NetworkCreator[]
+  templates: Record<string, string>
+}
+
+export interface OutreachStatusResponse {
+  messages: OutreachMessage[]
+  counts: Record<string, number>
+}
+
 // API response wrappers
 export interface ApiOk {
   ok: boolean

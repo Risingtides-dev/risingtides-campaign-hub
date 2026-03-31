@@ -1,7 +1,7 @@
 # Campaign Hub
 
-> **Last updated:** 2026-02-23 02:50 EST
-> **Status:** Migration complete. Deployed. Database empty -- awaiting data migration from Jake's local disk.
+> **Last updated:** 2026-03-12
+> **Status:** Frontend and backend deployed. Active development on campaign management features.
 > **Handoff:** Read `docs/handoff.md` for next steps and migration plan.
 
 ## What This Is
@@ -114,7 +114,9 @@ Campaign Hub <-- Cobrand (live performance stats)
 | `origin` | https://github.com/jakebalik-bit/risingtides-campaign-hub | Jake's repo (primary) |
 | `fork` | https://github.com/Risingtides-dev/risingtides-campaign-hub | Deploy fork (Railway + Vercel deploy from here) |
 
-Push to `fork` to trigger deploys. Tag `pre-migration-backup` on both remotes points to the old codebase.
+Push to `origin`, then open PR to `fork` (Risingtides-dev) to trigger deploys. Tag `pre-migration-backup` on both remotes points to the old codebase.
+
+**Deploy flow:** `git push origin main` → `gh pr create --repo Risingtides-dev/risingtides-campaign-hub` → merge PR → Railway + Vercel auto-deploy from Risingtides-dev/main.
 
 ## Environment Variables
 
@@ -143,12 +145,18 @@ Push to `fork` to trigger deploys. Tag `pre-migration-backup` on both remotes po
 - **Dual storage mode.** db.py supports both Postgres (production) and file-based JSON/CSV (local dev). Production always uses Postgres.
 - **Creator database** aggregates stats across all campaigns -- no new DB tables needed, just cross-campaign queries on existing Creator and MatchedVideo models.
 
+## Recent Changes
+
+- **Active/Finished campaign tabs** (2026-03-12) -- Campaigns list now splits into Active and Finished tabs. Green check (completion_status: "completed") moves a campaign to the Finished tab. PR #1 to upstream.
+- **Completion status cycling** -- Checkbox in campaigns table cycles: none → booked → completed (green check)
+
 ## Pending Work
 
-1. **Data migration** -- Import 14 active campaigns from Jake's local disk (campaign.json + creators.csv + matched_videos.json per campaign)
-2. **Platform-aware social links** -- Creator profiles should show TikTok/IG links based on which platforms they were booked on
-3. **Notion sync test** -- Hit `POST /api/webhooks/notion/sync` with real data and verify campaigns are created correctly
-4. **Legacy cleanup** -- Remove `web_dashboard.py` and `templates/` after migration confirmed
+1. **Scraper refinement** -- Original sound matching issues need investigation and fixes
+2. **Data migration** -- Import 14 active campaigns from Jake's local disk (campaign.json + creators.csv + matched_videos.json per campaign)
+3. **Platform-aware social links** -- Creator profiles should show TikTok/IG links based on which platforms they were booked on
+4. **Notion sync test** -- Hit `POST /api/webhooks/notion/sync` with real data and verify campaigns are created correctly
+5. **Legacy cleanup** -- Remove `web_dashboard.py` and `templates/` after migration confirmed
 
 ## Development Guidelines
 

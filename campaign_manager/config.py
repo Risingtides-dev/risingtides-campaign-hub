@@ -29,6 +29,9 @@ class Config:
     CRON_HOUR = int(os.environ.get("CRON_HOUR", "6"))
     CRON_MINUTE = int(os.environ.get("CRON_MINUTE", "0"))
 
+    # ManyChat integration (DM outreach)
+    MANYCHAT_API_KEY = os.environ.get("MANYCHAT_API_KEY", "")
+
     # TidesTracker integration
     TIDESTRACKER_API_URL = os.environ.get("TIDESTRACKER_API_URL", "")
     TIDESTRACKER_SERVICE_KEY = os.environ.get("TIDESTRACKER_SERVICE_KEY", "")
