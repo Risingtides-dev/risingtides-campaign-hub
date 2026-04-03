@@ -87,22 +87,59 @@ function SortableHeader({
   )
 }
 
+// ---- Niche Colors ----
+
+const NICHE_COLORS: Record<string, string> = {}
+const COLOR_PALETTE = [
+  "bg-blue-100 text-blue-700",
+  "bg-purple-100 text-purple-700",
+  "bg-green-100 text-green-700",
+  "bg-amber-100 text-amber-700",
+  "bg-rose-100 text-rose-700",
+  "bg-cyan-100 text-cyan-700",
+  "bg-indigo-100 text-indigo-700",
+  "bg-orange-100 text-orange-700",
+  "bg-teal-100 text-teal-700",
+  "bg-pink-100 text-pink-700",
+]
+function getNicheColor(niche: string): string {
+  if (!NICHE_COLORS[niche]) {
+    NICHE_COLORS[niche] = COLOR_PALETTE[Object.keys(NICHE_COLORS).length % COLOR_PALETTE.length]
+  }
+  return NICHE_COLORS[niche]
+}
+
 // ---- Main Component ----
 
 export default function CreatorDatabase() {
   const { data: creators, isLoading, isError, error } = useCreators()
   const navigate = useNavigate()
   const [search, setSearch] = useState("")
+  const [selectedNiche, setSelectedNiche] = useState<string | null>(null)
   const [sorting, setSorting] = useState<SortingState>([
     { id: "total_spend", desc: true },
   ])
 
+  // Collect all unique niches across creators
+  const allNiches = useMemo(() => {
+    if (!creators) return []
+    const set = new Set<string>()
+    creators.forEach((c) => (c.niches || []).forEach((n) => set.add(n)))
+    return Array.from(set).sort()
+  }, [creators])
+
   const filtered = useMemo(() => {
     if (!creators) return []
-    if (!search.trim()) return creators
-    const q = search.toLowerCase()
-    return creators.filter((c) => c.username.toLowerCase().includes(q))
-  }, [creators, search])
+    let result = creators
+    if (search.trim()) {
+      const q = search.toLowerCase()
+      result = result.filter((c) => c.username.toLowerCase().includes(q))
+    }
+    if (selectedNiche) {
+      result = result.filter((c) => (c.niches || []).includes(selectedNiche))
+    }
+    return result
+  }, [creators, search, selectedNiche])
 
   const columns: ColumnDef<CreatorSummary>[] = useMemo(
     () => [
@@ -135,6 +172,23 @@ export default function CreatorDatabase() {
               >
                 <TikTokIcon className="size-3.5" />
               </a>
+            </div>
+          )
+        },
+      },
+      {
+        id: "niches",
+        header: "Niches",
+        cell: ({ row }) => {
+          const niches = row.original.niches || []
+          if (niches.length === 0) return <span className="text-[#ccc] text-xs">{"\u2014"}</span>
+          return (
+            <div className="flex flex-wrap gap-1">
+              {niches.map((n) => (
+                <span key={n} className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium ${getNicheColor(n)}`}>
+                  {n}
+                </span>
+              ))}
             </div>
           )
         },
@@ -259,6 +313,35 @@ export default function CreatorDatabase() {
               <X className="size-3" />
               Clear
             </Button>
+          )}
+          {/* Niche filter chips */}
+          {allNiches.length > 0 && (
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="text-[11px] text-[#999] uppercase tracking-wide">Niche:</span>
+              {allNiches.map((niche) => (
+                <button
+                  key={niche}
+                  type="button"
+                  onClick={() => setSelectedNiche(selectedNiche === niche ? null : niche)}
+                  className={`inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-medium transition-all ${
+                    selectedNiche === niche
+                      ? getNicheColor(niche) + " ring-2 ring-offset-1 ring-current"
+                      : "bg-[#f0f0f5] text-[#666] hover:bg-[#e4e4ed]"
+                  }`}
+                >
+                  {niche}
+                </button>
+              ))}
+              {selectedNiche && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedNiche(null)}
+                  className="text-[11px] text-[#999] hover:text-[#555] underline"
+                >
+                  clear
+                </button>
+              )}
+            </div>
           )}
           <span className="ml-auto text-[#888] text-[13px]">
             {filtered.length} creator{filtered.length !== 1 ? "s" : ""}

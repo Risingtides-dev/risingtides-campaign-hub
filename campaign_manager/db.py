@@ -97,6 +97,18 @@ def init(database_url: Optional[str] = None):
     except Exception:
         pass
 
+    # Add niches column to creators if missing
+    try:
+        with _SessionLocal() as s:
+            s.execute(
+                __import__("sqlalchemy").text(
+                    "ALTER TABLE creators ADD COLUMN IF NOT EXISTS niches JSONB DEFAULT '[]'::jsonb"
+                )
+            )
+            s.commit()
+    except Exception:
+        pass
+
     return True
 
 
@@ -274,6 +286,7 @@ def save_creators(slug: str, creators_data: List[Dict]):
                 added_date=cd.get("added_date", ""),
                 status=cd.get("status", "active"),
                 notes=cd.get("notes", ""),
+                niches=cd.get("niches", []),
             )
             s.add(cr)
 
@@ -878,12 +891,15 @@ def confirm_outreach(campaign_id: int, username: str) -> Optional[Dict]:
                 added_date=datetime.now().strftime("%Y-%m-%d"),
                 status="active",
             )
-            # Copy paypal from network creator if available
+            # Copy paypal and niches from network creator if available
             nc = s.query(NetworkCreator).filter(
                 NetworkCreator.username.ilike(m.username)
             ).first()
-            if nc and nc.paypal_email:
-                cr.paypal_email = nc.paypal_email
+            if nc:
+                if nc.paypal_email:
+                    cr.paypal_email = nc.paypal_email
+                if nc.niches:
+                    cr.niches = nc.niches
             s.add(cr)
 
         s.commit()

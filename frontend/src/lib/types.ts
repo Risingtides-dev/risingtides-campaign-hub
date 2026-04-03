@@ -40,6 +40,7 @@ export interface Creator {
   added_date: string
   status: string
   notes: string
+  niches: string[]
 }
 
 export interface CampaignDetail {
@@ -257,6 +258,7 @@ export interface CreatorSummary {
   avg_cpm: number | null
   platform: string
   paypal_email: string
+  niches: string[]
 }
 
 // Network & Outreach types

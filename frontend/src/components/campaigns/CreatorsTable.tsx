@@ -8,7 +8,7 @@ import {
   type SortingState,
   useReactTable,
 } from "@tanstack/react-table"
-import { ArrowUpDown, ArrowUp, ArrowDown, Pencil, Trash2, Loader2 } from "lucide-react"
+import { ArrowUpDown, ArrowUp, ArrowDown, Pencil, Trash2, Loader2, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -46,6 +46,29 @@ interface EditState {
   totalRate: string
   paypalEmail: string
   notes: string
+  niches: string[]
+  nicheInput: string
+}
+
+// Niche color palette
+const NICHE_COLORS: Record<string, string> = {}
+const COLOR_PALETTE = [
+  "bg-blue-100 text-blue-700",
+  "bg-purple-100 text-purple-700",
+  "bg-green-100 text-green-700",
+  "bg-amber-100 text-amber-700",
+  "bg-rose-100 text-rose-700",
+  "bg-cyan-100 text-cyan-700",
+  "bg-indigo-100 text-indigo-700",
+  "bg-orange-100 text-orange-700",
+  "bg-teal-100 text-teal-700",
+  "bg-pink-100 text-pink-700",
+]
+function getNicheColor(niche: string): string {
+  if (!NICHE_COLORS[niche]) {
+    NICHE_COLORS[niche] = COLOR_PALETTE[Object.keys(NICHE_COLORS).length % COLOR_PALETTE.length]
+  }
+  return NICHE_COLORS[niche]
 }
 
 // ---- Sortable Header ----
@@ -128,6 +151,8 @@ export function CreatorsTable({
     totalRate: "",
     paypalEmail: "",
     notes: "",
+    niches: [],
+    nicheInput: "",
   })
   const editStateRef = useRef(editState)
   editStateRef.current = editState
@@ -148,6 +173,8 @@ export function CreatorsTable({
       totalRate: creator.total_rate.toFixed(2),
       paypalEmail: creator.paypal_email || "",
       notes: creator.notes || "",
+      niches: creator.niches || [],
+      nicheInput: "",
     })
   }
 
@@ -162,6 +189,7 @@ export function CreatorsTable({
       total_rate: parseFloat(current.totalRate),
       paypal_email: current.paypalEmail,
       notes: current.notes,
+      niches: current.niches,
     })
     setEditingUsername(null)
   }
@@ -217,6 +245,53 @@ export function CreatorsTable({
                   <path d="M19.59 6.69a4.83 4.83 0 01-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 01-2.88 2.5 2.89 2.89 0 01-2.89-2.89 2.89 2.89 0 012.89-2.89c.28 0 .54.04.79.1v-3.5a6.37 6.37 0 00-.79-.05A6.34 6.34 0 003.15 15.2a6.34 6.34 0 006.34 6.34 6.34 6.34 0 006.34-6.34V8.73a8.19 8.19 0 004.76 1.52V6.8a4.84 4.84 0 01-1-.11z" />
                 </svg>
               </a>
+            </div>
+          )
+        },
+      },
+      {
+        id: "niches",
+        header: "Niches",
+        cell: ({ row }) => {
+          const c = row.original
+          if (editingUsername === c.username) {
+            return (
+              <div className="flex flex-wrap gap-1 items-center max-w-[180px]">
+                {editStateRef.current.niches.map((n) => (
+                  <span key={n} className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-medium ${getNicheColor(n)}`}>
+                    {n}
+                    <button type="button" onClick={() => setEditState((s) => ({ ...s, niches: s.niches.filter((x) => x !== n) }))}>
+                      <X className="size-2.5" />
+                    </button>
+                  </span>
+                ))}
+                <Input
+                  value={editStateRef.current.nicheInput}
+                  onChange={(e) => setEditState((s) => ({ ...s, nicheInput: e.target.value }))}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault()
+                      const val = editStateRef.current.nicheInput.trim().toLowerCase()
+                      if (val && !editStateRef.current.niches.includes(val)) {
+                        setEditState((s) => ({ ...s, niches: [...s.niches, val], nicheInput: "" }))
+                      }
+                    }
+                  }}
+                  placeholder="+ niche"
+                  className="w-[70px] h-6 text-[10px] px-1"
+                />
+              </div>
+            )
+          }
+          const niches = c.niches || []
+          if (niches.length === 0) return <span className="text-[#ccc] text-xs">{"\u2014"}</span>
+          return (
+            <div className="flex flex-wrap gap-1">
+              {niches.map((n) => (
+                <span key={n} className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium ${getNicheColor(n)}`}>
+                  {n}
+                </span>
+              ))}
             </div>
           )
         },

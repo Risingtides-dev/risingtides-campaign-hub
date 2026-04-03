@@ -140,6 +140,7 @@ class Creator(Base):
     added_date = Column(String(20), default="")
     status = Column(String(20), default="active")
     notes = Column(Text, default="")
+    niches = Column(JSONB, default=list)
 
     campaign = relationship("Campaign", back_populates="creators")
 
@@ -158,6 +159,7 @@ class Creator(Base):
             "added_date": self.added_date or "",
             "status": self.status or "active",
             "notes": self.notes or "",
+            "niches": self.niches or [],
         }
 
 

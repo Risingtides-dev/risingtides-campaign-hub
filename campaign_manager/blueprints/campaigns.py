@@ -814,6 +814,7 @@ def add_creator(slug: str):
     total_rate_raw = data.get("total_rate", 0)
     paypal = (data.get("paypal_email") or "").strip()
     platform = (data.get("platform") or "tiktok").strip() or "tiktok"
+    niches = data.get("niches", [])
 
     # Auto-fill PayPal from memory if not provided
     if not paypal and username:
@@ -847,7 +848,7 @@ def add_creator(slug: str):
         "total_rate": total_rate, "per_post_rate": per_post,
         "paypal_email": paypal, "paid": "no", "payment_date": "",
         "platform": platform, "added_date": str(date.today()),
-        "status": "active", "notes": "",
+        "status": "active", "notes": "", "niches": niches,
     })
 
     try:
@@ -885,6 +886,7 @@ def edit_creator(slug: str, username: str):
     total_rate_raw = data.get("total_rate")
     paypal = (data.get("paypal_email") or "").strip()
     notes = (data.get("notes") or "").strip()
+    niches = data.get("niches")
 
     if posts_owed_raw is None or total_rate_raw is None:
         return jsonify({"error": "posts_owed and total_rate are required."}), 400
@@ -907,6 +909,8 @@ def edit_creator(slug: str, username: str):
             c["per_post_rate"] = round(total_rate / posts_owed, 2) if posts_owed > 0 else 0.0
             c["paypal_email"] = paypal
             c["notes"] = notes
+            if niches is not None:
+                c["niches"] = niches
             found = True
             break
 
@@ -1262,6 +1266,7 @@ def list_creators():
                     "total_views": 0,
                     "platform": c.get("platform", "tiktok"),
                     "paypal_email": c.get("paypal_email", ""),
+                    "niches": [],
                     "_platforms": [],
                 }
 
@@ -1279,6 +1284,11 @@ def list_creators():
             pp = (c.get("paypal_email", "") or "").strip()
             if pp:
                 entry["paypal_email"] = pp
+
+            # Merge niches (union across campaigns)
+            for n in (c.get("niches") or []):
+                if n and n not in entry["niches"]:
+                    entry["niches"].append(n)
 
     # Finalize: compute avg_cpm, pick most common platform, remove internals
     results = []

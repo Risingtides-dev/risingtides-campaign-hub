@@ -21,7 +21,7 @@ import {
   useConfirmOutreach,
   useCampaign,
 } from "@/lib/queries"
-import type { NetworkCreator, OutreachMessage } from "@/lib/types"
+import type { OutreachMessage } from "@/lib/types"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
