@@ -1,4 +1,12 @@
-# Warner Campaign Manager - Railway Deployment
+# ---- Stage 1: Build frontend ----
+FROM node:20-slim AS frontend-build
+WORKDIR /build
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
+# ---- Stage 2: Python app ----
 FROM python:3.11-slim
 
 # Install system dependencies for yt-dlp and video processing
@@ -6,11 +14,6 @@ RUN apt-get update && apt-get install -y \
     ffmpeg \
     wget \
     curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Node.js 20 for frontend build
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 # Install yt-dlp (latest version)
@@ -26,8 +29,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
-# Build frontend
-RUN cd frontend && npm ci && npm run build
+# Copy built frontend from stage 1
+COPY --from=frontend-build /build/dist /app/frontend/dist
 
 # Create necessary directories
 RUN mkdir -p /app/data_volume/campaigns/active \
