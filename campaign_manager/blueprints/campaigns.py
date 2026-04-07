@@ -665,40 +665,27 @@ def _refresh_stats_inner(slug: str):
         except Exception:
             pass
 
-    # Match videos to campaign sound
+    # Match videos using shared matching logic
+    from campaign_manager.services.matching import (
+        core_song_name as _csn, match_videos, merge_matched_videos,
+        update_creator_post_counts,
+    )
+
     core_song_words: set = set()
     if song:
-        core = _core_song_name(song)
-        core_song_words = {w for w in core.split() if len(w) > 2}
+        core_song_words = {w for w in _csn(song).split() if len(w) > 2}
     if ref_song_title:
-        core = _core_song_name(ref_song_title)
-        core_song_words |= {w for w in core.split() if len(w) > 2}
+        core_song_words |= {w for w in _csn(ref_song_title).split() if len(w) > 2}
 
-    matched: List[Dict] = []
-    for video in all_videos:
-        # Primary: use master_tracker's multi-strategy matching
-        if match_video_to_sounds(video, sound_ids, sound_keys):
-            matched.append(video)
-            continue
+    matched = match_videos(all_videos, sound_ids, sound_keys, core_song_words, artist, match_fn=match_video_to_sounds)
 
-        # Fuzzy fallback: match if video song contains core words and artist matches
-        v_song = _core_song_name(video.get("song", "") or "")
-        v_artist = (video.get("artist", "") or "").lower().strip()
-        if core_song_words and v_song:
-            v_words = set(v_song.split())
-            overlap = core_song_words & v_words
-            artist_match = artist and artist.lower().strip() in v_artist
-            if overlap and artist_match:
-                matched.append(video)
-
-    # Merge with existing matched videos (keep old ones, add new)
+    # Merge — updates view/like counts for existing matches + adds new ones
     if _db.is_active():
         existing = _db.get_matched_videos(slug)
     else:
         existing = load_matched_videos(campaign_dir)
-    existing_urls = {v.get("url") for v in existing}
-    new_matches = [v for v in matched if v.get("url") not in existing_urls]
-    all_matched = existing + new_matches
+
+    all_matched, new_count = merge_matched_videos(existing, matched)
 
     # Serialize matched videos (datetime -> string)
     for v in all_matched:
@@ -710,7 +697,7 @@ def _refresh_stats_inner(slug: str):
     else:
         save_matched_videos(campaign_dir, all_matched)
 
-    # Update stats
+    # Update stats (now with fresh view counts!)
     total_views = sum(int(v.get("views", 0)) for v in all_matched)
     total_likes = sum(int(v.get("likes", 0)) for v in all_matched)
     stats = meta.get("stats", {})
@@ -720,22 +707,12 @@ def _refresh_stats_inner(slug: str):
     meta["stats"] = stats
     _save_meta(slug, meta, campaign_dir)
 
-    # Update posts_done per creator
-    matched_by_account: Dict[str, int] = {}
-    for v in all_matched:
-        acct = v.get("account", "").lstrip("@")
-        if acct:
-            matched_by_account[acct] = matched_by_account.get(acct, 0) + 1
-
+    # Update creator post counts using shared logic
     if _db.is_active():
         all_creators = _db.get_creators(slug)
     else:
         all_creators = load_creators(campaign_dir)
-    for cr in all_creators:
-        username = cr.get("username", "")
-        if username in matched_by_account:
-            cr["posts_done"] = matched_by_account[username]
-            cr["posts_matched"] = matched_by_account[username]
+    all_creators = update_creator_post_counts(all_creators, all_matched)
     if _db.is_active():
         _db.save_creators(slug, all_creators)
     else:
@@ -745,7 +722,7 @@ def _refresh_stats_inner(slug: str):
     feedback = (
         f"Scrape complete: {accounts_scraped} accounts scraped, "
         f"{len(all_videos)} videos checked, "
-        f"{len(new_matches)} new matches found, "
+        f"{new_count} new matches found, "
         f"{len(all_matched)} total matched videos. "
         f"Views: {total_views:,} | Likes: {total_likes:,}"
     )
@@ -757,7 +734,7 @@ def _refresh_stats_inner(slug: str):
         "last_scrape": datetime.now().isoformat(),
         "accounts_scraped": accounts_scraped,
         "videos_checked": len(all_videos),
-        "new_matches": len(new_matches),
+        "new_matches": new_count,
         "total_matches": len(all_matched),
     }
     if _db.is_active():
@@ -771,7 +748,7 @@ def _refresh_stats_inner(slug: str):
         "message": feedback,
         "accounts_scraped": accounts_scraped,
         "videos_checked": len(all_videos),
-        "new_matches": len(new_matches),
+        "new_matches": new_count,
         "total_matches": len(all_matched),
         "total_views": total_views,
         "total_likes": total_likes,

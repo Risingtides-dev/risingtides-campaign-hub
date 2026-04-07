@@ -1,8 +1,8 @@
 """APScheduler-based daily scraping scheduler.
 
 Runs two jobs at 6 AM EST:
-1. campaign_refresh — scrapes all active campaigns via Apify, runs matching
-2. internal_scrape — scrapes all internal creators via Apify, updates caches
+1. campaign_refresh — scrapes all active campaigns via yt-dlp + HTML extraction, runs matching
+2. internal_scrape — scrapes all internal creators via yt-dlp, updates caches
 
 Results log to cron_log table and post to Slack.
 """
@@ -20,9 +20,78 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 
 from campaign_manager import db as _db
-from campaign_manager.services.apify_scraper import scrape_profiles
 
 log = logging.getLogger(__name__)
+
+
+# ── Scraper imports (yt-dlp + HTML extraction, free) ────────────────
+def _import_scraper():
+    """Lazy-import master_tracker functions. Returns (scrape_tiktok_account, extract_sound_ids_parallel, match_video_to_sounds) or raises ImportError."""
+    from src.scrapers.master_tracker import (
+        scrape_tiktok_account,
+        extract_sound_ids_parallel,
+        match_video_to_sounds,
+    )
+    return scrape_tiktok_account, extract_sound_ids_parallel, match_video_to_sounds
+
+
+def _scrape_creator_accounts(usernames, start_date=None, max_workers=5):
+    """Scrape multiple TikTok creator accounts in parallel using yt-dlp.
+
+    Returns (all_videos, accounts_scraped, errors).
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    scrape_tiktok_account, _, _ = _import_scraper()
+
+    all_videos = []
+    accounts_scraped = 0
+    errors = []
+
+    def _scrape_one(username):
+        for attempt in range(2):
+            try:
+                videos = scrape_tiktok_account(
+                    f"@{username}",
+                    start_date=start_date,
+                    limit=500,
+                    use_cache=True,
+                )
+                return username, videos, None
+            except Exception as e:
+                if attempt == 0:
+                    continue
+                return username, [], str(e)
+        return username, [], "max retries"
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_scrape_one, u): u for u in usernames}
+        for future in as_completed(futures):
+            username, videos, error = future.result()
+            if error:
+                errors.append(f"@{username}: {error}")
+            else:
+                all_videos.extend(videos)
+                accounts_scraped += 1
+
+    return all_videos, accounts_scraped, errors
+
+
+def _enhance_sound_ids(videos, max_workers=10):
+    """Extract sound IDs via HTML for videos that don't have them."""
+    _, extract_sound_ids_parallel, _ = _import_scraper()
+
+    needing = [v for v in videos if not v.get("extracted_sound_id")]
+    if not needing:
+        return videos
+
+    try:
+        enhanced = extract_sound_ids_parallel(needing, max_workers=max_workers)
+        enhanced_dict = {v["url"]: v for v in enhanced}
+        return [enhanced_dict.get(v.get("url"), v) for v in videos]
+    except Exception as e:
+        log.warning("Sound ID extraction failed: %s", e)
+        return videos
 EST = ZoneInfo("America/New_York")
 
 _scheduler: Optional[BackgroundScheduler] = None
@@ -143,7 +212,7 @@ def trigger_job(job_type: str):
 # ── Job 1: Campaign Refresh ──────────────────────────────────────────
 
 def run_campaign_refresh():
-    """Refresh all active campaigns: scrape creators via Apify, run matching, update stats."""
+    """Refresh all active campaigns: scrape creators via yt-dlp, run matching, update stats."""
     log.info("CRON: starting campaign_refresh")
     log_id = _db.create_cron_log("campaign_refresh")
 
@@ -160,10 +229,37 @@ def run_campaign_refresh():
         campaigns = _db.list_campaigns(status="active")
         campaigns_total = len(campaigns)
 
+        # Improvement #4: Deduplicate creators across campaigns
+        # Scrape each unique creator once, share results across all their campaigns
+        all_usernames = set()
+        for meta in campaigns:
+            campaign_creators = _db.get_creators(meta.get("slug", ""))
+            for c in campaign_creators:
+                if c.get("platform", "tiktok") == "tiktok" and c.get("status") == "active":
+                    uname = c.get("username", "")
+                    if uname:
+                        all_usernames.add(uname)
+
+        # Pre-scrape all unique creators + extract sound IDs
+        shared_videos = {}  # username -> [videos]
+        if all_usernames:
+            log.info("CRON: pre-scraping %d unique creators across %d campaigns",
+                     len(all_usernames), campaigns_total)
+            all_scraped, _, _ = _scrape_creator_accounts(
+                list(all_usernames), start_date=None, max_workers=5
+            )
+            # Extract sound IDs for all videos at once (much more efficient)
+            all_scraped = _enhance_sound_ids(all_scraped, max_workers=10)
+            # Index by account
+            for v in all_scraped:
+                acct = (v.get("account", "") or "").lstrip("@").lower()
+                if acct:
+                    shared_videos.setdefault(acct, []).append(v)
+
         for meta in campaigns:
             slug = meta.get("slug", "")
             try:
-                result = _refresh_single_campaign(slug, meta)
+                result = _refresh_single_campaign(slug, meta, shared_videos=shared_videos)
                 campaigns_refreshed += 1
                 total_new_matches += result.get("new_matches", 0)
                 total_videos_checked += result.get("videos_checked", 0)
@@ -201,35 +297,31 @@ def run_campaign_refresh():
         log.error("CRON: campaign_refresh failed: %s", e)
 
 
-def _core_song_name(s: str) -> str:
-    """Normalize a song title for fuzzy matching — matches campaigns.py logic."""
-    s = re.sub(r"\s*\(feat\..*?\)", "", s, flags=re.IGNORECASE)
-    s = re.sub(r"\s*\(ft\..*?\)", "", s, flags=re.IGNORECASE)
-    s = re.sub(r"\s*feat\..*$", "", s, flags=re.IGNORECASE)
-    s = re.sub(r"\s+promo\s*$", "", s, flags=re.IGNORECASE)
-    s = re.sub(r"\s+remix\s*$", "", s, flags=re.IGNORECASE)
-    return s.strip().lower()
+def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None) -> dict:
+    """Refresh a single campaign using yt-dlp + HTML sound extraction (free).
 
+    Pipeline:
+    1. Get creator videos (from shared pre-scrape cache or scrape individually)
+    2. Match videos using shared multi-strategy matching
+    3. Auto-discover original sounds from campaign creators
+    4. Merge with existing matches (updates view counts for known videos)
 
-def _refresh_single_campaign(slug: str, meta: dict) -> dict:
-    """Refresh a single campaign. Returns result dict with new_matches, total_matches, etc."""
+    Args:
+        shared_videos: Optional dict of {username: [videos]} pre-scraped by run_campaign_refresh.
+                       When provided, skips per-campaign scraping (dedup optimization).
+    """
+    from campaign_manager.services.matching import (
+        build_sound_sets, match_videos, discover_original_sounds,
+        merge_matched_videos, update_creator_post_counts,
+    )
+
+    _, _, match_video_to_sounds = _import_scraper()
+
     creators = _db.get_creators(slug)
     existing_videos = _db.get_matched_videos(slug)
 
-    # Build sound set
-    sound_ids = set()
-    if meta.get("sound_id"):
-        sound_ids.add(str(meta["sound_id"]))
-    for sid in (meta.get("additional_sounds") or []):
-        if sid:
-            sound_ids.add(str(sid))
-
-    # Build song+artist keys for secondary matching
+    sound_ids, sound_keys, core_song_words = build_sound_sets(meta)
     artist = meta.get("artist", "")
-    song = meta.get("song", "")
-    sound_keys = set()
-    if song and artist:
-        sound_keys.add(f"{_core_song_name(song)} - {artist.lower().strip()}")
 
     # Collect TikTok creator usernames
     tiktok_creators = [c for c in creators if c.get("platform", "tiktok") == "tiktok" and c.get("status") == "active"]
@@ -238,82 +330,46 @@ def _refresh_single_campaign(slug: str, meta: dict) -> dict:
     if not usernames:
         return {"new_matches": 0, "total_matches": len(existing_videos), "videos_checked": 0}
 
-    # Scrape via Apify
-    all_videos = scrape_profiles(usernames, results_per_page=100)
+    # Step 1: Get videos — use shared cache if available, otherwise scrape
+    if shared_videos is not None:
+        # Pull this campaign's creators from the pre-scraped cache
+        all_videos = []
+        for uname in usernames:
+            all_videos.extend(shared_videos.get(uname.lower(), []))
+    else:
+        # Fallback: scrape individually (used by manual trigger_job)
+        scrape_start = None
+        start_date_str = meta.get("start_date", "")
+        if start_date_str:
+            try:
+                scrape_start = datetime.strptime(start_date_str, "%Y-%m-%d")
+            except ValueError:
+                pass
+        all_videos, _, scrape_errors = _scrape_creator_accounts(
+            usernames, start_date=scrape_start, max_workers=5
+        )
+        if scrape_errors:
+            for err in scrape_errors[:5]:
+                log.warning("CRON: scrape error for %s: %s", slug, err)
+        all_videos = _enhance_sound_ids(all_videos, max_workers=10)
 
-    # Filter by campaign start_date (same as interactive refresh)
+    # Filter by campaign start_date
     start_date_str = meta.get("start_date", "")
     if start_date_str:
         try:
-            scrape_start = datetime.strptime(start_date_str, "%Y-%m-%d").date()
-            filtered = []
-            for v in all_videos:
-                ts = v.get("timestamp", "")
-                if ts and isinstance(ts, str):
-                    try:
-                        vdt = datetime.fromisoformat(ts).date()
-                        if vdt < scrape_start:
-                            continue
-                    except Exception:
-                        pass
-                filtered.append(v)
-            all_videos = filtered
+            scrape_start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
+            all_videos = _filter_by_date(all_videos, scrape_start_date)
         except ValueError:
-            pass  # invalid start_date format, skip filtering
+            pass
 
-    # Match videos
-    matched = []
-    discovered_sound_ids = []
+    # Step 3: Match using shared multi-strategy logic
+    matched = match_videos(all_videos, sound_ids, sound_keys, core_song_words, artist, match_fn=match_video_to_sounds)
 
-    core_song_words = set()
-    if song:
-        core = _core_song_name(song)
-        core_song_words = {w for w in core.split() if len(w) > 2}
-
-    for video in all_videos:
-        vid_music_id = video.get("music_id", "")
-
-        # Primary: musicId set lookup
-        if vid_music_id and vid_music_id in sound_ids:
-            matched.append(video)
-            continue
-
-        # Secondary: song+artist key
-        v_song = video.get("song", "") or ""
-        v_artist = video.get("artist", "") or ""
-        if v_song and v_artist:
-            v_key = f"{v_song.lower().strip()} - {v_artist.lower().strip()}"
-            if v_key in sound_keys:
-                matched.append(video)
-                continue
-
-        # Fuzzy: core word overlap + artist match
-        if core_song_words and v_song:
-            v_words = set(_core_song_name(v_song).split())
-            overlap = core_song_words & v_words
-            if overlap and artist and artist.lower().strip() in v_artist.lower():
-                matched.append(video)
-                continue
-
-    # Auto-discovery for original sounds
-    if artist:
-        campaign_artist_lower = artist.lower().strip()
-        creator_set = {u.lower() for u in usernames}
-        matched_urls = {v.get("url") for v in matched}
-        for video in all_videos:
-            if video.get("url") in matched_urls:
-                continue
-            vid_account = (video.get("account", "") or "").lstrip("@").lower()
-            if vid_account not in creator_set:
-                continue
-            vid_song = (video.get("song", "") or "").lower()
-            vid_artist = (video.get("artist", "") or "").lower().strip()
-            vid_music_id = video.get("music_id", "")
-            is_orig = video.get("is_original_sound", False) or vid_song.startswith("original sound")
-            if is_orig and vid_artist == campaign_artist_lower and vid_music_id and vid_music_id not in sound_ids:
-                matched.append(video)
-                discovered_sound_ids.append(vid_music_id)
-                sound_ids.add(vid_music_id)
+    # Step 4: Auto-discover original sounds from campaign creators
+    extra_matched, discovered_sound_ids = discover_original_sounds(
+        all_videos, matched, sound_ids, usernames, artist
+    )
+    matched.extend(extra_matched)
 
     # Auto-add discovered sounds to campaign
     if discovered_sound_ids:
@@ -325,47 +381,54 @@ def _refresh_single_campaign(slug: str, meta: dict) -> dict:
         updated_meta["additional_sounds"] = current_additional
         _db.save_campaign(slug, updated_meta)
 
-    # Merge matched videos (dedup by URL) and replace all (updates view/like counts)
-    existing_urls = {v.get("url") for v in existing_videos}
-    new_matches = [v for v in matched if v.get("url") and v["url"] not in existing_urls]
-    all_matched = existing_videos + new_matches
+    # Step 5: Merge — updates view/like counts for existing matches + adds new ones
+    all_matched, new_count = merge_matched_videos(existing_videos, matched)
+
+    # Serialize timestamps
+    for v in all_matched:
+        if isinstance(v.get("timestamp"), datetime):
+            v["timestamp"] = v["timestamp"].isoformat()
+
     _db.replace_matched_videos(slug, all_matched)
 
-    # Update creator posts_matched
-    account_counts = {}
-    for v in all_matched:
-        acct = (v.get("account", "") or "").lstrip("@").lower()
-        if acct:
-            account_counts[acct] = account_counts.get(acct, 0) + 1
-
-    updated_creators = []
-    for c in creators:
-        c = dict(c)
-        uname = c.get("username", "").lower()
-        c["posts_matched"] = account_counts.get(uname, 0)
-        c["posts_done"] = account_counts.get(uname, 0)
-        updated_creators.append(c)
+    # Update creator post counts
+    updated_creators = update_creator_post_counts(creators, all_matched)
     _db.save_creators(slug, updated_creators)
 
-    # Update campaign stats
+    # Update campaign stats (now with fresh view counts!)
     total_views = sum(v.get("views", 0) or 0 for v in all_matched)
     total_likes = sum(v.get("likes", 0) or 0 for v in all_matched)
     _db.update_campaign_stats(slug, total_views, total_likes)
 
-    # Save scrape log
     _db.save_scrape_log(slug, {
         "accounts_scraped": len(usernames),
         "videos_checked": len(all_videos),
-        "new_matches": len(new_matches),
+        "new_matches": new_count,
         "total_matches": len(all_matched),
     })
 
     return {
-        "new_matches": len(new_matches),
+        "new_matches": new_count,
         "total_matches": len(all_matched),
         "videos_checked": len(all_videos),
         "discovered_sound_ids": discovered_sound_ids,
     }
+
+
+def _filter_by_date(videos, start_date):
+    """Filter videos to only those on or after start_date."""
+    filtered = []
+    for v in videos:
+        ts = v.get("timestamp", "")
+        if ts and isinstance(ts, str):
+            try:
+                vdt = datetime.fromisoformat(ts).date()
+                if vdt < start_date:
+                    continue
+            except Exception:
+                pass
+        filtered.append(v)
+    return filtered
 
 
 # ── Job 2: Internal Scrape ───────────────────────────────────────────
@@ -381,7 +444,16 @@ def run_internal_scrape():
             _db.finish_cron_log(log_id, "completed", {"accounts_total": 0, "errors": []})
             return
 
-        all_videos = scrape_profiles(creators, results_per_page=50)
+        # Scrape via yt-dlp (free) instead of Apify
+        all_videos, accounts_ok, scrape_errors = _scrape_creator_accounts(
+            creators, start_date=None, max_workers=5
+        )
+        if scrape_errors:
+            for err in scrape_errors[:5]:
+                log.warning("CRON: internal scrape error: %s", err)
+
+        # Extract real sound IDs for better song grouping
+        all_videos = _enhance_sound_ids(all_videos, max_workers=10)
 
         # Filter to last 48 hours
         cutoff = datetime.now(EST) - timedelta(hours=48)
