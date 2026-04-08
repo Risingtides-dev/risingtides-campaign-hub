@@ -516,3 +516,157 @@ def upload_results():
         return jsonify({"error": "Invalid results payload."}), 400
     save_internal_results(data)
     return jsonify({"ok": True, "message": f"Saved {data.get('total_videos', 0)} videos, {data.get('unique_songs', 0)} songs."}), 201
+
+
+# ===================================================================
+# Creator Groups -- bucket internal creators for per-group stats.
+# All routes require the database to be active; JSON fallback is not
+# supported for groups (keeps the data model simple).
+# ===================================================================
+
+def _require_db():
+    if not _db.is_active():
+        return jsonify({"error": "Database not configured. Groups require Postgres."}), 503
+    return None
+
+
+# -------------------------------------------------------------------
+# 9. GET /api/internal/groups  -- list all groups with member counts
+# -------------------------------------------------------------------
+@internal_bp.get("/api/internal/groups")
+def list_groups():
+    err = _require_db()
+    if err:
+        return err
+    return jsonify(_db.list_internal_groups())
+
+
+# -------------------------------------------------------------------
+# 10. POST /api/internal/groups  -- create a group
+# -------------------------------------------------------------------
+@internal_bp.post("/api/internal/groups")
+def create_group():
+    err = _require_db()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    slug = (data.get("slug") or "").strip().lower()
+    title = (data.get("title") or "").strip()
+    kind = (data.get("kind") or "custom").strip().lower()
+    sort_order = int(data.get("sort_order") or 0)
+
+    if not slug or not title:
+        return jsonify({"error": "slug and title are required"}), 400
+
+    group = _db.create_internal_group(slug, title, kind=kind, sort_order=sort_order)
+    if not group:
+        return jsonify({"error": f"Group '{slug}' already exists or is invalid"}), 409
+    return jsonify(group), 201
+
+
+# -------------------------------------------------------------------
+# 11. GET /api/internal/groups/<identifier>  -- group detail + members
+# -------------------------------------------------------------------
+@internal_bp.get("/api/internal/groups/<identifier>")
+def get_group(identifier: str):
+    err = _require_db()
+    if err:
+        return err
+    group = _db.get_internal_group(identifier)
+    if not group:
+        return jsonify({"error": "Group not found"}), 404
+    members = _db.get_group_members(group["id"])
+    return jsonify({**group, "members": members})
+
+
+# -------------------------------------------------------------------
+# 12. PATCH /api/internal/groups/<id>  -- rename / re-kind / reorder
+# -------------------------------------------------------------------
+@internal_bp.patch("/api/internal/groups/<int:group_id>")
+def patch_group(group_id: int):
+    err = _require_db()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    updated = _db.update_internal_group(group_id, data)
+    if not updated:
+        return jsonify({"error": "Group not found"}), 404
+    return jsonify(updated)
+
+
+# -------------------------------------------------------------------
+# 13. DELETE /api/internal/groups/<id>  -- remove a group
+# -------------------------------------------------------------------
+@internal_bp.delete("/api/internal/groups/<int:group_id>")
+def delete_group(group_id: int):
+    err = _require_db()
+    if err:
+        return err
+    if not _db.delete_internal_group(group_id):
+        return jsonify({"error": "Group not found"}), 404
+    return jsonify({"ok": True})
+
+
+# -------------------------------------------------------------------
+# 14. POST /api/internal/groups/<id>/members  -- add members
+# -------------------------------------------------------------------
+@internal_bp.post("/api/internal/groups/<int:group_id>/members")
+def add_members(group_id: int):
+    err = _require_db()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    usernames = data.get("usernames") or data.get("username") or []
+    if isinstance(usernames, str):
+        usernames = re.split(r"[\n,]+", usernames)
+    if not usernames:
+        return jsonify({"error": "usernames is required (list or comma/newline separated string)"}), 400
+
+    added = _db.add_group_members(group_id, usernames)
+    return jsonify({
+        "ok": True,
+        "group_id": group_id,
+        "added": added,
+        "skipped": [u.strip().lstrip("@") for u in usernames
+                    if u.strip().lstrip("@").lower() not in {a.lower() for a in added}],
+    }), 201
+
+
+# -------------------------------------------------------------------
+# 15. DELETE /api/internal/groups/<id>/members/<username>
+# -------------------------------------------------------------------
+@internal_bp.delete("/api/internal/groups/<int:group_id>/members/<username>")
+def remove_member(group_id: int, username: str):
+    err = _require_db()
+    if err:
+        return err
+    if not _db.remove_group_member(group_id, username):
+        return jsonify({"error": f"@{username} is not a member of group {group_id}"}), 404
+    return jsonify({"ok": True})
+
+
+# -------------------------------------------------------------------
+# 16. GET /api/internal/groups/<id>/stats  -- aggregate group stats
+# -------------------------------------------------------------------
+@internal_bp.get("/api/internal/groups/<identifier>/stats")
+def group_stats(identifier: str):
+    err = _require_db()
+    if err:
+        return err
+    group = _db.get_internal_group(identifier)
+    if not group:
+        return jsonify({"error": "Group not found"}), 404
+    days = int(request.args.get("days", 30))
+    return jsonify(_db.get_group_stats(group["id"], days=days))
+
+
+# -------------------------------------------------------------------
+# 17. GET /api/internal/creators/<username>/stats  -- per-creator stats
+# -------------------------------------------------------------------
+@internal_bp.get("/api/internal/creators/<username>/stats")
+def creator_stats(username: str):
+    err = _require_db()
+    if err:
+        return err
+    days = int(request.args.get("days", 30))
+    return jsonify(_db.get_creator_stats(username, days=days))

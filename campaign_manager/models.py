@@ -266,7 +266,17 @@ class InternalCreator(Base):
     __tablename__ = "internal_creators"
 
     username = Column(String(255), primary_key=True)
+    display_name = Column(String(255), default="")
+    niche = Column(String(100), default="")
     added_at = Column(DateTime, default=datetime.now)
+
+    def to_dict(self):
+        return {
+            "username": self.username or "",
+            "display_name": self.display_name or "",
+            "niche": self.niche or "",
+            "added_at": self.added_at.isoformat() if self.added_at else "",
+        }
 
 
 class InternalVideoCache(Base):
@@ -407,3 +417,59 @@ class CronLog(Base):
             "finished_at": self.finished_at.isoformat() if self.finished_at else "",
             "summary": self.summary or {},
         }
+
+
+# ===================================================================
+# Internal creator groups (booked-by / niche / custom)
+# ===================================================================
+
+class InternalCreatorGroup(Base):
+    """Named grouping of internal TikTok creators.
+
+    Groups let us bucket creators by who books them (Johnny/Sam/Eric/etc.),
+    by niche, by label (Warner Pages), or by any custom criteria. A creator
+    can belong to many groups via InternalCreatorGroupMember.
+    """
+    __tablename__ = "internal_creator_groups"
+
+    id = Column(Integer, primary_key=True)
+    slug = Column(String(100), unique=True, nullable=False, index=True)
+    title = Column(String(255), nullable=False)
+    kind = Column(String(50), default="custom")  # booked_by | label | niche | custom
+    sort_order = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.now)
+
+    members = relationship(
+        "InternalCreatorGroupMember",
+        back_populates="group",
+        cascade="all, delete-orphan",
+    )
+
+    def to_dict(self, member_count: int | None = None):
+        return {
+            "id": self.id,
+            "slug": self.slug or "",
+            "title": self.title or "",
+            "kind": self.kind or "custom",
+            "sort_order": self.sort_order or 0,
+            "created_at": self.created_at.isoformat() if self.created_at else "",
+            "member_count": member_count if member_count is not None else len(self.members or []),
+        }
+
+
+class InternalCreatorGroupMember(Base):
+    """Many-to-many join: an internal creator belongs to a group."""
+    __tablename__ = "internal_creator_group_members"
+    __table_args__ = (
+        UniqueConstraint("group_id", "username", name="uq_internal_group_member"),
+    )
+
+    group_id = Column(
+        Integer,
+        ForeignKey("internal_creator_groups.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    username = Column(String(255), primary_key=True)
+    added_at = Column(DateTime, default=datetime.now)
+
+    group = relationship("InternalCreatorGroup", back_populates="members")

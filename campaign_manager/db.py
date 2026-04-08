@@ -12,13 +12,14 @@ from zoneinfo import ZoneInfo
 
 EST = ZoneInfo("America/New_York")
 
-from sqlalchemy import create_engine, desc
+from sqlalchemy import create_engine, desc, func
 from sqlalchemy.orm import Session, sessionmaker
 
 from campaign_manager.models import (
     Base, Campaign, Creator, MatchedVideo, ScrapeLog,
     InboxItem, PaypalMemory, InternalCreator, InternalVideoCache,
     InternalScrapeResult, CronLog, NetworkCreator, OutreachMessage,
+    InternalCreatorGroup, InternalCreatorGroupMember,
 )
 
 _engine = None
@@ -103,6 +104,23 @@ def init(database_url: Optional[str] = None):
             s.execute(
                 __import__("sqlalchemy").text(
                     "ALTER TABLE creators ADD COLUMN IF NOT EXISTS niches JSONB DEFAULT '[]'::jsonb"
+                )
+            )
+            s.commit()
+    except Exception:
+        pass
+
+    # Add display_name + niche to internal_creators
+    try:
+        with _SessionLocal() as s:
+            s.execute(
+                __import__("sqlalchemy").text(
+                    "ALTER TABLE internal_creators ADD COLUMN IF NOT EXISTS display_name VARCHAR(255) DEFAULT ''"
+                )
+            )
+            s.execute(
+                __import__("sqlalchemy").text(
+                    "ALTER TABLE internal_creators ADD COLUMN IF NOT EXISTS niche VARCHAR(100) DEFAULT ''"
                 )
             )
             s.commit()
@@ -904,3 +922,323 @@ def confirm_outreach(campaign_id: int, username: str) -> Optional[Dict]:
 
         s.commit()
         return m.to_dict()
+
+
+# ── Internal Creator Groups ───────────────────────────────────────────
+#
+# Groups bucket internal creators by who books them, label, niche, or
+# any custom criteria. A creator can belong to many groups.
+
+def _group_to_dict(group: "InternalCreatorGroup", member_count: int) -> Dict:
+    return {
+        "id": group.id,
+        "slug": group.slug or "",
+        "title": group.title or "",
+        "kind": group.kind or "custom",
+        "sort_order": group.sort_order or 0,
+        "created_at": group.created_at.isoformat() if group.created_at else "",
+        "member_count": member_count,
+    }
+
+
+def list_internal_groups() -> List[Dict]:
+    """List all internal creator groups with member counts."""
+    with get_session() as s:
+        rows = (
+            s.query(
+                InternalCreatorGroup,
+                func.count(InternalCreatorGroupMember.username).label("n"),
+            )
+            .outerjoin(
+                InternalCreatorGroupMember,
+                InternalCreatorGroupMember.group_id == InternalCreatorGroup.id,
+            )
+            .group_by(InternalCreatorGroup.id)
+            .order_by(InternalCreatorGroup.sort_order, InternalCreatorGroup.title)
+            .all()
+        )
+        return [_group_to_dict(g, int(n or 0)) for g, n in rows]
+
+
+def get_internal_group(identifier) -> Optional[Dict]:
+    """Get a group by id or slug."""
+    with get_session() as s:
+        q = s.query(InternalCreatorGroup)
+        if isinstance(identifier, int) or (isinstance(identifier, str) and identifier.isdigit()):
+            g = q.filter_by(id=int(identifier)).first()
+        else:
+            g = q.filter_by(slug=str(identifier)).first()
+        if not g:
+            return None
+        n = s.query(func.count(InternalCreatorGroupMember.username))\
+            .filter_by(group_id=g.id).scalar() or 0
+        return _group_to_dict(g, int(n))
+
+
+def create_internal_group(slug: str, title: str, kind: str = "custom",
+                          sort_order: int = 0) -> Optional[Dict]:
+    """Create a new group. Returns the group dict, or None if slug already exists."""
+    slug = (slug or "").strip().lower()
+    title = (title or "").strip()
+    if not slug or not title:
+        return None
+    with get_session() as s:
+        if s.query(InternalCreatorGroup).filter_by(slug=slug).first():
+            return None
+        g = InternalCreatorGroup(
+            slug=slug,
+            title=title,
+            kind=(kind or "custom").strip().lower(),
+            sort_order=int(sort_order or 0),
+        )
+        s.add(g)
+        s.commit()
+        s.refresh(g)
+        return _group_to_dict(g, 0)
+
+
+def update_internal_group(group_id: int, fields: Dict) -> Optional[Dict]:
+    """Update mutable fields on a group (title, kind, sort_order)."""
+    with get_session() as s:
+        g = s.query(InternalCreatorGroup).filter_by(id=group_id).first()
+        if not g:
+            return None
+        if "title" in fields and fields["title"]:
+            g.title = str(fields["title"]).strip()
+        if "kind" in fields and fields["kind"]:
+            g.kind = str(fields["kind"]).strip().lower()
+        if "sort_order" in fields:
+            try:
+                g.sort_order = int(fields["sort_order"])
+            except (TypeError, ValueError):
+                pass
+        s.commit()
+        n = s.query(func.count(InternalCreatorGroupMember.username))\
+            .filter_by(group_id=g.id).scalar() or 0
+        return _group_to_dict(g, int(n))
+
+
+def delete_internal_group(group_id: int) -> bool:
+    """Delete a group and all its memberships. Returns True if deleted."""
+    with get_session() as s:
+        g = s.query(InternalCreatorGroup).filter_by(id=group_id).first()
+        if not g:
+            return False
+        s.delete(g)  # cascade removes members
+        s.commit()
+        return True
+
+
+def get_group_members(group_id: int) -> List[str]:
+    """List usernames belonging to a group."""
+    with get_session() as s:
+        rows = s.query(InternalCreatorGroupMember.username)\
+            .filter_by(group_id=group_id)\
+            .order_by(InternalCreatorGroupMember.username)\
+            .all()
+        return [r[0] for r in rows]
+
+
+def add_group_members(group_id: int, usernames: List[str]) -> List[str]:
+    """Add usernames to a group. Returns list of actually-added usernames.
+
+    Unknown usernames are silently skipped (so the caller can add creators
+    independently). Already-member usernames are also skipped.
+    """
+    cleaned = [u.strip().lstrip("@").strip().lower() for u in usernames if u]
+    cleaned = [u for u in cleaned if u]
+    if not cleaned:
+        return []
+    with get_session() as s:
+        if not s.query(InternalCreatorGroup).filter_by(id=group_id).first():
+            return []
+        # Skip usernames that don't exist in internal_creators.
+        known = {
+            r[0].lower() for r in s.query(InternalCreator.username)
+            .filter(func.lower(InternalCreator.username).in_(cleaned)).all()
+        }
+        # Skip already-members.
+        already = {
+            r[0].lower() for r in s.query(InternalCreatorGroupMember.username)
+            .filter(InternalCreatorGroupMember.group_id == group_id,
+                    func.lower(InternalCreatorGroupMember.username).in_(cleaned))
+            .all()
+        }
+        added = []
+        for u in cleaned:
+            if u in known and u not in already:
+                s.add(InternalCreatorGroupMember(group_id=group_id, username=u))
+                added.append(u)
+                already.add(u)
+        s.commit()
+        return added
+
+
+def remove_group_member(group_id: int, username: str) -> bool:
+    """Remove a single username from a group."""
+    uname = username.strip().lstrip("@").lower()
+    with get_session() as s:
+        n = s.query(InternalCreatorGroupMember).filter(
+            InternalCreatorGroupMember.group_id == group_id,
+            func.lower(InternalCreatorGroupMember.username) == uname,
+        ).delete(synchronize_session=False)
+        s.commit()
+        return n > 0
+
+
+def get_groups_for_creator(username: str) -> List[Dict]:
+    """List all groups a creator belongs to."""
+    uname = username.strip().lstrip("@").lower()
+    with get_session() as s:
+        groups = (
+            s.query(InternalCreatorGroup)
+            .join(
+                InternalCreatorGroupMember,
+                InternalCreatorGroupMember.group_id == InternalCreatorGroup.id,
+            )
+            .filter(func.lower(InternalCreatorGroupMember.username) == uname)
+            .order_by(InternalCreatorGroup.sort_order, InternalCreatorGroup.title)
+            .all()
+        )
+        return [_group_to_dict(g, 0) for g in groups]
+
+
+# ── Internal Creator Stats ────────────────────────────────────────────
+#
+# Stats pull directly from InternalVideoCache, which already holds a
+# 30-day rolling window of scraped posts. We filter by upload_date (stored
+# as a YYYYMMDD string, which sorts lexicographically), so "last N days"
+# is a simple string comparison.
+
+def _cutoff_yyyymmdd(days: int) -> str:
+    return (datetime.now() - timedelta(days=int(days or 30))).strftime("%Y%m%d")
+
+
+def get_creator_stats(username: str, days: int = 30) -> Dict:
+    """Stats for a single internal creator over the last N days.
+
+    Returns: { username, days, total_posts, total_views, total_likes,
+               posts_by_song: [{song, artist, posts, views}], top_posts: [...] }
+    """
+    uname = username.strip().lstrip("@").lower()
+    cutoff = _cutoff_yyyymmdd(days)
+
+    with get_session() as s:
+        videos = (
+            s.query(InternalVideoCache)
+            .filter(
+                func.lower(InternalVideoCache.username) == uname,
+                InternalVideoCache.upload_date >= cutoff,
+            )
+            .all()
+        )
+
+        total_posts = len(videos)
+        total_views = sum(int(v.views or 0) for v in videos)
+        total_likes = sum(int(v.likes or 0) for v in videos)
+
+        # Group by (song, artist)
+        by_song: Dict[tuple, Dict] = {}
+        for v in videos:
+            key = ((v.song or "").strip(), (v.artist or "").strip())
+            slot = by_song.setdefault(key, {"song": key[0], "artist": key[1],
+                                            "posts": 0, "views": 0, "likes": 0})
+            slot["posts"] += 1
+            slot["views"] += int(v.views or 0)
+            slot["likes"] += int(v.likes or 0)
+
+        posts_by_song = sorted(by_song.values(), key=lambda r: r["views"], reverse=True)
+
+        top_posts = sorted(
+            (v.to_dict() for v in videos),
+            key=lambda p: p.get("views", 0),
+            reverse=True,
+        )[:10]
+
+        return {
+            "username": uname,
+            "days": int(days),
+            "cutoff": cutoff,
+            "total_posts": total_posts,
+            "total_views": total_views,
+            "total_likes": total_likes,
+            "posts_by_song": posts_by_song,
+            "top_posts": top_posts,
+        }
+
+
+def get_group_stats(group_id: int, days: int = 30) -> Optional[Dict]:
+    """Aggregate stats for a group over the last N days.
+
+    Returns: { group: {...}, days, total_posts, total_views, total_likes,
+               creators: [{username, posts, views, likes}], top_songs: [...] }
+    """
+    group = get_internal_group(group_id)
+    if not group:
+        return None
+
+    members = get_group_members(group_id)
+    if not members:
+        return {
+            "group": group,
+            "days": int(days),
+            "total_posts": 0,
+            "total_views": 0,
+            "total_likes": 0,
+            "creators": [],
+            "top_songs": [],
+        }
+
+    members_lower = [m.lower() for m in members]
+    cutoff = _cutoff_yyyymmdd(days)
+
+    with get_session() as s:
+        videos = (
+            s.query(InternalVideoCache)
+            .filter(
+                func.lower(InternalVideoCache.username).in_(members_lower),
+                InternalVideoCache.upload_date >= cutoff,
+            )
+            .all()
+        )
+
+        # Per-creator rollup
+        per_creator: Dict[str, Dict] = {
+            m: {"username": m, "posts": 0, "views": 0, "likes": 0} for m in members_lower
+        }
+        # Per-song rollup
+        by_song: Dict[tuple, Dict] = {}
+
+        for v in videos:
+            uname = (v.username or "").lower()
+            slot = per_creator.setdefault(
+                uname, {"username": uname, "posts": 0, "views": 0, "likes": 0}
+            )
+            slot["posts"] += 1
+            slot["views"] += int(v.views or 0)
+            slot["likes"] += int(v.likes or 0)
+
+            key = ((v.song or "").strip(), (v.artist or "").strip())
+            s_slot = by_song.setdefault(
+                key, {"song": key[0], "artist": key[1], "posts": 0, "views": 0}
+            )
+            s_slot["posts"] += 1
+            s_slot["views"] += int(v.views or 0)
+
+        creators_ranked = sorted(
+            per_creator.values(), key=lambda r: r["views"], reverse=True
+        )
+        top_songs = sorted(
+            by_song.values(), key=lambda r: r["views"], reverse=True
+        )[:10]
+
+        return {
+            "group": group,
+            "days": int(days),
+            "cutoff": cutoff,
+            "total_posts": sum(c["posts"] for c in creators_ranked),
+            "total_views": sum(c["views"] for c in creators_ranked),
+            "total_likes": sum(c["likes"] for c in creators_ranked),
+            "creators": creators_ranked,
+            "top_songs": top_songs,
+        }
