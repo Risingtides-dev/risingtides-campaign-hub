@@ -32,12 +32,19 @@ def _config() -> Tuple[str, str, str]:
     return api, key, base
 
 
+TIDESTRACKER_PUBLIC_URL = "https://risingtides-tracker.com/"
+
+
 def tracker_url_for(tracker_id: str) -> str:
-    """Build the public TidesTracker URL for a given tracker UUID."""
-    base = current_app.config.get("TIDESTRACKER_BASE_URL", "")
-    if not base or not tracker_id:
+    """Public URL for the TidesTracker dashboard.
+
+    TidesTracker doesn't have per-campaign deep links — selection happens
+    inside the dashboard UI — so every tracker links to the same canonical
+    dashboard URL.
+    """
+    if not tracker_id:
         return ""
-    return f"{base}/{tracker_id}"
+    return TIDESTRACKER_PUBLIC_URL
 
 
 def create_tracker_campaign(

@@ -6,10 +6,6 @@ const navItems = [
     links: [{ label: "Promotions", path: "/" }],
   },
   {
-    section: "Tracking",
-    links: [{ label: "TidesTrackers", path: "/trackers" }],
-  },
-  {
     section: "Creators",
     links: [{ label: "Creator Database", path: "/creators" }],
   },
@@ -24,6 +20,10 @@ const navItems = [
   {
     section: "Intake",
     links: [{ label: "Slack Inbox", path: "/inbox" }],
+  },
+  {
+    section: "Tracking",
+    links: [{ label: "TidesTrackers", path: "/trackers" }],
   },
 ]
 
