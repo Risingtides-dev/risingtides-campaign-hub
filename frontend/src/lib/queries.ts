@@ -20,6 +20,8 @@ export const keys = {
   network: ["network"] as const,
   outreach: (slug: string) => ["outreach", slug] as const,
   outreachStatus: (slug: string) => ["outreach", slug, "status"] as const,
+  trackers: ["trackers"] as const,
+  trackerGroups: ["tracker-groups"] as const,
 }
 
 // --- Campaigns ---
@@ -167,6 +169,57 @@ export function useCreateTracker(slug: string) {
     mutationFn: () => api.createTracker(slug),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: keys.campaign(slug) })
+      qc.invalidateQueries({ queryKey: keys.trackers })
+    },
+  })
+}
+
+export function useTrackers() {
+  return useQuery({ queryKey: keys.trackers, queryFn: api.listTrackers })
+}
+
+export function useTrackerGroups() {
+  return useQuery({ queryKey: keys.trackerGroups, queryFn: api.listTrackerGroups })
+}
+
+export function useCreateStandaloneTracker() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: api.createStandaloneTracker,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: keys.trackers })
+      qc.invalidateQueries({ queryKey: keys.trackerGroups })
+    },
+  })
+}
+
+export function useSetTrackerGroup() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ trackerId, groupId }: { trackerId: string; groupId: number | null }) =>
+      api.setTrackerGroup(trackerId, groupId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: keys.trackers })
+      qc.invalidateQueries({ queryKey: keys.trackerGroups })
+    },
+  })
+}
+
+export function useCreateTrackerGroup() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: api.createTrackerGroup,
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.trackerGroups }),
+  })
+}
+
+export function useDeleteTrackerGroup() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => api.deleteTrackerGroup(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: keys.trackerGroups })
+      qc.invalidateQueries({ queryKey: keys.trackers })
     },
   })
 }

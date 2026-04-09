@@ -1509,14 +1509,6 @@ def create_tracker(slug: str):
             "tracker_url": meta.get("tracker_url", ""),
         })
 
-    # Get TidesTracker config
-    tracker_api = current_app.config.get("TIDESTRACKER_API_URL", "")
-    tracker_key = current_app.config.get("TIDESTRACKER_SERVICE_KEY", "")
-    tracker_base = current_app.config.get("TIDESTRACKER_BASE_URL", "")
-
-    if not tracker_api or not tracker_key:
-        return jsonify({"error": "TidesTracker not configured. Set TIDESTRACKER_API_URL and TIDESTRACKER_SERVICE_KEY."}), 500
-
     # Build tracker campaign name from campaign metadata
     title = meta.get("title", slug)
     artist = meta.get("artist", "")
@@ -1528,31 +1520,21 @@ def create_tracker(slug: str):
         tracker_name = f"{artist} Campaign"
 
     # Call TidesTracker API to create the campaign
-    import requests as http_requests
+    from campaign_manager.services.tidestracker import (
+        create_tracker_campaign,
+        TidesTrackerError,
+    )
     try:
-        resp = http_requests.post(
-            f"{tracker_api}/campaigns",
-            json={
-                "name": tracker_name,
-                "slug": slug,
-                "cobrand_share_link": cobrand_share_url,
-                "client_id": None,  # Unassigned — assign to client later via admin UI
-            },
-            headers={
-                "Content-Type": "application/json",
-                "x-service-key": tracker_key,
-            },
-            timeout=15,
+        tracker_campaign_id, tracker_url = create_tracker_campaign(
+            name=tracker_name,
+            slug=slug,
+            cobrand_share_url=cobrand_share_url,
         )
-        resp.raise_for_status()
-        result = resp.json()
-    except http_requests.RequestException as e:
-        return jsonify({"error": f"Failed to create tracker: {str(e)}"}), 502
+    except TidesTrackerError as e:
+        return jsonify({"error": str(e)}), e.status_code
 
-    tracker_campaign_id = result.get("campaign", {}).get("id", "")
-    tracker_url = f"{tracker_base}/{tracker_campaign_id}" if tracker_base else ""
-
-    # Save tracker ID back to campaign
+    # Save tracker ID back to campaign. The TidesTrackers tab reads live from
+    # TidesTracker, so it'll automatically pick up this new tracker.
     if _db.is_active():
         _db.update_campaign_fields(slug, {
             "tracker_campaign_id": tracker_campaign_id,

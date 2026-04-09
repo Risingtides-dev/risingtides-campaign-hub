@@ -20,6 +20,7 @@ from campaign_manager.models import (
     InboxItem, PaypalMemory, InternalCreator, InternalVideoCache,
     InternalScrapeResult, CronLog, NetworkCreator, OutreachMessage,
     InternalCreatorGroup, InternalCreatorGroupMember,
+    TrackerGroup, TrackerGroupAssignment,
 )
 
 _engine = None
@@ -1242,3 +1243,82 @@ def get_group_stats(group_id: int, days: int = 30) -> Optional[Dict]:
             "creators": creators_ranked,
             "top_songs": top_songs,
         }
+
+
+# ===================================================================
+# TidesTrackers (folder overlay)
+# ===================================================================
+#
+# Tracker data lives in TidesTracker (Supabase). The helpers below only
+# manage local groups and the join from a TidesTracker UUID to a group.
+
+def list_tracker_groups() -> List[Dict]:
+    """List all tracker groups with assignment counts."""
+    with get_session() as s:
+        rows = (
+            s.query(
+                TrackerGroup,
+                func.count(TrackerGroupAssignment.tracker_id).label("n"),
+            )
+            .outerjoin(
+                TrackerGroupAssignment,
+                TrackerGroupAssignment.group_id == TrackerGroup.id,
+            )
+            .group_by(TrackerGroup.id)
+            .order_by(TrackerGroup.sort_order, TrackerGroup.title)
+            .all()
+        )
+        return [g.to_dict(int(n or 0)) for g, n in rows]
+
+
+def create_tracker_group(slug: str, title: str, sort_order: int = 0) -> Optional[Dict]:
+    """Create a tracker group. Returns the group dict, or None on conflict."""
+    slug = (slug or "").strip().lower()
+    title = (title or "").strip()
+    if not slug or not title:
+        return None
+    with get_session() as s:
+        if s.query(TrackerGroup).filter_by(slug=slug).first():
+            return None
+        g = TrackerGroup(slug=slug, title=title, sort_order=int(sort_order or 0))
+        s.add(g)
+        s.commit()
+        s.refresh(g)
+        return g.to_dict(0)
+
+
+def delete_tracker_group(group_id: int) -> bool:
+    """Delete a tracker group and all its assignments."""
+    with get_session() as s:
+        g = s.query(TrackerGroup).filter_by(id=group_id).first()
+        if not g:
+            return False
+        s.delete(g)
+        s.commit()
+        return True
+
+
+def get_tracker_assignments() -> Dict[str, int]:
+    """Return {tracker_id: group_id} for every assigned tracker."""
+    with get_session() as s:
+        rows = s.query(TrackerGroupAssignment.tracker_id, TrackerGroupAssignment.group_id).all()
+        return {tid: gid for tid, gid in rows}
+
+
+def set_tracker_assignment(tracker_id: str, group_id: Optional[int]) -> None:
+    """Assign a tracker to a group, or clear its assignment if group_id is None."""
+    tid = (tracker_id or "").strip()
+    if not tid:
+        return
+    with get_session() as s:
+        existing = s.query(TrackerGroupAssignment).filter_by(tracker_id=tid).first()
+        if group_id is None:
+            if existing:
+                s.delete(existing)
+                s.commit()
+            return
+        if existing:
+            existing.group_id = int(group_id)
+        else:
+            s.add(TrackerGroupAssignment(tracker_id=tid, group_id=int(group_id)))
+        s.commit()

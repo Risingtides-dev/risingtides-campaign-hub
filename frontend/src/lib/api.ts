@@ -17,6 +17,8 @@ import type {
   NetworkCreator,
   OutreachResponse,
   OutreachStatusResponse,
+  Tracker,
+  TrackerGroup,
 } from "./types"
 
 const API_BASE = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? "http://localhost:5055" : "")
@@ -269,6 +271,48 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ username }),
     }),
+
+  // TidesTrackers — list comes live from TidesTracker; groups are local
+  listTrackers: () => request<Tracker[]>("/api/trackers"),
+
+  createStandaloneTracker: (data: {
+    name?: string
+    cobrand_share_url: string
+    group_id?: number | null
+  }) =>
+    request<{
+      ok: boolean
+      tracker: {
+        id: string
+        name: string
+        cobrand_share_url: string
+        tracker_url: string
+        group_id: number | null
+      }
+    }>("/api/trackers", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  setTrackerGroup: (trackerId: string, groupId: number | null) =>
+    request<{ ok: boolean; id: string; group_id: number | null }>(
+      `/api/trackers/${trackerId}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ group_id: groupId }),
+      }
+    ),
+
+  listTrackerGroups: () => request<TrackerGroup[]>("/api/tracker-groups"),
+
+  createTrackerGroup: (data: { title: string; slug?: string }) =>
+    request<TrackerGroup>("/api/tracker-groups", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  deleteTrackerGroup: (id: number) =>
+    request<ApiOk>(`/api/tracker-groups/${id}`, { method: "DELETE" }),
 }
 
 export { ApiError }

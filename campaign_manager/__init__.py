@@ -33,6 +33,7 @@ def create_app(config=None):
     from campaign_manager.blueprints.slack_events import slack_events_bp
     from campaign_manager.blueprints.cron import cron_bp
     from campaign_manager.blueprints.outreach import outreach_bp
+    from campaign_manager.blueprints.trackers import trackers_bp
 
     app.register_blueprint(health_bp)
     app.register_blueprint(campaigns_bp)
@@ -43,6 +44,7 @@ def create_app(config=None):
     app.register_blueprint(slack_events_bp)
     app.register_blueprint(cron_bp)
     app.register_blueprint(outreach_bp)
+    app.register_blueprint(trackers_bp)
 
     # Initialize Slack bot (no-op if credentials aren't set)
     if app.config.get("SLACK_BOT_TOKEN"):

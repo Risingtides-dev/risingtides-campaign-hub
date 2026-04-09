@@ -10,6 +10,7 @@ import InternalCreatorDetail from "./pages/InternalCreatorDetail"
 import SlackInbox from "./pages/SlackInbox"
 import NetworkCreators from "./pages/NetworkCreators"
 import CampaignOutreach from "./pages/CampaignOutreach"
+import TidesTrackers from "./pages/TidesTrackers"
 
 function App() {
   return (
@@ -26,6 +27,7 @@ function App() {
           <Route path="/internal/:username" element={<InternalCreatorDetail />} />
           <Route path="/inbox" element={<SlackInbox />} />
           <Route path="/network" element={<NetworkCreators />} />
+          <Route path="/trackers" element={<TidesTrackers />} />
         </Route>
       </Routes>
     </BrowserRouter>

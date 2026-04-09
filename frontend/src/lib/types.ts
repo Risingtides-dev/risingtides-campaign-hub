@@ -323,3 +323,31 @@ export interface BudgetResponse {
   budget_pct_used: number
   message: string
 }
+
+// TidesTrackers
+export interface TrackerGroup {
+  id: number
+  slug: string
+  title: string
+  sort_order: number
+  created_at: string
+  tracker_count: number
+}
+
+export interface TrackerClient {
+  id: string
+  name: string
+  slug: string
+}
+
+export interface Tracker {
+  id: string                       // TidesTracker UUID
+  name: string
+  slug: string
+  cobrand_share_url: string
+  tracker_url: string
+  is_active: boolean
+  created_at: string
+  client: TrackerClient | null
+  group_id: number | null          // local overlay
+}

@@ -473,3 +473,54 @@ class InternalCreatorGroupMember(Base):
     added_at = Column(DateTime, default=datetime.now)
 
     group = relationship("InternalCreatorGroup", back_populates="members")
+
+
+# ===================================================================
+# TidesTrackers (folder overlay for trackers that live in TidesTracker)
+# ===================================================================
+#
+# Tracker data itself lives in TidesTracker's database (Supabase). The
+# tables below only store the local "folder" overlay: groups and which
+# tracker (by TidesTracker UUID) belongs to which group.
+
+class TrackerGroup(Base):
+    """A folder for grouping TidesTrackers (e.g. one per record label)."""
+    __tablename__ = "tracker_groups"
+
+    id = Column(Integer, primary_key=True)
+    slug = Column(String(100), unique=True, nullable=False, index=True)
+    title = Column(String(255), nullable=False)
+    sort_order = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.now)
+
+    assignments = relationship(
+        "TrackerGroupAssignment",
+        back_populates="group",
+        cascade="all, delete-orphan",
+    )
+
+    def to_dict(self, tracker_count: int | None = None):
+        return {
+            "id": self.id,
+            "slug": self.slug or "",
+            "title": self.title or "",
+            "sort_order": self.sort_order or 0,
+            "created_at": self.created_at.isoformat() if self.created_at else "",
+            "tracker_count": tracker_count if tracker_count is not None else 0,
+        }
+
+
+class TrackerGroupAssignment(Base):
+    """Joins a TidesTracker (by its UUID) to a local TrackerGroup."""
+    __tablename__ = "tracker_group_assignments"
+
+    tracker_id = Column(String(64), primary_key=True)  # TidesTracker campaign UUID
+    group_id = Column(
+        Integer,
+        ForeignKey("tracker_groups.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    created_at = Column(DateTime, default=datetime.now)
+
+    group = relationship("TrackerGroup", back_populates="assignments")
