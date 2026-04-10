@@ -34,12 +34,15 @@ def _slugify(text: str) -> str:
     return text or "tracker"
 
 
-def _hydrate(tracker: dict, assignments: dict) -> dict:
+def _hydrate(tracker: dict, assignments: dict, names: dict) -> dict:
     """Convert a TidesTracker API row into the shape the frontend expects."""
     tid = tracker.get("id") or ""
+    original_name = tracker.get("name") or ""
+    override = names.get(tid) or ""
     return {
         "id": tid,
-        "name": tracker.get("name") or "",
+        "name": override or original_name,
+        "original_name": original_name,
         "slug": tracker.get("slug") or "",
         "cobrand_share_url": tracker.get("cobrand_share_link") or "",
         "tracker_url": tracker_url_for(tid),
@@ -65,7 +68,8 @@ def list_trackers():
         return jsonify({"error": str(e)}), e.status_code
 
     assignments = _db.get_tracker_assignments()
-    trackers = [_hydrate(t, assignments) for t in raw]
+    names = _db.get_tracker_names()
+    trackers = [_hydrate(t, assignments, names) for t in raw]
 
     group_id_raw = request.args.get("group_id")
     if group_id_raw == "none":
@@ -123,25 +127,41 @@ def create_tracker():
 
 @trackers_bp.patch("/api/trackers/<tracker_id>")
 def update_tracker(tracker_id: str):
-    """Update local-only fields for a tracker (currently just group_id)."""
+    """Update local-only fields for a tracker (group_id, display name)."""
     err = _require_db()
     if err:
         return err
     data = request.get_json(silent=True) or {}
+    touched = False
+    response: dict = {"ok": True, "id": tracker_id}
 
     if "group_id" in data:
         gid_raw = data["group_id"]
         if gid_raw in (None, "", "null"):
             _db.set_tracker_assignment(tracker_id, None)
-            return jsonify({"ok": True, "id": tracker_id, "group_id": None})
-        try:
-            gid = int(gid_raw)
-        except (TypeError, ValueError):
-            return jsonify({"error": "group_id must be an integer or null"}), 400
-        _db.set_tracker_assignment(tracker_id, gid)
-        return jsonify({"ok": True, "id": tracker_id, "group_id": gid})
+            response["group_id"] = None
+        else:
+            try:
+                gid = int(gid_raw)
+            except (TypeError, ValueError):
+                return jsonify({"error": "group_id must be an integer or null"}), 400
+            _db.set_tracker_assignment(tracker_id, gid)
+            response["group_id"] = gid
+        touched = True
 
-    return jsonify({"error": "No updatable fields supplied"}), 400
+    if "name" in data:
+        name_raw = data["name"]
+        if name_raw is None or (isinstance(name_raw, str) and not name_raw.strip()):
+            _db.set_tracker_name(tracker_id, None)
+            response["name"] = None
+        else:
+            _db.set_tracker_name(tracker_id, str(name_raw))
+            response["name"] = str(name_raw).strip()
+        touched = True
+
+    if not touched:
+        return jsonify({"error": "No updatable fields supplied"}), 400
+    return jsonify(response)
 
 
 # ---------------------------------------------------------------------------

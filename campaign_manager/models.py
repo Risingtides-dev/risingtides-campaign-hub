@@ -524,3 +524,18 @@ class TrackerGroupAssignment(Base):
     created_at = Column(DateTime, default=datetime.now)
 
     group = relationship("TrackerGroup", back_populates="assignments")
+
+
+class TrackerName(Base):
+    """Local display-name override for a TidesTracker.
+
+    TidesTracker auto-names some campaigns generically ("Campaign"); we let
+    users rename them inside Campaign Hub without round-tripping to
+    TidesTracker. Stored as an overlay so the original name is recoverable
+    by clearing the override.
+    """
+    __tablename__ = "tracker_names"
+
+    tracker_id = Column(String(64), primary_key=True)  # TidesTracker campaign UUID
+    display_name = Column(String(500), nullable=False)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)

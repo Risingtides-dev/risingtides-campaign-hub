@@ -316,6 +316,15 @@ export const api = {
       }
     ),
 
+  setTrackerName: (trackerId: string, name: string | null) =>
+    request<{ ok: boolean; id: string; name: string | null }>(
+      `/api/trackers/${trackerId}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ name }),
+      }
+    ),
+
   listTrackerGroups: () => request<TrackerGroup[]>("/api/tracker-groups"),
 
   createTrackerGroup: (data: { title: string; slug?: string }) =>

@@ -429,7 +429,8 @@ export interface TrackerClient {
 
 export interface Tracker {
   id: string                       // TidesTracker UUID
-  name: string
+  name: string                     // local override if set, else original
+  original_name: string            // raw name from TidesTracker
   slug: string
   cobrand_share_url: string
   tracker_url: string

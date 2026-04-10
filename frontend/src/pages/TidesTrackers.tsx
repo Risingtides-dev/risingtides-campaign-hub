@@ -5,6 +5,7 @@ import {
   useTrackerGroups,
   useCreateStandaloneTracker,
   useSetTrackerGroup,
+  useSetTrackerName,
   useCreateTrackerGroup,
 } from "@/lib/queries"
 import type { Tracker } from "@/lib/types"
@@ -60,6 +61,7 @@ export default function TidesTrackers() {
 
   const createTracker = useCreateStandaloneTracker()
   const setTrackerGroup = useSetTrackerGroup()
+  const setTrackerName = useSetTrackerName()
   const createGroup = useCreateTrackerGroup()
 
   const filteredTrackers = useMemo(() => {
@@ -124,6 +126,24 @@ export default function TidesTrackers() {
         setCopiedId((current) => (current === tracker.id ? null : current))
       }, 1500)
     })
+  }
+
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editValue, setEditValue] = useState("")
+  function startEdit(tracker: Tracker) {
+    setEditingId(tracker.id)
+    setEditValue(tracker.name || "")
+  }
+  function commitEdit(tracker: Tracker) {
+    const next = editValue.trim()
+    setEditingId(null)
+    if (next === (tracker.name || "")) return
+    // Empty string clears the override and reverts to TidesTracker's original name.
+    setTrackerName.mutate({ trackerId: tracker.id, name: next || null })
+  }
+  function cancelEdit() {
+    setEditingId(null)
+    setEditValue("")
   }
 
   return (
@@ -297,11 +317,40 @@ export default function TidesTrackers() {
               filteredTrackers.map((t) => (
                 <TableRow key={t.id}>
                   <TableCell className="font-medium text-[14px]">
-                    {t.name || <span className="text-[#999]">Untitled</span>}
-                    {t.client?.name && (
-                      <span className="ml-2 inline-block px-1.5 py-0.5 rounded bg-[#eef2ff] text-[#0b62d6] text-[10px] uppercase tracking-wide">
-                        {t.client.name}
-                      </span>
+                    {editingId === t.id ? (
+                      <Input
+                        autoFocus
+                        value={editValue}
+                        onChange={(e) => setEditValue(e.target.value)}
+                        onBlur={() => commitEdit(t)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault()
+                            commitEdit(t)
+                          } else if (e.key === "Escape") {
+                            e.preventDefault()
+                            cancelEdit()
+                          }
+                        }}
+                        placeholder={t.original_name || "Tracker name"}
+                        className="h-8 text-[14px]"
+                      />
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => startEdit(t)}
+                        title="Click to rename"
+                        className="text-left hover:text-purple-600 transition-colors"
+                      >
+                        {t.name || (
+                          <span className="text-[#999]">Untitled</span>
+                        )}
+                        {t.client?.name && (
+                          <span className="ml-2 inline-block px-1.5 py-0.5 rounded bg-[#eef2ff] text-[#0b62d6] text-[10px] uppercase tracking-wide">
+                            {t.client.name}
+                          </span>
+                        )}
+                      </button>
                     )}
                   </TableCell>
                   <TableCell>

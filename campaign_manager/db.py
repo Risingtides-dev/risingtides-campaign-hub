@@ -20,7 +20,7 @@ from campaign_manager.models import (
     InboxItem, PaypalMemory, InternalCreator, InternalVideoCache,
     InternalScrapeResult, CronLog, NetworkCreator, OutreachMessage,
     InternalCreatorGroup, InternalCreatorGroupMember,
-    TrackerGroup, TrackerGroupAssignment,
+    TrackerGroup, TrackerGroupAssignment, TrackerName,
 )
 
 _engine = None
@@ -1321,4 +1321,31 @@ def set_tracker_assignment(tracker_id: str, group_id: Optional[int]) -> None:
             existing.group_id = int(group_id)
         else:
             s.add(TrackerGroupAssignment(tracker_id=tid, group_id=int(group_id)))
+        s.commit()
+
+
+def get_tracker_names() -> Dict[str, str]:
+    """Return {tracker_id: display_name} for every tracker with a local rename."""
+    with get_session() as s:
+        rows = s.query(TrackerName.tracker_id, TrackerName.display_name).all()
+        return {tid: name for tid, name in rows}
+
+
+def set_tracker_name(tracker_id: str, display_name: Optional[str]) -> None:
+    """Set or clear a local display-name override for a tracker."""
+    tid = (tracker_id or "").strip()
+    if not tid:
+        return
+    cleaned = (display_name or "").strip()
+    with get_session() as s:
+        existing = s.query(TrackerName).filter_by(tracker_id=tid).first()
+        if not cleaned:
+            if existing:
+                s.delete(existing)
+                s.commit()
+            return
+        if existing:
+            existing.display_name = cleaned
+        else:
+            s.add(TrackerName(tracker_id=tid, display_name=cleaned))
         s.commit()
