@@ -62,6 +62,13 @@ class Campaign(Base):
 
     # Extended campaign metadata (from Notion CRM)
     insta_sound = Column(Text, default="")
+
+    # TikTok scraper matching — for original sounds, the artist/track on TikTok
+    # often differs from the real artist/song name. These fields store what
+    # TikTok actually labels the sound so the scraper can match reliably.
+    tt_artist_label = Column(String(255), default="")
+    tt_track_name = Column(String(255), default="")
+
     campaign_stage = Column(String(50), default="")
     round = Column(String(20), default="")
     label = Column(String(255), default="")
@@ -109,6 +116,8 @@ class Campaign(Base):
             "completion_status": self.completion_status or "none",
             "notion_page_id": self.notion_page_id or "",
             "insta_sound": self.insta_sound or "",
+            "tt_artist_label": self.tt_artist_label or "",
+            "tt_track_name": self.tt_track_name or "",
             "campaign_stage": self.campaign_stage or "",
             "round": self.round or "",
             "label": self.label or "",
@@ -539,3 +548,66 @@ class TrackerName(Base):
     tracker_id = Column(String(64), primary_key=True)  # TidesTracker campaign UUID
     display_name = Column(String(500), nullable=False)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+# ===================================================================
+# ManyChat conversation log
+# ===================================================================
+#
+# Every DM -- inbound and outbound -- between Rising Tides and a
+# ManyChat subscriber is logged verbatim in manychat_messages. This is
+# separate from OutreachMessage (which tracks per-campaign outreach
+# state): a subscriber may have dozens of raw messages but only one
+# OutreachMessage per campaign. The raw log powers the DM Inbox, Claude
+# intent classification, and conversation-threaded views.
+#
+# Intents are tagged asynchronously by a Claude Haiku classification
+# pass on inbound messages. The set is closed (not free-form) so the
+# inbox can reliably filter and Claude can use the tag in later
+# decisioning (e.g. which creators to draft follow-ups for).
+
+class ManyChatMessage(Base):
+    """A single verbatim DM between Rising Tides and a ManyChat subscriber."""
+    __tablename__ = "manychat_messages"
+    __table_args__ = (
+        UniqueConstraint(
+            "subscriber_id",
+            "manychat_message_id",
+            name="uq_manychat_message_id",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True)
+    subscriber_id = Column(String(100), nullable=False, index=True)
+    username = Column(String(255), default="", index=True)
+    platform = Column(String(20), default="tiktok")  # tiktok | instagram | messenger
+    direction = Column(String(10), nullable=False, index=True)  # in | out
+    text = Column(Text, default="")
+    manychat_message_id = Column(String(100), default="")
+    flow_ns = Column(String(100), default="")  # which ManyChat flow produced this
+    campaign_slug = Column(String(255), default="", index=True)  # context if known
+    received_at = Column(DateTime, default=datetime.now, index=True)
+
+    # Claude intent classification (nullable -- set asynchronously)
+    intent = Column(String(50), default="", index=True)
+    intent_confidence = Column(Float, default=0.0)
+    extracted = Column(JSONB, default=dict)  # {rate, email, paypal, song, ...}
+    classified_at = Column(DateTime, nullable=True)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "subscriber_id": self.subscriber_id or "",
+            "username": self.username or "",
+            "platform": self.platform or "tiktok",
+            "direction": self.direction or "in",
+            "text": self.text or "",
+            "manychat_message_id": self.manychat_message_id or "",
+            "flow_ns": self.flow_ns or "",
+            "campaign_slug": self.campaign_slug or "",
+            "received_at": self.received_at.isoformat() if self.received_at else "",
+            "intent": self.intent or "",
+            "intent_confidence": self.intent_confidence or 0.0,
+            "extracted": self.extracted or {},
+            "classified_at": self.classified_at.isoformat() if self.classified_at else "",
+        }

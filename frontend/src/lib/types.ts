@@ -50,6 +50,8 @@ export interface CampaignDetail {
   song: string
   sound_id: string
   official_sound: string
+  tt_artist_label: string
+  tt_track_name: string
   additional_sounds: string[]
   cobrand_link: string
   cobrand_share_url: string

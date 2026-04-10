@@ -21,6 +21,7 @@ from campaign_manager.models import (
     InternalScrapeResult, CronLog, NetworkCreator, OutreachMessage,
     InternalCreatorGroup, InternalCreatorGroupMember,
     TrackerGroup, TrackerGroupAssignment, TrackerName,
+    ManyChatMessage,
 )
 
 _engine = None
@@ -128,6 +129,26 @@ def init(database_url: Optional[str] = None):
     except Exception:
         pass
 
+    # Add TikTok scraper label fields to campaigns
+    try:
+        with _SessionLocal() as s:
+            s.execute(
+                __import__("sqlalchemy").text(
+                    "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS tt_artist_label VARCHAR(255) DEFAULT ''"
+                )
+            )
+            s.execute(
+                __import__("sqlalchemy").text(
+                    "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS tt_track_name VARCHAR(255) DEFAULT ''"
+                )
+            )
+            s.commit()
+    except Exception:
+        pass
+
+    # manychat_messages table is created by Base.metadata.create_all above.
+    # No migration block needed -- it's additive only.
+
     return True
 
 
@@ -193,6 +214,8 @@ def save_campaign(slug: str, meta: Dict):
         raw_notion_id = meta.get("notion_page_id", c.notion_page_id)
         c.notion_page_id = raw_notion_id if raw_notion_id else None
         c.insta_sound = meta.get("insta_sound", c.insta_sound or "")
+        c.tt_artist_label = meta.get("tt_artist_label", c.tt_artist_label or "")
+        c.tt_track_name = meta.get("tt_track_name", c.tt_track_name or "")
         c.campaign_stage = meta.get("campaign_stage", c.campaign_stage or "")
         c.round = meta.get("round", c.round or "")
         c.label = meta.get("label", c.label or "")
@@ -1298,6 +1321,86 @@ def delete_tracker_group(group_id: int) -> bool:
         return True
 
 
+# ── ManyChat Message Log ──────────────────────────────────────────────
+#
+# Every DM to/from a ManyChat subscriber is stored verbatim. Messages
+# are deduplicated by (subscriber_id, manychat_message_id) so replaying
+# the same webhook is idempotent. Inbound messages arrive via the
+# /api/manychat/webhook endpoint; outbound messages are logged by the
+# outreach send path when a ManyChat API call succeeds.
+
+def log_manychat_message(
+    subscriber_id: str,
+    direction: str,
+    text: str,
+    *,
+    username: str = "",
+    platform: str = "tiktok",
+    manychat_message_id: str = "",
+    flow_ns: str = "",
+    campaign_slug: str = "",
+) -> Optional[Dict]:
+    """Insert a single DM into the message log. Returns the stored row, or
+    None if a duplicate (same subscriber_id + manychat_message_id) already
+    exists.
+    """
+    direction = (direction or "").strip().lower()
+    if direction not in ("in", "out"):
+        return None
+    subscriber_id = (subscriber_id or "").strip()
+    if not subscriber_id:
+        return None
+
+    with get_session() as s:
+        # Dedupe on (subscriber_id, manychat_message_id) when an ID is present.
+        if manychat_message_id:
+            existing = (
+                s.query(ManyChatMessage)
+                .filter_by(
+                    subscriber_id=subscriber_id,
+                    manychat_message_id=manychat_message_id,
+                )
+                .first()
+            )
+            if existing:
+                return existing.to_dict()
+
+        msg = ManyChatMessage(
+            subscriber_id=subscriber_id,
+            username=(username or "").lstrip("@").strip(),
+            platform=(platform or "tiktok").strip().lower(),
+            direction=direction,
+            text=text or "",
+            manychat_message_id=manychat_message_id or "",
+            flow_ns=flow_ns or "",
+            campaign_slug=campaign_slug or "",
+            received_at=datetime.now(),
+        )
+        s.add(msg)
+        s.commit()
+        s.refresh(msg)
+        return msg.to_dict()
+
+
+def set_message_intent(
+    message_id: int,
+    intent: str,
+    confidence: float = 0.0,
+    extracted: Optional[Dict] = None,
+) -> bool:
+    """Attach Claude classification results to a logged message."""
+    with get_session() as s:
+        msg = s.query(ManyChatMessage).filter_by(id=message_id).first()
+        if not msg:
+            return False
+        msg.intent = (intent or "").strip().lower()
+        msg.intent_confidence = float(confidence or 0.0)
+        msg.extracted = extracted or {}
+        msg.classified_at = datetime.now()
+        s.commit()
+        return True
+
+
 def get_tracker_assignments() -> Dict[str, int]:
     """Return {tracker_id: group_id} for every assigned tracker."""
     with get_session() as s:
@@ -1349,3 +1452,64 @@ def set_tracker_name(tracker_id: str, display_name: Optional[str]) -> None:
         else:
             s.add(TrackerName(tracker_id=tid, display_name=cleaned))
         s.commit()
+
+
+def get_inbox_messages(
+    intent: str = "",
+    direction: str = "",
+    days: int = 30,
+    limit: int = 200,
+) -> List[Dict]:
+    """List messages in the inbox, newest first, with optional filters."""
+    cutoff = datetime.now() - timedelta(days=int(days or 30))
+    with get_session() as s:
+        q = s.query(ManyChatMessage).filter(ManyChatMessage.received_at >= cutoff)
+        if intent:
+            q = q.filter(ManyChatMessage.intent == intent.strip().lower())
+        if direction:
+            q = q.filter(ManyChatMessage.direction == direction.strip().lower())
+        q = q.order_by(desc(ManyChatMessage.received_at)).limit(int(limit or 200))
+        return [m.to_dict() for m in q.all()]
+
+
+def get_subscriber_thread(subscriber_id: str, limit: int = 200) -> List[Dict]:
+    """Return the full conversation with one subscriber, oldest first."""
+    with get_session() as s:
+        q = (
+            s.query(ManyChatMessage)
+            .filter_by(subscriber_id=subscriber_id)
+            .order_by(ManyChatMessage.received_at)
+            .limit(int(limit or 200))
+        )
+        return [m.to_dict() for m in q.all()]
+
+
+def get_unclassified_messages(limit: int = 50) -> List[Dict]:
+    """Return inbound messages that haven't been classified by Claude yet."""
+    with get_session() as s:
+        q = (
+            s.query(ManyChatMessage)
+            .filter(
+                ManyChatMessage.direction == "in",
+                ManyChatMessage.classified_at.is_(None),
+            )
+            .order_by(ManyChatMessage.received_at)
+            .limit(int(limit or 50))
+        )
+        return [m.to_dict() for m in q.all()]
+
+
+def inbox_intent_counts(days: int = 30) -> Dict[str, int]:
+    """Count messages by intent over the last N days (for dashboard widgets)."""
+    cutoff = datetime.now() - timedelta(days=int(days or 30))
+    with get_session() as s:
+        rows = (
+            s.query(ManyChatMessage.intent, func.count(ManyChatMessage.id))
+            .filter(
+                ManyChatMessage.direction == "in",
+                ManyChatMessage.received_at >= cutoff,
+            )
+            .group_by(ManyChatMessage.intent)
+            .all()
+        )
+        return {(intent or "unclassified"): int(n) for intent, n in rows}

@@ -31,6 +31,8 @@ export function CampaignHeader({
   // Edit form state
   const [title, setTitle] = useState(campaign.title || "")
   const [soundId, setSoundId] = useState(campaign.sound_id || campaign.official_sound || "")
+  const [ttArtistLabel, setTtArtistLabel] = useState(campaign.tt_artist_label || "")
+  const [ttTrackName, setTtTrackName] = useState(campaign.tt_track_name || "")
   const [additionalSounds, setAdditionalSounds] = useState<string[]>(
     campaign.additional_sounds || []
   )
@@ -49,6 +51,8 @@ export function CampaignHeader({
     onEdit({
       title,
       sound_id: soundId,
+      tt_artist_label: ttArtistLabel,
+      tt_track_name: ttTrackName,
       additional_sounds: additionalSounds.filter((s) => s.trim()),
       start_date: startDate,
       budget: parseFloat(budget),
@@ -61,6 +65,8 @@ export function CampaignHeader({
     // Reset form state to current campaign values
     setTitle(campaign.title || "")
     setSoundId(campaign.sound_id || campaign.official_sound || "")
+    setTtArtistLabel(campaign.tt_artist_label || "")
+    setTtTrackName(campaign.tt_track_name || "")
     setAdditionalSounds(campaign.additional_sounds || [])
     setStartDate(campaign.start_date || "")
     setBudget(campaign.budget?.total?.toString() || "0")
@@ -132,6 +138,24 @@ export function CampaignHeader({
               </div>
             </div>
             <div className="w-full sm:w-auto">
+              <label className="block text-xs opacity-60 mb-1">TT Artist Label</label>
+              <Input
+                value={ttArtistLabel}
+                onChange={(e) => setTtArtistLabel(e.target.value)}
+                placeholder="e.g. Music for the Soul"
+                className="w-full sm:w-[200px] bg-white/10 border-white/30 text-white placeholder:text-white/40"
+              />
+            </div>
+            <div className="w-full sm:w-auto">
+              <label className="block text-xs opacity-60 mb-1">TT Track Name</label>
+              <Input
+                value={ttTrackName}
+                onChange={(e) => setTtTrackName(e.target.value)}
+                placeholder="e.g. original sound"
+                className="w-full sm:w-[200px] bg-white/10 border-white/30 text-white placeholder:text-white/40"
+              />
+            </div>
+            <div className="w-full sm:w-auto">
               <label className="block text-xs opacity-60 mb-1">Start Date</label>
               <Input
                 type="date"
@@ -192,6 +216,12 @@ export function CampaignHeader({
             {soundCount > 0 && (
               <>
                 {" "}&middot; {soundCount} sound{soundCount > 1 ? "s" : ""}
+              </>
+            )}
+            {campaign.tt_artist_label && (
+              <>
+                {" "}&middot; TT: {campaign.tt_artist_label}
+                {campaign.tt_track_name && <> / {campaign.tt_track_name}</>}
               </>
             )}
           </div>
