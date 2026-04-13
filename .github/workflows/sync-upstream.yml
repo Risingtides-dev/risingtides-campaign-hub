@@ -1,0 +1,40 @@
+name: Sync from upstream (jakebalik-bit)
+
+on:
+  schedule:
+    - cron: '* * * * *'
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Sync upstream to fork
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Add Jake's repo as upstream
+          git remote add upstream https://github.com/jakebalik-bit/risingtides-campaign-hub.git
+          git fetch upstream main
+
+          # Save our workflow file before overwriting
+          cp -r .github /tmp/.github-backup
+
+          # Reset to upstream's main
+          git reset --hard upstream/main
+
+          # Restore our workflow file
+          cp -r /tmp/.github-backup .github
+
+          # Commit the workflow file if it changed
+          git add .github/
+          git diff --cached --quiet || git commit -m "chore: preserve sync workflow"
+
+          # Push to our fork
+          git push origin main --force
