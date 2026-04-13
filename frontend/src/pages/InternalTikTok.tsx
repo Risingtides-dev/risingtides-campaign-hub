@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react"
+import { useState, useCallback, useMemo } from "react"
 import { Link } from "react-router-dom"
 import {
   useInternalCreators,
@@ -25,8 +25,24 @@ function formatNum(n: number): string {
   return n.toLocaleString()
 }
 
-function GroupStatsCard({ group }: { group: InternalGroup }) {
-  const { data: stats, isLoading } = useInternalGroupStats(group.slug, 30)
+function todayStr(): string {
+  return new Date().toISOString().slice(0, 10)
+}
+
+function daysAgoStr(n: number): string {
+  const d = new Date()
+  d.setDate(d.getDate() - n)
+  return d.toISOString().slice(0, 10)
+}
+
+function daysBetween(start: string, end: string): number {
+  const s = new Date(start)
+  const e = new Date(end)
+  return Math.max(1, Math.round((e.getTime() - s.getTime()) / (1000 * 60 * 60 * 24)))
+}
+
+function GroupStatsCard({ group, days }: { group: InternalGroup; days: number }) {
+  const { data: stats, isLoading } = useInternalGroupStats(group.slug, days)
 
   return (
     <Link
@@ -73,16 +89,34 @@ function ScrapeCard({
 }: {
   title: string
   count: number
-  onScrape: () => void
+  onScrape: (startDate: string, endDate: string) => void
   isPending: boolean
   isRunning: boolean
 }) {
+  const [startDate, setStartDate] = useState(daysAgoStr(30))
+  const [endDate, setEndDate] = useState(todayStr())
+
   return (
     <div className="bg-white border border-[#e8e8ef] rounded-[10px] p-4">
       <div className="text-[14px] font-semibold text-[#1a1a2e] mb-1">{title}</div>
-      <div className="text-[12px] text-[#888] mb-3">{count} accounts</div>
+      <div className="text-[12px] text-[#888] mb-2">{count} accounts</div>
+      <div className="flex items-center gap-1.5 mb-2">
+        <Input
+          type="date"
+          value={startDate}
+          onChange={(e) => setStartDate(e.target.value)}
+          className="flex-1 h-7 text-xs px-1.5"
+        />
+        <span className="text-[#888] text-xs">to</span>
+        <Input
+          type="date"
+          value={endDate}
+          onChange={(e) => setEndDate(e.target.value)}
+          className="flex-1 h-7 text-xs px-1.5"
+        />
+      </div>
       <Button
-        onClick={onScrape}
+        onClick={() => onScrape(startDate, endDate)}
         disabled={isPending || isRunning}
         className="w-full bg-[#0b62d6] hover:bg-[#0951b5] text-white text-sm"
         size="sm"
@@ -100,6 +134,11 @@ export default function InternalTikTok() {
   const [newGroupSlug, setNewGroupSlug] = useState("")
   const [newGroupTitle, setNewGroupTitle] = useState("")
   const [newGroupKind, setNewGroupKind] = useState("custom")
+
+  // Stats date range (controls what GroupStatsCards show)
+  const [statsStartDate, setStatsStartDate] = useState(daysAgoStr(30))
+  const [statsEndDate, setStatsEndDate] = useState(todayStr())
+  const statsDays = useMemo(() => daysBetween(statsStartDate, statsEndDate), [statsStartDate, statsEndDate])
 
   const { data: groups, isLoading: groupsLoading } = useInternalGroups()
   const { data: creators, isLoading: creatorsLoading } = useInternalCreators()
@@ -132,14 +171,14 @@ export default function InternalTikTok() {
     (a, b) => (b.total_views ?? 0) - (a.total_views ?? 0)
   )
 
-  function handleScrapeAll() {
+  function handleScrapeAll(startDate: string, endDate: string) {
     setScraping(true)
-    triggerScrape.mutate(48)
+    triggerGroupScrape.mutate({ start_date: startDate, end_date: endDate })
   }
 
-  function handleScrapeGroup(slug: string) {
+  function handleScrapeGroup(slug: string, startDate: string, endDate: string) {
     setScraping(true)
-    triggerGroupScrape.mutate({ group: slug })
+    triggerGroupScrape.mutate({ group: slug, start_date: startDate, end_date: endDate })
   }
 
   function handleAddCreators(e: React.FormEvent) {
@@ -201,21 +240,21 @@ export default function InternalTikTok() {
         <ScrapeCard
           title="Internal Pages"
           count={internalCount}
-          onScrape={handleScrapeAll}
-          isPending={triggerScrape.isPending}
+          onScrape={(s, e) => handleScrapeAll(s, e)}
+          isPending={triggerGroupScrape.isPending}
           isRunning={isRunning}
         />
         <ScrapeCard
           title="Warner Pages"
           count={warnerGroup?.member_count ?? 0}
-          onScrape={() => handleScrapeGroup("warner_pages")}
+          onScrape={(s, e) => handleScrapeGroup("warner_pages", s, e)}
           isPending={triggerGroupScrape.isPending}
           isRunning={isRunning}
         />
         <ScrapeCard
           title="Atlantic Pages"
           count={atlanticGroup?.member_count ?? 0}
-          onScrape={() => handleScrapeGroup("atlantic_pages")}
+          onScrape={(s, e) => handleScrapeGroup("atlantic_pages", s, e)}
           isPending={triggerGroupScrape.isPending}
           isRunning={isRunning}
         />
@@ -246,6 +285,25 @@ export default function InternalTikTok() {
       {/* Stats tab */}
       {tab === "stats" && (
         <div>
+          {/* Stats date range picker */}
+          <div className="flex flex-wrap items-center gap-2 mb-4 p-3 bg-[#f8f8fc] rounded-[10px] border border-[#e8e8ef]">
+            <span className="text-[13px] text-[#666] font-medium">Stats period:</span>
+            <Input
+              type="date"
+              value={statsStartDate}
+              onChange={(e) => setStatsStartDate(e.target.value)}
+              className="w-[145px] h-8 text-sm"
+            />
+            <span className="text-[#888] text-sm">to</span>
+            <Input
+              type="date"
+              value={statsEndDate}
+              onChange={(e) => setStatsEndDate(e.target.value)}
+              className="w-[145px] h-8 text-sm"
+            />
+            <span className="text-[12px] text-[#888]">({statsDays} days)</span>
+          </div>
+
           {groupsLoading ? (
             <div className="flex items-center justify-center py-12">
               <Loader2 className="size-5 animate-spin text-[#888]" />
@@ -256,7 +314,7 @@ export default function InternalTikTok() {
               <h2 className="text-[15px] font-semibold text-[#1a1a2e] mb-3">Internal Pages</h2>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
                 {personGroups.map((g) => (
-                  <GroupStatsCard key={g.slug} group={g} />
+                  <GroupStatsCard key={g.slug} group={g} days={statsDays} />
                 ))}
               </div>
 
@@ -266,7 +324,7 @@ export default function InternalTikTok() {
                   <h2 className="text-[15px] font-semibold text-[#1a1a2e] mb-3">Label Pages</h2>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     {labelGroups.map((g) => (
-                      <GroupStatsCard key={g.slug} group={g} />
+                      <GroupStatsCard key={g.slug} group={g} days={statsDays} />
                     ))}
                   </div>
                 </>
