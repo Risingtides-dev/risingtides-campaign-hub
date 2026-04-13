@@ -349,6 +349,18 @@ export function useInternalGroupStats(slug: string, days = 30) {
   })
 }
 
+export function useTriggerGroupScrape() {
+  return useMutation({
+    mutationFn: (params: {
+      hours?: number
+      group?: string
+      username?: string
+      start_date?: string
+      end_date?: string
+    }) => api.triggerInternalScrapeAdvanced(params),
+  })
+}
+
 // --- Inbox ---
 
 export function useInbox(status?: string) {

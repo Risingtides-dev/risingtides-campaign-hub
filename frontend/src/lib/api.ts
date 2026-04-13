@@ -201,6 +201,18 @@ export const api = {
   getInternalGroupStats: (slug: string, days = 30) =>
     request<InternalGroupStats>(`/api/internal/groups/${slug}/stats?days=${days}`),
 
+  triggerInternalScrapeAdvanced: (params: {
+    hours?: number
+    group?: string
+    username?: string
+    start_date?: string
+    end_date?: string
+  }) =>
+    request<ApiOk & { creators_count: number }>("/api/internal/scrape", {
+      method: "POST",
+      body: JSON.stringify(params),
+    }),
+
   // Inbox
   getInbox: (status?: string) =>
     request<InboxItem[]>(

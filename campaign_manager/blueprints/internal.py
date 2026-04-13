@@ -166,8 +166,14 @@ def merge_into_cache(username: str, new_videos: List[Dict]) -> List[Dict]:
 # Background scrape worker
 # ---------------------------------------------------------------------------
 
-def _run_internal_scrape(hours: int, creators: List[str]):
-    """Background scrape worker -- runs in a thread."""
+def _run_internal_scrape(hours: int, creators: List[str], *,
+                         start_date_str: str = "", end_date_str: str = ""):
+    """Background scrape worker -- runs in a thread.
+
+    When start_date_str / end_date_str are provided (YYYY-MM-DD), they
+    override the hours-based window. This lets the UI request a specific
+    date range like "March 15 to April 15".
+    """
     from concurrent.futures import ThreadPoolExecutor, as_completed
     from collections import defaultdict
     from datetime import timedelta
@@ -215,8 +221,25 @@ def _run_internal_scrape(hours: int, creators: List[str]):
         return
 
     try:
-        end_dt = datetime.now(EST)
-        start_dt = end_dt - timedelta(hours=hours)
+        # Use explicit date range if provided, otherwise fall back to hours
+        if start_date_str:
+            try:
+                start_dt = datetime.strptime(start_date_str, "%Y-%m-%d").replace(tzinfo=EST)
+            except ValueError:
+                start_dt = datetime.now(EST) - timedelta(hours=hours)
+        else:
+            start_dt = datetime.now(EST) - timedelta(hours=hours)
+
+        if end_date_str:
+            try:
+                # End of the specified day
+                end_dt = datetime.strptime(end_date_str, "%Y-%m-%d").replace(
+                    hour=23, minute=59, second=59, tzinfo=EST
+                )
+            except ValueError:
+                end_dt = datetime.now(EST)
+        else:
+            end_dt = datetime.now(EST)
 
         all_videos: List[Dict] = []
         successful = 0
@@ -417,26 +440,68 @@ def remove_creator(username: str):
 # -------------------------------------------------------------------
 @internal_bp.post("/api/internal/scrape")
 def trigger_scrape():
-    """Start a background scrape of all internal creators."""
+    """Start a background scrape of internal creators.
+
+    Accepts optional filters to scope the scrape:
+      - group: slug of a creator group (scrapes only that group's members)
+      - username: single creator username (scrapes just one account)
+      - hours: lookback window (default 48) -- used when start_date/end_date not set
+      - start_date: explicit start date (YYYY-MM-DD), overrides hours
+      - end_date: explicit end date (YYYY-MM-DD), defaults to now
+    """
     if _internal_scrape_status.get("running"):
         return jsonify({"error": "A scrape is already running. Please wait."}), 409
 
     data = request.get_json(silent=True) or {}
     hours = int(data.get("hours", 48))
-    creators = load_internal_creators()
+
+    # Determine which creators to scrape
+    group_slug = (data.get("group") or "").strip()
+    single_username = (data.get("username") or "").strip().lstrip("@")
+
+    if single_username:
+        creators = [single_username]
+        scope_label = f"@{single_username}"
+    elif group_slug:
+        if _db.is_active():
+            group = _db.get_internal_group(group_slug)
+            if not group:
+                return jsonify({"error": f"Group '{group_slug}' not found."}), 404
+            creators = _db.get_group_members(group["id"])
+            if not creators:
+                return jsonify({"error": f"Group '{group_slug}' has no members."}), 400
+            scope_label = f"group:{group_slug} ({len(creators)} accounts)"
+        else:
+            return jsonify({"error": "Groups require database. Use 'hours' for flat scrape."}), 503
+    else:
+        creators = load_internal_creators()
+        scope_label = f"all ({len(creators)} accounts)"
 
     if not creators:
-        return jsonify({"error": "No internal creators to scrape."}), 400
+        return jsonify({"error": "No creators to scrape."}), 400
+
+    # Parse optional date range
+    start_date_str = (data.get("start_date") or "").strip()
+    end_date_str = (data.get("end_date") or "").strip()
 
     # Launch scrape in background thread
-    t = threading.Thread(target=_run_internal_scrape, args=(hours, creators), daemon=True)
+    t = threading.Thread(
+        target=_run_internal_scrape,
+        args=(hours, creators),
+        kwargs={"start_date_str": start_date_str, "end_date_str": end_date_str},
+        daemon=True,
+    )
     t.start()
 
     return jsonify({
         "ok": True,
-        "message": f"Scrape started for {len(creators)} accounts (last {hours}h).",
+        "message": f"Scrape started for {scope_label} (last {hours}h).",
         "creators_count": len(creators),
         "hours": hours,
+        "group": group_slug or None,
+        "username": single_username or None,
+        "start_date": start_date_str or None,
+        "end_date": end_date_str or None,
     })
 
 

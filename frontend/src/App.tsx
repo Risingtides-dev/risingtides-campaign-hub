@@ -11,6 +11,7 @@ import SlackInbox from "./pages/SlackInbox"
 import NetworkCreators from "./pages/NetworkCreators"
 import CampaignOutreach from "./pages/CampaignOutreach"
 import TidesTrackers from "./pages/TidesTrackers"
+import InternalGroupDetail from "./pages/InternalGroupDetail"
 
 function App() {
   return (
@@ -24,6 +25,7 @@ function App() {
           <Route path="/creators" element={<CreatorDatabase />} />
           <Route path="/creators/:username" element={<CreatorProfilePage />} />
           <Route path="/internal" element={<InternalTikTok />} />
+          <Route path="/internal/group/:slug" element={<InternalGroupDetail />} />
           <Route path="/internal/:username" element={<InternalCreatorDetail />} />
           <Route path="/inbox" element={<SlackInbox />} />
           <Route path="/network" element={<NetworkCreators />} />
