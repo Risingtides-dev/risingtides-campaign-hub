@@ -2,7 +2,7 @@ name: Sync from upstream (jakebalik-bit)
 
 on:
   schedule:
-    - cron: '* * * * *'
+    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 jobs:
@@ -23,6 +23,15 @@ jobs:
           git remote add upstream https://github.com/jakebalik-bit/risingtides-campaign-hub.git
           git fetch upstream main
 
+          # Check if upstream has new commits
+          UPSTREAM_SHA=$(git rev-parse upstream/main)
+          if git merge-base --is-ancestor "$UPSTREAM_SHA" HEAD; then
+            echo "Already up to date. Skipping."
+            exit 0
+          fi
+
+          echo "New upstream changes detected. Syncing..."
+
           # Save our workflow file before overwriting
           cp -r .github /tmp/.github-backup
 
@@ -30,9 +39,10 @@ jobs:
           git reset --hard upstream/main
 
           # Restore our workflow file
-          cp -r /tmp/.github-backup .github
+          mkdir -p .github
+          cp -r /tmp/.github-backup/.github/workflows .github/
 
-          # Commit the workflow file if it changed
+          # Commit the workflow file
           git add .github/
           git diff --cached --quiet || git commit -m "chore: preserve sync workflow"
 
