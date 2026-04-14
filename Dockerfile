@@ -9,9 +9,10 @@ RUN npm run build
 # ---- Stage 2: Python app ----
 FROM python:3.11-slim
 
-# Install system dependencies for yt-dlp and video processing
-RUN apt-get update && apt-get install -y \
-    ffmpeg \
+# Install system dependencies (ffmpeg excluded — not needed for metadata-only
+# scraping on Railway, and recent Debian ffmpeg packages have deprecation
+# build errors that break the Docker build)
+RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     curl \
     && rm -rf /var/lib/apt/lists/*
