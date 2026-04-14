@@ -1,17 +1,19 @@
 import { useState, useCallback, useMemo } from "react"
 import { useParams, Link } from "react-router-dom"
+import { useQueryClient } from "@tanstack/react-query"
 import {
   useInternalCreators,
   useInternalGroups,
   useTriggerGroupScrape,
   useInternalScrapeStatus,
   useInternalResults,
+  keys,
 } from "@/lib/queries"
 import { ScrapeProgress } from "@/components/internal/ScrapeProgress"
 import { SongsResults } from "@/components/internal/SongsResults"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Loader2, ArrowLeft } from "lucide-react"
+import { Loader2, ArrowLeft, RefreshCw } from "lucide-react"
 import type { InternalScrapeResults, InternalSongResult } from "@/lib/types"
 
 const CATEGORIES: Record<string, { title: string; groupSlugs: string[]; scrapeGroup?: string }> = {
@@ -55,14 +57,19 @@ export default function InternalScrapeView() {
   const [endDate, setEndDate] = useState(todayStr())
   const [scraping, setScraping] = useState(false)
 
+  const queryClient = useQueryClient()
   const { data: groups } = useInternalGroups()
   const { data: creators } = useInternalCreators()
-  const { data: results, isLoading: resultsLoading } = useInternalResults()
+  const { data: results, isLoading: resultsLoading, refetch: refetchResults } = useInternalResults()
   const scrape = useTriggerGroupScrape()
   const { data: scrapeStatus } = useInternalScrapeStatus(true)
   const isRunning = scraping || !!scrapeStatus?.running
 
-  const handleScrapeComplete = useCallback(() => setScraping(false), [])
+  const handleScrapeComplete = useCallback(() => {
+    setScraping(false)
+    // Refetch results after scrape completes so links show up
+    queryClient.invalidateQueries({ queryKey: keys.internalResults })
+  }, [queryClient])
 
   // Find all member usernames for this category's groups
   const categoryMembers = useMemo(() => {
@@ -179,7 +186,30 @@ export default function InternalScrapeView() {
         </div>
       )}
 
-      {/* Results */}
+      {/* Results header with refresh button */}
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-[18px] font-semibold text-[#1a1a2e]">
+          Scrape Results
+          {results?.scraped_at && (
+            <span className="text-[13px] text-[#888] font-normal ml-2">
+              Last scraped: {new Date(results.scraped_at).toLocaleString("en-US", {
+                month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+                hour12: true, timeZone: "America/New_York",
+              })} EST
+            </span>
+          )}
+        </h2>
+        <Button
+          onClick={() => refetchResults()}
+          variant="outline"
+          size="sm"
+          className="text-xs"
+        >
+          <RefreshCw className="size-3.5" /> Refresh Results
+        </Button>
+      </div>
+
+      {/* Songs + links output */}
       <SongsResults results={filteredResults} isLoading={resultsLoading} />
     </div>
   )
