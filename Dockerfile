@@ -1,7 +1,6 @@
 # ---- Stage 1: Build frontend ----
 FROM node:20-slim AS frontend-build
 WORKDIR /build
-# Cache bust: 2026-04-14-v2
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 COPY frontend/ ./
@@ -10,10 +9,9 @@ RUN npm run build
 # ---- Stage 2: Python app ----
 FROM python:3.11-slim
 
-# Install system dependencies (ffmpeg excluded — not needed for metadata-only
-# scraping on Railway, and recent Debian ffmpeg packages have deprecation
-# build errors that break the Docker build)
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Install system dependencies for yt-dlp and video processing
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
     wget \
     curl \
     && rm -rf /var/lib/apt/lists/*
@@ -44,10 +42,9 @@ RUN mkdir -p /app/data_volume/campaigns/active \
 # Expose port (Railway will override with PORT env var)
 EXPOSE 5055
 
-# Health check (generous start-period because the scheduler may trigger
-# a scrape on boot which makes the first response slow)
-HEALTHCHECK --interval=30s --timeout=30s --start-period=120s --retries=5 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:${PORT:-5055}/health')"
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:5055/health')"
 
 # Run the Flask app with gunicorn (production WSGI server)
 # 4 workers, 120s timeout for long scraping operations, bind to PORT env var
