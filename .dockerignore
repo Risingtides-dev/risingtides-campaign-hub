@@ -37,7 +37,5 @@ docs/
 
 # Untracked WIP files (not committed, must not be uploaded)
 frontend/src/pages/PublicDashboard.tsx
-frontend/src/components/campaigns/ShareTokenSection.tsx
-frontend/src/lib/public-api.ts
 campaign_manager/blueprints/public_dashboard.py
 campaign_manager/services/thumbnails.py
