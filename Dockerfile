@@ -4,7 +4,9 @@ WORKDIR /build
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 COPY frontend/ ./
-RUN npm run build
+# Run vite build directly (skip tsc -b to avoid OOM on Railway's build runner)
+# Type checking is done locally before pushing
+RUN npx vite build
 
 # ---- Stage 2: Python app ----
 FROM python:3.11-slim
