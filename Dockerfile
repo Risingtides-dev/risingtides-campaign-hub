@@ -9,9 +9,9 @@ RUN npm run build
 # ---- Stage 2: Python app ----
 FROM python:3.11-slim
 
-# Install system dependencies for yt-dlp and video processing
-RUN apt-get update && apt-get install -y \
-    ffmpeg \
+# Install system dependencies (ffmpeg excluded — Debian's ffmpeg package
+# has a broken libavcodec61 that fails to unpack on fresh Docker builds)
+RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     curl \
     && rm -rf /var/lib/apt/lists/*
@@ -23,8 +23,9 @@ RUN pip install --no-cache-dir yt-dlp
 WORKDIR /app
 
 # Copy requirements and install Python dependencies
+# Use --no-compile to reduce memory during install (Railway has tight build limits)
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --no-compile -r requirements.txt
 
 # Copy application code
 COPY . .
