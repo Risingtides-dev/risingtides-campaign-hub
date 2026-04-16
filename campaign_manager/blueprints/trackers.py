@@ -34,11 +34,19 @@ def _slugify(text: str) -> str:
     return text or "tracker"
 
 
-def _hydrate(tracker: dict, assignments: dict, names: dict) -> dict:
+def _hydrate(
+    tracker: dict,
+    assignments: dict,
+    names: dict,
+    campaign_links: dict,
+    campaigns_by_slug: dict,
+) -> dict:
     """Convert a TidesTracker API row into the shape the frontend expects."""
     tid = tracker.get("id") or ""
     original_name = tracker.get("name") or ""
     override = names.get(tid) or ""
+    linked_slug = campaign_links.get(tid)
+    campaign_obj = campaigns_by_slug.get(linked_slug) if linked_slug else None
     return {
         "id": tid,
         "name": override or original_name,
@@ -50,6 +58,8 @@ def _hydrate(tracker: dict, assignments: dict, names: dict) -> dict:
         "created_at": tracker.get("created_at") or "",
         "client": tracker.get("client") or None,
         "group_id": assignments.get(tid),
+        "campaign_slug": linked_slug or None,
+        "campaign": campaign_obj,
     }
 
 
@@ -69,7 +79,19 @@ def list_trackers():
 
     assignments = _db.get_tracker_assignments()
     names = _db.get_tracker_names()
-    trackers = [_hydrate(t, assignments, names) for t in raw]
+    campaign_links = _db.get_tracker_campaign_links()
+    campaigns_by_slug = {
+        c.get("slug"): {
+            "slug": c.get("slug"),
+            "title": c.get("title") or c.get("name") or "",
+        }
+        for c in _db.list_campaigns(status="")  # all statuses
+        if c.get("slug")
+    }
+    trackers = [
+        _hydrate(t, assignments, names, campaign_links, campaigns_by_slug)
+        for t in raw
+    ]
 
     group_id_raw = request.args.get("group_id")
     if group_id_raw == "none":
@@ -157,6 +179,17 @@ def update_tracker(tracker_id: str):
         else:
             _db.set_tracker_name(tracker_id, str(name_raw))
             response["name"] = str(name_raw).strip()
+        touched = True
+
+    if "campaign_slug" in data:
+        slug_raw = data["campaign_slug"]
+        if slug_raw in (None, "", "null"):
+            _db.set_tracker_campaign_link(tracker_id, None)
+            response["campaign_slug"] = None
+        else:
+            slug = str(slug_raw).strip()
+            _db.set_tracker_campaign_link(tracker_id, slug)
+            response["campaign_slug"] = slug
         touched = True
 
     if not touched:

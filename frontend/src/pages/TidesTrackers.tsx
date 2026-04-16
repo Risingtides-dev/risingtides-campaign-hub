@@ -6,7 +6,9 @@ import {
   useCreateStandaloneTracker,
   useSetTrackerGroup,
   useSetTrackerName,
+  useSetTrackerCampaign,
   useCreateTrackerGroup,
+  useCampaigns,
 } from "@/lib/queries"
 import type { Tracker } from "@/lib/types"
 import { Input } from "@/components/ui/input"
@@ -29,6 +31,7 @@ import {
 
 const ALL_GROUP = "__all__"
 const NO_GROUP = "__none__"
+const NO_CAMPAIGN = "__no_campaign__"
 
 function formatDate(iso: string): string {
   if (!iso) return "-"
@@ -62,7 +65,16 @@ export default function TidesTrackers() {
   const createTracker = useCreateStandaloneTracker()
   const setTrackerGroup = useSetTrackerGroup()
   const setTrackerName = useSetTrackerName()
+  const setTrackerCampaign = useSetTrackerCampaign()
   const createGroup = useCreateTrackerGroup()
+  const { data: campaigns = [] } = useCampaigns()
+  const activeCampaigns = useMemo(
+    () =>
+      [...campaigns]
+        .filter((c) => c.status === "active")
+        .sort((a, b) => a.title.localeCompare(b.title)),
+    [campaigns]
+  )
 
   const filteredTrackers = useMemo(() => {
     if (activeGroup === ALL_GROUP) return trackers
@@ -115,6 +127,12 @@ export default function TidesTrackers() {
     const gid = value === NO_GROUP ? null : Number(value)
     if (gid === tracker.group_id) return
     setTrackerGroup.mutate({ trackerId: tracker.id, groupId: gid })
+  }
+
+  function handleSetCampaign(tracker: Tracker, value: string) {
+    const slug = value === NO_CAMPAIGN ? null : value
+    if (slug === (tracker.campaign_slug ?? null)) return
+    setTrackerCampaign.mutate({ trackerId: tracker.id, campaignSlug: slug })
   }
 
   const [copiedId, setCopiedId] = useState<string | null>(null)
@@ -296,6 +314,7 @@ export default function TidesTrackers() {
               <TableHead>Name</TableHead>
               <TableHead>Cobrand link</TableHead>
               <TableHead>Tracker</TableHead>
+              <TableHead className="w-[200px]">Campaign</TableHead>
               <TableHead className="w-[180px]">Group</TableHead>
               <TableHead className="w-[120px]">Created</TableHead>
             </TableRow>
@@ -303,13 +322,13 @@ export default function TidesTrackers() {
           <TableBody>
             {isLoading ? (
               <TableRow>
-                <TableCell colSpan={5} className="text-center py-10 text-[#999] text-[13px]">
+                <TableCell colSpan={6} className="text-center py-10 text-[#999] text-[13px]">
                   Loading…
                 </TableCell>
               </TableRow>
             ) : filteredTrackers.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={5} className="text-center py-10 text-[#999] text-[13px]">
+                <TableCell colSpan={6} className="text-center py-10 text-[#999] text-[13px]">
                   No trackers in this group yet. Paste a Cobrand link above to create one.
                 </TableCell>
               </TableRow>
@@ -396,6 +415,30 @@ export default function TidesTrackers() {
                     ) : (
                       <span className="text-[#999] text-[13px]">-</span>
                     )}
+                  </TableCell>
+                  <TableCell>
+                    <Select
+                      value={t.campaign_slug ?? NO_CAMPAIGN}
+                      onValueChange={(v) => handleSetCampaign(t, v)}
+                    >
+                      <SelectTrigger className="h-8 text-[13px]">
+                        <SelectValue placeholder="—" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={NO_CAMPAIGN}>—</SelectItem>
+                        {t.campaign_slug &&
+                          !activeCampaigns.some((c) => c.slug === t.campaign_slug) && (
+                            <SelectItem value={t.campaign_slug}>
+                              {t.campaign?.title || t.campaign_slug}
+                            </SelectItem>
+                          )}
+                        {activeCampaigns.map((c) => (
+                          <SelectItem key={c.slug} value={c.slug}>
+                            {c.title}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </TableCell>
                   <TableCell>
                     <Select

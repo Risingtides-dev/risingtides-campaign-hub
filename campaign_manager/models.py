@@ -550,6 +550,15 @@ class TrackerName(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
+class TrackerCampaignLink(Base):
+    """Links a TidesTracker (by UUID) to a Campaign Hub campaign (by slug)."""
+    __tablename__ = "tracker_campaign_links"
+
+    tracker_id = Column(String(64), primary_key=True)  # TidesTracker UUID
+    campaign_slug = Column(String(255), nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.now)
+
+
 # ===================================================================
 # ManyChat conversation log
 # ===================================================================

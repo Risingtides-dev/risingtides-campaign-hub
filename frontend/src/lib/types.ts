@@ -429,6 +429,11 @@ export interface TrackerClient {
   slug: string
 }
 
+export interface TrackerCampaignRef {
+  slug: string
+  title: string
+}
+
 export interface Tracker {
   id: string                       // TidesTracker UUID
   name: string                     // local override if set, else original
@@ -440,4 +445,6 @@ export interface Tracker {
   created_at: string
   client: TrackerClient | null
   group_id: number | null          // local overlay
+  campaign_slug: string | null     // local overlay
+  campaign: TrackerCampaignRef | null
 }

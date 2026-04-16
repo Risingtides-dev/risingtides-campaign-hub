@@ -221,6 +221,22 @@ export function useSetTrackerName() {
   })
 }
 
+export function useSetTrackerCampaign() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      trackerId,
+      campaignSlug,
+    }: {
+      trackerId: string
+      campaignSlug: string | null
+    }) => api.setTrackerCampaign(trackerId, campaignSlug),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: keys.trackers })
+    },
+  })
+}
+
 export function useCreateTrackerGroup() {
   const qc = useQueryClient()
   return useMutation({
