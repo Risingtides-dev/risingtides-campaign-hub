@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { Search, RefreshCw, Send, Eye, AlertTriangle, X, Music, CheckCircle2, Loader2 } from "lucide-react"
+import { Search, RefreshCw, Send, Eye, AlertTriangle, X, Music, CheckCircle2, Loader2, EyeOff, Copy } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -85,6 +85,16 @@ interface SendResult {
   total_posters: number
 }
 
+// ---- Sound label helpers ----
+
+// Labels look like "Artist - Song" or "Artist - Song r2" / "... R3" for later rounds.
+// Round 1 is implicit (no suffix). We strip the suffix to get the song base.
+function parseSoundLabel(label: string): { base: string; round: number } {
+  const m = label.match(/^(.+?)\s+[Rr](\d+)\s*$/)
+  if (m) return { base: m[1].trim(), round: parseInt(m[2], 10) }
+  return { base: label.trim(), round: 1 }
+}
+
 // ---- API client ----
 
 const API_BASE = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? "http://localhost:5055" : "")
@@ -114,6 +124,8 @@ export default function SoundAssignments() {
   const [selectedPoster, setSelectedPoster] = useState<string | null>(null)
   const [selectedPage, setSelectedPage] = useState<string | null>(null)
   const [soundFilter, setSoundFilter] = useState("")
+  const [pageFilter, setPageFilter] = useState("")
+  const [showAllSounds, setShowAllSounds] = useState(false)
 
   const [loading, setLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
@@ -124,6 +136,7 @@ export default function SoundAssignments() {
   const [previewLoading, setPreviewLoading] = useState(false)
   const [sendingPoster, setSendingPoster] = useState<string | null>(null)
   const [sendingAll, setSendingAll] = useState(false)
+  const [bulkApplying, setBulkApplying] = useState(false)
   const [sendResult, setSendResult] = useState<SendResult | { single: true; poster_id: string; sent: boolean; reason?: string } | null>(null)
 
   // ---- Initial load ----
@@ -192,16 +205,80 @@ export default function SoundAssignments() {
       .filter((p): p is RosterPage => Boolean(p))
   }, [selectedPosterObj, pageById])
 
-  // ---- Filtered sound pool ----
-
-  const filteredSounds = useMemo(() => {
-    const q = soundFilter.trim().toLowerCase()
-    if (!q) return sounds
-    return sounds.filter((s) => s.label.toLowerCase().includes(q))
-  }, [sounds, soundFilter])
+  // Pages narrowed by the filter input.
+  const visiblePosterPages = useMemo(() => {
+    const q = pageFilter.trim().toLowerCase()
+    if (!q) return selectedPosterPages
+    return selectedPosterPages.filter((p) => p.name.toLowerCase().includes(q))
+  }, [selectedPosterPages, pageFilter])
 
   const selectedPagePlaylist = selectedPage ? playlists[selectedPage] || [] : []
   const selectedPagePlaylistSet = useMemo(() => new Set(selectedPagePlaylist), [selectedPagePlaylist])
+
+  // ---- Sound pool pipeline: sort → (hide inactive + collapse rounds) → search ----
+
+  // 1. Sort by added_at desc (newest first). Stable order for everything below.
+  const soundsByDate = useMemo(() => {
+    return [...sounds].sort((a, b) => (b.added_at || "").localeCompare(a.added_at || ""))
+  }, [sounds])
+
+  // 2. Collapse: hide inactive, group rounds of the same song, keep one entry per
+  //    song-base (preferring whichever round is currently assigned to the selected
+  //    page so the user always sees what's actually in their playlist).
+  const visibleSounds = useMemo(() => {
+    if (showAllSounds) return soundsByDate
+
+    const active = soundsByDate.filter((s) => s.active !== false)
+
+    // For each song-base, decide which round to surface.
+    const pickByBase = new Map<string, Sound>()
+    const trackBase = (key: string, candidate: Sound, candidateRound: number) => {
+      const existing = pickByBase.get(key)
+      if (!existing) {
+        pickByBase.set(key, candidate)
+        return
+      }
+      const existingRound = parseSoundLabel(existing.label).round
+      const existingAssigned = selectedPagePlaylistSet.has(existing.id)
+      const candidateAssigned = selectedPagePlaylistSet.has(candidate.id)
+      // Prefer the round currently assigned to the selected page; otherwise highest round.
+      if (candidateAssigned && !existingAssigned) {
+        pickByBase.set(key, candidate)
+      } else if (!existingAssigned && candidateRound > existingRound) {
+        pickByBase.set(key, candidate)
+      }
+    }
+    for (const s of active) {
+      const { base, round } = parseSoundLabel(s.label)
+      trackBase(base.toLowerCase(), s, round)
+    }
+
+    const kept = new Set(pickByBase.values())
+    return soundsByDate.filter((s) => kept.has(s))
+  }, [soundsByDate, showAllSounds, selectedPagePlaylistSet])
+
+  // 3. Apply text search.
+  const filteredSounds = useMemo(() => {
+    const q = soundFilter.trim().toLowerCase()
+    if (!q) return visibleSounds
+    return visibleSounds.filter((s) => s.label.toLowerCase().includes(q))
+  }, [visibleSounds, soundFilter])
+
+  // For the "show all" toggle copy: how many sounds are hidden right now.
+  const hiddenSoundCount = sounds.length - visibleSounds.length
+
+  // Map each base → all rounds (active or not), so a single visible row can show
+  // "+2 older rounds" without re-deriving on every render.
+  const roundsByBase = useMemo(() => {
+    const m = new Map<string, Sound[]>()
+    for (const s of sounds) {
+      const base = parseSoundLabel(s.label).base.toLowerCase()
+      const arr = m.get(base) || []
+      arr.push(s)
+      m.set(base, arr)
+    }
+    return m
+  }, [sounds])
 
   // ---- Mutations ----
 
@@ -221,6 +298,51 @@ export default function SoundAssignments() {
       setError(e instanceof Error ? e.message : "Toggle failed")
     } finally {
       setSavingPage(null)
+    }
+  }
+
+  // Copy the currently selected page's playlist to every OTHER page owned by the
+  // same poster. One PUT per target page; runs in parallel; partial failure tolerated.
+  async function applyPlaylistToAllPages() {
+    if (!selectedPage || !selectedPosterObj) return
+    const sourcePlaylist = playlists[selectedPage] || []
+    const targetPages = selectedPosterObj.page_ids.filter((id) => id !== selectedPage)
+    if (targetPages.length === 0) return
+    const sourcePageName = pageById[selectedPage]?.name || "this page"
+    const ok = confirm(
+      `Apply ${sourcePlaylist.length} sounds from "${sourcePageName}" to ${targetPages.length} other page${targetPages.length > 1 ? "s" : ""}? This will replace each page's existing playlist.`,
+    )
+    if (!ok) return
+    setBulkApplying(true)
+    setError(null)
+    try {
+      const results = await Promise.allSettled(
+        targetPages.map((pid) =>
+          api<{ sound_ids: string[] }>(`/pages/${pid}/playlist`, {
+            method: "PUT",
+            body: JSON.stringify({ sound_ids: sourcePlaylist }),
+          }).then((r) => ({ pid, sound_ids: r.sound_ids })),
+        ),
+      )
+      const updates: Record<string, string[]> = {}
+      const failed: string[] = []
+      for (const r of results) {
+        if (r.status === "fulfilled") {
+          updates[r.value.pid] = r.value.sound_ids
+        } else {
+          failed.push(String(r.reason))
+        }
+      }
+      if (Object.keys(updates).length > 0) {
+        setPlaylists((prev) => ({ ...prev, ...updates }))
+      }
+      if (failed.length > 0) {
+        setError(`Bulk apply: ${failed.length} page(s) failed — ${failed[0]}`)
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Bulk apply failed")
+    } finally {
+      setBulkApplying(false)
     }
   }
 
@@ -467,27 +589,61 @@ export default function SoundAssignments() {
                 This poster has no pages assigned
               </div>
             )}
-            {selectedPosterPages.map((page) => {
+            {selectedPoster && selectedPosterPages.length > 0 && (
+              <div className="relative pb-2">
+                <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[#888]" />
+                <Input
+                  placeholder="Filter pages..."
+                  value={pageFilter}
+                  onChange={(e) => setPageFilter(e.target.value)}
+                  className="pl-9 h-8 text-sm"
+                />
+              </div>
+            )}
+            {selectedPoster && selectedPosterPages.length > 0 && visiblePosterPages.length === 0 && (
+              <div className="text-xs text-[#888] italic px-3 py-3 text-center">
+                No pages match "{pageFilter}"
+              </div>
+            )}
+            {visiblePosterPages.map((page) => {
               const playlist = playlists[page.integration_id] || []
               const activeCount = playlist.filter((sid) => soundById[sid]?.active !== false).length
               const isEmpty = playlist.length === 0
+              // Preview: first 2 active song-base names, comma-separated.
+              const previewSongs = playlist
+                .map((sid) => soundById[sid])
+                .filter((s): s is Sound => Boolean(s) && s.active !== false)
+                .slice(0, 2)
+                .map((s) => parseSoundLabel(s.label).base)
+              const overflow = activeCount - previewSongs.length
+              const isSelected = selectedPage === page.integration_id
               return (
                 <button
                   key={page.integration_id}
                   onClick={() => setSelectedPage(page.integration_id)}
-                  className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors flex justify-between items-center ${
-                    selectedPage === page.integration_id
+                  className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors ${
+                    isSelected
                       ? "bg-[#eef2ff] text-[#0b62d6] font-semibold"
                       : "hover:bg-[#f0f0f5] text-[#333]"
                   }`}
                 >
-                  <span className="truncate">{page.name}</span>
-                  <Badge
-                    variant={isEmpty ? "outline" : "secondary"}
-                    className={`text-xs shrink-0 ml-2 ${isEmpty ? "border-amber-300 text-amber-700" : ""}`}
-                  >
-                    {activeCount}{playlist.length !== activeCount && `/${playlist.length}`}
-                  </Badge>
+                  <div className="flex justify-between items-center gap-2">
+                    <span className="truncate">{page.name}</span>
+                    <Badge
+                      variant={isEmpty ? "outline" : "secondary"}
+                      className={`text-xs shrink-0 ${isEmpty ? "border-amber-300 text-amber-700" : ""}`}
+                    >
+                      {activeCount}{playlist.length !== activeCount && `/${playlist.length}`}
+                    </Badge>
+                  </div>
+                  {previewSongs.length > 0 && (
+                    <div
+                      className={`text-[11px] mt-0.5 truncate ${isSelected ? "text-[#5a7fbf]" : "text-[#888]"}`}
+                    >
+                      {previewSongs.join(", ")}
+                      {overflow > 0 && ` +${overflow} more`}
+                    </div>
+                  )}
                 </button>
               )
             })}
@@ -495,6 +651,22 @@ export default function SoundAssignments() {
             {/* Poster-level actions */}
             {selectedPosterObj && (
               <div className="pt-4 mt-4 border-t border-[#e8e8ef] flex flex-col gap-2">
+                {selectedPage && selectedPosterPages.length > 1 && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={applyPlaylistToAllPages}
+                    disabled={bulkApplying}
+                    title={`Replace every other page's playlist with the one on "${pageById[selectedPage]?.name || selectedPage}"`}
+                  >
+                    {bulkApplying ? (
+                      <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                    ) : (
+                      <Copy className="w-4 h-4 mr-2" />
+                    )}
+                    Apply to all {selectedPosterPages.length} pages
+                  </Button>
+                )}
                 <Button
                   variant="outline"
                   size="sm"
@@ -547,6 +719,29 @@ export default function SoundAssignments() {
               />
             </div>
 
+            {/* Show-all toggle — surfaces inactive sounds and older rounds */}
+            <div className="flex items-center justify-between text-xs text-[#666] px-1">
+              <button
+                onClick={() => setShowAllSounds((v) => !v)}
+                className="flex items-center gap-1.5 hover:text-[#0b62d6] transition-colors"
+                title={
+                  showAllSounds
+                    ? "Hide inactive sounds and older rounds"
+                    : "Show every sound including inactive and older rounds"
+                }
+              >
+                {showAllSounds ? (
+                  <EyeOff className="w-3.5 h-3.5" />
+                ) : (
+                  <Eye className="w-3.5 h-3.5" />
+                )}
+                <span>{showAllSounds ? "Hide older / inactive" : "Show all rounds"}</span>
+              </button>
+              {!showAllSounds && hiddenSoundCount > 0 && (
+                <span className="text-[#999]">{hiddenSoundCount} hidden</span>
+              )}
+            </div>
+
             {!selectedPage && (
               <div className="text-sm text-[#888] italic px-3 py-3 text-center">
                 Select a page to assign sounds
@@ -558,6 +753,11 @@ export default function SoundAssignments() {
                 const isAssigned = selectedPagePlaylistSet.has(sound.id)
                 const isInactive = !sound.active
                 const disabled = !selectedPage || savingPage === selectedPage
+                const { base, round } = parseSoundLabel(sound.label)
+                const allRounds = roundsByBase.get(base.toLowerCase()) || []
+                const olderCount = !showAllSounds
+                  ? allRounds.filter((r) => r.id !== sound.id && r.active !== false).length
+                  : 0
                 return (
                   <button
                     key={sound.id}
@@ -579,8 +779,22 @@ export default function SoundAssignments() {
                       )}
                     </div>
                     <span className={`truncate ${isInactive ? "line-through" : ""}`}>
-                      {sound.label}
+                      {base}
                     </span>
+                    {round > 1 && (
+                      <Badge variant="outline" className="text-[10px] shrink-0 px-1.5 py-0 h-4">
+                        R{round}
+                      </Badge>
+                    )}
+                    {olderCount > 0 && (
+                      <Badge
+                        variant="outline"
+                        className="text-[10px] shrink-0 px-1.5 py-0 h-4 text-[#888] border-[#ddd]"
+                        title={`${olderCount} older round${olderCount > 1 ? "s" : ""} hidden — click "Show all rounds" to reveal`}
+                      >
+                        +{olderCount}
+                      </Badge>
+                    )}
                     {isInactive && (
                       <Badge variant="outline" className="ml-auto text-xs shrink-0">
                         inactive
