@@ -337,6 +337,15 @@ export const api = {
       }
     ),
 
+  setTrackerCampaign: (trackerId: string, campaignSlug: string | null) =>
+    request<{ ok: boolean; id: string; campaign_slug: string | null }>(
+      `/api/trackers/${trackerId}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ campaign_slug: campaignSlug }),
+      }
+    ),
+
   listTrackerGroups: () => request<TrackerGroup[]>("/api/tracker-groups"),
 
   createTrackerGroup: (data: { title: string; slug?: string }) =>

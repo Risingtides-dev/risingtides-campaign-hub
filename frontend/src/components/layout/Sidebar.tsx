@@ -25,6 +25,10 @@ const navItems = [
     section: "Tracking",
     links: [{ label: "TidesTrackers", path: "/trackers" }],
   },
+  {
+    section: "Distribution",
+    links: [{ label: "Sound Assignments", path: "/sound-assignments" }],
+  },
 ]
 
 interface SidebarProps {

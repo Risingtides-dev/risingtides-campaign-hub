@@ -20,7 +20,7 @@ from campaign_manager.models import (
     InboxItem, PaypalMemory, InternalCreator, InternalVideoCache,
     InternalScrapeResult, CronLog, NetworkCreator, OutreachMessage,
     InternalCreatorGroup, InternalCreatorGroupMember,
-    TrackerGroup, TrackerGroupAssignment, TrackerName,
+    TrackerGroup, TrackerGroupAssignment, TrackerName, TrackerCampaignLink,
     ManyChatMessage,
 )
 
@@ -1451,6 +1451,33 @@ def set_tracker_name(tracker_id: str, display_name: Optional[str]) -> None:
             existing.display_name = cleaned
         else:
             s.add(TrackerName(tracker_id=tid, display_name=cleaned))
+        s.commit()
+
+
+def get_tracker_campaign_links() -> Dict[str, str]:
+    """Return {tracker_id: campaign_slug} for every linked tracker."""
+    with get_session() as s:
+        rows = s.query(TrackerCampaignLink.tracker_id, TrackerCampaignLink.campaign_slug).all()
+        return {tid: slug for tid, slug in rows}
+
+
+def set_tracker_campaign_link(tracker_id: str, campaign_slug: Optional[str]) -> None:
+    """Link tracker to a campaign by slug, or clear if slug is None/empty."""
+    tid = (tracker_id or "").strip()
+    if not tid:
+        return
+    slug = (campaign_slug or "").strip()
+    with get_session() as s:
+        existing = s.query(TrackerCampaignLink).filter_by(tracker_id=tid).first()
+        if not slug:
+            if existing:
+                s.delete(existing)
+                s.commit()
+            return
+        if existing:
+            existing.campaign_slug = slug
+        else:
+            s.add(TrackerCampaignLink(tracker_id=tid, campaign_slug=slug))
         s.commit()
 
 

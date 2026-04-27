@@ -1,16 +1,20 @@
 import { useState, useCallback, useMemo } from "react"
 import { useParams, Link } from "react-router-dom"
+import { useQueryClient } from "@tanstack/react-query"
 import {
   useInternalGroup,
   useInternalGroupStats,
   useInternalCreators,
   useTriggerGroupScrape,
   useInternalScrapeStatus,
+  useInternalResults,
+  keys,
 } from "@/lib/queries"
 import { ScrapeProgress } from "@/components/internal/ScrapeProgress"
+import { SongsResults } from "@/components/internal/SongsResults"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Loader2, ArrowLeft, X, Plus } from "lucide-react"
+import { Loader2, ArrowLeft, X, Plus, RefreshCw } from "lucide-react"
 
 function todayStr(): string {
   return new Date().toISOString().slice(0, 10)
@@ -40,8 +44,10 @@ export default function InternalGroupDetail() {
   const days = useMemo(() => daysBetween(startDate, endDate), [startDate, endDate])
   const { data: stats, isLoading: statsLoading } = useInternalGroupStats(slug || "", days)
 
+  const queryClient = useQueryClient()
   const scrape = useTriggerGroupScrape()
   const { data: scrapeStatus } = useInternalScrapeStatus(true)
+  const { data: results, isLoading: resultsLoading, refetch: refetchResults } = useInternalResults()
   const [scraping, setScraping] = useState(false)
   const isRunning = scraping || !!scrapeStatus?.running
 
@@ -55,7 +61,10 @@ export default function InternalGroupDetail() {
     scrape.mutate({ group: slug, start_date: startDate, end_date: endDate })
   }
 
-  const handleScrapeComplete = useCallback(() => setScraping(false), [])
+  const handleScrapeComplete = useCallback(() => {
+    setScraping(false)
+    queryClient.invalidateQueries({ queryKey: keys.internalResults })
+  }, [queryClient])
 
   async function handleAddMembers(e: React.FormEvent) {
     e.preventDefault()
@@ -233,7 +242,7 @@ export default function InternalGroupDetail() {
 
       {/* Top Songs */}
       {stats?.top_songs && stats.top_songs.length > 0 && (
-        <div className="bg-white border border-[#e8e8ef] rounded-[10px] overflow-hidden">
+        <div className="bg-white border border-[#e8e8ef] rounded-[10px] overflow-hidden mb-5">
           <div className="px-4 py-3 border-b border-[#e8e8ef]">
             <h3 className="text-[15px] font-semibold">Top Songs</h3>
           </div>
@@ -259,6 +268,30 @@ export default function InternalGroupDetail() {
           </table>
         </div>
       )}
+
+      {/* Scrape results — copy/paste links for Cobrand */}
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-[18px] font-semibold text-[#1a1a2e]">
+          Scrape Results
+          {results?.scraped_at && (
+            <span className="text-[13px] text-[#888] font-normal ml-2">
+              Last scraped: {new Date(results.scraped_at).toLocaleString("en-US", {
+                month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+                hour12: true, timeZone: "America/New_York",
+              })} EST
+            </span>
+          )}
+        </h2>
+        <Button
+          onClick={() => refetchResults()}
+          variant="outline"
+          size="sm"
+          className="text-xs"
+        >
+          <RefreshCw className="size-3.5" /> Refresh Results
+        </Button>
+      </div>
+      <SongsResults results={results} isLoading={resultsLoading} />
     </div>
   )
 }

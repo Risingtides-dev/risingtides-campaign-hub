@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { api } from "./api"
+import type { ScrapeStatus } from "./types"
 
 // Query keys
 export const keys = {
@@ -220,6 +221,22 @@ export function useSetTrackerName() {
   })
 }
 
+export function useSetTrackerCampaign() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      trackerId,
+      campaignSlug,
+    }: {
+      trackerId: string
+      campaignSlug: string | null
+    }) => api.setTrackerCampaign(trackerId, campaignSlug),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: keys.trackers })
+    },
+  })
+}
+
 export function useCreateTrackerGroup() {
   const qc = useQueryClient()
   return useMutation({
@@ -350,6 +367,7 @@ export function useInternalGroupStats(slug: string, days = 30) {
 }
 
 export function useTriggerGroupScrape() {
+  const qc = useQueryClient()
   return useMutation({
     mutationFn: (params: {
       hours?: number
@@ -358,6 +376,25 @@ export function useTriggerGroupScrape() {
       start_date?: string
       end_date?: string
     }) => api.triggerInternalScrapeAdvanced(params),
+    onMutate: () => {
+      // Clear any stale "done" state from a previous scrape so the
+      // status query starts polling again and ScrapeProgress doesn't
+      // immediately fire its completion handler against old data.
+      qc.setQueryData<ScrapeStatus>(keys.internalScrapeStatus, {
+        running: true,
+        done: false,
+        progress: "Starting...",
+        accounts_total: 0,
+        accounts_completed: 0,
+        accounts_failed: 0,
+        videos_so_far: 0,
+        current_accounts: [],
+        log: [],
+      })
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: keys.internalScrapeStatus })
+    },
   })
 }
 

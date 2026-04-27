@@ -37,3 +37,9 @@ class Config:
     TIDESTRACKER_API_URL = os.environ.get("TIDESTRACKER_API_URL", "")
     TIDESTRACKER_SERVICE_KEY = os.environ.get("TIDESTRACKER_SERVICE_KEY", "")
     TIDESTRACKER_BASE_URL = os.environ.get("TIDESTRACKER_BASE_URL", "")
+
+    # Content Posting Lab (for Sound Assignments proxy)
+    CONTENT_LAB_URL = os.environ.get(
+        "CONTENT_LAB_URL",
+        "https://risingtides-content-lab-production.up.railway.app",
+    ).rstrip("/")
