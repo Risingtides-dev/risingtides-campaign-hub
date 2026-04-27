@@ -13,6 +13,7 @@ import CampaignOutreach from "./pages/CampaignOutreach"
 import TidesTrackers from "./pages/TidesTrackers"
 import InternalGroupDetail from "./pages/InternalGroupDetail"
 import InternalScrapeView from "./pages/InternalScrapeView"
+import SoundAssignments from "./pages/SoundAssignments"
 
 function App() {
   return (
@@ -32,6 +33,7 @@ function App() {
           <Route path="/inbox" element={<SlackInbox />} />
           <Route path="/network" element={<NetworkCreators />} />
           <Route path="/trackers" element={<TidesTrackers />} />
+          <Route path="/sound-assignments" element={<SoundAssignments />} />
         </Route>
       </Routes>
     </BrowserRouter>
