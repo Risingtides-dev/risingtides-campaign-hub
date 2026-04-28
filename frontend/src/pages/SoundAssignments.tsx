@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { Search, RefreshCw, Send, Eye, AlertTriangle, X, Music, CheckCircle2, Loader2 } from "lucide-react"
+import { Search, RefreshCw, Send, Eye, AlertTriangle, X, Music, CheckCircle2, Loader2, CheckCheck, CircleSlash } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -124,6 +124,8 @@ export default function SoundAssignments() {
   // Per-poster in-flight save indicator (the row checkbox toggles all
   // of that poster's pages, so the spinner sits on the poster row).
   const [savingPosterId, setSavingPosterId] = useState<string | null>(null)
+  // Top-bar "Select all / Clear all" in-flight indicator.
+  const [bulkPostering, setBulkPostering] = useState(false)
 
   const [loading, setLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
@@ -251,6 +253,53 @@ export default function SoundAssignments() {
     }
   }
 
+  // Top-bar bulk toggle: Select All / Clear All posters for the selected sound.
+  // If every poster already has the sound on at least one of their pages, treat
+  // the action as "clear all" (remove from every page everywhere). Otherwise
+  // assign the sound to every page of every poster that doesn't already have
+  // it. Fan out per-page like the single-poster path.
+  async function toggleAllPostersForSound() {
+    if (!selectedSound) return
+    if (posters.length === 0) return
+    const assignedPages = pagesBySoundId[selectedSound] || new Set<string>()
+    // Are we already at "all-on"? Every poster has at least one page assigned.
+    const allOn = posters.every((p) => p.page_ids.some((pid) => assignedPages.has(pid)))
+    setBulkPostering(true)
+    setError(null)
+    try {
+      // Build the list of (pageId, action) calls we need.
+      const tasks: { pageId: string; assign: boolean }[] = []
+      for (const poster of posters) {
+        for (const pageId of poster.page_ids) {
+          const has = (playlists[pageId] || []).includes(selectedSound)
+          if (allOn && has) tasks.push({ pageId, assign: false })
+          else if (!allOn && !has) tasks.push({ pageId, assign: true })
+        }
+      }
+      const results = await Promise.all(
+        tasks.map(async ({ pageId, assign }) => {
+          const url = assign
+            ? `/pages/${pageId}/playlist/songs`
+            : `/pages/${pageId}/playlist/songs/${selectedSound}`
+          const r = await api<{ sound_ids: string[] }>(url, {
+            method: assign ? "POST" : "DELETE",
+            body: assign ? JSON.stringify({ sound_id: selectedSound }) : undefined,
+          })
+          return { pageId, sound_ids: r.sound_ids }
+        }),
+      )
+      setPlaylists((prev) => {
+        const next = { ...prev }
+        for (const { pageId, sound_ids } of results) next[pageId] = sound_ids
+        return next
+      })
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Bulk toggle failed")
+    } finally {
+      setBulkPostering(false)
+    }
+  }
+
   async function syncSounds() {
     setSyncing(true)
     setError(null)
@@ -317,6 +366,12 @@ export default function SoundAssignments() {
 
   const selectedSoundObj = selectedSound ? soundById[selectedSound] : null
   const assignedPageIds = selectedSound ? pagesBySoundId[selectedSound] || new Set<string>() : new Set<string>()
+  // "all-on" = every poster has the selected sound on at least one of their pages.
+  // Drives the Select-All / Clear-All button label in the top bar.
+  const allPostersAssigned = useMemo(() => {
+    if (!selectedSound || posters.length === 0) return false
+    return posters.every((p) => p.page_ids.some((pid) => assignedPageIds.has(pid)))
+  }, [selectedSound, posters, assignedPageIds])
 
   // Filter posters' pages by pageFilter and collect counts. Only posters
   // with matching pages are visible after filtering.
@@ -378,6 +433,21 @@ export default function SoundAssignments() {
           <Button variant="outline" onClick={syncSounds} disabled={syncing}>
             {syncing ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <RefreshCw className="w-4 h-4 mr-2" />}
             Sync Sounds
+          </Button>
+          <Button
+            variant="outline"
+            onClick={toggleAllPostersForSound}
+            disabled={!selectedSound || bulkPostering}
+            title={!selectedSound ? "Pick a sound on the left first" : ""}
+          >
+            {bulkPostering ? (
+              <Loader2 className="w-4 h-4 animate-spin mr-2" />
+            ) : allPostersAssigned ? (
+              <CircleSlash className="w-4 h-4 mr-2" />
+            ) : (
+              <CheckCheck className="w-4 h-4 mr-2" />
+            )}
+            {allPostersAssigned ? "Clear All Posters" : "Select All Posters"}
           </Button>
           <Button
             onClick={sendToAll}
