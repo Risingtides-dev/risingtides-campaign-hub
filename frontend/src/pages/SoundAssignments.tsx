@@ -85,6 +85,73 @@ interface SendResult {
   total_posters: number
 }
 
+// ---- Telegram HTML preview renderer ----
+
+// The lab returns the message body in Telegram-flavored HTML. We render
+// just the two tags it actually uses (<b>, <a href="...">), plus the few
+// entities (&amp; &lt; &gt; &quot;), so the preview matches what the
+// poster will see in Telegram. We deliberately do NOT use
+// dangerouslySetInnerHTML on raw API output.
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+}
+
+type PreviewNode =
+  | { kind: "text"; text: string }
+  | { kind: "bold"; text: string }
+  | { kind: "link"; text: string; href: string }
+
+function parseTelegramHtml(html: string): PreviewNode[] {
+  const nodes: PreviewNode[] = []
+  // Combined regex for <b>...</b> and <a href="...">...</a> in source order.
+  const re = /<b>([\s\S]*?)<\/b>|<a\s+href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/g
+  let cursor = 0
+  let m: RegExpExecArray | null
+  while ((m = re.exec(html)) !== null) {
+    if (m.index > cursor) {
+      nodes.push({ kind: "text", text: decodeEntities(html.slice(cursor, m.index)) })
+    }
+    if (m[1] !== undefined) {
+      nodes.push({ kind: "bold", text: decodeEntities(m[1]) })
+    } else if (m[2] !== undefined && m[3] !== undefined) {
+      nodes.push({ kind: "link", text: decodeEntities(m[3]), href: decodeEntities(m[2]) })
+    }
+    cursor = m.index + m[0].length
+  }
+  if (cursor < html.length) {
+    nodes.push({ kind: "text", text: decodeEntities(html.slice(cursor)) })
+  }
+  return nodes
+}
+
+function TelegramPreview({ html }: { html: string }) {
+  const nodes = useMemo(() => parseTelegramHtml(html), [html])
+  return (
+    <div className="text-sm text-[#333] whitespace-pre-wrap font-sans leading-relaxed">
+      {nodes.map((n, i) => {
+        if (n.kind === "bold") return <strong key={i} className="font-semibold text-[#1a1a2e]">{n.text}</strong>
+        if (n.kind === "link") return (
+          <a
+            key={i}
+            href={n.href}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-[#0b62d6] hover:underline"
+          >
+            {n.text}
+          </a>
+        )
+        return <span key={i}>{n.text}</span>
+      })}
+    </div>
+  )
+}
+
 // ---- API client ----
 
 // Honor VITE_API_URL when defined (including empty string for relative URLs
@@ -825,9 +892,7 @@ export default function SoundAssignments() {
                 <div className="text-xs uppercase text-[#888] tracking-wide mb-2">
                   Telegram message preview
                 </div>
-                <pre className="text-sm text-[#333] whitespace-pre-wrap font-mono">
-                  {previewPoster.text}
-                </pre>
+                <TelegramPreview html={previewPoster.text} />
               </div>
 
               {previewPoster.skipped_pages.length > 0 && (
