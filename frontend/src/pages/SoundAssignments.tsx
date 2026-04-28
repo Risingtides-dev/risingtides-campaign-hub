@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { Search, RefreshCw, Send, Eye, AlertTriangle, X, Music, CheckCircle2, Loader2, EyeOff, Copy } from "lucide-react"
+import { Search, RefreshCw, Send, Eye, AlertTriangle, X, Music, CheckCircle2, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -85,19 +85,13 @@ interface SendResult {
   total_posters: number
 }
 
-// ---- Sound label helpers ----
-
-// Labels look like "Artist - Song" or "Artist - Song r2" / "... R3" for later rounds.
-// Round 1 is implicit (no suffix). We strip the suffix to get the song base.
-function parseSoundLabel(label: string): { base: string; round: number } {
-  const m = label.match(/^(.+?)\s+[Rr](\d+)\s*$/)
-  if (m) return { base: m[1].trim(), round: parseInt(m[2], 10) }
-  return { base: label.trim(), round: 1 }
-}
-
 // ---- API client ----
 
-const API_BASE = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? "http://localhost:5055" : "")
+// Honor VITE_API_URL when defined (including empty string for relative URLs
+// via Vite dev proxy). Only fall back to localhost when the var is absent.
+const API_BASE = import.meta.env.VITE_API_URL !== undefined
+  ? import.meta.env.VITE_API_URL
+  : (import.meta.env.DEV ? "http://localhost:5055" : "")
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}/api/sound-assignments${path}`, {
@@ -121,22 +115,24 @@ export default function SoundAssignments() {
   const [lastSync, setLastSync] = useState<SyncResult | null>(null)
   const [status, setStatus] = useState<TelegramStatus | null>(null)
 
-  const [selectedPoster, setSelectedPoster] = useState<string | null>(null)
-  const [selectedPage, setSelectedPage] = useState<string | null>(null)
+  // Sound-first model: pick a sound, then check posters to assign that
+  // sound to every page that poster owns. Page list is read-only/admin
+  // visibility — checking happens at the poster level.
+  const [selectedSound, setSelectedSound] = useState<string | null>(null)
   const [soundFilter, setSoundFilter] = useState("")
   const [pageFilter, setPageFilter] = useState("")
-  const [showAllSounds, setShowAllSounds] = useState(false)
+  // Per-poster in-flight save indicator (the row checkbox toggles all
+  // of that poster's pages, so the spinner sits on the poster row).
+  const [savingPosterId, setSavingPosterId] = useState<string | null>(null)
 
   const [loading, setLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [savingPage, setSavingPage] = useState<string | null>(null)
 
   const [previewPoster, setPreviewPoster] = useState<PosterPreview | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [sendingPoster, setSendingPoster] = useState<string | null>(null)
   const [sendingAll, setSendingAll] = useState(false)
-  const [bulkApplying, setBulkApplying] = useState(false)
   const [sendResult, setSendResult] = useState<SendResult | { single: true; poster_id: string; sent: boolean; reason?: string } | null>(null)
 
   // ---- Initial load ----
@@ -182,167 +178,76 @@ export default function SoundAssignments() {
     return m
   }, [sounds])
 
-  const posterById = useMemo(() => {
-    const m: Record<string, Poster> = {}
-    for (const p of posters) m[p.poster_id] = p
+  // For each sound id, the set of page_ids that have it assigned. Drives
+  // the checkbox state in the right column AND the smart-expand decision.
+  const pagesBySoundId = useMemo(() => {
+    const m: Record<string, Set<string>> = {}
+    for (const [pageId, soundIds] of Object.entries(playlists)) {
+      for (const sid of soundIds) {
+        if (!m[sid]) m[sid] = new Set<string>()
+        m[sid].add(pageId)
+      }
+    }
     return m
-  }, [posters])
+  }, [playlists])
 
-  // Pages without a poster
-  const unassignedPages = useMemo(() => {
-    const owned = new Set<string>()
-    for (const p of posters) for (const id of p.page_ids) owned.add(id)
-    return pages.filter((pg) => !owned.has(pg.integration_id))
-  }, [pages, posters])
+  // ---- Sound pool: active only + newest first + filter ----
 
-  // ---- Selected poster's pages ----
-
-  const selectedPosterObj = selectedPoster ? posterById[selectedPoster] : null
-  const selectedPosterPages = useMemo(() => {
-    if (!selectedPosterObj) return []
-    return selectedPosterObj.page_ids
-      .map((id) => pageById[id])
-      .filter((p): p is RosterPage => Boolean(p))
-  }, [selectedPosterObj, pageById])
-
-  // Pages narrowed by the filter input.
-  const visiblePosterPages = useMemo(() => {
-    const q = pageFilter.trim().toLowerCase()
-    if (!q) return selectedPosterPages
-    return selectedPosterPages.filter((p) => p.name.toLowerCase().includes(q))
-  }, [selectedPosterPages, pageFilter])
-
-  const selectedPagePlaylist = selectedPage ? playlists[selectedPage] || [] : []
-  const selectedPagePlaylistSet = useMemo(() => new Set(selectedPagePlaylist), [selectedPagePlaylist])
-
-  // ---- Sound pool pipeline: sort → (hide inactive + collapse rounds) → search ----
-
-  // 1. Sort by added_at desc (newest first). Stable order for everything below.
-  const soundsByDate = useMemo(() => {
-    return [...sounds].sort((a, b) => (b.added_at || "").localeCompare(a.added_at || ""))
-  }, [sounds])
-
-  // 2. Collapse: hide inactive, group rounds of the same song, keep one entry per
-  //    song-base (preferring whichever round is currently assigned to the selected
-  //    page so the user always sees what's actually in their playlist).
   const visibleSounds = useMemo(() => {
-    if (showAllSounds) return soundsByDate
-
-    const active = soundsByDate.filter((s) => s.active !== false)
-
-    // For each song-base, decide which round to surface.
-    const pickByBase = new Map<string, Sound>()
-    const trackBase = (key: string, candidate: Sound, candidateRound: number) => {
-      const existing = pickByBase.get(key)
-      if (!existing) {
-        pickByBase.set(key, candidate)
-        return
-      }
-      const existingRound = parseSoundLabel(existing.label).round
-      const existingAssigned = selectedPagePlaylistSet.has(existing.id)
-      const candidateAssigned = selectedPagePlaylistSet.has(candidate.id)
-      // Prefer the round currently assigned to the selected page; otherwise highest round.
-      if (candidateAssigned && !existingAssigned) {
-        pickByBase.set(key, candidate)
-      } else if (!existingAssigned && candidateRound > existingRound) {
-        pickByBase.set(key, candidate)
-      }
-    }
-    for (const s of active) {
-      const { base, round } = parseSoundLabel(s.label)
-      trackBase(base.toLowerCase(), s, round)
-    }
-
-    const kept = new Set(pickByBase.values())
-    return soundsByDate.filter((s) => kept.has(s))
-  }, [soundsByDate, showAllSounds, selectedPagePlaylistSet])
-
-  // 3. Apply text search.
-  const filteredSounds = useMemo(() => {
     const q = soundFilter.trim().toLowerCase()
-    if (!q) return visibleSounds
-    return visibleSounds.filter((s) => s.label.toLowerCase().includes(q))
-  }, [visibleSounds, soundFilter])
-
-  // For the "show all" toggle copy: how many sounds are hidden right now.
-  const hiddenSoundCount = sounds.length - visibleSounds.length
-
-  // Map each base → all rounds (active or not), so a single visible row can show
-  // "+2 older rounds" without re-deriving on every render.
-  const roundsByBase = useMemo(() => {
-    const m = new Map<string, Sound[]>()
-    for (const s of sounds) {
-      const base = parseSoundLabel(s.label).base.toLowerCase()
-      const arr = m.get(base) || []
-      arr.push(s)
-      m.set(base, arr)
-    }
-    return m
-  }, [sounds])
+    return sounds
+      .filter((s) => s.active !== false)
+      .filter((s) => (q ? s.label.toLowerCase().includes(q) : true))
+      .sort((a, b) => {
+        // Newest first. added_at is ISO-ish; fall back to string compare.
+        const av = a.added_at || ""
+        const bv = b.added_at || ""
+        if (av === bv) return 0
+        return av < bv ? 1 : -1
+      })
+  }, [sounds, soundFilter])
 
   // ---- Mutations ----
 
-  async function toggleSound(pageId: string, soundId: string) {
-    setSavingPage(pageId)
+  // Toggle the selected sound across ALL of a poster's pages in one motion.
+  // Checking the poster row = assign sound to every page they own.
+  // Unchecking = remove from every page they own.
+  async function togglePosterForSound(posterId: string) {
+    if (!selectedSound) return
+    const poster = posters.find((p) => p.poster_id === posterId)
+    if (!poster) return
+    const assignedPages = pagesBySoundId[selectedSound] || new Set<string>()
+    // If the poster has the sound on AT LEAST ONE page, treat the row as
+    // "checked" and the click means "remove from all". Otherwise add to all.
+    const anyAssigned = poster.page_ids.some((pid) => assignedPages.has(pid))
+    setSavingPosterId(posterId)
+    setError(null)
     try {
-      const isAssigned = (playlists[pageId] || []).includes(soundId)
-      const url = isAssigned
-        ? `/pages/${pageId}/playlist/songs/${soundId}`
-        : `/pages/${pageId}/playlist/songs`
-      const result = await api<{ sound_ids: string[] }>(url, {
-        method: isAssigned ? "DELETE" : "POST",
-        body: isAssigned ? undefined : JSON.stringify({ sound_id: soundId }),
+      const results = await Promise.all(
+        poster.page_ids.map(async (pageId) => {
+          const has = (playlists[pageId] || []).includes(selectedSound)
+          // Skip API calls that would be no-ops.
+          if (anyAssigned && !has) return { pageId, sound_ids: playlists[pageId] || [] }
+          if (!anyAssigned && has) return { pageId, sound_ids: playlists[pageId] || [] }
+          const url = anyAssigned
+            ? `/pages/${pageId}/playlist/songs/${selectedSound}`
+            : `/pages/${pageId}/playlist/songs`
+          const r = await api<{ sound_ids: string[] }>(url, {
+            method: anyAssigned ? "DELETE" : "POST",
+            body: anyAssigned ? undefined : JSON.stringify({ sound_id: selectedSound }),
+          })
+          return { pageId, sound_ids: r.sound_ids }
+        }),
+      )
+      setPlaylists((prev) => {
+        const next = { ...prev }
+        for (const { pageId, sound_ids } of results) next[pageId] = sound_ids
+        return next
       })
-      setPlaylists((prev) => ({ ...prev, [pageId]: result.sound_ids }))
     } catch (e) {
       setError(e instanceof Error ? e.message : "Toggle failed")
     } finally {
-      setSavingPage(null)
-    }
-  }
-
-  // Copy the currently selected page's playlist to every OTHER page owned by the
-  // same poster. One PUT per target page; runs in parallel; partial failure tolerated.
-  async function applyPlaylistToAllPages() {
-    if (!selectedPage || !selectedPosterObj) return
-    const sourcePlaylist = playlists[selectedPage] || []
-    const targetPages = selectedPosterObj.page_ids.filter((id) => id !== selectedPage)
-    if (targetPages.length === 0) return
-    const sourcePageName = pageById[selectedPage]?.name || "this page"
-    const ok = confirm(
-      `Apply ${sourcePlaylist.length} sounds from "${sourcePageName}" to ${targetPages.length} other page${targetPages.length > 1 ? "s" : ""}? This will replace each page's existing playlist.`,
-    )
-    if (!ok) return
-    setBulkApplying(true)
-    setError(null)
-    try {
-      const results = await Promise.allSettled(
-        targetPages.map((pid) =>
-          api<{ sound_ids: string[] }>(`/pages/${pid}/playlist`, {
-            method: "PUT",
-            body: JSON.stringify({ sound_ids: sourcePlaylist }),
-          }).then((r) => ({ pid, sound_ids: r.sound_ids })),
-        ),
-      )
-      const updates: Record<string, string[]> = {}
-      const failed: string[] = []
-      for (const r of results) {
-        if (r.status === "fulfilled") {
-          updates[r.value.pid] = r.value.sound_ids
-        } else {
-          failed.push(String(r.reason))
-        }
-      }
-      if (Object.keys(updates).length > 0) {
-        setPlaylists((prev) => ({ ...prev, ...updates }))
-      }
-      if (failed.length > 0) {
-        setError(`Bulk apply: ${failed.length} page(s) failed — ${failed[0]}`)
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Bulk apply failed")
-    } finally {
-      setBulkApplying(false)
+      setSavingPosterId(null)
     }
   }
 
@@ -352,7 +257,6 @@ export default function SoundAssignments() {
     try {
       const result = await api<SyncResult>("/sync", { method: "POST" })
       setLastSync(result)
-      // Reload sound pool after sync
       const soundsData = await api<Sound[]>("/sounds?active_only=false")
       setSounds(soundsData)
     } catch (e) {
@@ -409,6 +313,33 @@ export default function SoundAssignments() {
     }
   }
 
+  // ---- Right column derived data ----
+
+  const selectedSoundObj = selectedSound ? soundById[selectedSound] : null
+  const assignedPageIds = selectedSound ? pagesBySoundId[selectedSound] || new Set<string>() : new Set<string>()
+
+  // Filter posters' pages by pageFilter and collect counts. Only posters
+  // with matching pages are visible after filtering.
+  const visiblePosterGroups = useMemo(() => {
+    const q = pageFilter.trim().toLowerCase()
+    return posters.map((poster) => {
+      const ownedPages = poster.page_ids
+        .map((pid) => pageById[pid])
+        .filter((p): p is RosterPage => Boolean(p))
+      const matched = q
+        ? ownedPages.filter((p) => p.name.toLowerCase().includes(q))
+        : ownedPages
+      const assignedCount = ownedPages.filter((p) => assignedPageIds.has(p.integration_id)).length
+      return {
+        poster,
+        pages: matched,
+        totalPages: ownedPages.length,
+        assignedCount,
+        hidden: q.length > 0 && matched.length === 0,
+      }
+    })
+  }, [posters, pageById, pageFilter, assignedPageIds])
+
   // ---- Render ----
 
   if (loading) {
@@ -426,7 +357,7 @@ export default function SoundAssignments() {
         <div>
           <h1 className="text-2xl font-bold text-[#1a1a2e]">Sound Assignments</h1>
           <p className="text-sm text-[#666] mt-1">
-            Assign sounds to each page. Posters receive a daily message grouped by their pages.
+            Pick a sound, then check the pages that should run it. Posters get a daily message with their assignments.
           </p>
           {status && (
             <div className="mt-2">
@@ -514,198 +445,14 @@ export default function SoundAssignments() {
         </Card>
       )}
 
-      {/* Three-column layout */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 min-h-[600px]">
-        {/* Posters column */}
+      {/* Two-column layout: Sound Pool (left) | Pages-by-poster (right) */}
+      <div className="grid grid-cols-1 md:grid-cols-[minmax(280px,360px)_1fr] gap-4 min-h-[600px]">
+        {/* ---- Sound Pool ---- */}
         <Card>
-          <CardHeader>
-            <CardTitle className="text-sm">Posters ({posters.length})</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-1">
-            {posters.map((p) => {
-              const totalSongs = p.page_ids.reduce(
-                (sum, pid) => sum + (playlists[pid] || []).length,
-                0,
-              )
-              return (
-                <button
-                  key={p.poster_id}
-                  onClick={() => {
-                    setSelectedPoster(p.poster_id)
-                    setSelectedPage(null)
-                  }}
-                  className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors flex justify-between items-center ${
-                    selectedPoster === p.poster_id
-                      ? "bg-[#eef2ff] text-[#0b62d6] font-semibold"
-                      : "hover:bg-[#f0f0f5] text-[#333]"
-                  }`}
-                >
-                  <span className="flex items-center gap-2">
-                    {p.name}
-                    {!p.sounds_topic_id && (
-                      <span title="No Sounds topic yet — will auto-create on first send">
-                        <AlertTriangle className="w-3 h-3 text-amber-500" />
-                      </span>
-                    )}
-                  </span>
-                  <Badge variant="secondary" className="text-xs">
-                    {p.page_ids.length}p · {totalSongs}s
-                  </Badge>
-                </button>
-              )
-            })}
-
-            {unassignedPages.length > 0 && (
-              <>
-                <div className="pt-3 mt-3 border-t border-[#e8e8ef] text-[11px] uppercase font-semibold text-[#999] tracking-wide">
-                  Unassigned ({unassignedPages.length})
-                </div>
-                <div className="text-xs text-[#888] px-3 py-1.5 italic">
-                  Pages without a poster — assign in content lab.
-                </div>
-              </>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* Pages column */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm">
-              {selectedPosterObj ? `${selectedPosterObj.name}'s Pages` : "Pages"}
-              {selectedPosterObj && (
-                <span className="text-[#888] font-normal ml-1">({selectedPosterPages.length})</span>
-              )}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-1">
-            {!selectedPoster && (
-              <div className="text-sm text-[#888] italic px-3 py-6 text-center">
-                Select a poster to see their pages
-              </div>
-            )}
-            {selectedPoster && selectedPosterPages.length === 0 && (
-              <div className="text-sm text-[#888] italic px-3 py-6 text-center">
-                This poster has no pages assigned
-              </div>
-            )}
-            {selectedPoster && selectedPosterPages.length > 0 && (
-              <div className="relative pb-2">
-                <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[#888]" />
-                <Input
-                  placeholder="Filter pages..."
-                  value={pageFilter}
-                  onChange={(e) => setPageFilter(e.target.value)}
-                  className="pl-9 h-8 text-sm"
-                />
-              </div>
-            )}
-            {selectedPoster && selectedPosterPages.length > 0 && visiblePosterPages.length === 0 && (
-              <div className="text-xs text-[#888] italic px-3 py-3 text-center">
-                No pages match "{pageFilter}"
-              </div>
-            )}
-            {visiblePosterPages.map((page) => {
-              const playlist = playlists[page.integration_id] || []
-              const activeCount = playlist.filter((sid) => soundById[sid]?.active !== false).length
-              const isEmpty = playlist.length === 0
-              // Preview: first 2 active song-base names, comma-separated.
-              const previewSongs = playlist
-                .map((sid) => soundById[sid])
-                .filter((s): s is Sound => Boolean(s) && s.active !== false)
-                .slice(0, 2)
-                .map((s) => parseSoundLabel(s.label).base)
-              const overflow = activeCount - previewSongs.length
-              const isSelected = selectedPage === page.integration_id
-              return (
-                <button
-                  key={page.integration_id}
-                  onClick={() => setSelectedPage(page.integration_id)}
-                  className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors ${
-                    isSelected
-                      ? "bg-[#eef2ff] text-[#0b62d6] font-semibold"
-                      : "hover:bg-[#f0f0f5] text-[#333]"
-                  }`}
-                >
-                  <div className="flex justify-between items-center gap-2">
-                    <span className="truncate">{page.name}</span>
-                    <Badge
-                      variant={isEmpty ? "outline" : "secondary"}
-                      className={`text-xs shrink-0 ${isEmpty ? "border-amber-300 text-amber-700" : ""}`}
-                    >
-                      {activeCount}{playlist.length !== activeCount && `/${playlist.length}`}
-                    </Badge>
-                  </div>
-                  {previewSongs.length > 0 && (
-                    <div
-                      className={`text-[11px] mt-0.5 truncate ${isSelected ? "text-[#5a7fbf]" : "text-[#888]"}`}
-                    >
-                      {previewSongs.join(", ")}
-                      {overflow > 0 && ` +${overflow} more`}
-                    </div>
-                  )}
-                </button>
-              )
-            })}
-
-            {/* Poster-level actions */}
-            {selectedPosterObj && (
-              <div className="pt-4 mt-4 border-t border-[#e8e8ef] flex flex-col gap-2">
-                {selectedPage && selectedPosterPages.length > 1 && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={applyPlaylistToAllPages}
-                    disabled={bulkApplying}
-                    title={`Replace every other page's playlist with the one on "${pageById[selectedPage]?.name || selectedPage}"`}
-                  >
-                    {bulkApplying ? (
-                      <Loader2 className="w-4 h-4 animate-spin mr-2" />
-                    ) : (
-                      <Copy className="w-4 h-4 mr-2" />
-                    )}
-                    Apply to all {selectedPosterPages.length} pages
-                  </Button>
-                )}
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => openPreview(selectedPosterObj.poster_id)}
-                  disabled={previewLoading}
-                >
-                  {previewLoading ? (
-                    <Loader2 className="w-4 h-4 animate-spin mr-2" />
-                  ) : (
-                    <Eye className="w-4 h-4 mr-2" />
-                  )}
-                  Preview Send
-                </Button>
-                <Button
-                  size="sm"
-                  onClick={() => sendToPoster(selectedPosterObj.poster_id)}
-                  disabled={sendingPoster === selectedPosterObj.poster_id || !status?.sounds_bot_running}
-                  title={!status?.sounds_bot_running ? "Sounds bot must be running to send" : ""}
-                >
-                  {sendingPoster === selectedPosterObj.poster_id ? (
-                    <Loader2 className="w-4 h-4 animate-spin mr-2" />
-                  ) : (
-                    <Send className="w-4 h-4 mr-2" />
-                  )}
-                  Send to {selectedPosterObj.name}
-                </Button>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* Sound pool / playlist column */}
-        <Card>
-          <CardHeader>
+          <CardHeader className="pb-3">
             <CardTitle className="text-sm flex items-center gap-2">
               <Music className="w-4 h-4" />
-              {selectedPage
-                ? `Playlist for "${pageById[selectedPage]?.name || selectedPage}"`
-                : `Sound Pool (${sounds.length})`}
+              Sound Pool ({visibleSounds.length})
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-2">
@@ -718,97 +465,176 @@ export default function SoundAssignments() {
                 className="pl-9"
               />
             </div>
-
-            {/* Show-all toggle — surfaces inactive sounds and older rounds */}
-            <div className="flex items-center justify-between text-xs text-[#666] px-1">
-              <button
-                onClick={() => setShowAllSounds((v) => !v)}
-                className="flex items-center gap-1.5 hover:text-[#0b62d6] transition-colors"
-                title={
-                  showAllSounds
-                    ? "Hide inactive sounds and older rounds"
-                    : "Show every sound including inactive and older rounds"
-                }
-              >
-                {showAllSounds ? (
-                  <EyeOff className="w-3.5 h-3.5" />
-                ) : (
-                  <Eye className="w-3.5 h-3.5" />
-                )}
-                <span>{showAllSounds ? "Hide older / inactive" : "Show all rounds"}</span>
-              </button>
-              {!showAllSounds && hiddenSoundCount > 0 && (
-                <span className="text-[#999]">{hiddenSoundCount} hidden</span>
-              )}
-            </div>
-
-            {!selectedPage && (
-              <div className="text-sm text-[#888] italic px-3 py-3 text-center">
-                Select a page to assign sounds
-              </div>
-            )}
-
-            <div className="max-h-[480px] overflow-y-auto space-y-1">
-              {filteredSounds.map((sound) => {
-                const isAssigned = selectedPagePlaylistSet.has(sound.id)
-                const isInactive = !sound.active
-                const disabled = !selectedPage || savingPage === selectedPage
-                const { base, round } = parseSoundLabel(sound.label)
-                const allRounds = roundsByBase.get(base.toLowerCase()) || []
-                const olderCount = !showAllSounds
-                  ? allRounds.filter((r) => r.id !== sound.id && r.active !== false).length
-                  : 0
+            <div className="max-h-[640px] overflow-y-auto space-y-1 -mx-1 px-1">
+              {visibleSounds.map((sound) => {
+                const isSelected = selectedSound === sound.id
+                const assignedCount = (pagesBySoundId[sound.id] || new Set()).size
                 return (
                   <button
                     key={sound.id}
-                    onClick={() => selectedPage && toggleSound(selectedPage, sound.id)}
-                    disabled={disabled}
+                    onClick={() => setSelectedSound(sound.id)}
                     className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors flex items-center gap-2 ${
-                      isAssigned
-                        ? "bg-green-50 text-green-900 border border-green-200"
-                        : selectedPage
-                          ? "hover:bg-[#f0f0f5] text-[#333] border border-transparent"
-                          : "text-[#888] cursor-not-allowed border border-transparent"
-                    } ${isInactive ? "opacity-60" : ""}`}
+                      isSelected
+                        ? "bg-[#eef2ff] text-[#0b62d6] font-semibold border border-[#c8d4ff]"
+                        : "hover:bg-[#f0f0f5] text-[#333] border border-transparent"
+                    }`}
                   >
-                    <div className="w-4 h-4 shrink-0 flex items-center justify-center">
-                      {isAssigned ? (
-                        <CheckCircle2 className="w-4 h-4 text-green-600" />
-                      ) : (
-                        <div className="w-3.5 h-3.5 rounded border border-[#ccc]" />
-                      )}
-                    </div>
-                    <span className={`truncate ${isInactive ? "line-through" : ""}`}>
-                      {base}
-                    </span>
-                    {round > 1 && (
-                      <Badge variant="outline" className="text-[10px] shrink-0 px-1.5 py-0 h-4">
-                        R{round}
-                      </Badge>
-                    )}
-                    {olderCount > 0 && (
-                      <Badge
-                        variant="outline"
-                        className="text-[10px] shrink-0 px-1.5 py-0 h-4 text-[#888] border-[#ddd]"
-                        title={`${olderCount} older round${olderCount > 1 ? "s" : ""} hidden — click "Show all rounds" to reveal`}
-                      >
-                        +{olderCount}
-                      </Badge>
-                    )}
-                    {isInactive && (
-                      <Badge variant="outline" className="ml-auto text-xs shrink-0">
-                        inactive
+                    <span className="truncate flex-1">{sound.label}</span>
+                    {assignedCount > 0 && (
+                      <Badge variant="secondary" className="text-xs shrink-0">
+                        {assignedCount}
                       </Badge>
                     )}
                   </button>
                 )
               })}
-              {filteredSounds.length === 0 && (
+              {visibleSounds.length === 0 && (
                 <div className="text-sm text-[#888] italic px-3 py-3 text-center">
-                  {soundFilter ? "No sounds match filter" : "No sounds in pool — click Sync Sounds"}
+                  {soundFilter ? "No sounds match filter" : "No active sounds — click Sync Sounds"}
                 </div>
               )}
             </div>
+          </CardContent>
+        </Card>
+
+        {/* ---- Pages by poster ---- */}
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm flex items-center justify-between gap-2">
+              <span className="truncate">
+                {selectedSoundObj ? (
+                  <>
+                    Assign &ldquo;<span className="text-[#0b62d6]">{selectedSoundObj.label}</span>&rdquo; to pages
+                  </>
+                ) : (
+                  "Pages"
+                )}
+              </span>
+              {selectedSound && (
+                <Badge variant="secondary" className="text-xs shrink-0">
+                  {assignedPageIds.size} {assignedPageIds.size === 1 ? "page" : "pages"} assigned
+                </Badge>
+              )}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {!selectedSound && (
+              <div className="text-sm text-[#888] italic px-3 py-12 text-center">
+                Select a sound on the left to start assigning pages.
+              </div>
+            )}
+
+            {selectedSound && (
+              <>
+                <div className="relative">
+                  <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[#888]" />
+                  <Input
+                    placeholder="Filter pages..."
+                    value={pageFilter}
+                    onChange={(e) => setPageFilter(e.target.value)}
+                    className="pl-9"
+                  />
+                </div>
+
+                <div className="max-h-[640px] overflow-y-auto space-y-3 -mx-1 px-1">
+                  {visiblePosterGroups.map(({ poster, pages: groupPages, totalPages, assignedCount, hidden }) => {
+                    if (hidden) return null
+                    // Row check is on if at least one of the poster's pages
+                    // has the sound. Toggling fans out across all their pages.
+                    const isChecked = assignedCount > 0
+                    const isPartial = assignedCount > 0 && assignedCount < totalPages
+                    const isSaving = savingPosterId === poster.poster_id
+                    return (
+                      <div key={poster.poster_id} className="rounded-md border border-[#e8e8ef]">
+                        {/* Poster row — single checkbox controls the whole roster */}
+                        <label
+                          className={`flex items-center justify-between gap-3 px-3 py-2.5 cursor-pointer hover:bg-[#f7f7fa] rounded-t-md ${isSaving ? "opacity-60" : ""}`}
+                        >
+                          <span className="flex items-center gap-3 flex-1 min-w-0">
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              ref={(el) => { if (el) el.indeterminate = isPartial }}
+                              disabled={isSaving}
+                              onChange={() => togglePosterForSound(poster.poster_id)}
+                              className="w-4 h-4 rounded border-[#ccc] text-[#0b62d6] focus:ring-[#0b62d6]"
+                            />
+                            <span className="text-sm font-semibold text-[#1a1a2e] truncate">{poster.name}</span>
+                            {!poster.sounds_topic_id && (
+                              <span title="No Sounds topic yet — will auto-create on first send">
+                                <AlertTriangle className="w-3 h-3 text-amber-500 shrink-0" />
+                              </span>
+                            )}
+                            {isSaving && <Loader2 className="w-3 h-3 animate-spin text-[#888] shrink-0" />}
+                          </span>
+                          <Badge
+                            variant={assignedCount > 0 ? "default" : "secondary"}
+                            className={`text-xs shrink-0 ${assignedCount > 0 ? "bg-green-100 text-green-800 border-green-200 hover:bg-green-100" : ""}`}
+                          >
+                            {assignedCount}/{totalPages}
+                          </Badge>
+                        </label>
+
+                        {/* Read-only page list for admin visibility */}
+                        <div className="border-t border-[#e8e8ef] bg-[#fafafd]">
+                          {groupPages.length === 0 && (
+                            <div className="px-3 py-2 text-xs text-[#888] italic">
+                              No pages match the filter.
+                            </div>
+                          )}
+                          {groupPages.map((page) => {
+                            const pageHasSound = assignedPageIds.has(page.integration_id)
+                            return (
+                              <div
+                                key={page.integration_id}
+                                className="flex items-center gap-2 px-3 py-1.5 text-xs text-[#666]"
+                              >
+                                <span
+                                  className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${pageHasSound ? "bg-green-500" : "bg-[#d8d8e0]"}`}
+                                />
+                                <span className="truncate">{page.name}</span>
+                              </div>
+                            )
+                          })}
+                        </div>
+
+                        {/* Per-poster preview/send actions */}
+                        <div className="border-t border-[#e8e8ef] flex gap-2 px-3 py-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="text-xs"
+                            onClick={() => openPreview(poster.poster_id)}
+                            disabled={previewLoading}
+                          >
+                            {previewLoading ? (
+                              <Loader2 className="w-3 h-3 animate-spin mr-1" />
+                            ) : (
+                              <Eye className="w-3 h-3 mr-1" />
+                            )}
+                            Preview
+                          </Button>
+                          <Button
+                            size="sm"
+                            className="text-xs"
+                            onClick={() => sendToPoster(poster.poster_id)}
+                            disabled={sendingPoster === poster.poster_id || !status?.sounds_bot_running}
+                            title={!status?.sounds_bot_running ? "Sounds bot must be running to send" : ""}
+                          >
+                            {sendingPoster === poster.poster_id ? (
+                              <Loader2 className="w-3 h-3 animate-spin mr-1" />
+                            ) : (
+                              <Send className="w-3 h-3 mr-1" />
+                            )}
+                            Send to {poster.name}
+                          </Button>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </>
+            )}
           </CardContent>
         </Card>
       </div>
