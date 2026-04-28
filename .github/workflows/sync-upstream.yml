@@ -23,28 +23,24 @@ jobs:
           git remote add upstream https://github.com/jakebalik-bit/risingtides-campaign-hub.git
           git fetch upstream main
 
-          # Check if upstream has new commits
           UPSTREAM_SHA=$(git rev-parse upstream/main)
+          FORK_SHA=$(git rev-parse HEAD)
+
+          # If upstream is already an ancestor of our fork, we're ahead — nothing to do
           if git merge-base --is-ancestor "$UPSTREAM_SHA" HEAD; then
-            echo "Already up to date. Skipping."
+            echo "Fork is ahead of or equal to upstream. Nothing to sync."
             exit 0
           fi
 
-          echo "New upstream changes detected. Syncing..."
+          # If our fork is an ancestor of upstream, upstream is strictly ahead — fast-forward safe
+          if git merge-base --is-ancestor HEAD "$UPSTREAM_SHA"; then
+            echo "Upstream is strictly ahead. Fast-forward merging..."
+            git merge --ff-only upstream/main
+            git push origin main
+            exit 0
+          fi
 
-          # Save our workflow file before overwriting
-          cp -r .github /tmp/.github-backup
-
-          # Reset to upstream's main
-          git reset --hard upstream/main
-
-          # Restore our workflow file
-          mkdir -p .github
-          cp -r /tmp/.github-backup/.github/workflows .github/
-
-          # Commit the workflow file
-          git add .github/
-          git diff --cached --quiet || git commit -m "chore: preserve sync workflow"
-
-          # Push to our fork
-          git push origin main --force
+          # Branches have diverged — merge upstream into our fork (fork wins on conflicts)
+          echo "Branches have diverged. Merging upstream into fork (fork takes precedence)..."
+          git merge upstream/main --no-edit -m "chore: merge upstream changes" -X ours
+          git push origin main
