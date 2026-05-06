@@ -27,6 +27,9 @@ export const keys = {
   trackers: ["trackers"] as const,
   trackerGroups: ["tracker-groups"] as const,
   shareTokens: ["share-tokens"] as const,
+  scrapeTaskQueue: (params?: { campaign?: string; since?: string }) =>
+    ["scrape-tasks", "queue", params?.campaign ?? "", params?.since ?? ""] as const,
+  scrapeTaskHealth: ["scrape-tasks", "health"] as const,
 }
 
 // --- Campaigns ---
@@ -558,5 +561,68 @@ export function useRevokeShareToken() {
   return useMutation({
     mutationFn: (token: string) => api.revokeShareToken(token),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.shareTokens }),
+  })
+}
+
+// --- Scrape Tasks ---
+
+export function useScrapeTaskQueue(params?: { campaign?: string; since?: string; limit?: number }) {
+  return useQuery({
+    queryKey: keys.scrapeTaskQueue(params),
+    queryFn: () => api.getScrapeTaskQueue(params),
+    refetchOnWindowFocus: true,
+    staleTime: 30_000,
+  })
+}
+
+export function useScrapeTaskHealth() {
+  return useQuery({
+    queryKey: keys.scrapeTaskHealth,
+    queryFn: api.getScrapeTaskHealth,
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: true,
+  })
+}
+
+export function useMarkVideosTracked() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ ids, tracked_by }: { ids: number[]; tracked_by?: string }) =>
+      api.markVideosTracked(ids, tracked_by),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["scrape-tasks"] })
+    },
+  })
+}
+
+export function useUnmarkVideosTracked() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (ids: number[]) => api.unmarkVideosTracked(ids),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["scrape-tasks"] })
+    },
+  })
+}
+
+export function useMarkCampaignTracked() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ slug, tracked_by }: { slug: string; tracked_by?: string }) =>
+      api.markCampaignTracked(slug, tracked_by),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["scrape-tasks"] })
+    },
+  })
+}
+
+export function useTriggerCron() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (job_type: "campaign_refresh" | "internal_scrape") =>
+      api.triggerCron(job_type),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["scrape-tasks"] })
+    },
   })
 }

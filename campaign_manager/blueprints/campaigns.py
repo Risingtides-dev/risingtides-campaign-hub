@@ -371,6 +371,25 @@ def edit_campaign(slug: str):
     completion_status = data.get("completion_status")
     if completion_status in ("none", "booked", "completed"):
         meta["completion_status"] = completion_status
+    elif completion_status is not None:
+        # Loud rejection of bad enums — better than silent drop.
+        return jsonify({
+            "error": f"Invalid completion_status: {completion_status!r}",
+            "valid": ["none", "booked", "completed"],
+        }), 400
+
+    # Match strategy — controls whether fuzzy fallback is allowed.
+    # "strict" = sound_id only (use for original sound campaigns)
+    # "fuzzy"  = full strategy chain (default, safe for licensed songs)
+    match_strategy = data.get("match_strategy")
+    if match_strategy is not None:
+        if match_strategy in ("fuzzy", "strict"):
+            meta["match_strategy"] = match_strategy
+        else:
+            return jsonify({
+                "error": f"Invalid match_strategy: {match_strategy!r}",
+                "valid": ["fuzzy", "strict"],
+            }), 400
 
     cobrand_link = (data.get("cobrand_link") or "").strip()
     meta["cobrand_link"] = cobrand_link
@@ -677,7 +696,15 @@ def _refresh_stats_inner(slug: str):
     if ref_song_title:
         core_song_words |= {w for w in _csn(ref_song_title).split() if len(w) > 2}
 
-    matched = match_videos(all_videos, sound_ids, sound_keys, core_song_words, artist, match_fn=match_video_to_sounds)
+    # Honor the campaign's match strategy (strict mode skips fuzzy fallback)
+    match_strategy = meta.get("match_strategy", "fuzzy")
+    tt_artist_label = meta.get("tt_artist_label", "")
+    matched = match_videos(
+        all_videos, sound_ids, sound_keys, core_song_words, artist,
+        match_fn=match_video_to_sounds,
+        tt_artist_label=tt_artist_label,
+        match_strategy=match_strategy,
+    )
 
     # Merge — updates view/like counts for existing matches + adds new ones
     if _db.is_active():

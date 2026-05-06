@@ -14,6 +14,7 @@ import TidesTrackers from "./pages/TidesTrackers"
 import InternalGroupDetail from "./pages/InternalGroupDetail"
 import InternalScrapeView from "./pages/InternalScrapeView"
 import SoundAssignments from "./pages/SoundAssignments"
+import ScrapeTasks from "./pages/ScrapeTasks"
 
 function App() {
   return (
@@ -34,6 +35,7 @@ function App() {
           <Route path="/network" element={<NetworkCreators />} />
           <Route path="/trackers" element={<TidesTrackers />} />
           <Route path="/sound-assignments" element={<SoundAssignments />} />
+          <Route path="/scrape-tasks" element={<ScrapeTasks />} />
         </Route>
       </Routes>
     </BrowserRouter>

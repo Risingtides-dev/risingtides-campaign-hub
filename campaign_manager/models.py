@@ -69,6 +69,13 @@ class Campaign(Base):
     tt_artist_label = Column(String(255), default="")
     tt_track_name = Column(String(255), default="")
 
+    # Match strategy: "fuzzy" (default — full strategy chain incl. word
+    # overlap fallback) or "strict" (sound_id only — required for original
+    # sound campaigns where the same artist has multiple distinct campaigns
+    # to prevent cross-campaign false positives, e.g. Stella Lefty
+    # I-Know-I-Know vs Boston).
+    match_strategy = Column(String(20), default="fuzzy")
+
     campaign_stage = Column(String(50), default="")
     round = Column(String(20), default="")
     label = Column(String(255), default="")
@@ -118,6 +125,7 @@ class Campaign(Base):
             "insta_sound": self.insta_sound or "",
             "tt_artist_label": self.tt_artist_label or "",
             "tt_track_name": self.tt_track_name or "",
+            "match_strategy": self.match_strategy or "fuzzy",
             "campaign_stage": self.campaign_stage or "",
             "round": self.round or "",
             "label": self.label or "",
@@ -193,10 +201,26 @@ class MatchedVideo(Base):
     extracted_sound_id = Column(String(50), default="")
     extracted_song_title = Column(String(500), default="")
 
+    # When this match was first seen by the cron (so the Scrape Tasks tab
+    # can show "new since" filtering accurately).
+    first_seen_at = Column(DateTime, nullable=True)
+
+    # Set when the human in charge of tracking has copied this link into
+    # Cobrand and clicks "Mark tracked." Null = still in the queue.
+    tracked_at = Column(DateTime, nullable=True, index=True)
+
+    # Optional: who marked it (for an audit trail; defaults blank in single-user setups)
+    tracked_by = Column(String(100), default="")
+
+    # Match strategy that produced this match (sound_id|fuzzy|discovered|...)
+    # so the queue can show how a match was found.
+    match_strategy = Column(String(50), default="")
+
     campaign = relationship("Campaign", back_populates="matched_videos")
 
     def to_dict(self):
         return {
+            "id": self.id,
             "url": self.url or "",
             "song": self.song or "",
             "artist": self.artist or "",
@@ -209,6 +233,10 @@ class MatchedVideo(Base):
             "platform": self.platform or "tiktok",
             "extracted_sound_id": self.extracted_sound_id or "",
             "extracted_song_title": self.extracted_song_title or "",
+            "first_seen_at": self.first_seen_at.isoformat() if self.first_seen_at else "",
+            "tracked_at": self.tracked_at.isoformat() if self.tracked_at else "",
+            "tracked_by": self.tracked_by or "",
+            "match_strategy": self.match_strategy or "",
         }
 
 

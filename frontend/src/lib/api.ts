@@ -23,6 +23,8 @@ import type {
   Tracker,
   TrackerGroup,
   ShareToken,
+  ScrapeTaskQueue,
+  ScrapeTaskHealth,
 } from "./types"
 
 const API_BASE = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? "http://localhost:5055" : "")
@@ -369,6 +371,51 @@ export const api = {
 
   revokeShareToken: (token: string) =>
     request<ApiOk>(`/api/share-token/${token}`, { method: "DELETE" }),
+
+  // Scrape Tasks tab
+  getScrapeTaskQueue: (params?: { campaign?: string; since?: string; limit?: number }) => {
+    const qs = new URLSearchParams()
+    if (params?.campaign) qs.set("campaign", params.campaign)
+    if (params?.since) qs.set("since", params.since)
+    if (params?.limit != null) qs.set("limit", String(params.limit))
+    const suffix = qs.toString() ? `?${qs.toString()}` : ""
+    return request<ScrapeTaskQueue>(`/api/scrape-tasks/queue${suffix}`)
+  },
+
+  getScrapeTaskHealth: () => request<ScrapeTaskHealth>("/api/scrape-tasks/health"),
+
+  markVideosTracked: (matched_video_ids: number[], tracked_by?: string) =>
+    request<ApiOk & { marked_tracked: number; requested: number }>(
+      "/api/scrape-tasks/mark-tracked",
+      {
+        method: "POST",
+        body: JSON.stringify({ matched_video_ids, tracked_by: tracked_by || "" }),
+      }
+    ),
+
+  unmarkVideosTracked: (matched_video_ids: number[]) =>
+    request<ApiOk & { unmarked: number; requested: number }>(
+      "/api/scrape-tasks/unmark-tracked",
+      {
+        method: "POST",
+        body: JSON.stringify({ matched_video_ids }),
+      }
+    ),
+
+  markCampaignTracked: (slug: string, tracked_by?: string) =>
+    request<ApiOk & { slug: string; marked_tracked: number }>(
+      "/api/scrape-tasks/mark-campaign-tracked",
+      {
+        method: "POST",
+        body: JSON.stringify({ slug, tracked_by: tracked_by || "" }),
+      }
+    ),
+
+  triggerCron: (job_type: "campaign_refresh" | "internal_scrape") =>
+    request<{ status: string; job_type: string }>("/api/cron/trigger", {
+      method: "POST",
+      body: JSON.stringify({ job_type }),
+    }),
 }
 
 export { ApiError }

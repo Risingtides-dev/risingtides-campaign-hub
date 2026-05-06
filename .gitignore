@@ -75,3 +75,6 @@ campaign_manager/campaigns/
 campaign_manager/internal_cache/
 campaign_manager/internal_creators.json
 campaign_manager/internal_last_scrape.json
+
+# Local DB snapshots — never commit (contains prod data)
+backups/
