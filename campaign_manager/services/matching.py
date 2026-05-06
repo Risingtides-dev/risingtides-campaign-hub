@@ -10,6 +10,27 @@ from datetime import datetime
 from typing import Dict, List, Set, Tuple
 
 
+# TikTok localizes the "original sound" label by region. yt-dlp returns the
+# label verbatim in the `track` field, so a creator in Spain posts as
+# "sonido original - <handle>", Italy as "suono originale - <handle>", etc.
+# Carried over from the legacy scrape_external_accounts_cached locale list.
+ORIGINAL_SOUND_PREFIXES = (
+    "original sound",
+    "sonido original",
+    "audio original",
+    "suono originale",
+    "audio originale",
+    "som original",
+    "origineel geluid",
+    "son original",
+)
+
+
+def _is_original_sound_label(song: str) -> bool:
+    s = (song or "").lower().lstrip()
+    return any(s.startswith(p) for p in ORIGINAL_SOUND_PREFIXES)
+
+
 def core_song_name(s: str) -> str:
     """Normalize a song title for fuzzy matching.
 
@@ -137,25 +158,21 @@ def discover_original_sounds(
 ) -> Tuple[List[Dict], List[str]]:
     """Auto-discover original sound IDs from campaign creator videos.
 
-    When a creator posts using "original sound" but the artist matches,
-    capture the sound ID and add the video to matches.
+    When a tracked campaign creator posts using "original sound" with a
+    sound_id we don't already track, capture it. The creator-set filter
+    is the safety check — we do NOT also gate on artist match, because
+    for genuine original sounds TikTok labels the artist as the creator's
+    own display name (not the campaign artist or any label variant), so
+    an artist gate would never fire for the case this function exists
+    to solve.
 
-    Checks against both the campaign artist name AND the tt_artist_label
-    (TikTok-specific artist name) when available. This handles cases
-    where TikTok labels the artist differently from the real name
-    (e.g. "Music for the Soul" instead of "Sam Barber").
+    Locale-aware: handles "original sound" plus Spanish, Italian, Portuguese,
+    Dutch, French label variants (see ORIGINAL_SOUND_PREFIXES).
 
     Returns (additional_matched, discovered_sound_ids).
     """
-    if not artist and not tt_artist_label:
+    if not usernames:
         return [], []
-
-    # Build the set of artist names to match against
-    artist_variants: Set[str] = set()
-    if artist:
-        artist_variants.add(artist.lower().strip())
-    if tt_artist_label:
-        artist_variants.add(tt_artist_label.lower().strip())
 
     creator_set = {u.lower() for u in usernames}
     matched_urls = {v.get("url") for v in matched}
@@ -170,12 +187,11 @@ def discover_original_sounds(
         if vid_account not in creator_set:
             continue
 
-        vid_song = (video.get("song", "") or "").lower()
-        vid_artist = (video.get("artist", "") or "").lower().strip()
+        vid_song = video.get("song", "") or ""
         vid_music_id = video.get("extracted_sound_id") or video.get("music_id", "")
-        is_orig = video.get("is_original_sound", False) or vid_song.startswith("original sound")
+        is_orig = video.get("is_original_sound", False) or _is_original_sound_label(vid_song)
 
-        if is_orig and vid_artist in artist_variants and vid_music_id and vid_music_id not in sound_ids:
+        if is_orig and vid_music_id and vid_music_id not in sound_ids:
             additional.append(video)
             discovered.append(vid_music_id)
             sound_ids.add(vid_music_id)
