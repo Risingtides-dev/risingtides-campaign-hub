@@ -76,22 +76,23 @@ def match_videos(
     artist: str,
     match_fn=None,
     tt_artist_label: str = "",
+    match_strategy: str = "fuzzy",
 ) -> List[Dict]:
-    """Match videos to campaign sounds using multi-strategy matching.
+    """Match videos to campaign sounds.
 
-    Strategies (in order):
-    1. master_tracker's match_video_to_sounds (sound_id + song+artist key)
-    2. Fuzzy: core word overlap + artist name match (checks both campaign
-       artist and tt_artist_label)
+    match_strategy controls which fallback strategies are allowed:
+        - "strict": sound_id only. No fuzzy fallback. Required for original
+          sound campaigns where two campaigns share an artist (e.g. Stella
+          Lefty I-Know-I-Know vs Boston) — fuzzy fallback would scoop the
+          wrong videos into the wrong campaign.
+        - "fuzzy": full multi-strategy chain (sound_id, music_id, song-key,
+          word overlap + artist). Used for licensed-song campaigns where the
+          fuzzy fallbacks are safe.
 
-    Args:
-        all_videos: Scraped video dicts.
-        sound_ids: Numeric sound IDs to match against.
-        sound_keys: Normalized "song - artist" keys.
-        core_song_words: Core words from song title (len > 2).
-        artist: Campaign artist name.
-        match_fn: Optional match_video_to_sounds function from master_tracker.
-        tt_artist_label: TikTok-specific artist label for original sounds.
+    Each matched video is tagged with a `match_strategy` field so the
+    cron summary can report HOW matches were found (sound_id vs fuzzy).
+    A run that's heavy on `fuzzy` matches in a multi-original-sound-campaign
+    setup is a signal that something's drifting.
     """
     matched = []
 
@@ -103,26 +104,35 @@ def match_videos(
         artist_variants.add(tt_artist_label.lower().strip())
 
     for video in all_videos:
-        # Strategy 1: multi-strategy matching from master_tracker
-        if match_fn and match_fn(video, sound_ids, sound_keys):
-            matched.append(video)
+        # Strategy 1: direct sound_id check (always tried, all modes)
+        vid_sid = video.get("extracted_sound_id") or video.get("music_id", "")
+        if vid_sid and vid_sid in sound_ids:
+            v = dict(video)
+            v["match_strategy"] = "sound_id"
+            matched.append(v)
             continue
 
-        # Strategy 1b: direct sound_id check (if no match_fn)
-        if not match_fn:
-            vid_sid = video.get("extracted_sound_id") or video.get("music_id", "")
-            if vid_sid and vid_sid in sound_ids:
-                matched.append(video)
-                continue
+        # In strict mode, sound_id is the ONLY allowed match path. Stop here.
+        if match_strategy == "strict":
+            continue
 
-        # Strategy 2: fuzzy word overlap + artist match
+        # Strategy 2: master_tracker multi-strategy (music_id + song-key)
+        if match_fn and match_fn(video, sound_ids, sound_keys):
+            v = dict(video)
+            v["match_strategy"] = v.get("match_strategy") or "music_id_or_song_key"
+            matched.append(v)
+            continue
+
+        # Strategy 3: fuzzy word overlap + artist match (LAST RESORT)
         v_song = video.get("song", "") or ""
         v_artist = (video.get("artist", "") or "").lower().strip()
         if core_song_words and v_song:
             v_words = set(core_song_name(v_song).split())
             overlap = core_song_words & v_words
             if overlap and artist_variants and v_artist in artist_variants:
-                matched.append(video)
+                v = dict(video)
+                v["match_strategy"] = "fuzzy_word_overlap"
+                matched.append(v)
 
     return matched
 
@@ -134,19 +144,25 @@ def discover_original_sounds(
     usernames: List[str],
     artist: str,
     tt_artist_label: str = "",
+    match_strategy: str = "fuzzy",
 ) -> Tuple[List[Dict], List[str]]:
     """Auto-discover original sound IDs from campaign creator videos.
 
-    When a creator posts using "original sound" but the artist matches,
-    capture the sound ID and add the video to matches.
+    DISABLED in strict mode. In multi-campaign-per-artist setups (e.g.
+    Stella Lefty I-Know-I-Know vs Boston) auto-discovery would attach a
+    new sound ID to whichever campaign happened to scan first, which is
+    exactly the false-positive class that strict mode exists to prevent.
+
+    In fuzzy mode: when a creator posts using "original sound" but the
+    artist matches, capture the sound ID and add the video to matches.
 
     Checks against both the campaign artist name AND the tt_artist_label
-    (TikTok-specific artist name) when available. This handles cases
-    where TikTok labels the artist differently from the real name
-    (e.g. "Music for the Soul" instead of "Sam Barber").
+    (TikTok-specific artist name) when available.
 
     Returns (additional_matched, discovered_sound_ids).
     """
+    if match_strategy == "strict":
+        return [], []
     if not artist and not tt_artist_label:
         return [], []
 
@@ -176,7 +192,9 @@ def discover_original_sounds(
         is_orig = video.get("is_original_sound", False) or vid_song.startswith("original sound")
 
         if is_orig and vid_artist in artist_variants and vid_music_id and vid_music_id not in sound_ids:
-            additional.append(video)
+            v = dict(video)
+            v["match_strategy"] = "discovered_original_sound"
+            additional.append(v)
             discovered.append(vid_music_id)
             sound_ids.add(vid_music_id)
             matched_urls.add(video.get("url"))

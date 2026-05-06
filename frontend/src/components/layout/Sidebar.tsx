@@ -3,7 +3,10 @@ import { Link, useLocation } from "react-router-dom"
 const navItems = [
   {
     section: "Campaigns",
-    links: [{ label: "Promotions", path: "/" }],
+    links: [
+      { label: "Promotions", path: "/" },
+      { label: "Scrape Tasks", path: "/scrape-tasks" },
+    ],
   },
   {
     section: "Creators",

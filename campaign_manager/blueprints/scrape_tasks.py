@@ -1,0 +1,297 @@
+"""Scrape Tasks API — backs the dedicated tab where the team tracks
+which scraped video links have been copied into Cobrand.
+
+Default organization: by campaign. The queue groups untracked matched
+videos under their campaign so the person doing the work can knock out
+one campaign at a time.
+
+Endpoints:
+    GET  /api/scrape-tasks/queue        — untracked videos grouped by campaign
+    GET  /api/scrape-tasks/health       — last cron run status + degraded flag
+    POST /api/scrape-tasks/mark-tracked — mark videos as tracked (bulk)
+    POST /api/scrape-tasks/unmark-tracked — undo (in case of mis-click)
+    POST /api/scrape-tasks/mark-campaign-tracked — bulk mark every untracked
+         video for a single campaign in one click
+"""
+from __future__ import annotations
+
+from datetime import datetime
+from flask import Blueprint, jsonify, request
+
+from campaign_manager import db as _db
+from campaign_manager.models import MatchedVideo, Campaign
+
+scrape_tasks_bp = Blueprint("scrape_tasks", __name__)
+
+
+@scrape_tasks_bp.get("/api/scrape-tasks/queue")
+def queue():
+    """Return untracked matched videos grouped by campaign.
+
+    Response shape:
+        {
+          "total_untracked": 47,
+          "campaigns": [
+            {
+              "slug": "...",
+              "title": "Stella Lefty - I Know I Know R2",
+              "artist": "Stella Lefty",
+              "match_strategy": "strict",
+              "untracked_count": 12,
+              "videos": [
+                {
+                  "id": 1234,
+                  "url": "...",
+                  "account": "@ellie_creator",
+                  "views": 24500,
+                  "likes": 1200,
+                  "match_strategy": "sound_id",
+                  "first_seen_at": "2026-05-06T06:00:00",
+                  "timestamp": "2026-05-05T14:32:00"
+                },
+                ...
+              ]
+            },
+            ...
+          ]
+        }
+
+    Query params:
+        ?campaign=<slug>  — filter to single campaign (still nested in same shape)
+        ?since=YYYY-MM-DD — only videos first_seen_at on or after this date
+        ?limit=<n>        — max videos per campaign (default 100)
+    """
+    if not _db.is_active():
+        return jsonify({"error": "DB mode required."}), 400
+
+    campaign_filter = request.args.get("campaign", "").strip()
+    since_str = request.args.get("since", "").strip()
+    limit = request.args.get("limit", 100, type=int)
+
+    since_dt = None
+    if since_str:
+        try:
+            since_dt = datetime.strptime(since_str, "%Y-%m-%d")
+        except ValueError:
+            return jsonify({
+                "error": f"Invalid 'since' format: {since_str}",
+                "hint": "Use YYYY-MM-DD",
+            }), 400
+
+    with _db.get_session() as s:
+        q = (
+            s.query(MatchedVideo, Campaign)
+            .join(Campaign, MatchedVideo.campaign_id == Campaign.id)
+            .filter(MatchedVideo.tracked_at.is_(None))
+            .filter(Campaign.status == "active")
+        )
+        if campaign_filter:
+            q = q.filter(Campaign.slug == campaign_filter)
+        if since_dt is not None:
+            q = q.filter(MatchedVideo.first_seen_at >= since_dt)
+        q = q.order_by(
+            Campaign.slug,
+            MatchedVideo.first_seen_at.desc(),
+            MatchedVideo.views.desc(),
+        )
+        rows = q.all()
+
+    by_campaign: dict = {}
+    total = 0
+    for mv, camp in rows:
+        slug = camp.slug or ""
+        if slug not in by_campaign:
+            by_campaign[slug] = {
+                "slug": slug,
+                "title": camp.title or camp.name or slug,
+                "artist": camp.artist or "",
+                "song": camp.song or "",
+                "match_strategy": camp.match_strategy or "fuzzy",
+                "completion_status": camp.completion_status or "none",
+                "round": camp.round or "",
+                "untracked_count": 0,
+                "videos": [],
+            }
+        bucket = by_campaign[slug]
+        if len(bucket["videos"]) >= limit:
+            bucket["untracked_count"] += 1
+            continue
+        bucket["videos"].append({
+            "id": mv.id,
+            "url": mv.url or "",
+            "account": mv.account or "",
+            "views": mv.views or 0,
+            "likes": mv.likes or 0,
+            "song": mv.song or "",
+            "match_strategy": mv.match_strategy or "",
+            "extracted_sound_id": mv.extracted_sound_id or "",
+            "first_seen_at": (
+                mv.first_seen_at.isoformat() if mv.first_seen_at else ""
+            ),
+            "timestamp": mv.timestamp or "",
+            "upload_date": mv.upload_date or "",
+        })
+        bucket["untracked_count"] += 1
+        total += 1
+
+    # Sort campaigns by untracked_count desc — busiest first
+    campaigns = sorted(
+        by_campaign.values(),
+        key=lambda c: c["untracked_count"],
+        reverse=True,
+    )
+
+    return jsonify({
+        "total_untracked": total,
+        "campaigns": campaigns,
+    })
+
+
+@scrape_tasks_bp.get("/api/scrape-tasks/health")
+def health():
+    """Return cron run health summary for the Scrape Tasks tab."""
+    logs = _db.get_cron_logs(limit=10) or []
+
+    # Filter to the campaign refresh job specifically
+    refresh_logs = [
+        log for log in logs
+        if (log.get("job_type") or "").startswith("campaign_refresh")
+    ]
+
+    last = refresh_logs[0] if refresh_logs else None
+
+    history = []
+    for log in refresh_logs[:7]:
+        summary = log.get("summary") or {}
+        history.append({
+            "id": log.get("id"),
+            "status": log.get("status") or "",
+            "started_at": log.get("started_at") or "",
+            "finished_at": log.get("finished_at") or "",
+            "degraded": bool(summary.get("degraded", False)),
+            "campaigns_refreshed": summary.get("campaigns_refreshed", 0),
+            "total_new_matches": summary.get("total_new_matches", 0),
+            "empty_creator_rate": summary.get("empty_creator_rate", 0),
+        })
+
+    return jsonify({
+        "last_run": last,
+        "history": history,
+    })
+
+
+@scrape_tasks_bp.post("/api/scrape-tasks/mark-tracked")
+def mark_tracked():
+    """Mark one or more matched videos as tracked.
+
+    Body: {"matched_video_ids": [1234, 1235, ...], "tracked_by": "<name>"}
+
+    Strict body validation — invalid types or missing IDs return 400 not
+    silent success. (Audit lesson: send-all-style endpoints that ignore
+    body are dangerous.)
+    """
+    data = request.get_json(silent=True) or {}
+    ids = data.get("matched_video_ids")
+    tracked_by = (data.get("tracked_by") or "").strip()[:100]
+
+    if not isinstance(ids, list) or not ids:
+        return jsonify({
+            "error": "matched_video_ids must be a non-empty list of integers",
+        }), 400
+
+    try:
+        ids = [int(i) for i in ids]
+    except (TypeError, ValueError):
+        return jsonify({"error": "matched_video_ids must be integers"}), 400
+
+    now = datetime.now()
+    updated = 0
+    with _db.get_session() as s:
+        rows = s.query(MatchedVideo).filter(MatchedVideo.id.in_(ids)).all()
+        for row in rows:
+            if row.tracked_at is None:
+                row.tracked_at = now
+                if tracked_by:
+                    row.tracked_by = tracked_by
+                updated += 1
+        s.commit()
+
+    return jsonify({
+        "ok": True,
+        "marked_tracked": updated,
+        "requested": len(ids),
+    })
+
+
+@scrape_tasks_bp.post("/api/scrape-tasks/unmark-tracked")
+def unmark_tracked():
+    """Undo: clear tracked_at on the given videos.
+
+    Body: {"matched_video_ids": [1234, ...]}
+    """
+    data = request.get_json(silent=True) or {}
+    ids = data.get("matched_video_ids")
+
+    if not isinstance(ids, list) or not ids:
+        return jsonify({
+            "error": "matched_video_ids must be a non-empty list of integers",
+        }), 400
+
+    try:
+        ids = [int(i) for i in ids]
+    except (TypeError, ValueError):
+        return jsonify({"error": "matched_video_ids must be integers"}), 400
+
+    updated = 0
+    with _db.get_session() as s:
+        rows = s.query(MatchedVideo).filter(MatchedVideo.id.in_(ids)).all()
+        for row in rows:
+            if row.tracked_at is not None:
+                row.tracked_at = None
+                row.tracked_by = ""
+                updated += 1
+        s.commit()
+
+    return jsonify({
+        "ok": True,
+        "unmarked": updated,
+        "requested": len(ids),
+    })
+
+
+@scrape_tasks_bp.post("/api/scrape-tasks/mark-campaign-tracked")
+def mark_campaign_tracked():
+    """Bulk-mark every untracked video for a single campaign as tracked.
+
+    Body: {"slug": "<campaign-slug>", "tracked_by": "<name>"}
+
+    Useful when the human pastes a whole batch into Cobrand at once.
+    """
+    data = request.get_json(silent=True) or {}
+    slug = (data.get("slug") or "").strip()
+    tracked_by = (data.get("tracked_by") or "").strip()[:100]
+
+    if not slug:
+        return jsonify({"error": "slug is required"}), 400
+
+    now = datetime.now()
+    with _db.get_session() as s:
+        camp = s.query(Campaign).filter_by(slug=slug).first()
+        if not camp:
+            return jsonify({"error": "Campaign not found"}), 404
+
+        rows = (
+            s.query(MatchedVideo)
+            .filter_by(campaign_id=camp.id)
+            .filter(MatchedVideo.tracked_at.is_(None))
+            .all()
+        )
+        count = 0
+        for row in rows:
+            row.tracked_at = now
+            if tracked_by:
+                row.tracked_by = tracked_by
+            count += 1
+        s.commit()
+
+    return jsonify({"ok": True, "slug": slug, "marked_tracked": count})

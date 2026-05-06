@@ -38,7 +38,36 @@ def _import_scraper():
 def _scrape_creator_accounts(usernames, start_date=None, max_workers=5):
     """Scrape multiple TikTok creator accounts in parallel using yt-dlp.
 
-    Returns (all_videos, accounts_scraped, errors).
+    Returns (all_videos, accounts_scraped, errors). Legacy shape — preserved
+    for backwards compatibility. New code should call _scrape_creator_accounts_v2
+    which also returns per-creator outcomes.
+    """
+    all_videos, accounts_scraped, errors, _outcomes = _scrape_creator_accounts_v2(
+        usernames, start_date=start_date, max_workers=max_workers
+    )
+    return all_videos, accounts_scraped, errors
+
+
+def _scrape_creator_accounts_v2(usernames, start_date=None, max_workers=5):
+    """Scrape creator accounts and report per-creator outcomes.
+
+    Returns (all_videos, accounts_scraped, errors, outcomes) where outcomes is
+    a dict {username: {"status": str, "video_count": int, "error": str|None}}.
+
+    Status values:
+        ok            — videos returned (>0)
+        empty         — yt-dlp succeeded but returned 0 videos. Could mean
+                        the creator has no posts since start_date, OR could
+                        mean we got rate-limited and yt-dlp silently returned
+                        nothing. Not distinguishable per-creator but a high
+                        rate of `empty` across the run is the rate-limit
+                        signal.
+        error         — yt-dlp raised an exception
+        max_retries   — both attempts failed
+
+    This is the observability layer that fixes the "133/133 refreshed,
+    0 new matches" lie. The cron summary now reports the outcome
+    distribution so a run dominated by `empty` is visibly degraded.
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -47,8 +76,10 @@ def _scrape_creator_accounts(usernames, start_date=None, max_workers=5):
     all_videos = []
     accounts_scraped = 0
     errors = []
+    outcomes: dict = {}
 
     def _scrape_one(username):
+        last_err: Optional[str] = None
         for attempt in range(2):
             try:
                 videos = scrape_tiktok_account(
@@ -59,10 +90,11 @@ def _scrape_creator_accounts(usernames, start_date=None, max_workers=5):
                 )
                 return username, videos, None
             except Exception as e:
+                last_err = str(e)
                 if attempt == 0:
                     continue
-                return username, [], str(e)
-        return username, [], "max retries"
+                return username, [], last_err
+        return username, [], last_err or "max_retries"
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(_scrape_one, u): u for u in usernames}
@@ -70,11 +102,21 @@ def _scrape_creator_accounts(usernames, start_date=None, max_workers=5):
             username, videos, error = future.result()
             if error:
                 errors.append(f"@{username}: {error}")
+                outcomes[username] = {
+                    "status": "error",
+                    "video_count": 0,
+                    "error": error,
+                }
             else:
                 all_videos.extend(videos)
                 accounts_scraped += 1
+                outcomes[username] = {
+                    "status": "ok" if videos else "empty",
+                    "video_count": len(videos),
+                    "error": None,
+                }
 
-    return all_videos, accounts_scraped, errors
+    return all_videos, accounts_scraped, errors, outcomes
 
 
 def _enhance_sound_ids(videos, max_workers=10):
@@ -257,8 +299,10 @@ def run_campaign_refresh():
             if earliest_start is None or d < earliest_start:
                 earliest_start = d
 
-        # Pre-scrape all unique creators + extract sound IDs
+        # Pre-scrape all unique creators + extract sound IDs.
+        # Uses v2 scraper to capture per-creator outcomes for observability.
         shared_videos = {}  # username -> [videos]
+        scrape_outcomes: dict = {}  # username -> {status, video_count, error}
         if all_usernames:
             log.info(
                 "CRON: pre-scraping %d unique creators across %d campaigns "
@@ -266,7 +310,7 @@ def run_campaign_refresh():
                 len(all_usernames), campaigns_total,
                 earliest_start.date().isoformat() if earliest_start else "none",
             )
-            all_scraped, _, _ = _scrape_creator_accounts(
+            all_scraped, _, _, scrape_outcomes = _scrape_creator_accounts_v2(
                 list(all_usernames),
                 start_date=earliest_start,
                 max_workers=5,
@@ -279,6 +323,15 @@ def run_campaign_refresh():
                 if acct:
                     shared_videos.setdefault(acct, []).append(v)
 
+        # Roll up scrape outcome distribution
+        outcome_counts = {"ok": 0, "empty": 0, "error": 0}
+        for o in scrape_outcomes.values():
+            s = o.get("status", "error")
+            outcome_counts[s] = outcome_counts.get(s, 0) + 1
+
+        # Track per-campaign new-match links for the daily digest
+        new_matches_by_campaign: dict = {}
+
         for meta in campaigns:
             slug = meta.get("slug", "")
             try:
@@ -290,11 +343,39 @@ def run_campaign_refresh():
                 per_campaign[slug] = {
                     "new_matches": result.get("new_matches", 0),
                     "total_matches": result.get("total_matches", 0),
+                    "match_strategy": meta.get("match_strategy", "fuzzy"),
+                    "match_strategy_breakdown": result.get("strategy_breakdown", {}),
                 }
+                if result.get("new_match_links"):
+                    new_matches_by_campaign[slug] = {
+                        "title": meta.get("title") or meta.get("name") or slug,
+                        "links": result["new_match_links"],
+                    }
             except Exception as e:
                 campaigns_failed += 1
                 errors.append(f"{slug}: {e}")
                 log.error("CRON: campaign %s failed: %s", slug, e)
+
+        # Anomaly detection
+        # 1. Empty rate — % of creators that returned 0 videos. >70% is the
+        #    rate-limit signal (TikTok blocked us, yt-dlp returned empty).
+        # 2. Zero-match anomaly — refreshed many campaigns but found nothing
+        #    new. Could be legit (slow day) but combined with high empty rate
+        #    means the system is broken, not just quiet.
+        total_creators_scraped = len(scrape_outcomes)
+        empty_rate = (
+            outcome_counts["empty"] / total_creators_scraped
+            if total_creators_scraped > 0
+            else 0.0
+        )
+        is_degraded = (
+            (empty_rate > 0.7 and total_creators_scraped > 5)
+            or (
+                campaigns_refreshed > 5
+                and total_new_matches == 0
+                and total_videos_checked == 0
+            )
+        )
 
         summary = {
             "campaigns_total": campaigns_total,
@@ -305,14 +386,23 @@ def run_campaign_refresh():
             "discovered_sound_ids": discovered_sound_ids,
             "errors": errors[:10],
             "per_campaign": per_campaign,
+            # New observability fields
+            "scrape_outcome_counts": outcome_counts,
+            "creators_scraped_total": total_creators_scraped,
+            "empty_creator_rate": round(empty_rate, 3),
+            "degraded": is_degraded,
         }
 
-        status = "completed"
-        _db.finish_cron_log(log_id, status, summary)
+        _db.finish_cron_log(log_id, "completed", summary)
         _post_campaign_refresh_slack(summary)
+        _post_new_matches_digest_slack(new_matches_by_campaign)
         _post_active_sounds_slack()
-        log.info("CRON: campaign_refresh done — %d/%d refreshed, %d new matches",
-                 campaigns_refreshed, campaigns_total, total_new_matches)
+        log.info(
+            "CRON: campaign_refresh done — %d/%d refreshed, %d new matches, "
+            "outcomes=%s degraded=%s",
+            campaigns_refreshed, campaigns_total, total_new_matches,
+            outcome_counts, is_degraded,
+        )
 
     except Exception as e:
         _db.finish_cron_log(log_id, "failed", {"error": str(e), "errors": errors[:10]})
@@ -385,19 +475,27 @@ def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None) 
         except ValueError:
             pass
 
-    # Step 3: Match using shared multi-strategy logic
+    # Step 3: Match using strategy specified by the campaign.
+    # "strict" disables fuzzy fallback + auto-discovery. Critical for
+    # original sound campaigns where multiple campaigns share an artist
+    # (e.g. Stella Lefty I-Know-I-Know vs Boston).
     tt_artist_label = meta.get("tt_artist_label", "")
-    matched = match_videos(all_videos, sound_ids, sound_keys, core_song_words, artist,
-                           match_fn=match_video_to_sounds, tt_artist_label=tt_artist_label)
+    match_strategy = meta.get("match_strategy", "fuzzy")
+    matched = match_videos(
+        all_videos, sound_ids, sound_keys, core_song_words, artist,
+        match_fn=match_video_to_sounds, tt_artist_label=tt_artist_label,
+        match_strategy=match_strategy,
+    )
 
-    # Step 4: Auto-discover original sounds from campaign creators
+    # Step 4: Auto-discover original sounds — fuzzy mode only
     extra_matched, discovered_sound_ids = discover_original_sounds(
         all_videos, matched, sound_ids, usernames, artist,
         tt_artist_label=tt_artist_label,
+        match_strategy=match_strategy,
     )
     matched.extend(extra_matched)
 
-    # Auto-add discovered sounds to campaign
+    # Auto-add discovered sounds to campaign (only happens in fuzzy mode now)
     if discovered_sound_ids:
         current_additional = list(meta.get("additional_sounds") or [])
         for sid in discovered_sound_ids:
@@ -408,7 +506,25 @@ def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None) 
         _db.save_campaign(slug, updated_meta)
 
     # Step 5: Merge — updates view/like counts for existing matches + adds new ones
+    existing_urls = {v.get("url") for v in existing_videos if v.get("url")}
+    new_match_links = []
+    for v in matched:
+        url = v.get("url", "")
+        if url and url not in existing_urls:
+            new_match_links.append({
+                "url": url,
+                "account": v.get("account", ""),
+                "views": v.get("views", 0),
+                "match_strategy": v.get("match_strategy", "unknown"),
+            })
+
     all_matched, new_count = merge_matched_videos(existing_videos, matched)
+
+    # Strategy breakdown — answers "how was each match found?"
+    strategy_breakdown: dict = {}
+    for v in matched:
+        s = v.get("match_strategy", "unknown")
+        strategy_breakdown[s] = strategy_breakdown.get(s, 0) + 1
 
     # Serialize timestamps
     for v in all_matched:
@@ -457,6 +573,8 @@ def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None) 
         "total_matches": len(all_matched),
         "videos_checked": len(all_videos),
         "discovered_sound_ids": discovered_sound_ids,
+        "strategy_breakdown": strategy_breakdown,
+        "new_match_links": new_match_links,
     }
 
 
@@ -553,22 +671,69 @@ def run_internal_scrape():
                 accounts_failed += 1
                 log.warning("CRON: internal cache merge failed for %s: %s", creator, e)
 
-        # Group filtered videos by song
+        # Group filtered videos.
+        #
+        # OLD behavior: group by "{song_title} - {artist}" text. This collapses
+        # every distinct "Original Sound - Stella Lefty" entry into ONE group
+        # even though TikTok treats them as different sounds with different
+        # numeric IDs (I-Know-I-Know vs Boston are both labeled "Original
+        # Sound - Stella Lefty" but have different sound IDs).
+        #
+        # NEW behavior: prefer extracted_sound_id as the grouping key when
+        # available. Each unique sound ID = one group. Title + artist are kept
+        # as display metadata. Falls back to title-based key only when no
+        # sound ID was extracted (rare).
         def _normalize_key(s: str) -> str:
             return re.sub(r"[^\w\s]", "", s.lower()).strip()
 
-        song_groups = {}
+        song_groups: dict = {}
         for v in filtered:
             s = v.get("song", "") or ""
             a = v.get("artist", "") or ""
-            if not s:
-                continue
-            key = f"{_normalize_key(s)} - {_normalize_key(a)}"
-            song_groups.setdefault(key, {"song": s, "artist": a, "videos": []})
+            sid = (v.get("extracted_sound_id") or v.get("music_id") or "").strip()
+
+            # Pick a grouping key: sound_id (preferred) or title+artist text
+            if sid:
+                key = f"sid:{sid}"
+            elif s:
+                key = f"text:{_normalize_key(s)} - {_normalize_key(a)}"
+            else:
+                continue  # no song info AND no sound id — skip
+
+            if key not in song_groups:
+                song_groups[key] = {
+                    "song": s,
+                    "artist": a,
+                    "sound_id": sid,
+                    "videos": [],
+                    "is_original_sound": (
+                        v.get("is_original_sound", False)
+                        or s.lower().startswith("original sound")
+                    ),
+                }
             song_groups[key]["videos"].append(v)
 
         songs_list = sorted(song_groups.values(), key=lambda x: len(x["videos"]), reverse=True)
         unique_songs = len(songs_list)
+
+        # Sanitize datetimes inside the songs JSONB blob — videos coming from
+        # yt-dlp / sound enhancement carry datetime objects in the `timestamp`
+        # field, which JSON cannot serialize. This bug has been failing the
+        # internal_scrape job daily for 10+ days.
+        def _sanitize_video(v: dict) -> dict:
+            out = dict(v)
+            ts = out.get("timestamp")
+            if isinstance(ts, datetime):
+                out["timestamp"] = ts.isoformat()
+            return out
+
+        sanitized_songs = []
+        for entry in songs_list[:100]:
+            entry_copy = dict(entry)
+            entry_copy["videos"] = [
+                _sanitize_video(v) for v in (entry.get("videos") or [])
+            ]
+            sanitized_songs.append(entry_copy)
 
         # Save results
         _db.save_internal_results({
@@ -581,7 +746,7 @@ def run_internal_scrape():
             "total_videos": len(filtered),
             "total_videos_unfiltered": len(all_videos),
             "unique_songs": unique_songs,
-            "songs": songs_list[:100],  # cap at 100 to avoid bloating DB
+            "songs": sanitized_songs,  # cap at 100 to avoid bloating DB
         })
 
         summary = {
@@ -593,15 +758,151 @@ def run_internal_scrape():
             "errors": [],
         }
 
+        # Cross-reference internal videos against active campaigns.
+        # Any internal video whose sound_id matches an active campaign
+        # gets attached to that campaign's matched_videos with
+        # match_strategy="internal_creator". This unifies the two pipelines
+        # so an internal creator post that hits a campaign sound shows up
+        # in the campaign's tracking queue, not just the internal song
+        # discovery view.
+        try:
+            campaign_attach_summary = _attach_internal_to_campaigns(filtered)
+            summary_attach_info = campaign_attach_summary
+        except Exception as e:
+            log.error("CRON: internal->campaign attach failed: %s", e)
+            summary_attach_info = {"error": str(e)}
+
+        summary["campaign_attach"] = summary_attach_info
         _db.finish_cron_log(log_id, "completed", summary)
         _post_internal_scrape_slack(summary)
-        log.info("CRON: internal_scrape done — %d accounts, %d videos, %d songs",
-                 len(creators), len(filtered), unique_songs)
+        log.info(
+            "CRON: internal_scrape done — %d accounts, %d videos, %d songs, "
+            "%d internal->campaign attaches",
+            len(creators), len(filtered), unique_songs,
+            (summary_attach_info or {}).get("attached_count", 0)
+            if isinstance(summary_attach_info, dict) else 0,
+        )
 
     except Exception as e:
         _db.finish_cron_log(log_id, "failed", {"error": str(e)})
         _post_failure_slack("internal_scrape", str(e))
         log.error("CRON: internal_scrape failed: %s", e)
+
+
+def _attach_internal_to_campaigns(internal_videos: list) -> dict:
+    """For each internal-scrape video whose sound ID matches an active
+    campaign sound, attach it to that campaign's matched_videos.
+
+    Disambiguation rule when multiple campaigns share a sound ID
+    (typical for rounds: r3, r4, r6 may all use the same sound):
+        Latest active round wins (highest start_date).
+        If start_dates tie, latest created_at wins.
+
+    Returns a dict summary:
+        {
+          "attached_count": int,
+          "campaigns_touched": int,
+          "skipped_no_sound_id": int,
+          "skipped_no_active_campaign": int,
+          "per_campaign": {slug: count, ...}
+        }
+
+    Only auto-attaches in fuzzy mode OR when the campaign explicitly
+    accepts internal hits. In strict mode, attachment STILL happens
+    because the match is sound-ID-exact (the whole point of strict).
+    """
+    from campaign_manager.services.matching import merge_matched_videos
+
+    attached_count = 0
+    skipped_no_sound_id = 0
+    skipped_no_active_campaign = 0
+    per_campaign: dict = {}
+
+    if not internal_videos:
+        return {
+            "attached_count": 0,
+            "campaigns_touched": 0,
+            "skipped_no_sound_id": 0,
+            "skipped_no_active_campaign": 0,
+            "per_campaign": {},
+        }
+
+    # Build sound_id -> winning campaign lookup
+    campaigns = _db.list_campaigns(status="active")
+    sound_to_campaign: dict = {}  # sound_id -> meta
+
+    for meta in campaigns:
+        sids = []
+        primary = (meta.get("sound_id") or "").strip()
+        if primary and primary != "-" and len(primary) >= 5:
+            sids.append(primary)
+        for sid in (meta.get("additional_sounds") or []):
+            s = (sid or "").strip()
+            if s and s != "-" and len(s) >= 5 and s not in sids:
+                sids.append(s)
+
+        for sid in sids:
+            existing = sound_to_campaign.get(sid)
+            if existing is None:
+                sound_to_campaign[sid] = meta
+                continue
+
+            # Disambiguation: latest start_date wins
+            def _start_key(m):
+                return (m.get("start_date") or "", m.get("created_at") or "")
+
+            if _start_key(meta) > _start_key(existing):
+                sound_to_campaign[sid] = meta
+
+    # Group internal videos by which campaign they should attach to
+    by_campaign: dict = {}  # campaign_slug -> [video_dicts_to_attach]
+    for v in internal_videos:
+        sid = (v.get("extracted_sound_id") or v.get("music_id") or "").strip()
+        if not sid:
+            skipped_no_sound_id += 1
+            continue
+        winning = sound_to_campaign.get(sid)
+        if winning is None:
+            skipped_no_active_campaign += 1
+            continue
+        # Tag and stage for attach
+        attach_v = dict(v)
+        attach_v["match_strategy"] = "internal_creator"
+        slug = winning.get("slug", "")
+        if not slug:
+            continue
+        by_campaign.setdefault(slug, []).append(attach_v)
+
+    # Merge into each campaign's matched_videos
+    for slug, vids in by_campaign.items():
+        try:
+            existing = _db.get_matched_videos(slug)
+            all_matched, new_count = merge_matched_videos(existing, vids)
+            # Sanitize timestamps
+            for v in all_matched:
+                if isinstance(v.get("timestamp"), datetime):
+                    v["timestamp"] = v["timestamp"].isoformat()
+            _db.replace_matched_videos(slug, all_matched)
+            attached_count += new_count
+            per_campaign[slug] = new_count
+
+            # Refresh campaign-level totals when there were new attaches
+            if new_count > 0:
+                total_views = sum(v.get("views", 0) or 0 for v in all_matched)
+                total_likes = sum(v.get("likes", 0) or 0 for v in all_matched)
+                _db.update_campaign_stats(slug, total_views, total_likes)
+        except Exception as e:
+            log.warning(
+                "CRON: failed to attach internal videos to %s: %s", slug, e
+            )
+
+    return {
+        "attached_count": attached_count,
+        "campaigns_touched": len(by_campaign),
+        "skipped_no_sound_id": skipped_no_sound_id,
+        "skipped_no_active_campaign": skipped_no_active_campaign,
+        "per_campaign": per_campaign,
+    }
 
 
 # ── Slack Notifications ──────────────────────────────────────────────
@@ -625,7 +926,11 @@ def _get_cron_channel() -> str:
 
 
 def _post_campaign_refresh_slack(summary: dict):
-    """Post campaign refresh results to Slack."""
+    """Post campaign refresh results to Slack with anomaly detection.
+
+    Stops lying about success when nothing actually worked. A run with
+    `degraded=True` posts a :warning: header so the team sees it loud.
+    """
     client = _get_slack_client()
     channel = _get_cron_channel()
     if not client or not channel:
@@ -636,11 +941,42 @@ def _post_campaign_refresh_slack(summary: dict):
     total = summary.get("campaigns_total", 0)
     new_matches = summary.get("total_new_matches", 0)
     failed = summary.get("campaigns_failed", 0)
+    degraded = summary.get("degraded", False)
+    outcomes = summary.get("scrape_outcome_counts", {})
+    creators_total = summary.get("creators_scraped_total", 0)
+    empty_rate = summary.get("empty_creator_rate", 0)
+    videos_checked = summary.get("total_videos_checked", 0)
 
-    lines = [f"*Daily campaign refresh complete* ({now})"]
-    lines.append(f"Campaigns: {refreshed}/{total} refreshed, {new_matches} new matches found")
+    header = (
+        ":warning: *Daily campaign refresh DEGRADED*"
+        if degraded
+        else "*Daily campaign refresh complete*"
+    )
+    lines = [f"{header} ({now})"]
+    lines.append(
+        f"Campaigns: {refreshed}/{total} refreshed | "
+        f"Videos checked: {videos_checked} | "
+        f"New matches: {new_matches}"
+    )
+
+    if creators_total > 0:
+        ok = outcomes.get("ok", 0)
+        empty = outcomes.get("empty", 0)
+        err_count = outcomes.get("error", 0)
+        lines.append(
+            f"Creators: {creators_total} scraped — "
+            f"{ok} returned videos, {empty} empty, {err_count} errored "
+            f"({int(empty_rate * 100)}% empty rate)"
+        )
+
+    if degraded:
+        lines.append(
+            "_Run produced no useful data. Likely TikTok rate-limited yt-dlp "
+            "(empty rate over 70%) or matching is broken. Check logs._"
+        )
+
     if failed:
-        lines.append(f":warning: {failed} campaign(s) failed")
+        lines.append(f":x: {failed} campaign(s) failed")
         for err in summary.get("errors", [])[:3]:
             lines.append(f"  - {err}")
 
@@ -648,6 +984,64 @@ def _post_campaign_refresh_slack(summary: dict):
         client.chat_postMessage(channel=channel, text="\n".join(lines))
     except Exception as e:
         log.error("CRON: Slack post failed: %s", e)
+
+
+def _post_new_matches_digest_slack(new_matches_by_campaign: dict):
+    """Post a daily digest of NEW matched links per campaign for the human
+    whose job is to copy these into tracking tools.
+
+    One Slack message. One section per campaign that has new matches.
+    Older view-count updates are NOT included — only links that didn't
+    exist before today.
+    """
+    if not new_matches_by_campaign:
+        return
+
+    client = _get_slack_client()
+    channel = _get_cron_channel()
+    if not client or not channel:
+        return
+
+    total_new = sum(len(d["links"]) for d in new_matches_by_campaign.values())
+    if total_new == 0:
+        return
+
+    now = datetime.now(EST).strftime("%a %b %-d, %-I:%M %p EST")
+    lines = [
+        f"*New matched links to add to tracking* — {now}",
+        f"_{total_new} new link(s) across {len(new_matches_by_campaign)} campaign(s). "
+        f"Copy into the tracking tools._",
+        "",
+    ]
+
+    # Sort campaigns by new-link count, descending
+    sorted_campaigns = sorted(
+        new_matches_by_campaign.items(),
+        key=lambda kv: len(kv[1]["links"]),
+        reverse=True,
+    )
+
+    for slug, data in sorted_campaigns:
+        title = data.get("title") or slug
+        links = data.get("links", [])
+        if not links:
+            continue
+        lines.append(f"*{title}* ({len(links)} new)")
+        for link in links[:25]:  # cap per campaign to avoid Slack length limits
+            url = link.get("url", "")
+            account = link.get("account", "")
+            views = link.get("views", 0) or 0
+            strategy = link.get("match_strategy", "")
+            strat_tag = f" [{strategy}]" if strategy and strategy != "sound_id" else ""
+            lines.append(f"  • {account} — {url} ({views:,} views){strat_tag}")
+        if len(links) > 25:
+            lines.append(f"  _… and {len(links) - 25} more_")
+        lines.append("")
+
+    try:
+        client.chat_postMessage(channel=channel, text="\n".join(lines))
+    except Exception as e:
+        log.error("CRON: digest Slack post failed: %s", e)
 
 
 def _post_internal_scrape_slack(summary: dict):

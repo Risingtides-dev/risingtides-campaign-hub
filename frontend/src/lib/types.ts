@@ -448,3 +448,58 @@ export interface Tracker {
   campaign_slug: string | null     // local overlay
   campaign: TrackerCampaignRef | null
 }
+
+// Scrape Tasks tab — the dedicated tracking workflow
+export interface ScrapeTaskVideo {
+  id: number
+  url: string
+  account: string
+  views: number
+  likes: number
+  song: string
+  match_strategy: string
+  extracted_sound_id: string
+  first_seen_at: string
+  timestamp: string
+  upload_date: string
+}
+
+export interface ScrapeTaskCampaign {
+  slug: string
+  title: string
+  artist: string
+  song: string
+  match_strategy: "fuzzy" | "strict"
+  completion_status: "none" | "booked" | "completed"
+  round: string
+  untracked_count: number
+  videos: ScrapeTaskVideo[]
+}
+
+export interface ScrapeTaskQueue {
+  total_untracked: number
+  campaigns: ScrapeTaskCampaign[]
+}
+
+export interface ScrapeTaskHealthRun {
+  id: number
+  status: string
+  started_at: string
+  finished_at: string
+  degraded: boolean
+  campaigns_refreshed: number
+  total_new_matches: number
+  empty_creator_rate: number
+}
+
+export interface ScrapeTaskHealth {
+  last_run: {
+    id?: number
+    job_type?: string
+    status?: string
+    started_at?: string
+    finished_at?: string
+    summary?: Record<string, unknown>
+  } | null
+  history: ScrapeTaskHealthRun[]
+}

@@ -146,6 +146,75 @@ def init(database_url: Optional[str] = None):
     except Exception:
         pass
 
+    # Add match_strategy field to campaigns. "fuzzy" preserves existing
+    # behavior; "strict" disables fuzzy fallback for original sound campaigns
+    # where multiple campaigns share an artist (Stella Lefty I-Know-I-Know
+    # vs Boston) — fuzzy fallback was causing cross-campaign false positives.
+    try:
+        with _SessionLocal() as s:
+            s.execute(
+                __import__("sqlalchemy").text(
+                    "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS match_strategy VARCHAR(20) DEFAULT 'fuzzy'"
+                )
+            )
+            s.commit()
+    except Exception:
+        pass
+
+    # Add tracking-workflow + match metadata to matched_videos.
+    # - first_seen_at: when the cron first matched this video (used by
+    #   the Scrape Tasks tab to show "new since" filtering)
+    # - tracked_at: set when a human marks "I copied this into Cobrand"
+    # - tracked_by: optional audit trail
+    # - match_strategy: how the match was found (sound_id|fuzzy|internal_creator)
+    #
+    # IMPORTANT: backfill tracked_at = NOW() for every PRE-EXISTING matched
+    # video so the Scrape Tasks tab starts at a clean zero queue. Only NEW
+    # matches from the next cron run forward show up as untracked. Without
+    # this backfill, your employee opens the tab and sees thousands of
+    # historical videos all flagged as "needs tracking" which is useless.
+    try:
+        with _SessionLocal() as s:
+            sa = __import__("sqlalchemy")
+            s.execute(sa.text(
+                "ALTER TABLE matched_videos "
+                "ADD COLUMN IF NOT EXISTS first_seen_at TIMESTAMP NULL"
+            ))
+            s.execute(sa.text(
+                "ALTER TABLE matched_videos "
+                "ADD COLUMN IF NOT EXISTS tracked_at TIMESTAMP NULL"
+            ))
+            s.execute(sa.text(
+                "ALTER TABLE matched_videos "
+                "ADD COLUMN IF NOT EXISTS tracked_by VARCHAR(100) DEFAULT ''"
+            ))
+            s.execute(sa.text(
+                "ALTER TABLE matched_videos "
+                "ADD COLUMN IF NOT EXISTS match_strategy VARCHAR(50) DEFAULT ''"
+            ))
+            s.execute(sa.text(
+                "CREATE INDEX IF NOT EXISTS idx_matched_videos_tracked_at "
+                "ON matched_videos (tracked_at)"
+            ))
+
+            # Backfill ONLY rows that haven't been seen before — covers a
+            # fresh deploy where pre-existing rows should be considered
+            # already-handled. Idempotent: subsequent runs are no-ops.
+            s.execute(sa.text(
+                "UPDATE matched_videos "
+                "SET first_seen_at = NOW() "
+                "WHERE first_seen_at IS NULL"
+            ))
+            s.execute(sa.text(
+                "UPDATE matched_videos "
+                "SET tracked_at = NOW() "
+                "WHERE tracked_at IS NULL "
+                "AND first_seen_at < NOW() - INTERVAL '5 minutes'"
+            ))
+            s.commit()
+    except Exception:
+        pass
+
     # manychat_messages table is created by Base.metadata.create_all above.
     # No migration block needed -- it's additive only.
 
@@ -386,37 +455,74 @@ def save_matched_videos(slug: str, videos: List[Dict]):
 
 
 def replace_matched_videos(slug: str, videos: List[Dict]):
-    """Replace all matched videos for a campaign (full overwrite)."""
+    """Upsert matched videos for a campaign by URL.
+
+    NOTE: This used to do a full delete + reinsert, which destroyed
+    `tracked_at` and other tracking-workflow state on every cron run.
+    Now it upserts by URL — existing rows get stat updates and keep
+    their tracked_at, while new URLs are inserted with first_seen_at=NOW().
+
+    URLs in the existing matched_videos table that are NOT in the new
+    `videos` list are LEFT ALONE — they continue to exist (so the human's
+    tracking history doesn't get wiped if the scraper temporarily fails).
+    """
     with get_session() as s:
         c = s.query(Campaign).filter_by(slug=slug).first()
         if not c:
             return
 
-        s.query(MatchedVideo).filter_by(campaign_id=c.id).delete()
+        # Index existing rows by URL
+        existing_rows = s.query(MatchedVideo).filter_by(campaign_id=c.id).all()
+        existing_by_url = {row.url: row for row in existing_rows}
 
         seen = set()
+        now = datetime.now()
         for vd in videos:
             url = vd.get("url", "")
             if not url or url in seen:
                 continue
             seen.add(url)
 
-            mv = MatchedVideo(
-                campaign_id=c.id,
-                url=url,
-                song=vd.get("song", ""),
-                artist=vd.get("artist", ""),
-                account=vd.get("account", ""),
-                views=int(vd.get("views", 0) or 0),
-                likes=int(vd.get("likes", 0) or 0),
-                upload_date=vd.get("upload_date", ""),
-                timestamp=str(vd.get("timestamp", "")),
-                music_id=vd.get("music_id", ""),
-                platform=vd.get("platform", "tiktok"),
-                extracted_sound_id=vd.get("extracted_sound_id", ""),
-                extracted_song_title=vd.get("extracted_song_title", ""),
-            )
-            s.add(mv)
+            row = existing_by_url.get(url)
+            if row is not None:
+                # UPDATE — refresh stats + match metadata, preserve tracked_at
+                row.song = vd.get("song", row.song)
+                row.artist = vd.get("artist", row.artist)
+                row.account = vd.get("account", row.account)
+                row.views = int(vd.get("views", row.views) or 0)
+                row.likes = int(vd.get("likes", row.likes) or 0)
+                row.upload_date = vd.get("upload_date", row.upload_date)
+                row.timestamp = str(vd.get("timestamp", row.timestamp))
+                if vd.get("music_id"):
+                    row.music_id = vd.get("music_id")
+                if vd.get("extracted_sound_id"):
+                    row.extracted_sound_id = vd.get("extracted_sound_id")
+                if vd.get("extracted_song_title"):
+                    row.extracted_song_title = vd.get("extracted_song_title")
+                if vd.get("match_strategy"):
+                    row.match_strategy = vd.get("match_strategy")
+                # tracked_at, tracked_by, first_seen_at intentionally NOT
+                # overwritten — those are human-maintained workflow state
+            else:
+                # INSERT new
+                mv = MatchedVideo(
+                    campaign_id=c.id,
+                    url=url,
+                    song=vd.get("song", ""),
+                    artist=vd.get("artist", ""),
+                    account=vd.get("account", ""),
+                    views=int(vd.get("views", 0) or 0),
+                    likes=int(vd.get("likes", 0) or 0),
+                    upload_date=vd.get("upload_date", ""),
+                    timestamp=str(vd.get("timestamp", "")),
+                    music_id=vd.get("music_id", ""),
+                    platform=vd.get("platform", "tiktok"),
+                    extracted_sound_id=vd.get("extracted_sound_id", ""),
+                    extracted_song_title=vd.get("extracted_song_title", ""),
+                    match_strategy=vd.get("match_strategy", ""),
+                    first_seen_at=now,
+                )
+                s.add(mv)
 
         s.commit()
 
