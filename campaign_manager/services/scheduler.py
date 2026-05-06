@@ -505,18 +505,75 @@ def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None) 
         updated_meta["additional_sounds"] = current_additional
         _db.save_campaign(slug, updated_meta)
 
+    # Cobrand cross-check — for every tracker that covers any of this
+    # campaign's sound IDs, fetch its submitted-videos list and pre-mark
+    # scraped matches that are already in Cobrand as tracked. This is the
+    # difference between a noisy "queue full of stuff already in Cobrand"
+    # and a useful "queue of new links the human still needs to paste."
+    #
+    # Tracker discovery is sound-ID-based (no manual linking required).
+    # A campaign with rounds may have multiple trackers — we query all of
+    # them and union the tracked-URLs sets.
+    cobrand_tracked_count = 0
+    try:
+        from campaign_manager.services.tracker_discovery import (
+            find_trackers_for_campaign,
+        )
+        from campaign_manager.services.tidestracker import (
+            get_tracked_videos as _get_tv,
+            normalize_video_url as _norm,
+            extract_video_id as _vid,
+        )
+
+        tracker_matches = find_trackers_for_campaign(meta)
+
+        if tracker_matches:
+            # Union tracked URLs from every tracker that covers this campaign's sounds
+            all_tracked_urls: set = set()
+            all_tracked_vids: set = set()
+            for tm in tracker_matches:
+                tv = _get_tv(tm["tracker_id"])
+                if tv.get("ok"):
+                    all_tracked_urls |= tv.get("urls") or set()
+                    all_tracked_vids |= tv.get("video_ids") or set()
+
+            # Tag every matched video that's already in Cobrand
+            from datetime import datetime as _dt_now
+            now_iso = _dt_now.now().isoformat()
+            for v in matched:
+                u = v.get("url", "")
+                if not u:
+                    continue
+                norm_u = _norm(u)
+                vid = _vid(u)
+                if norm_u in all_tracked_urls or (vid and vid in all_tracked_vids):
+                    v["tracked_at"] = now_iso
+                    v["tracked_by"] = "cobrand_auto"
+                    cobrand_tracked_count += 1
+    except Exception as e:
+        log.warning(
+            "CRON: cobrand cross-check failed for %s: %s",
+            slug, e,
+        )
+
     # Step 5: Merge — updates view/like counts for existing matches + adds new ones
     existing_urls = {v.get("url") for v in existing_videos if v.get("url")}
     new_match_links = []
     for v in matched:
         url = v.get("url", "")
-        if url and url not in existing_urls:
-            new_match_links.append({
-                "url": url,
-                "account": v.get("account", ""),
-                "views": v.get("views", 0),
-                "match_strategy": v.get("match_strategy", "unknown"),
-            })
+        if not url or url in existing_urls:
+            continue
+        # Skip videos already auto-tracked from Cobrand — they shouldn't
+        # surface in the daily new-links digest. Your coworker doesn't need
+        # to know about them; they're already in tracking.
+        if v.get("tracked_at"):
+            continue
+        new_match_links.append({
+            "url": url,
+            "account": v.get("account", ""),
+            "views": v.get("views", 0),
+            "match_strategy": v.get("match_strategy", "unknown"),
+        })
 
     all_matched, new_count = merge_matched_videos(existing_videos, matched)
 

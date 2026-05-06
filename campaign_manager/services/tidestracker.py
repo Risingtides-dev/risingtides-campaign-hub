@@ -97,6 +97,147 @@ def create_tracker_campaign(
     return tracker_campaign_id, tracker_url
 
 
+def normalize_video_url(url: str) -> str:
+    """Normalize a TikTok/IG URL for cross-system comparison.
+
+    Scraper stores URLs as `https://www.tiktok.com/@user/video/<id>`.
+    TidesTracker public API returns `https://tiktok.com/@user/video/<id>` (no www).
+    Lowercase, strip www, strip trailing slash. The video ID at the end is
+    the real join key — everything before it is normalized.
+    """
+    if not url:
+        return ""
+    u = url.strip().lower()
+    if u.startswith("https://www."):
+        u = "https://" + u[len("https://www."):]
+    elif u.startswith("http://www."):
+        u = "http://" + u[len("http://www."):]
+    if u.endswith("/"):
+        u = u[:-1]
+    # Drop query strings — they don't change which video this is
+    if "?" in u:
+        u = u.split("?", 1)[0]
+    return u
+
+
+def extract_video_id(url: str) -> str:
+    """Pull the trailing numeric video ID out of a TikTok URL.
+
+    Used as a backup join key in case URL normalization differs in
+    unexpected ways (mobile vs web URLs, redirects, etc.).
+    """
+    if not url:
+        return ""
+    import re
+    m = re.search(r"/video/(\d+)", url)
+    return m.group(1) if m else ""
+
+
+# Per-tracker cache for the public submissions list.
+# In-process, 5-minute TTL — saves hammering risingtides-tracker.com on
+# every cron run. Cron runs once daily so we mostly miss the cache, but
+# the manual refresh button + Scrape Tasks queue may hit the same tracker
+# multiple times in a session.
+import time as _time
+_tracker_videos_cache: Dict[str, Tuple[float, Dict]] = {}
+_TRACKER_CACHE_TTL = 300  # seconds
+
+
+def get_tracked_videos(tracker_id: str, force: bool = False) -> Dict:
+    """Fetch the list of videos already submitted to Cobrand for this tracker.
+
+    Returns a dict:
+        {
+            "ok": bool,
+            "tracker_id": str,
+            "fetched_at": iso str,
+            "count": int,
+            "urls": Set[str]      # normalized URLs
+            "video_ids": Set[str] # numeric video IDs (backup join key)
+            "raw_videos": List[Dict]  # full payload from TidesTracker
+        }
+
+    Hits the auth-free TidesTracker public endpoint:
+        GET https://risingtides-tracker.com/api/public/<tracker_id>
+
+    Returns ok=False if tracker_id is missing, the request fails, or the
+    payload doesn't contain a videos array. Callers should treat that as
+    "we don't know what's in Cobrand for this campaign — show all matches
+    in the queue conservatively."
+    """
+    if not tracker_id:
+        return {
+            "ok": False, "tracker_id": "", "count": 0,
+            "urls": set(), "video_ids": set(), "raw_videos": [],
+            "error": "no tracker_id",
+        }
+
+    now = _time.time()
+    if not force:
+        cached = _tracker_videos_cache.get(tracker_id)
+        if cached and (now - cached[0]) < _TRACKER_CACHE_TTL:
+            return cached[1]
+
+    url = f"{TIDESTRACKER_PUBLIC_URL.rstrip('/')}/api/public/{tracker_id}"
+    try:
+        resp = _requests.get(url, timeout=15, headers={"Accept": "application/json"})
+        resp.raise_for_status()
+        payload = resp.json()
+    except Exception as e:
+        result = {
+            "ok": False, "tracker_id": tracker_id, "count": 0,
+            "urls": set(), "video_ids": set(), "raw_videos": [],
+            "error": str(e),
+        }
+        # Don't cache failures — retry next call
+        return result
+
+    videos = payload.get("videos") or []
+    urls: set = set()
+    vids: set = set()
+    for v in videos:
+        u = v.get("video_url") or ""
+        if u:
+            urls.add(normalize_video_url(u))
+            vid = extract_video_id(u)
+            if vid:
+                vids.add(vid)
+
+    result = {
+        "ok": True,
+        "tracker_id": tracker_id,
+        "fetched_at": payload.get("fetched_at") or "",
+        "count": len(videos),
+        "urls": urls,
+        "video_ids": vids,
+        "raw_videos": videos,
+    }
+    _tracker_videos_cache[tracker_id] = (now, result)
+    return result
+
+
+def is_video_tracked(tracker_id: str, video_url: str) -> bool:
+    """Return True if this video URL is already submitted to Cobrand for
+    the given tracker. Uses normalized URL match first, video-ID match as
+    a fallback for edge cases (mobile URLs, etc.).
+
+    If tracker_id is missing or the public fetch fails, returns False —
+    we conservatively let the link show up in the queue rather than hide it.
+    """
+    if not tracker_id or not video_url:
+        return False
+    cache = get_tracked_videos(tracker_id)
+    if not cache["ok"]:
+        return False
+    norm = normalize_video_url(video_url)
+    if norm in cache["urls"]:
+        return True
+    vid = extract_video_id(video_url)
+    if vid and vid in cache["video_ids"]:
+        return True
+    return False
+
+
 def list_tracker_campaigns(client_id: Optional[str] = None) -> List[Dict]:
     """Fetch all active campaigns from TidesTracker via the service-key API.
 

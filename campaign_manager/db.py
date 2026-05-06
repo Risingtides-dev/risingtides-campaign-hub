@@ -501,10 +501,36 @@ def replace_matched_videos(slug: str, videos: List[Dict]):
                     row.extracted_song_title = vd.get("extracted_song_title")
                 if vd.get("match_strategy"):
                     row.match_strategy = vd.get("match_strategy")
-                # tracked_at, tracked_by, first_seen_at intentionally NOT
-                # overwritten — those are human-maintained workflow state
+
+                # If the cron determined this video is now in Cobrand and the
+                # row hasn't been marked tracked yet, auto-mark it. Don't
+                # overwrite a human's existing tracked_at (preserves audit).
+                incoming_tracked = vd.get("tracked_at")
+                if incoming_tracked and row.tracked_at is None:
+                    if isinstance(incoming_tracked, str):
+                        try:
+                            row.tracked_at = datetime.fromisoformat(incoming_tracked)
+                        except Exception:
+                            pass
+                    elif isinstance(incoming_tracked, datetime):
+                        row.tracked_at = incoming_tracked
+                    if vd.get("tracked_by") and not row.tracked_by:
+                        row.tracked_by = vd.get("tracked_by")
             else:
-                # INSERT new
+                # INSERT new — honor incoming tracked_at if the cron already
+                # determined this video is in Cobrand (cross-check at scrape
+                # time means the row never enters the Scrape Tasks queue).
+                incoming_tracked = vd.get("tracked_at")
+                if isinstance(incoming_tracked, str) and incoming_tracked:
+                    try:
+                        tracked_at_val = datetime.fromisoformat(incoming_tracked)
+                    except Exception:
+                        tracked_at_val = None
+                elif isinstance(incoming_tracked, datetime):
+                    tracked_at_val = incoming_tracked
+                else:
+                    tracked_at_val = None
+
                 mv = MatchedVideo(
                     campaign_id=c.id,
                     url=url,
@@ -521,6 +547,8 @@ def replace_matched_videos(slug: str, videos: List[Dict]):
                     extracted_song_title=vd.get("extracted_song_title", ""),
                     match_strategy=vd.get("match_strategy", ""),
                     first_seen_at=now,
+                    tracked_at=tracked_at_val,
+                    tracked_by=vd.get("tracked_by", ""),
                 )
                 s.add(mv)
 
@@ -1565,6 +1593,50 @@ def get_tracker_campaign_links() -> Dict[str, str]:
     with get_session() as s:
         rows = s.query(TrackerCampaignLink.tracker_id, TrackerCampaignLink.campaign_slug).all()
         return {tid: slug for tid, slug in rows}
+
+
+def get_tracker_id_for_campaign(slug: str) -> str:
+    """Return the TidesTracker UUID linked to this campaign, or empty string.
+
+    Checks two sources in order:
+        1. campaigns.tracker_campaign_id (newer canonical field)
+        2. tracker_campaign_links overlay table (legacy manual mapping)
+
+    The unification work folds these into one — until then, both are checked.
+    """
+    if not slug:
+        return ""
+    with get_session() as s:
+        # Source 1 — campaigns row
+        c = s.query(Campaign).filter_by(slug=slug).first()
+        if c and (c.tracker_campaign_id or "").strip():
+            return c.tracker_campaign_id
+
+        # Source 2 — overlay table
+        row = s.query(TrackerCampaignLink).filter_by(campaign_slug=slug).first()
+        if row:
+            return row.tracker_id or ""
+    return ""
+
+
+def get_campaign_to_tracker_map() -> Dict[str, str]:
+    """Return {campaign_slug: tracker_id} for every campaign that has a
+    tracker (from either source). Used by the cron to look up trackers in
+    bulk without hitting the DB once per campaign.
+    """
+    result: Dict[str, str] = {}
+    with get_session() as s:
+        # Source 1
+        for c in s.query(Campaign.slug, Campaign.tracker_campaign_id).all():
+            slug, tid = c[0], (c[1] or "").strip()
+            if slug and tid:
+                result[slug] = tid
+        # Source 2 — fill in gaps without overwriting source 1
+        for row in s.query(TrackerCampaignLink.campaign_slug, TrackerCampaignLink.tracker_id).all():
+            slug, tid = row[0], (row[1] or "").strip()
+            if slug and tid and slug not in result:
+                result[slug] = tid
+    return result
 
 
 def set_tracker_campaign_link(tracker_id: str, campaign_slug: Optional[str]) -> None:
