@@ -150,25 +150,34 @@ def _campaign_sound_ids(meta: dict) -> List[str]:
 
 
 def find_trackers_for_campaign(meta: dict) -> List[Dict]:
-    """Return list of tracker entries whose sound IDs overlap with this
-    campaign's sound IDs.
+    """Return list of tracker entries linked to this campaign.
 
-    Each entry is a tracker dict from build_sound_to_trackers_map() with
-    one extra field: `matched_sound_ids` — the specific sound IDs that
-    overlap. Useful for surfacing exactly why a tracker was matched.
+    Two sources, unioned:
+      1. Sound-ID overlap (auto): the campaign and tracker reference the
+         same TikTok sound ID.
+      2. Manual override (`tracker_campaign_links` table): a human pinned
+         this tracker to this campaign on the TidesTrackers tab. Used for
+         cases where sound IDs don't overlap (e.g. re-uploaded original
+         sounds, or trackers covering multi-sound rounds).
+
+    Each entry has:
+      - the tracker's metadata (id, name, share link, etc.)
+      - `matched_sound_ids`: which campaign sounds overlap (may be empty
+        if the link is manual-only)
+      - `link_source`: "sound_id" | "manual" | "both"
     """
+    from campaign_manager import db as _db
+
     sound_map = build_sound_to_trackers_map()
     camp_sounds = _campaign_sound_ids(meta)
-    if not camp_sounds:
-        return []
+    slug = (meta.get("slug") or "").strip()
 
-    seen_trackers: Set[str] = set()
     matches: List[Dict] = []
+
+    # Source 1: sound-ID overlap
     for cs in camp_sounds:
         for hit in sound_map.get(cs, []):
             tid = hit["tracker_id"]
-            # Dedup — a tracker covering multiple of the campaign's sounds
-            # only appears once, but we accumulate all matched sound IDs
             existing = next((m for m in matches if m["tracker_id"] == tid), None)
             if existing:
                 if cs not in existing["matched_sound_ids"]:
@@ -176,8 +185,52 @@ def find_trackers_for_campaign(meta: dict) -> List[Dict]:
             else:
                 entry = dict(hit)
                 entry["matched_sound_ids"] = [cs]
+                entry["link_source"] = "sound_id"
                 matches.append(entry)
-                seen_trackers.add(tid)
+
+    # Source 2: manual links (overlay table)
+    if slug:
+        try:
+            manual_links = _db.get_tracker_campaign_links()  # {tracker_id: slug}
+        except Exception:
+            manual_links = {}
+        manually_linked_tids = {tid for tid, s in manual_links.items() if s == slug}
+
+        # Build a quick tracker_id -> first hit lookup so we can fill in
+        # tracker metadata for manual links that don't have a sound match
+        tid_to_hit: Dict[str, Dict] = {}
+        for hits in sound_map.values():
+            for hit in hits:
+                tid_to_hit.setdefault(hit["tracker_id"], hit)
+
+        for tid in manually_linked_tids:
+            existing = next((m for m in matches if m["tracker_id"] == tid), None)
+            if existing:
+                # Already auto-matched — promote source to "both"
+                existing["link_source"] = "both"
+                continue
+            hit = tid_to_hit.get(tid)
+            if hit:
+                entry = dict(hit)
+                entry["matched_sound_ids"] = []
+                entry["link_source"] = "manual"
+                matches.append(entry)
+            else:
+                # Manual link to a tracker we couldn't fetch metadata for —
+                # still surface it so the cron can hit its public API.
+                matches.append({
+                    "tracker_id": tid,
+                    "tracker_name": "",
+                    "tracker_slug": "",
+                    "tracker_is_active": True,
+                    "promo_name": "",
+                    "activation_name": "",
+                    "sound_title": "",
+                    "cobrand_share_link": "",
+                    "matched_sound_ids": [],
+                    "link_source": "manual",
+                })
+
     return matches
 
 

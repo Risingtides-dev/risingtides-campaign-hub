@@ -447,6 +447,15 @@ export interface Tracker {
   group_id: number | null          // local overlay
   campaign_slug: string | null     // local overlay
   campaign: TrackerCampaignRef | null
+  // Sound-ID auto-suggestions: campaigns whose sound_ids overlap with
+  // this tracker's. UI surfaces these so the user can one-click link.
+  auto_suggested_campaigns: TrackerCampaignSuggestion[]
+}
+
+export interface TrackerCampaignSuggestion {
+  slug: string
+  title: string
+  matched_sound_ids: string[]
 }
 
 // Scrape Tasks tab — the dedicated tracking workflow

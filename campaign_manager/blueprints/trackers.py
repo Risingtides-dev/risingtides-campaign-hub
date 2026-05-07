@@ -40,8 +40,14 @@ def _hydrate(
     names: dict,
     campaign_links: dict,
     campaigns_by_slug: dict,
+    tracker_to_suggestions: dict,
 ) -> dict:
-    """Convert a TidesTracker API row into the shape the frontend expects."""
+    """Convert a TidesTracker API row into the shape the frontend expects.
+
+    `tracker_to_suggestions` maps tracker_id -> list of suggested campaigns
+    (slug + title) whose sound IDs overlap with this tracker's sounds.
+    Surfaces "you should probably link this tracker to <campaign>" in the UI.
+    """
     tid = tracker.get("id") or ""
     original_name = tracker.get("name") or ""
     override = names.get(tid) or ""
@@ -60,6 +66,7 @@ def _hydrate(
         "group_id": assignments.get(tid),
         "campaign_slug": linked_slug or None,
         "campaign": campaign_obj,
+        "auto_suggested_campaigns": tracker_to_suggestions.get(tid, []),
     }
 
 
@@ -80,16 +87,49 @@ def list_trackers():
     assignments = _db.get_tracker_assignments()
     names = _db.get_tracker_names()
     campaign_links = _db.get_tracker_campaign_links()
+    all_campaigns = _db.list_campaigns(status="")  # all statuses
     campaigns_by_slug = {
         c.get("slug"): {
             "slug": c.get("slug"),
             "title": c.get("title") or c.get("name") or "",
         }
-        for c in _db.list_campaigns(status="")  # all statuses
+        for c in all_campaigns
         if c.get("slug")
     }
+
+    # Build sound-ID auto-suggestions: tracker_id -> [{slug, title, matched_sound_ids}]
+    # Only consider active campaigns that aren't completed.
+    tracker_to_suggestions: dict = {}
+    try:
+        from campaign_manager.services.tracker_discovery import (
+            find_trackers_for_campaign,
+        )
+        for c in all_campaigns:
+            if (c.get("completion_status") or "") == "completed":
+                continue
+            if (c.get("status") or "") != "active":
+                continue
+            slug = c.get("slug") or ""
+            title = c.get("title") or c.get("name") or slug
+            for hit in find_trackers_for_campaign(c):
+                # Only surface auto-detected (sound_id) hits as suggestions
+                # — manual links are already reflected in `campaign_slug`.
+                if hit.get("link_source") == "manual":
+                    continue
+                tid = hit.get("tracker_id") or ""
+                if not tid:
+                    continue
+                tracker_to_suggestions.setdefault(tid, []).append({
+                    "slug": slug,
+                    "title": title,
+                    "matched_sound_ids": hit.get("matched_sound_ids", []),
+                })
+    except Exception:
+        # Discovery is non-critical — don't fail the trackers list if it errors
+        tracker_to_suggestions = {}
+
     trackers = [
-        _hydrate(t, assignments, names, campaign_links, campaigns_by_slug)
+        _hydrate(t, assignments, names, campaign_links, campaigns_by_slug, tracker_to_suggestions)
         for t in raw
     ]
 
