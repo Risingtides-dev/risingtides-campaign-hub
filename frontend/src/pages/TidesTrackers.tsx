@@ -10,7 +10,7 @@ import {
   useCreateTrackerGroup,
   useCampaigns,
 } from "@/lib/queries"
-import type { Tracker } from "@/lib/types"
+import type { Tracker, TrackerCampaignSuggestion } from "@/lib/types"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import {
@@ -417,28 +417,46 @@ export default function TidesTrackers() {
                     )}
                   </TableCell>
                   <TableCell>
-                    <Select
-                      value={t.campaign_slug ?? NO_CAMPAIGN}
-                      onValueChange={(v) => handleSetCampaign(t, v)}
-                    >
-                      <SelectTrigger className="h-8 text-[13px]">
-                        <SelectValue placeholder="—" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value={NO_CAMPAIGN}>—</SelectItem>
-                        {t.campaign_slug &&
-                          !activeCampaigns.some((c) => c.slug === t.campaign_slug) && (
-                            <SelectItem value={t.campaign_slug}>
-                              {t.campaign?.title || t.campaign_slug}
+                    <div className="flex flex-col gap-1">
+                      <Select
+                        value={t.campaign_slug ?? NO_CAMPAIGN}
+                        onValueChange={(v) => handleSetCampaign(t, v)}
+                      >
+                        <SelectTrigger className="h-8 text-[13px]">
+                          <SelectValue placeholder="—" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={NO_CAMPAIGN}>—</SelectItem>
+                          {t.campaign_slug &&
+                            !activeCampaigns.some((c) => c.slug === t.campaign_slug) && (
+                              <SelectItem value={t.campaign_slug}>
+                                {t.campaign?.title || t.campaign_slug}
+                              </SelectItem>
+                            )}
+                          {activeCampaigns.map((c) => (
+                            <SelectItem key={c.slug} value={c.slug}>
+                              {c.title}
                             </SelectItem>
-                          )}
-                        {activeCampaigns.map((c) => (
-                          <SelectItem key={c.slug} value={c.slug}>
-                            {c.title}
-                          </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      {/* Auto-suggestion: shown when sound IDs overlap and the tracker
+                          isn't already linked to that campaign. One click adopts it. */}
+                      {(t.auto_suggested_campaigns ?? [])
+                        .filter((s: TrackerCampaignSuggestion) => s.slug !== t.campaign_slug)
+                        .slice(0, 1)
+                        .map((s: TrackerCampaignSuggestion) => (
+                          <button
+                            key={s.slug}
+                            type="button"
+                            onClick={() => handleSetCampaign(t, s.slug)}
+                            title={`Sound IDs match: ${s.matched_sound_ids.join(", ") || "—"}`}
+                            className="text-left text-[11px] text-purple-600 hover:underline truncate"
+                          >
+                            ✦ matches {s.title}
+                          </button>
                         ))}
-                      </SelectContent>
-                    </Select>
+                    </div>
                   </TableCell>
                   <TableCell>
                     <Select
