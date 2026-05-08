@@ -94,12 +94,18 @@ def build_tiktok_cmd(
         "--socket-timeout", "30",
     ])
 
-    # Impersonation: yt-dlp's `--impersonate` requires curl_cffi to be
-    # installed. When present it gives the request a Chrome-like TLS
-    # fingerprint instead of Python's giveaway one. We try-then-fallback
-    # so the scraper still works on machines without curl_cffi.
-    if os.environ.get("TIKTOK_IMPERSONATE", "1") != "0":
-        cmd.extend(["--impersonate", os.environ.get("TIKTOK_IMPERSONATE_TARGET", "chrome")])
+    # Impersonation: yt-dlp's `--impersonate` requires curl_cffi installed
+    # AND a matching impersonate target available at runtime. yt-dlp 2026.x
+    # is picky about target names — generic "chrome" often doesn't work,
+    # specific versions like "chrome-110" or "edge-99" do. To avoid breaking
+    # the scraper when the target isn't available, this is OFF by default.
+    # Set TIKTOK_IMPERSONATE=1 + TIKTOK_IMPERSONATE_TARGET=<exact-name> to
+    # enable. Use `python -m yt_dlp --list-impersonate-targets` to find the
+    # available names on your system.
+    if os.environ.get("TIKTOK_IMPERSONATE", "0") == "1":
+        target = os.environ.get("TIKTOK_IMPERSONATE_TARGET", "chrome").strip()
+        if target:
+            cmd.extend(["--impersonate", target])
 
     cookies_file = (os.environ.get("TIKTOK_COOKIES_FILE") or "").strip()
     if cookies_file and os.path.exists(cookies_file):
