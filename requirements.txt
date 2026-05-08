@@ -22,7 +22,7 @@ yt-dlp==2026.3.17
 # curl_cffi enables yt-dlp's --impersonate flag, which spoofs Chrome's
 # TLS fingerprint to bypass TikTok's bot detection. Pinned to a version
 # known to work with yt-dlp 2026.3.17.
-curl_cffi==0.7.4
+curl_cffi==0.11.4
 
 # Instagram scraping
 instaloader>=4.10.0
