@@ -126,29 +126,24 @@ def scrape_account_videos(account, start_date=None, limit=500, use_cache=True):
     else:
         scrape_from_date = start_date
     
-    # Use yt-dlp to get video metadata
-    import shutil
-    
-    yt_dlp_cmd = 'yt-dlp'
-    if not shutil.which('yt-dlp'):
-        yt_dlp_cmd = [sys.executable, '-m', 'yt_dlp']
-    
-    cmd = [
-        yt_dlp_cmd if isinstance(yt_dlp_cmd, str) else yt_dlp_cmd[0],
-        '--flat-playlist',
-        '--dump-json',
-        '--playlist-end', str(limit),
-        profile_url
-    ]
-    
-    if not isinstance(yt_dlp_cmd, str):
-        cmd = [sys.executable, '-m', 'yt_dlp'] + cmd[1:]
-    
+    # Hardened yt-dlp command (cookies / proxy / impersonation / retries)
+    from src.scrapers.yt_dlp_runner import build_tiktok_cmd, diagnose_failure
+    cmd = build_tiktok_cmd(
+        profile_url,
+        flat_playlist=True,
+        dump_json=True,
+        playlist_end=limit,
+    )
+
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-        
+
         if result.returncode != 0:
-            print(f"    [ERROR] Failed to scrape: {result.stderr[:200]}")
+            reason = diagnose_failure(result.stderr)
+            print(f"    [ERROR] Failed to scrape [{reason}]: {result.stderr[:200]}")
+            return cached_videos if cached_videos else []
+        if not (result.stdout or "").strip():
+            print(f"    [WARN] yt-dlp returned empty for {profile_url} — likely rate-limited / soft-block")
             return cached_videos if cached_videos else []
         
         new_videos = []

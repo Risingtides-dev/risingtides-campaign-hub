@@ -18,14 +18,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install yt-dlp (latest version)
-RUN pip install --no-cache-dir yt-dlp
-
 # Set working directory
 WORKDIR /app
 
 # Copy requirements and install Python dependencies
 # Use --no-compile to reduce memory during install (Railway has tight build limits)
+# NOTE: yt-dlp is pinned in requirements.txt. Do NOT add a separate
+# `pip install yt-dlp` here — that pulls whatever's latest at Docker
+# build time and silently overrides the pin, which is exactly how the
+# scraper started failing in production.
 COPY requirements.txt .
 RUN pip install --no-cache-dir --no-compile -r requirements.txt
 

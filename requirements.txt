@@ -15,7 +15,13 @@ openpyxl>=3.0.0
 requests>=2.31.0
 
 # TikTok scraping
-yt-dlp>=2024.10.0
+# Pinned: TikTok extractor changes weekly and an unpinned `pip install yt-dlp`
+# means every Docker rebuild can change scraper behavior silently. Bump
+# this version intentionally when you've verified a newer one works.
+yt-dlp==2026.3.17
+# curl_cffi enables yt-dlp's --extractor-args impersonation_target=chrome,
+# which spoofs Chrome's TLS fingerprint to bypass TikTok's bot detection.
+curl_cffi>=0.7.0
 
 # Instagram scraping
 instaloader>=4.10.0
