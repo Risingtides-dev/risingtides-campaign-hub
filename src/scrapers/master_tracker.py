@@ -459,12 +459,14 @@ def scrape_tiktok_account(account: str, start_date: Optional[datetime] = None,
         if use_cache:
             save_account_cache(account, 'tiktok', all_videos, datetime.now().date())
 
-        # Filter returned videos to only those after start_date (cache keeps everything)
+        # Filter returned videos to only those after start_date (cache keeps everything).
+        # Both sides normalized to `date` to avoid datetime/date comparison errors.
         if start_date:
+            start_date_norm = start_date.date() if isinstance(start_date, datetime) else start_date
             all_videos = [
                 v for v in all_videos
                 if not v.get('timestamp')
-                or (v['timestamp'].date() if isinstance(v['timestamp'], datetime) else v['timestamp']) >= start_date
+                or (v['timestamp'].date() if isinstance(v['timestamp'], datetime) else v['timestamp']) >= start_date_norm
             ]
 
         print(f"  -> Completed @{username}: {len(new_videos)} new videos, {len(all_videos)} total (after date filter)")
