@@ -333,14 +333,17 @@ def scrape_tiktok_account(account: str, start_date: Optional[datetime] = None,
     if use_cache:
         cached_videos, last_scrape_date = load_account_cache(account, 'tiktok')
         if cached_videos and last_scrape_date:
-            # Convert cache_cutoff_date to date object for comparison
+            # Normalize to `date` on both sides — start_date can come in as
+            # either datetime or date depending on caller, and `max()` raises
+            # TypeError when comparing the two types directly.
             cache_cutoff_date = last_scrape_date.date() if isinstance(last_scrape_date, datetime) else last_scrape_date
-            scrape_from_date = max(start_date, cache_cutoff_date) if start_date else cache_cutoff_date
+            start_date_norm = start_date.date() if isinstance(start_date, datetime) else start_date
+            scrape_from_date = max(start_date_norm, cache_cutoff_date) if start_date_norm else cache_cutoff_date
             cached_urls = {v.get('url') for v in cached_videos}
         else:
-            scrape_from_date = start_date
+            scrape_from_date = start_date.date() if isinstance(start_date, datetime) else start_date
     else:
-        scrape_from_date = start_date
+        scrape_from_date = start_date.date() if isinstance(start_date, datetime) else start_date
 
     # Hardened yt-dlp command (cookies / proxy / impersonation / retries)
     from src.scrapers.yt_dlp_runner import build_tiktok_cmd, diagnose_failure
@@ -499,12 +502,14 @@ def scrape_instagram_account(account: str, start_date: Optional[datetime] = None
     if use_cache:
         cached_posts, last_scrape_date = load_account_cache(account, 'instagram')
         if cached_posts and last_scrape_date:
-            cache_cutoff_date = last_scrape_date
-            scrape_from_date = max(start_date, cache_cutoff_date) if start_date else cache_cutoff_date
+            # Same date/datetime normalization as TikTok path above.
+            cache_cutoff_date = last_scrape_date.date() if isinstance(last_scrape_date, datetime) else last_scrape_date
+            start_date_norm = start_date.date() if isinstance(start_date, datetime) else start_date
+            scrape_from_date = max(start_date_norm, cache_cutoff_date) if start_date_norm else cache_cutoff_date
         else:
-            scrape_from_date = start_date
+            scrape_from_date = start_date.date() if isinstance(start_date, datetime) else start_date
     else:
-        scrape_from_date = start_date
+        scrape_from_date = start_date.date() if isinstance(start_date, datetime) else start_date
 
     try:
         # Initialize Instaloader

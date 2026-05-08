@@ -92,9 +92,14 @@ def build_tiktok_cmd(
         "--retries", "3",
         "--fragment-retries", "3",
         "--socket-timeout", "30",
-        # tiktok extractor knob — try modern API endpoint first
-        "--extractor-args", "tiktok:api_hostname=api22-normal-c-useast1a.tiktokv.com",
     ])
+
+    # Impersonation: yt-dlp's `--impersonate` requires curl_cffi to be
+    # installed. When present it gives the request a Chrome-like TLS
+    # fingerprint instead of Python's giveaway one. We try-then-fallback
+    # so the scraper still works on machines without curl_cffi.
+    if os.environ.get("TIKTOK_IMPERSONATE", "1") != "0":
+        cmd.extend(["--impersonate", os.environ.get("TIKTOK_IMPERSONATE_TARGET", "chrome")])
 
     cookies_file = (os.environ.get("TIKTOK_COOKIES_FILE") or "").strip()
     if cookies_file and os.path.exists(cookies_file):
