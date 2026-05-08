@@ -97,6 +97,21 @@ def cron_diag():
     except Exception as e:
         result["yt_dlp_version_error"] = str(e)
 
+    # Available impersonate targets (so we know what TIKTOK_IMPERSONATE_TARGET
+    # values are valid on this deploy)
+    try:
+        t = subprocess.run(
+            [sys.executable, "-m", "yt_dlp", "--list-impersonate-targets"],
+            capture_output=True, text=True, timeout=15,
+        )
+        out = (t.stdout or "")[:2000]
+        result["impersonate_targets"] = out.strip().split("\n")[:30]
+    except Exception as e:
+        result["impersonate_targets_error"] = str(e)
+
+    result["tiktok_impersonate_env"] = os.environ.get("TIKTOK_IMPERSONATE", "0")
+    result["tiktok_impersonate_target_env"] = os.environ.get("TIKTOK_IMPERSONATE_TARGET", "")
+
     # Live scrape test against a known-public TikTok account
     try:
         from src.scrapers.yt_dlp_runner import build_tiktok_cmd, diagnose_failure
