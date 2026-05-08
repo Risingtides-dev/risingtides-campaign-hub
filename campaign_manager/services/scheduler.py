@@ -35,7 +35,17 @@ def _import_scraper():
     return scrape_tiktok_account, extract_sound_ids_parallel, match_video_to_sounds
 
 
-def _scrape_creator_accounts(usernames, start_date=None, max_workers=5):
+# Concurrency caps — kept low to avoid burst-rate-limit from TikTok.
+# 216 creators × parallelism × 500-video pulls used to mean ~108k metadata
+# requests in a few minutes from one Railway IP, which TikTok responded to
+# by serving empty 200s (silent block). 2 parallel + 50-video cap brings
+# total request volume way down, and the per-request jitter spreads the
+# burst out further.
+DEFAULT_MAX_WORKERS = 2
+DEFAULT_VIDEO_LIMIT = 50
+
+
+def _scrape_creator_accounts(usernames, start_date=None, max_workers=DEFAULT_MAX_WORKERS):
     """Scrape multiple TikTok creator accounts in parallel using yt-dlp.
 
     Returns (all_videos, accounts_scraped, errors). Legacy shape — preserved
@@ -48,7 +58,7 @@ def _scrape_creator_accounts(usernames, start_date=None, max_workers=5):
     return all_videos, accounts_scraped, errors
 
 
-def _scrape_creator_accounts_v2(usernames, start_date=None, max_workers=5):
+def _scrape_creator_accounts_v2(usernames, start_date=None, max_workers=DEFAULT_MAX_WORKERS):
     """Scrape creator accounts and report per-creator outcomes.
 
     Returns (all_videos, accounts_scraped, errors, outcomes) where outcomes is
@@ -79,19 +89,28 @@ def _scrape_creator_accounts_v2(usernames, start_date=None, max_workers=5):
     outcomes: dict = {}
 
     def _scrape_one(username):
+        # Per-creator jitter (0.5-2s) to spread the burst — 216 creators
+        # at max_workers=2 still means ~100 sequential pairs in fast
+        # succession otherwise.
+        import random
+        import time
+        time.sleep(random.uniform(0.5, 2.0))
+
         last_err: Optional[str] = None
         for attempt in range(2):
             try:
                 videos = scrape_tiktok_account(
                     f"@{username}",
                     start_date=start_date,
-                    limit=500,
+                    limit=DEFAULT_VIDEO_LIMIT,
                     use_cache=True,
                 )
                 return username, videos, None
             except Exception as e:
                 last_err = str(e)
                 if attempt == 0:
+                    # Backoff before retry — TikTok 429s can take 30s+ to clear
+                    time.sleep(random.uniform(5.0, 10.0))
                     continue
                 return username, [], last_err
         return username, [], last_err or "max_retries"
@@ -119,7 +138,7 @@ def _scrape_creator_accounts_v2(usernames, start_date=None, max_workers=5):
     return all_videos, accounts_scraped, errors, outcomes
 
 
-def _enhance_sound_ids(videos, max_workers=10):
+def _enhance_sound_ids(videos, max_workers=3):
     """Extract sound IDs via HTML for videos that don't have them."""
     _, extract_sound_ids_parallel, _ = _import_scraper()
 
@@ -313,10 +332,10 @@ def run_campaign_refresh():
             all_scraped, _, _, scrape_outcomes = _scrape_creator_accounts_v2(
                 list(all_usernames),
                 start_date=earliest_start,
-                max_workers=5,
+                max_workers=DEFAULT_MAX_WORKERS,
             )
             # Extract sound IDs for all videos at once (much more efficient)
-            all_scraped = _enhance_sound_ids(all_scraped, max_workers=10)
+            all_scraped = _enhance_sound_ids(all_scraped, max_workers=3)
             # Index by account
             for v in all_scraped:
                 acct = (v.get("account", "") or "").lstrip("@").lower()
@@ -459,12 +478,12 @@ def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None) 
             except ValueError:
                 pass
         all_videos, _, scrape_errors = _scrape_creator_accounts(
-            usernames, start_date=scrape_start, max_workers=5
+            usernames, start_date=scrape_start, max_workers=DEFAULT_MAX_WORKERS
         )
         if scrape_errors:
             for err in scrape_errors[:5]:
                 log.warning("CRON: scrape error for %s: %s", slug, err)
-        all_videos = _enhance_sound_ids(all_videos, max_workers=10)
+        all_videos = _enhance_sound_ids(all_videos, max_workers=3)
 
     # Filter by campaign start_date
     start_date_str = meta.get("start_date", "")
@@ -682,14 +701,14 @@ def run_internal_scrape():
 
         # Scrape via yt-dlp (free) instead of Apify
         all_videos, accounts_ok, scrape_errors = _scrape_creator_accounts(
-            creators, start_date=None, max_workers=5
+            creators, start_date=None, max_workers=DEFAULT_MAX_WORKERS
         )
         if scrape_errors:
             for err in scrape_errors[:5]:
                 log.warning("CRON: internal scrape error: %s", err)
 
         # Extract real sound IDs for better song grouping
-        all_videos = _enhance_sound_ids(all_videos, max_workers=10)
+        all_videos = _enhance_sound_ids(all_videos, max_workers=3)
 
         # Filter to last 48 hours
         cutoff = datetime.now(EST) - timedelta(hours=48)
