@@ -466,8 +466,22 @@ def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None) 
     if shared_videos is not None:
         # Pull this campaign's creators from the pre-scraped cache
         all_videos = []
+        misses = []
         for uname in usernames:
-            all_videos.extend(shared_videos.get(uname.lower(), []))
+            hits = shared_videos.get(uname.lower(), [])
+            if hits:
+                all_videos.extend(hits)
+            else:
+                misses.append(uname)
+        # If we're getting all-misses, log a sample of available keys so we
+        # can diagnose the username-mismatch class of bug. Logged at INFO
+        # so it shows up in Railway logs without being spammy.
+        if misses and not all_videos:
+            sample_keys = list(shared_videos.keys())[:5]
+            log.info(
+                "CRON %s: shared_videos lookup ALL MISSED. usernames=%r sample_keys=%r total_keys=%d",
+                slug, usernames[:5], sample_keys, len(shared_videos),
+            )
     else:
         # Fallback: scrape individually (used by manual trigger_job)
         scrape_start = None
