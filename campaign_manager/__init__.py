@@ -12,7 +12,34 @@ from campaign_manager import db
 FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
 
+def _materialize_tiktok_cookies():
+    """Write TIKTOK_COOKIES_TEXT env var to a real file at boot.
+
+    Operator pastes the contents of a Netscape-format cookies.txt
+    (exported from a logged-in TikTok browser session) into the
+    TIKTOK_COOKIES_TEXT env var on Railway. We write it to /tmp at
+    boot and set TIKTOK_COOKIES_FILE so yt-dlp picks it up. This is
+    much simpler than mounting a Railway volume just to upload a
+    13-line text file.
+    """
+    text = os.environ.get("TIKTOK_COOKIES_TEXT", "")
+    if not text or not text.strip():
+        return
+    target = "/tmp/tiktok_cookies.txt"
+    try:
+        with open(target, "w") as f:
+            f.write(text)
+        os.environ["TIKTOK_COOKIES_FILE"] = target
+    except Exception:
+        # If /tmp isn't writable (shouldn't happen on Railway), silently
+        # skip — the scraper will still run, just without cookies.
+        pass
+
+
 def create_app(config=None):
+    # Materialize cookies BEFORE anything else uses TIKTOK_COOKIES_FILE.
+    _materialize_tiktok_cookies()
+
     app = Flask(__name__, static_folder=None)
     app.config.from_object(Config)
     if config:
