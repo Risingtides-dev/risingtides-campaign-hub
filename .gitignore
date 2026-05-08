@@ -78,3 +78,6 @@ campaign_manager/internal_last_scrape.json
 
 # Local DB snapshots — never commit (contains prod data)
 backups/
+
+# MkDocs build output
+/site/

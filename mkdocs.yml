@@ -1,0 +1,76 @@
+site_name: Campaign Hub Wiki
+site_description: Plain-English documentation for Rising Tides Campaign Hub
+site_url: https://risingtides-dev.github.io/risingtides-campaign-hub/
+repo_url: https://github.com/Risingtides-dev/risingtides-campaign-hub
+repo_name: Risingtides-dev/risingtides-campaign-hub
+edit_uri: edit/main/docs/wiki/
+
+docs_dir: docs/wiki
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.action.edit
+    - toc.follow
+  icon:
+    repo: fontawesome/brands/github
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+plugins:
+  - search
+
+nav:
+  - Home: index.md
+  - 1. The Big Picture: 01-big-picture.md
+  - 2. Who Does What: 02-who-does-what.md
+  - 3. Campaign Lifecycle: 03-campaign-lifecycle.md
+  - The Screens:
+      - Campaigns List: 04-screens-campaigns-list.md
+      - Campaign Detail: 04-screens-campaign-detail.md
+      - Active vs. Finished Tabs: 04-screens-active-finished-tabs.md
+      - Creator Database: 04-screens-creator-database.md
+      - Creator Profile: 04-screens-creator-profile.md
+      - Slack Inbox: 04-screens-slack-inbox.md
+      - Internal TikTok: 04-screens-internal-tiktok.md
+      - Sidebar / Navigation: 04-screens-sidebar-navigation.md
+  - 5. Outside Connections: 05-outside-connections.md
+  - 6. The Money Trail: 06-money-trail.md
+  - 7. The Scrapers: 07-scrapers.md
+  - 8. What's In Progress: 08-whats-in-progress.md
+  - 9. Glossary: 09-glossary.md
+  - 10. If Something Looks Weird: 10-troubleshooting.md
