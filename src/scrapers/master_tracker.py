@@ -342,29 +342,27 @@ def scrape_tiktok_account(account: str, start_date: Optional[datetime] = None,
     else:
         scrape_from_date = start_date
 
-    # Use yt-dlp
-    import shutil
-    yt_dlp_cmd = 'yt-dlp'
-    if not shutil.which('yt-dlp'):
-        yt_dlp_cmd = [sys.executable, '-m', 'yt_dlp']
-
-    cmd = [
-        yt_dlp_cmd if isinstance(yt_dlp_cmd, str) else yt_dlp_cmd[0],
-        '--flat-playlist',
-        '--dump-json',
-        '--playlist-end', str(limit),
-        profile_url
-    ]
-
-    if not isinstance(yt_dlp_cmd, str):
-        cmd = [sys.executable, '-m', 'yt_dlp'] + cmd[1:]
+    # Hardened yt-dlp command (cookies / proxy / impersonation / retries)
+    from src.scrapers.yt_dlp_runner import build_tiktok_cmd, diagnose_failure
+    cmd = build_tiktok_cmd(
+        profile_url,
+        flat_playlist=True,
+        dump_json=True,
+        playlist_end=limit,
+    )
 
     try:
         log(f"Running yt-dlp for @{username}...")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=TIKTOK_SCRAPE_TIMEOUT)
 
         if result.returncode != 0:
-            log(f"yt-dlp failed for @{username}: {result.stderr[:500]}", "ERROR")
+            reason = diagnose_failure(result.stderr)
+            log(f"yt-dlp failed for @{username} [{reason}]: {result.stderr[:500]}", "ERROR")
+            return cached_videos if cached_videos else []
+        # Empty stdout with returncode 0 is the silent-fail mode TikTok
+        # serves when it doesn't want to give us anything — log it loud.
+        if not (result.stdout or "").strip():
+            log(f"yt-dlp returned empty for @{username} — likely rate-limited / soft-block", "WARNING")
             return cached_videos if cached_videos else []
 
         new_videos = []

@@ -259,6 +259,27 @@ def unmark_tracked():
     })
 
 
+@scrape_tasks_bp.get("/api/scrape-tasks/tracker-discovery")
+def tracker_discovery():
+    """Return the campaign↔tracker discovery report.
+
+    Surfaces:
+        - matched: active campaigns that have a TidesTracker (via sound-ID overlap)
+        - unmatched: active campaigns with no Cobrand tracker — needs setup
+        - orphan_trackers: TidesTrackers with no active campaign (probably
+          tied to completed campaigns or test/old promos)
+
+    The Scrape Tasks tab uses this to show your team which campaigns
+    are missing trackers so they can fix the gap.
+    """
+    from campaign_manager.services.tracker_discovery import discovery_report
+    try:
+        report = discovery_report()
+        return jsonify(report)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @scrape_tasks_bp.post("/api/scrape-tasks/mark-campaign-tracked")
 def mark_campaign_tracked():
     """Bulk-mark every untracked video for a single campaign as tracked.

@@ -70,47 +70,47 @@ def cron_toggle():
 
 @cron_bp.route("/api/cron/diag")
 def cron_diag():
-    """Diagnostic endpoint: test Apify connectivity and token."""
+    """Diagnostic endpoint: yt-dlp version + TikTok scrape test.
+
+    Useful for confirming a deploy actually picked up the pinned yt-dlp
+    version and that TikTok isn't soft-blocking from this IP. Hit this
+    before debugging "why does cron return 0 matches" — if scrape_test_*
+    is empty, it's TikTok-side, not the matcher.
+    """
     import os
-    from campaign_manager.config import Config
+    import subprocess
+    import sys
 
-    env_token = os.environ.get("APIFY_API_TOKEN", "")
-    config_token = Config.APIFY_API_TOKEN
-
-    result = {
-        "env_token_set": bool(env_token),
-        "env_token_prefix": env_token[:8] + "..." if env_token else "",
-        "config_token_set": bool(config_token),
-        "config_token_prefix": config_token[:8] + "..." if config_token else "",
+    result: dict = {
+        "yt_dlp_cookies_file_set": bool(os.environ.get("TIKTOK_COOKIES_FILE")),
+        "yt_dlp_cookies_file_exists": os.path.exists(os.environ.get("TIKTOK_COOKIES_FILE", "")),
+        "yt_dlp_proxy_set": bool(os.environ.get("TIKTOK_PROXY")),
     }
 
-    # Try a minimal Apify call with raw output
+    # yt-dlp version
     try:
-        from apify_client import ApifyClient
-        token = env_token or config_token
-        client = ApifyClient(token)
-        run_input = {
-            "profiles": ["https://www.tiktok.com/@amourgazette"],
-            "resultsPerPage": 5,
-            "shouldDownloadCovers": False,
-            "shouldDownloadVideos": False,
-            "shouldDownloadSubtitles": False,
-        }
-        run = client.actor("clockworks/tiktok-scraper").call(run_input=run_input)
-        result["apify_run_status"] = run.get("status") if run else "no_run"
-        result["apify_run_id"] = run.get("id") if run else None
-
-        if run:
-            items = client.dataset(run["defaultDatasetId"]).list_items().items
-            result["apify_raw_count"] = len(items)
-            if items:
-                first = items[0]
-                result["apify_first_keys"] = sorted(first.keys())[:15]
-                result["apify_first_author"] = (first.get("authorMeta") or {}).get("name", "?")
-        else:
-            result["apify_raw_count"] = 0
+        v = subprocess.run(
+            [sys.executable, "-m", "yt_dlp", "--version"],
+            capture_output=True, text=True, timeout=10,
+        )
+        result["yt_dlp_version"] = (v.stdout or v.stderr or "").strip()
     except Exception as e:
-        result["apify_test"] = "failed"
-        result["apify_error"] = str(e)
+        result["yt_dlp_version_error"] = str(e)
+
+    # Live scrape test against a known-public TikTok account
+    try:
+        from src.scrapers.yt_dlp_runner import build_tiktok_cmd, diagnose_failure
+        test_url = "https://www.tiktok.com/@tiktok"
+        cmd = build_tiktok_cmd(test_url, flat_playlist=True, dump_json=True, playlist_end=3)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
+        stdout_lines = [ln for ln in (proc.stdout or "").strip().split("\n") if ln.strip()]
+        result["scrape_test_target"] = test_url
+        result["scrape_test_returncode"] = proc.returncode
+        result["scrape_test_video_count"] = len(stdout_lines)
+        result["scrape_test_stderr_tail"] = (proc.stderr or "")[-400:]
+        if proc.returncode != 0 or not stdout_lines:
+            result["scrape_test_diagnosis"] = diagnose_failure(proc.stderr)
+    except Exception as e:
+        result["scrape_test_error"] = str(e)
 
     return jsonify(result)
