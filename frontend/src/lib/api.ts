@@ -300,7 +300,10 @@ export const api = {
     }),
 
   // TidesTrackers — list comes live from TidesTracker; groups are local
-  listTrackers: () => request<Tracker[]>("/api/trackers"),
+  listTrackers: (includeArchived = false) =>
+    request<Tracker[]>(
+      `/api/trackers${includeArchived ? "?include_archived=true" : ""}`
+    ),
 
   createStandaloneTracker: (data: {
     name?: string
@@ -346,6 +349,18 @@ export const api = {
         method: "PATCH",
         body: JSON.stringify({ campaign_slug: campaignSlug }),
       }
+    ),
+
+  archiveTracker: (trackerId: string) =>
+    request<{ ok: boolean; id: string; archived: boolean }>(
+      `/api/trackers/${trackerId}`,
+      { method: "DELETE" }
+    ),
+
+  restoreTracker: (trackerId: string) =>
+    request<{ ok: boolean; id: string; archived: boolean }>(
+      `/api/trackers/${trackerId}/restore`,
+      { method: "POST" }
     ),
 
   listTrackerGroups: () => request<TrackerGroup[]>("/api/tracker-groups"),

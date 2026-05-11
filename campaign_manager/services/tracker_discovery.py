@@ -91,11 +91,21 @@ def build_sound_to_trackers_map(force_refresh: bool = False) -> Dict[str, List[D
     except Exception:
         trackers = []
 
+    # Exclude soft-deleted (archived) trackers so they don't show up as
+    # auto-suggestions on campaigns or as manual-link candidates anywhere.
+    try:
+        from campaign_manager import db as _db
+        archived_ids = set(_db.get_tracker_archives().keys()) if _db.is_active() else set()
+    except Exception:
+        archived_ids = set()
+
     for t in trackers:
         tid = t.get("id")
         share = t.get("cobrand_share_link") or ""
         name = t.get("name") or ""
         if not tid:
+            continue
+        if tid in archived_ids:
             continue
 
         promo = _extract_promo_data(share)
@@ -194,7 +204,15 @@ def find_trackers_for_campaign(meta: dict) -> List[Dict]:
             manual_links = _db.get_tracker_campaign_links()  # {tracker_id: slug}
         except Exception:
             manual_links = {}
-        manually_linked_tids = {tid for tid, s in manual_links.items() if s == slug}
+        try:
+            archived_tids = set(_db.get_tracker_archives().keys())
+        except Exception:
+            archived_tids = set()
+        manually_linked_tids = {
+            tid
+            for tid, s in manual_links.items()
+            if s == slug and tid not in archived_tids
+        }
 
         # Build a quick tracker_id -> first hit lookup so we can fill in
         # tracker metadata for manual links that don't have a sound match

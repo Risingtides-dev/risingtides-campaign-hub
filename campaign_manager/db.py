@@ -21,6 +21,7 @@ from campaign_manager.models import (
     InternalScrapeResult, CronLog, NetworkCreator, OutreachMessage,
     InternalCreatorGroup, InternalCreatorGroupMember,
     TrackerGroup, TrackerGroupAssignment, TrackerName, TrackerCampaignLink,
+    TrackerArchive,
     ManyChatMessage,
 )
 
@@ -1666,6 +1667,54 @@ def set_tracker_campaign_link(tracker_id: str, campaign_slug: Optional[str]) -> 
         else:
             s.add(TrackerCampaignLink(tracker_id=tid, campaign_slug=slug))
         s.commit()
+
+
+def get_tracker_archives() -> Dict[str, datetime]:
+    """Return {tracker_id: archived_at} for every archived (soft-deleted) tracker."""
+    with get_session() as s:
+        rows = s.query(TrackerArchive.tracker_id, TrackerArchive.archived_at).all()
+        return {tid: ts for tid, ts in rows}
+
+
+def archive_tracker(tracker_id: str) -> bool:
+    """Soft-delete a tracker by recording an archived_at timestamp.
+
+    Idempotent: if the tracker is already archived, the existing timestamp
+    is preserved. Returns True if a row was inserted or already existed.
+    """
+    tid = (tracker_id or "").strip()
+    if not tid:
+        return False
+    with get_session() as s:
+        existing = s.query(TrackerArchive).filter_by(tracker_id=tid).first()
+        if existing:
+            return True
+        s.add(TrackerArchive(tracker_id=tid, archived_at=datetime.now()))
+        s.commit()
+        return True
+
+
+def unarchive_tracker(tracker_id: str) -> bool:
+    """Clear the archive flag for a tracker. Returns True if a row was removed."""
+    tid = (tracker_id or "").strip()
+    if not tid:
+        return False
+    with get_session() as s:
+        existing = s.query(TrackerArchive).filter_by(tracker_id=tid).first()
+        if not existing:
+            return False
+        s.delete(existing)
+        s.commit()
+        return True
+
+
+def is_tracker_archived(tracker_id: str) -> bool:
+    """Check whether a tracker has been soft-deleted."""
+    tid = (tracker_id or "").strip()
+    if not tid:
+        return False
+    with get_session() as s:
+        return s.query(TrackerArchive).filter_by(tracker_id=tid).first() is not None
 
 
 def get_inbox_messages(

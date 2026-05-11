@@ -41,18 +41,22 @@ def _hydrate(
     campaign_links: dict,
     campaigns_by_slug: dict,
     tracker_to_suggestions: dict,
+    archives: dict,
 ) -> dict:
     """Convert a TidesTracker API row into the shape the frontend expects.
 
     `tracker_to_suggestions` maps tracker_id -> list of suggested campaigns
     (slug + title) whose sound IDs overlap with this tracker's sounds.
     Surfaces "you should probably link this tracker to <campaign>" in the UI.
+
+    `archives` maps tracker_id -> archived_at datetime for soft-deleted trackers.
     """
     tid = tracker.get("id") or ""
     original_name = tracker.get("name") or ""
     override = names.get(tid) or ""
     linked_slug = campaign_links.get(tid)
     campaign_obj = campaigns_by_slug.get(linked_slug) if linked_slug else None
+    archived_at = archives.get(tid)
     return {
         "id": tid,
         "name": override or original_name,
@@ -67,6 +71,7 @@ def _hydrate(
         "campaign_slug": linked_slug or None,
         "campaign": campaign_obj,
         "auto_suggested_campaigns": tracker_to_suggestions.get(tid, []),
+        "archived_at": archived_at.isoformat() if archived_at else None,
     }
 
 
@@ -87,6 +92,7 @@ def list_trackers():
     assignments = _db.get_tracker_assignments()
     names = _db.get_tracker_names()
     campaign_links = _db.get_tracker_campaign_links()
+    archives = _db.get_tracker_archives()
     all_campaigns = _db.list_campaigns(status="")  # all statuses
     campaigns_by_slug = {
         c.get("slug"): {
@@ -129,9 +135,27 @@ def list_trackers():
         tracker_to_suggestions = {}
 
     trackers = [
-        _hydrate(t, assignments, names, campaign_links, campaigns_by_slug, tracker_to_suggestions)
+        _hydrate(
+            t,
+            assignments,
+            names,
+            campaign_links,
+            campaigns_by_slug,
+            tracker_to_suggestions,
+            archives,
+        )
         for t in raw
     ]
+
+    # Hide archived (soft-deleted) trackers unless explicitly requested.
+    # Pass ?include_archived=true to surface them (for an "Archived" view).
+    include_archived = (request.args.get("include_archived") or "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    if not include_archived:
+        trackers = [t for t in trackers if not t.get("archived_at")]
 
     group_id_raw = request.args.get("group_id")
     if group_id_raw == "none":
@@ -235,6 +259,32 @@ def update_tracker(tracker_id: str):
     if not touched:
         return jsonify({"error": "No updatable fields supplied"}), 400
     return jsonify(response)
+
+
+@trackers_bp.delete("/api/trackers/<tracker_id>")
+def archive_tracker_endpoint(tracker_id: str):
+    """Soft-delete (archive) a tracker.
+
+    Trackers themselves live in TidesTracker and we don't want to hard-delete
+    them remotely — a typo'd duplicate just gets hidden from Campaign Hub by
+    recording an archive timestamp here. POST `/restore` to undo.
+    """
+    err = _require_db()
+    if err:
+        return err
+    if not _db.archive_tracker(tracker_id):
+        return jsonify({"error": "tracker_id is required"}), 400
+    return jsonify({"ok": True, "id": tracker_id, "archived": True})
+
+
+@trackers_bp.post("/api/trackers/<tracker_id>/restore")
+def restore_tracker_endpoint(tracker_id: str):
+    """Un-archive a previously soft-deleted tracker."""
+    err = _require_db()
+    if err:
+        return err
+    _db.unarchive_tracker(tracker_id)  # idempotent: no-op if not archived
+    return jsonify({"ok": True, "id": tracker_id, "archived": False})
 
 
 # ---------------------------------------------------------------------------
