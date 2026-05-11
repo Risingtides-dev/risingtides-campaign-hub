@@ -55,18 +55,46 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 # Timeout settings (much more generous)
 TIKTOK_SCRAPE_TIMEOUT = 600  # 10 minutes per account
 SOUND_ID_FETCH_TIMEOUT = 30  # 30 seconds per video (up from 15)
-MAX_WORKERS = 15  # Parallel workers for sound ID extraction (reduced to avoid rate limiting)
+# Parallel workers for sound ID extraction. 3 by default — TikTok 403s heavily
+# when bursting from a single IP. Override via SOUND_ID_WORKERS env var.
+MAX_WORKERS = int(os.environ.get("SOUND_ID_WORKERS", "3"))
 MAX_ACCOUNT_WORKERS = 5  # Parallel account scraping workers
-SOUND_ID_REQUEST_DELAY = 0.05  # Delay in seconds between sound ID requests (helps avoid rate limiting)
+SOUND_ID_REQUEST_DELAY = 0.2  # Per-worker delay before each sound ID request
 
 # Early termination settings
 EARLY_TERMINATION_ENABLED = True
 CONSECUTIVE_CACHED_THRESHOLD = 20  # Stop after this many consecutive cached videos
 
 # Retry settings
-MAX_RETRIES = 3
+MAX_RETRIES = 4
 RETRY_WAIT_MIN = 2
-RETRY_WAIT_MAX = 10
+RETRY_WAIT_MAX = 20
+
+# Residential proxy (optional). When set, all requests.get() calls below go
+# through this URL. TikTok rate-limits datacenter IPs aggressively, so the
+# per-video sound-ID extraction needs residential exits to keep success
+# rates above ~50%.
+#
+# Format expected: http://USER:PASS@HOST:PORT  (Decodo rotating-residential
+# endpoint generator → "URL" output). Leave unset to use Railway's IP.
+PROXY_URL = os.environ.get("RESIDENTIAL_PROXY_URL", "").strip()
+
+
+def _get_proxies():
+    """Return a requests-compatible proxies dict, or None if unconfigured."""
+    if not PROXY_URL:
+        return None
+    return {"http": PROXY_URL, "https": PROXY_URL}
+
+
+class RetryableHTTPError(Exception):
+    """HTTP status codes worth retrying (403/429/5xx). Raised from
+    extract_sound_id_from_video_robust so tenacity can re-issue the request
+    with a fresh proxy IP."""
+    def __init__(self, status_code: int, url: str):
+        self.status_code = status_code
+        self.url = url
+        super().__init__(f"HTTP {status_code} for {url}")
 
 # Validation settings
 VALIDATION_ENABLED = True
@@ -151,11 +179,16 @@ def validate_video_data(video_data: Dict, platform: str) -> bool:
 @retry(
     stop=stop_after_attempt(MAX_RETRIES),
     wait=wait_exponential(multiplier=1, min=RETRY_WAIT_MIN, max=RETRY_WAIT_MAX),
-    retry=retry_if_exception_type((requests.Timeout, requests.ConnectionError))
+    retry=retry_if_exception_type((requests.Timeout, requests.ConnectionError, RetryableHTTPError))
 )
 def extract_sound_id_from_video_robust(video_url: str) -> Tuple[Optional[str], Optional[str]]:
     """
-    Extract sound ID from TikTok video with retry logic and validation
+    Extract sound ID from TikTok video with retry logic and validation.
+
+    Routes through RESIDENTIAL_PROXY_URL if configured. On 403/429/5xx,
+    raises RetryableHTTPError so the @retry decorator can re-issue the
+    request — with a rotating residential proxy, the retry usually lands
+    on a fresh IP and succeeds.
 
     Returns: (sound_id, song_title) or (None, None) if not found
     """
@@ -164,7 +197,18 @@ def extract_sound_id_from_video_robust(video_url: str) -> Tuple[Optional[str], O
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
 
-        response = requests.get(video_url, headers=headers, timeout=SOUND_ID_FETCH_TIMEOUT)
+        response = requests.get(
+            video_url,
+            headers=headers,
+            timeout=SOUND_ID_FETCH_TIMEOUT,
+            proxies=_get_proxies(),
+        )
+
+        # Retryable: anti-bot / rate-limit / server error. Surface the status
+        # so tenacity gets a chance with a fresh IP.
+        if response.status_code in (403, 429) or response.status_code >= 500:
+            log(f"HTTP {response.status_code} for {video_url} (retryable)", "WARNING")
+            raise RetryableHTTPError(response.status_code, video_url)
 
         if response.status_code != 200:
             log(f"HTTP {response.status_code} for {video_url}", "WARNING")
@@ -204,6 +248,8 @@ def extract_sound_id_from_video_robust(video_url: str) -> Tuple[Optional[str], O
     except requests.ConnectionError:
         log(f"Connection error for {video_url}", "WARNING")
         raise  # Let retry handle it
+    except RetryableHTTPError:
+        raise  # Let retry handle it — don't let the broad catch below swallow it
     except Exception as e:
         log(f"Error extracting sound ID from {video_url}: {e}", "ERROR")
         return None, None
@@ -217,7 +263,8 @@ def extract_sound_ids_parallel(videos: List[Dict], max_workers: Optional[int] = 
     """
     if max_workers is None:
         max_workers = MAX_WORKERS
-    log(f"Extracting sound IDs from {len(videos)} videos using {max_workers} parallel workers...")
+    proxy_status = "via residential proxy" if PROXY_URL else "DIRECT (no proxy configured)"
+    log(f"Extracting sound IDs from {len(videos)} videos, {max_workers} workers, {proxy_status}")
 
     def process_video(video):
         """Process a single video and add sound ID"""
