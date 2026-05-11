@@ -104,7 +104,7 @@ def post_sounds_to_slack(channel: str | None = None) -> dict:
     if not client:
         return {"ok": False, "error": "Slack bot not initialized"}
 
-    campaigns = _db.list_campaigns(status="active")
+    campaigns = _db.list_campaigns(status="active", exclude_completed=True)
     if not campaigns:
         return {"ok": True, "posted": False, "message": "No active campaigns"}
 

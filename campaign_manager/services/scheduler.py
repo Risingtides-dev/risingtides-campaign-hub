@@ -287,7 +287,7 @@ def run_campaign_refresh():
     per_campaign = {}
 
     try:
-        campaigns = _db.list_campaigns(status="active")
+        campaigns = _db.list_campaigns(status="active", exclude_completed=True)
         campaigns_total = len(campaigns)
 
         # Improvement #4: Deduplicate creators across campaigns
@@ -918,7 +918,7 @@ def _attach_internal_to_campaigns(internal_videos: list) -> dict:
         }
 
     # Build sound_id -> winning campaign lookup
-    campaigns = _db.list_campaigns(status="active")
+    campaigns = _db.list_campaigns(status="active", exclude_completed=True)
     sound_to_campaign: dict = {}  # sound_id -> meta
 
     for meta in campaigns:
