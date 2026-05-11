@@ -66,10 +66,11 @@ function shortenUrl(url: string, max = 38): string {
 
 export default function TidesTrackers() {
   const [activeGroup, setActiveGroup] = useState<string>(ALL_GROUP)
-  // Fetch archived trackers too when the Archived pill is selected so we
-  // can render them. For all other views we get the default active-only list.
+  // Always fetch archived rows too so the Archived pill's count is accurate
+  // on first paint (without it, the pill is undiscoverable after refresh).
+  // All non-archived views filter them out client-side below.
   const viewingArchived = activeGroup === ARCHIVED_GROUP
-  const { data: trackers = [], isLoading } = useTrackers(viewingArchived)
+  const { data: trackers = [], isLoading } = useTrackers(true)
   const { data: groups = [] } = useTrackerGroups()
   const [cobrandUrl, setCobrandUrl] = useState("")
   const [name, setName] = useState("")
@@ -94,14 +95,13 @@ export default function TidesTrackers() {
   )
 
   const filteredTrackers = useMemo(() => {
-    // When viewing the Archived pill, the API already returns only what we
-    // want (active + archived); show only archived rows here.
     if (activeGroup === ARCHIVED_GROUP)
       return trackers.filter((t) => !!t.archived_at)
-    if (activeGroup === ALL_GROUP) return trackers
-    if (activeGroup === NO_GROUP) return trackers.filter((t) => t.group_id == null)
+    const active = trackers.filter((t) => !t.archived_at)
+    if (activeGroup === ALL_GROUP) return active
+    if (activeGroup === NO_GROUP) return active.filter((t) => t.group_id == null)
     const gid = Number(activeGroup)
-    return trackers.filter((t) => t.group_id === gid)
+    return active.filter((t) => t.group_id === gid)
   }, [trackers, activeGroup])
 
   const ungroupedCount = useMemo(
@@ -279,11 +279,7 @@ export default function TidesTrackers() {
             active={activeGroup === ALL_GROUP}
             onClick={() => setActiveGroup(ALL_GROUP)}
             label="All"
-            count={
-              viewingArchived
-                ? trackers.filter((t) => !t.archived_at).length
-                : trackers.length
-            }
+            count={trackers.filter((t) => !t.archived_at).length}
           />
           {groups.map((g) => (
             <GroupPill
@@ -302,7 +298,7 @@ export default function TidesTrackers() {
               count={ungroupedCount}
             />
           )}
-          {(viewingArchived || archivedCount > 0) && (
+          {archivedCount > 0 && (
             <GroupPill
               active={viewingArchived}
               onClick={() => setActiveGroup(ARCHIVED_GROUP)}
