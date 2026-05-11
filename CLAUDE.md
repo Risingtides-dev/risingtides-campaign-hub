@@ -111,12 +111,18 @@ Campaign Hub <-- Cobrand (live performance stats)
 
 | Remote | Repo | Purpose |
 |---|---|---|
-| `origin` | https://github.com/jakebalik-bit/risingtides-campaign-hub | Jake's repo (primary) |
-| `fork` | https://github.com/Risingtides-dev/risingtides-campaign-hub | Deploy fork (Railway + Vercel deploy from here) |
+| `origin` | https://github.com/Risingtides-dev/risingtides-campaign-hub | Deploy fork — where new work lands and Railway + Vercel deploy from |
+| `upstream` | https://github.com/jakebalik-bit/risingtides-campaign-hub | Jake's repo — local emergency fallback. Only gets rebased forward from the fork **after** a change is proven in production. |
 
-Push to `origin`, then open PR to `fork` (Risingtides-dev) to trigger deploys. Tag `pre-migration-backup` on both remotes points to the old codebase.
+Tag `pre-migration-backup` on both remotes points to the old codebase.
 
-**Deploy flow:** `git push origin main` → `gh pr create --repo Risingtides-dev/risingtides-campaign-hub` → merge PR → Railway + Vercel auto-deploy from Risingtides-dev/main.
+**Deploy flow (the only flow for new work):**
+1. Branch off `origin/main`
+2. Push branch to `origin` (the fork)
+3. `gh pr create --repo Risingtides-dev/risingtides-campaign-hub --base main` → open PR against the fork
+4. Merge PR → Railway + Vercel auto-deploy from Risingtides-dev/main
+
+**Do NOT push branches or open PRs to `upstream` (jakebalik-bit) for in-flight work.** Jake's repo is a quick fallback we can revert to locally if the fork breaks. It only gets rebased forward from the fork *after* a feature is fully green in production.
 
 ## Environment Variables
 
