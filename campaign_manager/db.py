@@ -338,12 +338,21 @@ def update_campaign_stats(slug: str, total_views: int, total_likes: int):
             s.commit()
 
 
-def list_campaigns(status: str = "active") -> List[Dict]:
-    """List all campaigns with the given status, returning meta dicts."""
+def list_campaigns(status: str = "active", exclude_completed: bool = False) -> List[Dict]:
+    """List all campaigns with the given status, returning meta dicts.
+
+    `exclude_completed=True` additionally filters out campaigns whose
+    completion_status is "completed". The cron, internal-creator attach,
+    and slack-sounds poster pass this so they stop touching finished
+    campaigns. Frontend list endpoints leave it False — the UI's
+    Active/Finished tabs filter client-side and need both sets.
+    """
     with get_session() as s:
         query = s.query(Campaign)
         if status:
             query = query.filter_by(status=status)
+        if exclude_completed:
+            query = query.filter(Campaign.completion_status != "completed")
         campaigns = query.all()
         return [c.to_meta_dict() for c in campaigns]
 
