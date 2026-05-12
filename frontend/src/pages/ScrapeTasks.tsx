@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { Link } from "react-router-dom"
 import {
   useScrapeTaskQueue,
@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
-import { Copy, Check, ExternalLink, RefreshCw, AlertTriangle, X } from "lucide-react"
+import { Copy, Check, ExternalLink, RefreshCw, AlertTriangle, X, Undo2 } from "lucide-react"
 import type { ScrapeTaskCampaign, ScrapeTaskVideo } from "@/lib/types"
 
 /**
@@ -204,9 +204,52 @@ function CampaignBlock({
   const [open, setOpen] = useState(true)
   const [selected, setSelected] = useState<Set<number>>(new Set())
   // Optimistic local "just ticked" state — keeps rows visible (greyed) so
-  // he can see what he's marked and undo accidental clicks. Cleared on next
-  // data refetch (which happens on tab refocus / 30s stale time).
+  // he can see what he's marked and undo accidental clicks. Pruned when
+  // a refetch confirms the row has left the queue server-side.
   const [locallyTicked, setLocallyTicked] = useState<Set<number>>(new Set())
+
+  const videoIdSet = useMemo(
+    () => new Set(camp.videos.map((v) => v.id)),
+    [camp.videos]
+  )
+  useEffect(() => {
+    setLocallyTicked((prev) => {
+      let changed = false
+      const next = new Set<number>()
+      for (const id of prev) {
+        if (videoIdSet.has(id)) next.add(id)
+        else changed = true
+      }
+      return changed ? next : prev
+    })
+  }, [videoIdSet])
+
+  const markIds = (ids: number[]) => {
+    setLocallyTicked((prev) => {
+      const next = new Set(prev)
+      ids.forEach((id) => next.add(id))
+      return next
+    })
+    onMark(ids)
+  }
+
+  const undoMarkIds = (ids: number[]) => {
+    setLocallyTicked((prev) => {
+      const next = new Set(prev)
+      ids.forEach((id) => next.delete(id))
+      return next
+    })
+    onUnmark(ids)
+  }
+
+  const markAllLocal = () => {
+    setLocallyTicked((prev) => {
+      const next = new Set(prev)
+      camp.videos.forEach((v) => next.add(v.id))
+      return next
+    })
+    onMarkAll()
+  }
 
   const toggle = (id: number) =>
     setSelected((prev) => {
@@ -282,7 +325,7 @@ function CampaignBlock({
                   <Button
                     size="sm"
                     onClick={() => {
-                      onMark(Array.from(selected))
+                      markIds(Array.from(selected))
                       setSelected(new Set())
                     }}
                     disabled={isMarking}
@@ -329,7 +372,7 @@ function CampaignBlock({
                       `Mark all ${camp.untracked_count} link(s) for "${camp.title}" as tracked?`
                     )
                   ) {
-                    onMarkAll()
+                    markAllLocal()
                   }
                 }}
                 disabled={isMarking}
@@ -371,11 +414,12 @@ function CampaignBlock({
                   video={v}
                   selected={selected.has(v.id)}
                   onToggle={() => toggle(v.id)}
-                  onMarkOne={() => onMark([v.id])}
-                  onUnmarkOne={() => onUnmark([v.id])}
+                  onMarkOne={() => markIds([v.id])}
+                  onUndoOne={() => undoMarkIds([v.id])}
                   onDismissOne={(reason) => onDismiss([v.id], reason)}
                   isMarking={isMarking}
                   isDismissing={isDismissing}
+                  isLocallyTicked={locallyTicked.has(v.id)}
                 />
               ))}
             </tbody>
@@ -391,18 +435,21 @@ function VideoRow({
   selected,
   onToggle,
   onMarkOne,
+  onUndoOne,
   onDismissOne,
   isMarking,
   isDismissing,
+  isLocallyTicked,
 }: {
   video: ScrapeTaskVideo
   selected: boolean
   onToggle: () => void
   onMarkOne: () => void
-  onUnmarkOne: () => void
+  onUndoOne: () => void
   onDismissOne: (reason?: string) => void
   isMarking: boolean
   isDismissing: boolean
+  isLocallyTicked: boolean
 }) {
   const [copied, setCopied] = useState(false)
 
@@ -413,13 +460,19 @@ function VideoRow({
   }
 
   return (
-    <tr className="border-b border-[#f0f0f5] hover:bg-[#fafafd]">
+    <tr
+      className={
+        "border-b border-[#f0f0f5] hover:bg-[#fafafd]" +
+        (isLocallyTicked ? " opacity-50 line-through" : "")
+      }
+    >
       <td className="px-2 py-2 align-middle">
         <input
           type="checkbox"
           checked={selected}
           onChange={onToggle}
-          className="cursor-pointer"
+          disabled={isLocallyTicked}
+          className="cursor-pointer disabled:cursor-not-allowed"
         />
       </td>
       <td className="px-2 py-2 font-medium text-[#1a1a2e]">{video.account || "—"}</td>
@@ -483,29 +536,42 @@ function VideoRow({
           >
             <ExternalLink size={14} />
           </a>
-          <button
-            onClick={onMarkOne}
-            disabled={isMarking}
-            className="p-1 rounded hover:bg-[#dcf6dc] text-[#666] hover:text-[#226e22] disabled:opacity-50"
-            title="Mark this link as tracked"
-          >
-            <Check size={14} />
-          </button>
-          <button
-            onClick={() => {
-              const reason = window.prompt(
-                "Dismiss this match as a false positive? Optional reason:",
-                ""
-              )
-              if (reason === null) return
-              onDismissOne(reason.trim() || undefined)
-            }}
-            disabled={isDismissing}
-            className="p-1 rounded hover:bg-[#fceaea] text-[#666] hover:text-[#a13434] disabled:opacity-50"
-            title="Dismiss as false-positive — excluded from totals"
-          >
-            <X size={14} />
-          </button>
+          {isLocallyTicked ? (
+            <button
+              onClick={onUndoOne}
+              disabled={isMarking}
+              className="p-1 rounded hover:bg-[#fff5e6] text-[#a16100] hover:text-[#7a4a00] disabled:opacity-50"
+              title="Undo — restore to the queue"
+            >
+              <Undo2 size={14} />
+            </button>
+          ) : (
+            <>
+              <button
+                onClick={onMarkOne}
+                disabled={isMarking}
+                className="p-1 rounded hover:bg-[#dcf6dc] text-[#666] hover:text-[#226e22] disabled:opacity-50"
+                title="Mark this link as tracked"
+              >
+                <Check size={14} />
+              </button>
+              <button
+                onClick={() => {
+                  const reason = window.prompt(
+                    "Dismiss this match as a false positive? Optional reason:",
+                    ""
+                  )
+                  if (reason === null) return
+                  onDismissOne(reason.trim() || undefined)
+                }}
+                disabled={isDismissing}
+                className="p-1 rounded hover:bg-[#fceaea] text-[#666] hover:text-[#a13434] disabled:opacity-50"
+                title="Dismiss as false-positive — excluded from totals"
+              >
+                <X size={14} />
+              </button>
+            </>
+          )}
         </div>
       </td>
     </tr>
