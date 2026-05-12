@@ -160,12 +160,15 @@ export default function ScrapeTasks() {
             key={camp.slug}
             camp={camp}
             trackedBy={trackedBy}
-            onMark={(ids) =>
-              markMut.mutate({ ids, tracked_by: trackedBy })
+            onMark={(ids, onError) =>
+              markMut.mutate({ ids, tracked_by: trackedBy }, { onError })
             }
-            onUnmark={(ids) => unmarkMut.mutate(ids)}
-            onMarkAll={() =>
-              markCampaignMut.mutate({ slug: camp.slug, tracked_by: trackedBy })
+            onUnmark={(ids, onError) => unmarkMut.mutate(ids, { onError })}
+            onMarkAll={(onError) =>
+              markCampaignMut.mutate(
+                { slug: camp.slug, tracked_by: trackedBy },
+                { onError }
+              )
             }
             onDismiss={(ids, reason) =>
               dismissMut.mutate({
@@ -194,9 +197,9 @@ function CampaignBlock({
 }: {
   camp: ScrapeTaskCampaign
   trackedBy: string
-  onMark: (ids: number[]) => void
-  onUnmark: (ids: number[]) => void
-  onMarkAll: () => void
+  onMark: (ids: number[], onError?: () => void) => void
+  onUnmark: (ids: number[], onError?: () => void) => void
+  onMarkAll: (onError?: () => void) => void
   onDismiss: (ids: number[], reason?: string) => void
   isMarking: boolean
   isDismissing: boolean
@@ -224,31 +227,39 @@ function CampaignBlock({
     })
   }, [videoIdSet])
 
-  const markIds = (ids: number[]) => {
+  const addToTicked = (ids: number[]) =>
     setLocallyTicked((prev) => {
       const next = new Set(prev)
       ids.forEach((id) => next.add(id))
       return next
     })
-    onMark(ids)
-  }
-
-  const undoMarkIds = (ids: number[]) => {
+  const removeFromTicked = (ids: number[]) =>
     setLocallyTicked((prev) => {
       const next = new Set(prev)
       ids.forEach((id) => next.delete(id))
       return next
     })
-    onUnmark(ids)
+
+  const markIds = (ids: number[]) => {
+    addToTicked(ids)
+    // Roll back the optimistic grey-out if the server rejects the mark,
+    // otherwise the row stays greyed forever (prune effect only drops
+    // IDs that leave camp.videos, which won't happen on failure).
+    onMark(ids, () => removeFromTicked(ids))
+  }
+
+  const undoMarkIds = (ids: number[]) => {
+    removeFromTicked(ids)
+    // Re-grey on failure so the user can see undo didn't take and try
+    // again — without this, the row briefly looks normal then vanishes
+    // on next refetch (server still has it tracked).
+    onUnmark(ids, () => addToTicked(ids))
   }
 
   const markAllLocal = () => {
-    setLocallyTicked((prev) => {
-      const next = new Set(prev)
-      camp.videos.forEach((v) => next.add(v.id))
-      return next
-    })
-    onMarkAll()
+    const ids = camp.videos.map((v) => v.id)
+    addToTicked(ids)
+    onMarkAll(() => removeFromTicked(ids))
   }
 
   const toggle = (id: number) =>
