@@ -12,6 +12,9 @@ Endpoints:
     POST /api/scrape-tasks/unmark-tracked — undo (in case of mis-click)
     POST /api/scrape-tasks/mark-campaign-tracked — bulk mark every untracked
          video for a single campaign in one click
+    POST /api/scrape-tasks/dismiss       — hide false-positive matches so they
+         stop counting toward totals (bulk)
+    POST /api/scrape-tasks/undismiss     — undo a dismissal (bulk)
 """
 from __future__ import annotations
 
@@ -83,6 +86,7 @@ def queue():
             s.query(MatchedVideo, Campaign)
             .join(Campaign, MatchedVideo.campaign_id == Campaign.id)
             .filter(MatchedVideo.tracked_at.is_(None))
+            .filter(MatchedVideo.dismissed_at.is_(None))
             .filter(Campaign.status == "active")
         )
         if campaign_filter:
@@ -305,6 +309,7 @@ def mark_campaign_tracked():
             s.query(MatchedVideo)
             .filter_by(campaign_id=camp.id)
             .filter(MatchedVideo.tracked_at.is_(None))
+            .filter(MatchedVideo.dismissed_at.is_(None))
             .all()
         )
         count = 0
@@ -316,3 +321,90 @@ def mark_campaign_tracked():
         s.commit()
 
     return jsonify({"ok": True, "slug": slug, "marked_tracked": count})
+
+
+@scrape_tasks_bp.post("/api/scrape-tasks/dismiss")
+def dismiss():
+    """Soft-dismiss false-positive matches.
+
+    Body: {
+        "matched_video_ids": [1234, ...],
+        "dismissed_by": "<name>",   # optional, recorded for audit
+        "reason": "<free text>"     # optional, why it was dismissed
+    }
+
+    Dismissed rows stay in the DB (so re-scrapes don't resurrect them via
+    insert) but are hidden from the tracking queue and excluded from
+    campaign view/engagement totals.
+    """
+    data = request.get_json(silent=True) or {}
+    ids = data.get("matched_video_ids")
+    dismissed_by = (data.get("dismissed_by") or "").strip()[:100]
+    reason = (data.get("reason") or "").strip()
+
+    if not isinstance(ids, list) or not ids:
+        return jsonify({
+            "error": "matched_video_ids must be a non-empty list of integers",
+        }), 400
+
+    try:
+        ids = [int(i) for i in ids]
+    except (TypeError, ValueError):
+        return jsonify({"error": "matched_video_ids must be integers"}), 400
+
+    now = datetime.now()
+    updated = 0
+    with _db.get_session() as s:
+        rows = s.query(MatchedVideo).filter(MatchedVideo.id.in_(ids)).all()
+        for row in rows:
+            if row.dismissed_at is None:
+                row.dismissed_at = now
+                if dismissed_by:
+                    row.dismissed_by = dismissed_by
+                if reason:
+                    row.dismissed_reason = reason
+                updated += 1
+        s.commit()
+
+    return jsonify({
+        "ok": True,
+        "dismissed": updated,
+        "requested": len(ids),
+    })
+
+
+@scrape_tasks_bp.post("/api/scrape-tasks/undismiss")
+def undismiss():
+    """Undo a dismissal — restores the row to the active set.
+
+    Body: {"matched_video_ids": [1234, ...]}
+    """
+    data = request.get_json(silent=True) or {}
+    ids = data.get("matched_video_ids")
+
+    if not isinstance(ids, list) or not ids:
+        return jsonify({
+            "error": "matched_video_ids must be a non-empty list of integers",
+        }), 400
+
+    try:
+        ids = [int(i) for i in ids]
+    except (TypeError, ValueError):
+        return jsonify({"error": "matched_video_ids must be integers"}), 400
+
+    updated = 0
+    with _db.get_session() as s:
+        rows = s.query(MatchedVideo).filter(MatchedVideo.id.in_(ids)).all()
+        for row in rows:
+            if row.dismissed_at is not None:
+                row.dismissed_at = None
+                row.dismissed_by = ""
+                row.dismissed_reason = ""
+                updated += 1
+        s.commit()
+
+    return jsonify({
+        "ok": True,
+        "undismissed": updated,
+        "requested": len(ids),
+    })

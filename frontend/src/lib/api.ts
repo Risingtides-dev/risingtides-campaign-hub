@@ -426,6 +426,31 @@ export const api = {
       }
     ),
 
+  dismissVideos: (
+    matched_video_ids: number[],
+    opts?: { dismissed_by?: string; reason?: string }
+  ) =>
+    request<ApiOk & { dismissed: number; requested: number }>(
+      "/api/scrape-tasks/dismiss",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          matched_video_ids,
+          dismissed_by: opts?.dismissed_by || "",
+          reason: opts?.reason || "",
+        }),
+      }
+    ),
+
+  undismissVideos: (matched_video_ids: number[]) =>
+    request<ApiOk & { undismissed: number; requested: number }>(
+      "/api/scrape-tasks/undismiss",
+      {
+        method: "POST",
+        body: JSON.stringify({ matched_video_ids }),
+      }
+    ),
+
   triggerCron: (job_type: "campaign_refresh" | "internal_scrape") =>
     request<{ status: string; job_type: string }>("/api/cron/trigger", {
       method: "POST",

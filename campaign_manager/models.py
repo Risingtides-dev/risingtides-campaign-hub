@@ -216,6 +216,15 @@ class MatchedVideo(Base):
     # so the queue can show how a match was found.
     match_strategy = Column(String(50), default="")
 
+    # Soft-dismiss for false-positive matches. When set, the row is hidden
+    # from the tracking queue and excluded from campaign view/engagement
+    # totals so reporting stays accurate. The next cron scrape preserves
+    # the dismissal — URL-based upsert refreshes stats but won't clear
+    # these fields, so a dismissed bad match stays dismissed.
+    dismissed_at = Column(DateTime, nullable=True, index=True)
+    dismissed_by = Column(String(100), default="")
+    dismissed_reason = Column(Text, default="")
+
     campaign = relationship("Campaign", back_populates="matched_videos")
 
     def to_dict(self):
@@ -237,6 +246,9 @@ class MatchedVideo(Base):
             "tracked_at": self.tracked_at.isoformat() if self.tracked_at else "",
             "tracked_by": self.tracked_by or "",
             "match_strategy": self.match_strategy or "",
+            "dismissed_at": self.dismissed_at.isoformat() if self.dismissed_at else "",
+            "dismissed_by": self.dismissed_by or "",
+            "dismissed_reason": self.dismissed_reason or "",
         }
 
 

@@ -645,6 +645,42 @@ export function useMarkCampaignTracked() {
   })
 }
 
+export function useDismissVideos() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      ids,
+      dismissed_by,
+      reason,
+    }: {
+      ids: number[]
+      dismissed_by?: string
+      reason?: string
+    }) => api.dismissVideos(ids, { dismissed_by, reason }),
+    onSuccess: () => {
+      // Dismissing affects campaign totals + creator aggregates too, so
+      // invalidate the broader caches not just scrape-tasks.
+      qc.invalidateQueries({ queryKey: ["scrape-tasks"] })
+      qc.invalidateQueries({ queryKey: ["campaign"] })
+      qc.invalidateQueries({ queryKey: keys.campaigns })
+      qc.invalidateQueries({ queryKey: keys.creators })
+    },
+  })
+}
+
+export function useUndismissVideos() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (ids: number[]) => api.undismissVideos(ids),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["scrape-tasks"] })
+      qc.invalidateQueries({ queryKey: ["campaign"] })
+      qc.invalidateQueries({ queryKey: keys.campaigns })
+      qc.invalidateQueries({ queryKey: keys.creators })
+    },
+  })
+}
+
 export function useTriggerCron() {
   const qc = useQueryClient()
   return useMutation({

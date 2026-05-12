@@ -76,6 +76,7 @@ export interface CampaignDetail {
 }
 
 export interface MatchedVideo {
+  id?: number
   url: string
   song: string
   artist: string
@@ -88,6 +89,9 @@ export interface MatchedVideo {
   platform: string
   extracted_sound_id: string
   extracted_song_title: string
+  dismissed_at?: string
+  dismissed_by?: string
+  dismissed_reason?: string
 }
 
 // Cobrand types
