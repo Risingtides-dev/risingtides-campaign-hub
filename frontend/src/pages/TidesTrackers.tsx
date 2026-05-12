@@ -1,5 +1,15 @@
 import { useMemo, useState } from "react"
-import { ExternalLink, Plus, Loader2, Activity, Copy, Check } from "lucide-react"
+import {
+  ExternalLink,
+  Plus,
+  Loader2,
+  Activity,
+  Copy,
+  Check,
+  Pencil,
+  Trash2,
+  Undo2,
+} from "lucide-react"
 import {
   useTrackers,
   useTrackerGroups,
@@ -9,6 +19,8 @@ import {
   useSetTrackerCampaign,
   useCreateTrackerGroup,
   useCampaigns,
+  useArchiveTracker,
+  useRestoreTracker,
 } from "@/lib/queries"
 import type { Tracker, TrackerCampaignSuggestion } from "@/lib/types"
 import { Input } from "@/components/ui/input"
@@ -32,6 +44,7 @@ import {
 const ALL_GROUP = "__all__"
 const NO_GROUP = "__none__"
 const NO_CAMPAIGN = "__no_campaign__"
+const ARCHIVED_GROUP = "__archived__"
 
 function formatDate(iso: string): string {
   if (!iso) return "-"
@@ -52,10 +65,13 @@ function shortenUrl(url: string, max = 38): string {
 }
 
 export default function TidesTrackers() {
-  const { data: trackers = [], isLoading } = useTrackers()
-  const { data: groups = [] } = useTrackerGroups()
-
   const [activeGroup, setActiveGroup] = useState<string>(ALL_GROUP)
+  // Always fetch archived rows too so the Archived pill's count is accurate
+  // on first paint (without it, the pill is undiscoverable after refresh).
+  // All non-archived views filter them out client-side below.
+  const viewingArchived = activeGroup === ARCHIVED_GROUP
+  const { data: trackers = [], isLoading } = useTrackers(true)
+  const { data: groups = [] } = useTrackerGroups()
   const [cobrandUrl, setCobrandUrl] = useState("")
   const [name, setName] = useState("")
   const [createGroupId, setCreateGroupId] = useState<string>(NO_GROUP)
@@ -67,6 +83,8 @@ export default function TidesTrackers() {
   const setTrackerName = useSetTrackerName()
   const setTrackerCampaign = useSetTrackerCampaign()
   const createGroup = useCreateTrackerGroup()
+  const archiveTracker = useArchiveTracker()
+  const restoreTracker = useRestoreTracker()
   const { data: campaigns = [] } = useCampaigns()
   const activeCampaigns = useMemo(
     () =>
@@ -77,14 +95,22 @@ export default function TidesTrackers() {
   )
 
   const filteredTrackers = useMemo(() => {
-    if (activeGroup === ALL_GROUP) return trackers
-    if (activeGroup === NO_GROUP) return trackers.filter((t) => t.group_id == null)
+    if (activeGroup === ARCHIVED_GROUP)
+      return trackers.filter((t) => !!t.archived_at)
+    const active = trackers.filter((t) => !t.archived_at)
+    if (activeGroup === ALL_GROUP) return active
+    if (activeGroup === NO_GROUP) return active.filter((t) => t.group_id == null)
     const gid = Number(activeGroup)
-    return trackers.filter((t) => t.group_id === gid)
+    return active.filter((t) => t.group_id === gid)
   }, [trackers, activeGroup])
 
   const ungroupedCount = useMemo(
-    () => trackers.filter((t) => t.group_id == null).length,
+    () =>
+      trackers.filter((t) => !t.archived_at && t.group_id == null).length,
+    [trackers]
+  )
+  const archivedCount = useMemo(
+    () => trackers.filter((t) => !!t.archived_at).length,
     [trackers]
   )
 
@@ -164,6 +190,22 @@ export default function TidesTrackers() {
     setEditValue("")
   }
 
+  function handleArchive(tracker: Tracker) {
+    const label = tracker.name || tracker.original_name || "this tracker"
+    if (
+      !window.confirm(
+        `Archive "${label}"? It will be hidden from the list and from campaign dropdowns. You can restore it later from the Archived view.`
+      )
+    ) {
+      return
+    }
+    archiveTracker.mutate(tracker.id)
+  }
+
+  function handleRestore(tracker: Tracker) {
+    restoreTracker.mutate(tracker.id)
+  }
+
   return (
     <div>
       {/* Header */}
@@ -237,7 +279,7 @@ export default function TidesTrackers() {
             active={activeGroup === ALL_GROUP}
             onClick={() => setActiveGroup(ALL_GROUP)}
             label="All"
-            count={trackers.length}
+            count={trackers.filter((t) => !t.archived_at).length}
           />
           {groups.map((g) => (
             <GroupPill
@@ -254,6 +296,14 @@ export default function TidesTrackers() {
               onClick={() => setActiveGroup(NO_GROUP)}
               label="Ungrouped"
               count={ungroupedCount}
+            />
+          )}
+          {archivedCount > 0 && (
+            <GroupPill
+              active={viewingArchived}
+              onClick={() => setActiveGroup(ARCHIVED_GROUP)}
+              label="Archived"
+              count={archivedCount}
             />
           )}
 
@@ -317,19 +367,22 @@ export default function TidesTrackers() {
               <TableHead className="w-[200px]">Campaign</TableHead>
               <TableHead className="w-[180px]">Group</TableHead>
               <TableHead className="w-[120px]">Created</TableHead>
+              <TableHead className="w-[90px] text-right">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {isLoading ? (
               <TableRow>
-                <TableCell colSpan={6} className="text-center py-10 text-[#999] text-[13px]">
+                <TableCell colSpan={7} className="text-center py-10 text-[#999] text-[13px]">
                   Loading…
                 </TableCell>
               </TableRow>
             ) : filteredTrackers.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={6} className="text-center py-10 text-[#999] text-[13px]">
-                  No trackers in this group yet. Paste a Cobrand link above to create one.
+                <TableCell colSpan={7} className="text-center py-10 text-[#999] text-[13px]">
+                  {viewingArchived
+                    ? "No archived trackers."
+                    : "No trackers in this group yet. Paste a Cobrand link above to create one."}
                 </TableCell>
               </TableRow>
             ) : (
@@ -478,6 +531,41 @@ export default function TidesTrackers() {
                   </TableCell>
                   <TableCell className="text-[13px] text-[#666]">
                     {formatDate(t.created_at)}
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex items-center justify-end gap-1">
+                      {t.archived_at ? (
+                        <button
+                          type="button"
+                          onClick={() => handleRestore(t)}
+                          disabled={restoreTracker.isPending}
+                          title="Restore tracker"
+                          className="p-1.5 rounded text-[#666] hover:text-purple-600 hover:bg-[#f5f3ff] transition-colors disabled:opacity-50"
+                        >
+                          <Undo2 className="size-3.5" />
+                        </button>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => startEdit(t)}
+                            title="Rename tracker"
+                            className="p-1.5 rounded text-[#666] hover:text-purple-600 hover:bg-[#f5f3ff] transition-colors"
+                          >
+                            <Pencil className="size-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleArchive(t)}
+                            disabled={archiveTracker.isPending}
+                            title="Archive tracker"
+                            className="p-1.5 rounded text-[#666] hover:text-red-600 hover:bg-red-50 transition-colors disabled:opacity-50"
+                          >
+                            <Trash2 className="size-3.5" />
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </TableCell>
                 </TableRow>
               ))

@@ -450,6 +450,10 @@ export interface Tracker {
   // Sound-ID auto-suggestions: campaigns whose sound_ids overlap with
   // this tracker's. UI surfaces these so the user can one-click link.
   auto_suggested_campaigns: TrackerCampaignSuggestion[]
+  // ISO timestamp set when a tracker has been soft-deleted (archived).
+  // Archived trackers are hidden from the default list and from
+  // campaign→tracker dropdowns but can be restored.
+  archived_at: string | null
 }
 
 export interface TrackerCampaignSuggestion {

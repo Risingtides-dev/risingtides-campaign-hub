@@ -182,8 +182,11 @@ export function useCreateTracker(slug: string) {
   })
 }
 
-export function useTrackers() {
-  return useQuery({ queryKey: keys.trackers, queryFn: api.listTrackers })
+export function useTrackers(includeArchived = false) {
+  return useQuery({
+    queryKey: [...keys.trackers, includeArchived ? "all" : "active"] as const,
+    queryFn: () => api.listTrackers(includeArchived),
+  })
 }
 
 export function useTrackerGroups() {
@@ -236,6 +239,32 @@ export function useSetTrackerCampaign() {
     }) => api.setTrackerCampaign(trackerId, campaignSlug),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: keys.trackers })
+    },
+  })
+}
+
+export function useArchiveTracker() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (trackerId: string) => api.archiveTracker(trackerId),
+    onSuccess: () => {
+      // Invalidate both active and archived variants of the trackers query,
+      // plus campaign detail (auto-suggestions surface archived trackers).
+      qc.invalidateQueries({ queryKey: keys.trackers })
+      qc.invalidateQueries({ queryKey: keys.campaigns })
+      qc.invalidateQueries({ queryKey: keys.trackerGroups })
+    },
+  })
+}
+
+export function useRestoreTracker() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (trackerId: string) => api.restoreTracker(trackerId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: keys.trackers })
+      qc.invalidateQueries({ queryKey: keys.campaigns })
+      qc.invalidateQueries({ queryKey: keys.trackerGroups })
     },
   })
 }

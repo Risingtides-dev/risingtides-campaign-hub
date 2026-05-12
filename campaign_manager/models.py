@@ -587,6 +587,19 @@ class TrackerCampaignLink(Base):
     created_at = Column(DateTime, default=datetime.now)
 
 
+class TrackerArchive(Base):
+    """Soft-delete overlay for TidesTrackers.
+
+    Trackers live in TidesTracker (Supabase) and we don't want to delete
+    them remotely — a typo'd duplicate just gets hidden from Campaign Hub
+    by recording an archive timestamp here. Clearing the row un-archives.
+    """
+    __tablename__ = "tracker_archives"
+
+    tracker_id = Column(String(64), primary_key=True)  # TidesTracker UUID
+    archived_at = Column(DateTime, default=datetime.now, nullable=False)
+
+
 # ===================================================================
 # ManyChat conversation log
 # ===================================================================
