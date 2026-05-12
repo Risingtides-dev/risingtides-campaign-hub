@@ -33,6 +33,9 @@
   "include": ["src"],
   "exclude": [
     "src/pages/CampaignOutreach.tsx",
-    "src/pages/NetworkCreators.tsx"
+    "src/pages/NetworkCreators.tsx",
+    "src/test",
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx"
   ]
 }
