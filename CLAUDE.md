@@ -173,6 +173,17 @@ Tag `pre-migration-backup` on both remotes points to the old codebase.
 - No full page refreshes for user actions.
 - Mobile layout: sidebar collapses to hamburger, tables scroll horizontally.
 
+## Running Tests
+
+Backend smoke tests live in `tests/`. They run against in-memory SQLite (not Postgres) and bypass `db.init`'s Postgres-only ALTER TABLE migrations -- they cover endpoint behavior, not schema rollouts.
+
+```
+pip install -r requirements-dev.txt
+python3 -m pytest
+```
+
+The conftest registers individual blueprints directly rather than calling `create_app`, so tests don't pull in apscheduler/yt-dlp/slack-bolt. When you add tests for a new blueprint, register it the same way in `tests/conftest.py:_build_test_app`.
+
 ## What NOT To Do
 
 - Don't put financial/budget data in Cobrand sync. This app tracks money.
