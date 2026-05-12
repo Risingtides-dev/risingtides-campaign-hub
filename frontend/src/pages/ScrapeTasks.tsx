@@ -6,13 +6,14 @@ import {
   useMarkVideosTracked,
   useUnmarkVideosTracked,
   useMarkCampaignTracked,
+  useDismissVideos,
   useTriggerCron,
 } from "@/lib/queries"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
-import { Copy, Check, ExternalLink, RefreshCw, AlertTriangle } from "lucide-react"
+import { Copy, Check, ExternalLink, RefreshCw, AlertTriangle, X } from "lucide-react"
 import type { ScrapeTaskCampaign, ScrapeTaskVideo } from "@/lib/types"
 
 /**
@@ -33,6 +34,7 @@ export default function ScrapeTasks() {
   const markMut = useMarkVideosTracked()
   const unmarkMut = useUnmarkVideosTracked()
   const markCampaignMut = useMarkCampaignTracked()
+  const dismissMut = useDismissVideos()
   const triggerMut = useTriggerCron()
 
   const filtered = useMemo(() => {
@@ -165,7 +167,15 @@ export default function ScrapeTasks() {
             onMarkAll={() =>
               markCampaignMut.mutate({ slug: camp.slug, tracked_by: trackedBy })
             }
+            onDismiss={(ids, reason) =>
+              dismissMut.mutate({
+                ids,
+                dismissed_by: trackedBy,
+                reason,
+              })
+            }
             isMarking={markMut.isPending || markCampaignMut.isPending}
+            isDismissing={dismissMut.isPending}
           />
         ))}
       </div>
@@ -178,14 +188,18 @@ function CampaignBlock({
   onMark,
   onUnmark,
   onMarkAll,
+  onDismiss,
   isMarking,
+  isDismissing,
 }: {
   camp: ScrapeTaskCampaign
   trackedBy: string
   onMark: (ids: number[]) => void
   onUnmark: (ids: number[]) => void
   onMarkAll: () => void
+  onDismiss: (ids: number[], reason?: string) => void
   isMarking: boolean
+  isDismissing: boolean
 }) {
   const [open, setOpen] = useState(true)
   const [selected, setSelected] = useState<Set<number>>(new Set())
@@ -279,6 +293,25 @@ function CampaignBlock({
                   <Button
                     size="sm"
                     variant="outline"
+                    className="border-[#f1c8c8] text-[#a13434] hover:bg-[#fceaea]"
+                    onClick={() => {
+                      const reason = window.prompt(
+                        `Dismiss ${selected.size} match(es) as bad? Optional reason:`,
+                        ""
+                      )
+                      if (reason === null) return
+                      onDismiss(Array.from(selected), reason.trim() || undefined)
+                      setSelected(new Set())
+                    }}
+                    disabled={isDismissing}
+                    title="Hide these as false-positive matches — they stop counting toward totals"
+                  >
+                    <X size={14} />
+                    Dismiss {selected.size}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
                     onClick={() => setSelected(new Set())}
                   >
                     Clear selection
@@ -340,7 +373,9 @@ function CampaignBlock({
                   onToggle={() => toggle(v.id)}
                   onMarkOne={() => onMark([v.id])}
                   onUnmarkOne={() => onUnmark([v.id])}
+                  onDismissOne={(reason) => onDismiss([v.id], reason)}
                   isMarking={isMarking}
+                  isDismissing={isDismissing}
                 />
               ))}
             </tbody>
@@ -356,14 +391,18 @@ function VideoRow({
   selected,
   onToggle,
   onMarkOne,
+  onDismissOne,
   isMarking,
+  isDismissing,
 }: {
   video: ScrapeTaskVideo
   selected: boolean
   onToggle: () => void
   onMarkOne: () => void
   onUnmarkOne: () => void
+  onDismissOne: (reason?: string) => void
   isMarking: boolean
+  isDismissing: boolean
 }) {
   const [copied, setCopied] = useState(false)
 
@@ -451,6 +490,21 @@ function VideoRow({
             title="Mark this link as tracked"
           >
             <Check size={14} />
+          </button>
+          <button
+            onClick={() => {
+              const reason = window.prompt(
+                "Dismiss this match as a false positive? Optional reason:",
+                ""
+              )
+              if (reason === null) return
+              onDismissOne(reason.trim() || undefined)
+            }}
+            disabled={isDismissing}
+            className="p-1 rounded hover:bg-[#fceaea] text-[#666] hover:text-[#a13434] disabled:opacity-50"
+            title="Dismiss as false-positive — excluded from totals"
+          >
+            <X size={14} />
           </button>
         </div>
       </td>

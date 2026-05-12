@@ -724,9 +724,19 @@ def _refresh_stats_inner(slug: str):
     else:
         save_matched_videos(campaign_dir, all_matched)
 
+    # Refresh dismissal state from the DB so totals exclude rows the team
+    # has flagged as false-positives (issue #32). Falsy dismissed_at
+    # (None or "") means active match — count it. The scraper itself
+    # doesn't see this flag, so we re-read after the upsert.
+    if _db.is_active():
+        persisted = _db.get_matched_videos(slug)
+        active_matched = [v for v in persisted if not v.get("dismissed_at")]
+    else:
+        active_matched = all_matched
+
     # Update stats (now with fresh view counts!)
-    total_views = sum(int(v.get("views", 0)) for v in all_matched)
-    total_likes = sum(int(v.get("likes", 0)) for v in all_matched)
+    total_views = sum(int(v.get("views", 0)) for v in active_matched)
+    total_likes = sum(int(v.get("likes", 0)) for v in active_matched)
     stats = meta.get("stats", {})
     stats["total_views"] = total_views
     stats["total_likes"] = total_likes
@@ -739,7 +749,7 @@ def _refresh_stats_inner(slug: str):
         all_creators = _db.get_creators(slug)
     else:
         all_creators = load_creators(campaign_dir)
-    all_creators = update_creator_post_counts(all_creators, all_matched)
+    all_creators = update_creator_post_counts(all_creators, active_matched)
     if _db.is_active():
         _db.save_creators(slug, all_creators)
     else:
@@ -1305,9 +1315,12 @@ def list_creators():
         creators = camp["creators"]
         matched_videos = camp["matched_videos"]
 
-        # Build a views-by-account map for this campaign
+        # Build a views-by-account map for this campaign. Skip rows the
+        # team has dismissed as false-positive matches (issue #32).
         views_by_account: Dict[str, int] = {}
         for v in matched_videos:
+            if v.get("dismissed_at"):
+                continue
             acct = (v.get("account", "") or "").lstrip("@").lower()
             if acct:
                 views_by_account[acct] = views_by_account.get(acct, 0) + int(v.get("views", 0) or 0)
@@ -1430,9 +1443,13 @@ def creator_profile(username: str):
         if pp:
             paypal_email = pp
 
-        # Gather matched videos for this creator in this campaign
+        # Gather matched videos for this creator in this campaign. Dismissed
+        # rows are excluded from the per-creator totals so a flagged false
+        # positive doesn't inflate the creator's CPM (issue #32).
         campaign_views = 0
         for v in matched_videos:
+            if v.get("dismissed_at"):
+                continue
             acct = (v.get("account", "") or "").lstrip("@").lower()
             if acct == uname_lower:
                 views = int(v.get("views", 0) or 0)

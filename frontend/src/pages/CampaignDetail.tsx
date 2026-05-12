@@ -173,7 +173,9 @@ export default function CampaignDetail() {
       {campaign.cobrand_link && (
         <CobrandUploadSection
           cobrandLink={campaign.cobrand_link}
-          matchedVideos={campaign.matched_videos || []}
+          matchedVideos={(campaign.matched_videos || []).filter(
+            (v) => !v.dismissed_at
+          )}
           visible={cobrandVisible}
         />
       )}

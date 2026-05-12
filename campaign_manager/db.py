@@ -198,6 +198,26 @@ def init(database_url: Optional[str] = None):
                 "ON matched_videos (tracked_at)"
             ))
 
+            # Soft-dismiss columns for false-positive matches (issue #32).
+            # Dismissed rows are hidden from the tracking queue and excluded
+            # from campaign view/engagement totals.
+            s.execute(sa.text(
+                "ALTER TABLE matched_videos "
+                "ADD COLUMN IF NOT EXISTS dismissed_at TIMESTAMP NULL"
+            ))
+            s.execute(sa.text(
+                "ALTER TABLE matched_videos "
+                "ADD COLUMN IF NOT EXISTS dismissed_by VARCHAR(100) DEFAULT ''"
+            ))
+            s.execute(sa.text(
+                "ALTER TABLE matched_videos "
+                "ADD COLUMN IF NOT EXISTS dismissed_reason TEXT DEFAULT ''"
+            ))
+            s.execute(sa.text(
+                "CREATE INDEX IF NOT EXISTS idx_matched_videos_dismissed_at "
+                "ON matched_videos (dismissed_at)"
+            ))
+
             # Backfill ONLY rows that haven't been seen before — covers a
             # fresh deploy where pre-existing rows should be considered
             # already-handled. Idempotent: subsequent runs are no-ops.
