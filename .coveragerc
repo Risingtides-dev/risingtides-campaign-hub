@@ -1,0 +1,18 @@
+[run]
+source = campaign_manager
+omit =
+    campaign_manager/web_dashboard.py
+    campaign_manager/templates/*
+    campaign_manager/services/scheduler.py
+    campaign_manager/services/slack_bot.py
+    campaign_manager/services/apify_scraper.py
+    campaign_manager/services/llm.py
+    campaign_manager/services/tidestracker.py
+    campaign_manager/services/tracker_discovery.py
+    campaign_manager/services/slack_sounds.py
+
+[report]
+exclude_lines =
+    pragma: no cover
+    raise NotImplementedError
+    if __name__ == .__main__.:
