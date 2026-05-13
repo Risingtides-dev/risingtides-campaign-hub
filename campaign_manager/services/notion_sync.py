@@ -1,21 +1,37 @@
-"""Notion -> Postgres full sync service (RTA-8).
+"""Notion -> Postgres full sync + membership resolver (RTA-8, RTA-9).
 
-Pulls every row from the Notion "🌌 Master Pages" database and mirrors it
-into the `notion_master_pages` table. Records one `notion_sync_log` row
-per run with counts + per-row errors.
+Two-stage pipeline that keeps Hub's `internal_creator_group_members` table
+in sync with what Notion's "🌌 Master Pages" database says.
 
-Key design choices:
+Stage 1 — `sync_master_pages` (RTA-8):
+    Pulls every row from Notion and mirrors it into `notion_master_pages`.
+    Records one `notion_sync_log` row per run with counts + per-row errors.
+
+Stage 2 — `resolve_memberships` (RTA-9):
+    Reads `notion_master_pages` and reconciles the
+    `internal_creator_group_members` table against it. Each Notion row
+    resolves to at most one label group (from `notion_group`) and one
+    booker group (from `poster`); both are slugified via the canonical
+    `slugify()` helper. Missing groups are auto-created with the right
+    kind. Memberships that the mirror no longer attests get removed.
+
+    CRITICAL CONSTRAINT: the cleanup pass NEVER touches memberships in
+    groups with `kind='custom'` (e.g. `general`). Those are managed by
+    humans outside the sync; the resolver only owns the label/booker
+    axes.
+
+Key design choices (apply to both stages):
 - Reuses the property extractor helpers from `campaign_manager.services.notion`
   rather than introducing a new SDK dependency.
 - Idempotent: a second run with no Notion changes is a no-op.
-- Diff key is `notion_page_id` (UUID). Notion-only -> INSERT, both with newer
-  `last_edited_time` -> UPDATE, mirror-only -> DELETE, equal timestamps -> skip.
+- Diff key for stage 1 is `notion_page_id` (UUID). Notion-only -> INSERT,
+  both with newer `last_edited_time` -> UPDATE, mirror-only -> DELETE.
 - Password field is intentionally NOT mirrored (security).
-- Transactional: all upserts + deletes happen in one session. The sync_log
-  row is written in a separate, always-committed session so the audit trail
-  survives even when the main transaction rolls back on an unexpected error.
+- Transactional: each stage's mutations land in one session. The
+  sync_log row is written in a separate, always-committed session so the
+  audit trail survives even when the main transaction rolls back.
 
-RTA-9 builds the membership resolver on top of this mirror.
+RTA-10 (cron) chains these two stages every 15 minutes.
 """
 from __future__ import annotations
 
@@ -23,13 +39,18 @@ import logging
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from uuid import UUID
 
 import requests
 
 from campaign_manager import db as _db
-from campaign_manager.models import NotionMasterPage, NotionSyncLog
+from campaign_manager.models import (
+    InternalCreatorGroup,
+    InternalCreatorGroupMember,
+    NotionMasterPage,
+    NotionSyncLog,
+)
 from campaign_manager.services.notion import (
     NOTION_API_BASE,
     NOTION_VERSION,
@@ -41,6 +62,7 @@ from campaign_manager.services.notion import (
     _get_title,
     _get_url,
 )
+from campaign_manager.utils.helpers import slugify
 
 logger = logging.getLogger(__name__)
 
@@ -347,4 +369,295 @@ def sync_master_pages(triggered_by: str = "cron") -> SyncResult:
         logger.exception("Failed to write notion_sync_log row")
 
     result.sync_log_id = log_id
+    return result
+
+
+# ===========================================================================
+# RTA-9: Membership resolver
+# ===========================================================================
+
+
+@dataclass
+class ResolveResult:
+    rows_processed: int = 0
+    memberships_added: int = 0
+    memberships_removed: int = 0
+    groups_created: int = 0
+    errors: List[Dict[str, Any]] = field(default_factory=list)
+    sync_log_id: int = 0
+
+
+# Only memberships in these group kinds are managed by the resolver. Anything
+# else (notably `kind='custom'`, e.g. the `general` group) is humanmaintained
+# and survives the cleanup pass intact.
+_MANAGED_KINDS = ("label", "booked_by")
+
+
+def _title_from_notion_value(value: str, kind: str) -> str:
+    """Produce a human-readable group title from a raw Notion value.
+
+    For labels, Notion stores ALL-CAPS strings ('WARNER', 'ATLANTIC') —
+    title-case is the right display form. For bookers, the input is
+    already free-text human ('Jake Balik') — keep as-is, just stripped.
+    """
+    cleaned = (value or "").strip()
+    if not cleaned:
+        return cleaned
+    if kind == "label":
+        return cleaned.title()
+    return cleaned
+
+
+def _ensure_group(
+    session,
+    *,
+    slug: str,
+    kind: str,
+    title_source: str,
+    cache: Dict[str, InternalCreatorGroup],
+) -> Tuple[InternalCreatorGroup, bool]:
+    """Return ``(group, was_created)`` for ``slug``. Creates with ``kind`` if missing.
+
+    ``cache`` is a per-resolve dict that maps slug -> group, used to skip
+    repeat queries within a single run. Mutated in place.
+    """
+    if slug in cache:
+        return cache[slug], False
+
+    existing = (
+        session.query(InternalCreatorGroup)
+        .filter(InternalCreatorGroup.slug == slug)
+        .one_or_none()
+    )
+    if existing is not None:
+        cache[slug] = existing
+        return existing, False
+
+    created = InternalCreatorGroup(
+        slug=slug,
+        title=_title_from_notion_value(title_source, kind) or slug,
+        kind=kind,
+        sort_order=999,
+    )
+    session.add(created)
+    session.flush()  # populate .id so subsequent membership inserts can FK it
+    cache[slug] = created
+    return created, True
+
+
+def _desired_memberships_from_mirror(
+    session,
+    errors: List[Dict[str, Any]],
+    rows_processed: List[int],
+    groups_created: List[int],
+) -> Set[Tuple[int, str]]:
+    """Walk `notion_master_pages` and return the set of (group_id, username)
+    tuples that the Notion mirror currently attests.
+
+    Side effects: auto-creates missing label/booker groups, appends informational
+    "group_created" entries to ``errors``, and increments the mutable counters
+    passed in by the caller (list-of-one used as a mutable int).
+    """
+    cache: Dict[str, InternalCreatorGroup] = {}
+    desired: Set[Tuple[int, str]] = set()
+
+    for row in session.query(NotionMasterPage).all():
+        rows_processed[0] += 1
+        page_id = str(row.notion_page_id)
+        username = (row.account_username or "").strip().lower()
+
+        if not username:
+            # The sync stage already guards against this, but defensive.
+            errors.append({
+                "row_id": page_id,
+                "error_kind": "missing_account_username",
+                "detail": "mirror row had empty account_username at resolve time",
+            })
+            continue
+
+        label_raw = (row.notion_group or "").strip()
+        poster_raw = (row.poster or "").strip()
+
+        resolved_any = False
+
+        if label_raw:
+            label_slug = slugify(label_raw)
+            if label_slug:
+                group, created = _ensure_group(
+                    session, slug=label_slug, kind="label",
+                    title_source=label_raw, cache=cache,
+                )
+                if created:
+                    groups_created[0] += 1
+                    errors.append({
+                        "row_id": page_id,
+                        "error_kind": "group_created",
+                        "detail": f"label group {label_slug!r} created",
+                    })
+                desired.add((int(group.id), username))
+                resolved_any = True
+
+        if poster_raw:
+            poster_slug = slugify(poster_raw)
+            if poster_slug:
+                group, created = _ensure_group(
+                    session, slug=poster_slug, kind="booked_by",
+                    title_source=poster_raw, cache=cache,
+                )
+                if created:
+                    groups_created[0] += 1
+                    errors.append({
+                        "row_id": page_id,
+                        "error_kind": "group_created",
+                        "detail": f"booked_by group {poster_slug!r} created",
+                    })
+                desired.add((int(group.id), username))
+                resolved_any = True
+
+        if not resolved_any:
+            errors.append({
+                "row_id": page_id,
+                "error_kind": "no_attribution",
+                "detail": "no label or booker on this Notion page",
+            })
+
+    return desired
+
+
+def _apply_membership_diff(
+    session,
+    desired: Set[Tuple[int, str]],
+) -> Tuple[int, int]:
+    """Apply the desired (group_id, username) set to
+    `internal_creator_group_members`. Only mutates rows whose group's kind
+    is in ``_MANAGED_KINDS``.
+
+    Returns ``(added, removed)``.
+    """
+    # Pull existing memberships that belong to a managed-kind group. Anything
+    # in a custom-kind group is invisible to this function — both for diffing
+    # and for removal. That keeps `general` and friends safe.
+    existing_rows = (
+        session.query(
+            InternalCreatorGroupMember.group_id,
+            InternalCreatorGroupMember.username,
+            InternalCreatorGroup.kind,
+        )
+        .join(
+            InternalCreatorGroup,
+            InternalCreatorGroup.id == InternalCreatorGroupMember.group_id,
+        )
+        .filter(InternalCreatorGroup.kind.in_(_MANAGED_KINDS))
+        .all()
+    )
+    existing: Set[Tuple[int, str]] = {
+        (int(gid), (uname or "").lower()) for gid, uname, _kind in existing_rows
+    }
+
+    to_add = desired - existing
+    to_remove = existing - desired
+
+    for group_id, username in to_add:
+        session.add(InternalCreatorGroupMember(group_id=group_id, username=username))
+
+    for group_id, username in to_remove:
+        session.query(InternalCreatorGroupMember).filter(
+            InternalCreatorGroupMember.group_id == group_id,
+            InternalCreatorGroupMember.username == username,
+        ).delete(synchronize_session=False)
+
+    return len(to_add), len(to_remove)
+
+
+def resolve_memberships(
+    triggered_by: str = "cron",
+    sync_log_id: Optional[int] = None,
+) -> ResolveResult:
+    """Reconcile `internal_creator_group_members` against `notion_master_pages`.
+
+    For each mirrored Notion page:
+      - Slugify ``notion_group`` -> resolve/create a ``kind='label'`` group.
+      - Slugify ``poster`` -> resolve/create a ``kind='booked_by'`` group.
+      - Ensure a membership row exists for each resolved group.
+
+    After processing all rows, remove memberships in managed-kind groups
+    that the mirror no longer attests. Custom-kind groups are never touched.
+
+    If ``sync_log_id`` is provided, the membership counts are written back
+    onto that existing row (typically the row produced by `sync_master_pages`
+    earlier in the same cron cycle). Otherwise a fresh ``sync_type='resolve'``
+    log row is written.
+    """
+    result = ResolveResult()
+    started_at = datetime.now(timezone.utc)
+
+    rows_processed = [0]
+    groups_created = [0]
+
+    try:
+        with _db.get_session() as session:
+            desired = _desired_memberships_from_mirror(
+                session, result.errors, rows_processed, groups_created,
+            )
+            added, removed = _apply_membership_diff(session, desired)
+            session.commit()
+            result.memberships_added = added
+            result.memberships_removed = removed
+    except Exception as exc:
+        result.errors.append({
+            "row_id": "",
+            "error_kind": "resolve_failed",
+            "detail": str(exc)[:500],
+        })
+        logger.exception("resolve_memberships transaction failed")
+
+    result.rows_processed = rows_processed[0]
+    result.groups_created = groups_created[0]
+
+    # ---- Audit log (always written) -----------------------------------
+    finished_at = datetime.now(timezone.utc)
+    log_id_written = 0
+    try:
+        with _db.get_session() as log_session:
+            row: Optional[NotionSyncLog] = None
+            if sync_log_id:
+                row = (
+                    log_session.query(NotionSyncLog)
+                    .filter(NotionSyncLog.id == sync_log_id)
+                    .one_or_none()
+                )
+            if row is not None:
+                # Updating the existing sync_master_pages row in place — keep
+                # the original started_at, refresh finished_at, layer on the
+                # resolver counts, and merge the error arrays.
+                row.finished_at = finished_at
+                row.memberships_added = result.memberships_added
+                row.memberships_removed = result.memberships_removed
+                existing_errors = list(row.errors or [])
+                if result.errors:
+                    existing_errors.extend(result.errors)
+                row.errors = existing_errors
+                log_session.commit()
+                log_id_written = int(row.id)
+            else:
+                fresh = NotionSyncLog(
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    sync_type="resolve",
+                    pages_fetched=None,
+                    pages_added=None,
+                    pages_updated=None,
+                    pages_deleted=None,
+                    memberships_added=result.memberships_added,
+                    memberships_removed=result.memberships_removed,
+                    errors=result.errors or [],
+                    triggered_by=triggered_by,
+                )
+                log_session.add(fresh)
+                log_session.commit()
+                log_id_written = int(fresh.id or 0)
+    except Exception:
+        logger.exception("Failed to write notion_sync_log row for resolve stage")
+
+    result.sync_log_id = log_id_written
     return result
