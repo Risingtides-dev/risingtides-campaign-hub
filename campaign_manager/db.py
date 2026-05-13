@@ -23,6 +23,7 @@ from campaign_manager.models import (
     TrackerGroup, TrackerGroupAssignment, TrackerName, TrackerCampaignLink,
     TrackerArchive,
     ManyChatMessage,
+    NotionMasterPage, NotionSyncLog,
 )
 
 _engine = None
@@ -238,6 +239,68 @@ def init(database_url: Optional[str] = None):
 
     # manychat_messages table is created by Base.metadata.create_all above.
     # No migration block needed -- it's additive only.
+
+    # Notion mirror tables (RTA-6, RTA-7). create_all above handles fresh
+    # creation; the explicit CREATE TABLE IF NOT EXISTS + CREATE INDEX IF
+    # NOT EXISTS below pin the exact schema (verbatim from the tickets)
+    # so the deploy is idempotent even if the SQLAlchemy DDL drifts.
+    # Password is deliberately NOT mirrored from Notion (security).
+    try:
+        with _SessionLocal() as s:
+            sa = __import__("sqlalchemy")
+            s.execute(sa.text(
+                "CREATE TABLE IF NOT EXISTS notion_master_pages ("
+                "  notion_page_id        UUID PRIMARY KEY,"
+                "  account_username      TEXT NOT NULL,"
+                "  notion_group          TEXT,"
+                "  notion_subgroup       TEXT,"
+                "  poster                TEXT,"
+                "  account_type          TEXT,"
+                "  page_type             TEXT,"
+                "  content_engine        TEXT,"
+                "  pipeline              TEXT,"
+                "  status                TEXT,"
+                "  page_url              TEXT,"
+                "  email                 TEXT,"
+                "  notes                 TEXT,"
+                "  go_live_date          DATE,"
+                "  is_complete           BOOLEAN DEFAULT FALSE,"
+                "  notion_last_edited_at TIMESTAMPTZ,"
+                "  synced_at             TIMESTAMPTZ NOT NULL DEFAULT NOW()"
+                ")"
+            ))
+            s.execute(sa.text(
+                "CREATE INDEX IF NOT EXISTS idx_notion_master_account_username "
+                "ON notion_master_pages (LOWER(account_username))"
+            ))
+            s.execute(sa.text(
+                "CREATE INDEX IF NOT EXISTS idx_notion_master_group "
+                "ON notion_master_pages (notion_group)"
+            ))
+            s.execute(sa.text(
+                "CREATE INDEX IF NOT EXISTS idx_notion_master_poster "
+                "ON notion_master_pages (poster)"
+            ))
+
+            s.execute(sa.text(
+                "CREATE TABLE IF NOT EXISTS notion_sync_log ("
+                "  id                  BIGSERIAL PRIMARY KEY,"
+                "  started_at          TIMESTAMPTZ NOT NULL,"
+                "  finished_at         TIMESTAMPTZ,"
+                "  sync_type           TEXT NOT NULL,"
+                "  pages_fetched       INTEGER,"
+                "  pages_added         INTEGER,"
+                "  pages_updated       INTEGER,"
+                "  pages_deleted       INTEGER,"
+                "  memberships_added   INTEGER,"
+                "  memberships_removed INTEGER,"
+                "  errors              JSONB,"
+                "  triggered_by        TEXT"
+                ")"
+            ))
+            s.commit()
+    except Exception:
+        pass
 
     return True
 

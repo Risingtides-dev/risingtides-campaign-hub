@@ -4,10 +4,10 @@ from __future__ import annotations
 from datetime import date, datetime
 
 from sqlalchemy import (
-    Boolean, Column, Date, DateTime, Float, ForeignKey, Integer, String, Text,
-    UniqueConstraint, create_engine
+    BigInteger, Boolean, Column, Date, DateTime, Float, ForeignKey, Integer,
+    String, Text, UniqueConstraint, create_engine
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, relationship, sessionmaker
 
 
@@ -673,3 +673,56 @@ class ManyChatMessage(Base):
             "extracted": self.extracted or {},
             "classified_at": self.classified_at.isoformat() if self.classified_at else "",
         }
+
+
+# ===================================================================
+# Notion master pages mirror (RTA-6) + sync log (RTA-7)
+# ===================================================================
+#
+# Mirror of the canonical attribution Notion DB. The Hub queries this
+# locally so the scrape pipeline can resolve label + booker from an
+# account_username without hitting Notion. The sync service (RTA-8)
+# populates these; the resolver (RTA-9) reads from them. This file is
+# schema-only -- no app code reads/writes here yet.
+#
+# Password is intentionally NOT mirrored (security).
+
+class NotionMasterPage(Base):
+    """Row-for-row mirror of one page in the Notion master attribution DB."""
+    __tablename__ = "notion_master_pages"
+
+    notion_page_id = Column(UUID(as_uuid=True), primary_key=True)
+    account_username = Column(Text, nullable=False)        # join key with our DB
+    notion_group = Column(Text)                            # WARNER | ATLANTIC | INTERNAL
+    notion_subgroup = Column(Text)                         # e.g. "Warner UGC", "Jack Harlow (Atlantic)"
+    poster = Column(Text)                                  # free text, normalize on read
+    account_type = Column(Text)                            # TRUCK | POV | Coffee | slideshow | silhouette | meme
+    page_type = Column(Text)                               # Lyric page | UGC page | Artist burner page
+    content_engine = Column(Text)                          # Kingmaker | Flow Stage
+    pipeline = Column(Text)                                # King Maker Tech | Flow Stage
+    status = Column(Text)                                  # New — Pending Setup | In Production | ...
+    page_url = Column(Text)
+    email = Column(Text)
+    notes = Column(Text)
+    go_live_date = Column(Date)
+    is_complete = Column(Boolean, default=False)
+    notion_last_edited_at = Column(DateTime(timezone=True))
+    synced_at = Column(DateTime(timezone=True), nullable=False, default=datetime.now)
+
+
+class NotionSyncLog(Base):
+    """Audit row for each Notion -> Hub sync run."""
+    __tablename__ = "notion_sync_log"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    started_at = Column(DateTime(timezone=True), nullable=False)
+    finished_at = Column(DateTime(timezone=True))
+    sync_type = Column(Text, nullable=False)               # full | webhook | manual
+    pages_fetched = Column(Integer)
+    pages_added = Column(Integer)
+    pages_updated = Column(Integer)
+    pages_deleted = Column(Integer)
+    memberships_added = Column(Integer)
+    memberships_removed = Column(Integer)
+    errors = Column(JSONB)                                 # list of {row_id, error_kind, detail}
+    triggered_by = Column(Text)                            # cron | manual:<user> | webhook
