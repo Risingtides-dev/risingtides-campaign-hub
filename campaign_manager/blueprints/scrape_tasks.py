@@ -88,6 +88,7 @@ def queue():
             .filter(MatchedVideo.tracked_at.is_(None))
             .filter(MatchedVideo.dismissed_at.is_(None))
             .filter(Campaign.status == "active")
+            .filter(Campaign.completion_status != "completed")
         )
         if campaign_filter:
             q = q.filter(Campaign.slug == campaign_filter)

@@ -8,7 +8,7 @@ exercise the Postgres-specific migration path; that lives in
 from __future__ import annotations
 
 from campaign_manager import db
-from campaign_manager.models import MatchedVideo
+from campaign_manager.models import Campaign, MatchedVideo
 
 
 def _get_video(session, video_id):
@@ -127,6 +127,28 @@ def test_mark_campaign_tracked_skips_dismissed(client, seeded_campaign):
         # independent states.
         assert row.tracked_at is None
         assert row.dismissed_at is not None
+
+
+def test_queue_excludes_completed_campaigns(client, seeded_campaign):
+    """RTA-15: campaigns with completion_status="completed" must not
+    appear in the scrape-tasks queue, even when status="active". The UI's
+    green check only flips completion_status — status stays "active"."""
+    slug = seeded_campaign["slug"]
+
+    # Sanity: queue starts with the seeded campaign's 3 videos.
+    before = client.get("/api/scrape-tasks/queue").get_json()
+    assert before["total_untracked"] == 3
+    assert any(c["slug"] == slug for c in before["campaigns"])
+
+    # Mark the campaign completed (status stays "active").
+    with db.get_session() as s:
+        camp = s.query(Campaign).filter_by(slug=slug).first()
+        camp.completion_status = "completed"
+        s.commit()
+
+    after = client.get("/api/scrape-tasks/queue").get_json()
+    assert after["total_untracked"] == 0
+    assert after["campaigns"] == []
 
 
 def test_dismiss_rejects_invalid_body(client, seeded_campaign):
