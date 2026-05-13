@@ -18,7 +18,7 @@ os.environ.setdefault("DATABASE_URL", "")
 
 import pytest
 from sqlalchemy import BigInteger, create_engine
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import sessionmaker
 
@@ -39,6 +39,17 @@ def _bigint_as_integer_on_sqlite(_type, _compiler, **_kw):
     # BigInteger -> INTEGER for SQLite so models that use BigInteger PKs
     # (e.g. NotionSyncLog, InternalVideoGroupAttribution) work in tests.
     return "INTEGER"
+
+
+@compiles(UUID, "sqlite")
+def _uuid_as_char_on_sqlite(_type, _compiler, **_kw):
+    # The Postgres UUID dialect type relies on libpq's binary UUID binding.
+    # On SQLite the round-trip surfaces as 'AttributeError: float object
+    # has no attribute replace' when SQLAlchemy tries to reconstruct a
+    # uuid.UUID from the returned cell. Mapping UUID -> CHAR(36) lets
+    # values round-trip as hyphenated strings; as_uuid=True still coerces
+    # back to UUID on read. Needed for NotionMasterPage tests (RTA-8).
+    return "CHAR(36)"
 
 
 from flask import Flask  # noqa: E402
