@@ -10,10 +10,16 @@ import requests
 
 
 def slugify(text: str) -> str:
+    """Canonical slug from free-text (Notion `Group` / `Poster` values).
+
+    Lowercase, replace whitespace + punctuation with `_`, collapse runs of `_`,
+    strip leading/trailing `_`. Source of truth for slug generation now that
+    Notion drives both label and booker axes (see RTA-5 / RTA-8).
+    """
     text = text.lower().strip()
-    text = re.sub(r"[^\w\s-]", "", text)
-    text = re.sub(r"[\s-]+", "_", text)
-    return text
+    text = re.sub(r"[^\w\s-]", "_", text)
+    text = re.sub(r"[\s\-_]+", "_", text)
+    return text.strip("_")
 
 
 def load_json(path: Path) -> Dict:

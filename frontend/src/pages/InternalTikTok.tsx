@@ -12,8 +12,8 @@ import { Input } from "@/components/ui/input"
 import { Loader2, ChevronRight, X, Plus, Trash2 } from "lucide-react"
 import type { InternalGroup } from "@/lib/types"
 
-const PERSON_GROUPS = ["jake_balik", "john_smathers", "sam_hudgens", "eric_cromartie", "johnny_balik", "seeno_pages"]
-const LABEL_GROUPS = ["warner_pages", "atlantic_pages", "warner_test_pages"]
+const PERSON_GROUPS = ["jake_balik", "john_smathers", "sam_hudgens", "eric_cromartie", "johnny_balik", "seeno"]
+const LABEL_GROUPS = ["warner", "atlantic", "warner_test"]
 
 function formatNum(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
@@ -129,9 +129,9 @@ export default function InternalTikTok() {
     .sort((a, b) => (a.sort_order ?? 99) - (b.sort_order ?? 99))
 
   const internalCount = personGroups.reduce((sum, g) => sum + g.member_count, 0)
-  const warnerGroup = (groups || []).find((g) => g.slug === "warner_pages")
-  const atlanticGroup = (groups || []).find((g) => g.slug === "atlantic_pages")
-  const warnerTestGroup = (groups || []).find((g) => g.slug === "warner_test_pages")
+  const warnerGroup = (groups || []).find((g) => g.slug === "warner")
+  const atlanticGroup = (groups || []).find((g) => g.slug === "atlantic")
+  const warnerTestGroup = (groups || []).find((g) => g.slug === "warner_test")
 
   const sortedCreators = [...(creators || [])].sort(
     (a, b) => (b.total_views ?? 0) - (a.total_views ?? 0)

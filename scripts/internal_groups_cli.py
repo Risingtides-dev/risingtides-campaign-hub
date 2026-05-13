@@ -43,7 +43,7 @@ TIMEOUT = 30
 # ---------------------------------------------------------------------------
 SEED_GROUPS: List[Dict[str, Any]] = [
     {
-        "slug": "warner_pages",
+        "slug": "warner",
         "title": "Warner Pages",
         "kind": "label",
         "sort_order": 10,
