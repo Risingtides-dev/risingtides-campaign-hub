@@ -17,7 +17,7 @@ import os
 os.environ.setdefault("DATABASE_URL", "")
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import BigInteger, create_engine
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import sessionmaker
@@ -29,6 +29,16 @@ def _jsonb_as_json_on_sqlite(_type, _compiler, **_kw):
     # Bind/value handling still works because SQLAlchemy serializes
     # Python lists/dicts to JSON text for either backend.
     return "JSON"
+
+
+@compiles(BigInteger, "sqlite")
+def _bigint_as_integer_on_sqlite(_type, _compiler, **_kw):
+    # SQLite only auto-increments columns typed exactly "INTEGER PRIMARY
+    # KEY" (rowid alias). BIGINT primary keys silently break autoincrement
+    # and surface as "NOT NULL constraint failed: <table>.id". Map
+    # BigInteger -> INTEGER for SQLite so models that use BigInteger PKs
+    # (e.g. NotionSyncLog, InternalVideoGroupAttribution) work in tests.
+    return "INTEGER"
 
 
 from flask import Flask  # noqa: E402

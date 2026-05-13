@@ -4,8 +4,8 @@ from __future__ import annotations
 from datetime import date, datetime
 
 from sqlalchemy import (
-    BigInteger, Boolean, Column, Date, DateTime, Float, ForeignKey, Integer,
-    String, Text, UniqueConstraint, create_engine
+    BigInteger, Boolean, Column, Date, DateTime, Float, ForeignKey, Index,
+    Integer, String, Text, UniqueConstraint, create_engine, func
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, relationship, sessionmaker
@@ -522,6 +522,37 @@ class InternalCreatorGroupMember(Base):
     added_at = Column(DateTime, default=datetime.now)
 
     group = relationship("InternalCreatorGroup", back_populates="members")
+
+
+class InternalVideoGroupAttribution(Base):
+    """Point-in-time attribution of a scraped video to a group.
+
+    Snapshots the group membership of an account at scrape time so that
+    re-tagging an account later does not silently rewrite historical
+    view attribution. Stats joins prefer this table for videos that
+    have rows here; videos without rows fall back to the runtime join
+    on `internal_creator_group_members` (transitional — only NEW scrapes
+    get attribution rows; historical videos are not backfilled).
+    """
+    __tablename__ = "internal_video_group_attribution"
+    __table_args__ = (
+        UniqueConstraint("video_id", "group_id", name="uq_ivga_video_group"),
+        Index("idx_ivga_video", "video_id"),
+        Index("idx_ivga_group", "group_id"),
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    video_id = Column(
+        BigInteger,
+        ForeignKey("internal_video_cache.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    group_id = Column(
+        BigInteger,
+        ForeignKey("internal_creator_groups.id"),
+        nullable=False,
+    )
+    resolved_at = Column(DateTime(timezone=True), nullable=False, default=func.now())
 
 
 # ===================================================================

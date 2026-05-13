@@ -20,6 +20,7 @@ from campaign_manager.models import (
     InboxItem, PaypalMemory, InternalCreator, InternalVideoCache,
     InternalScrapeResult, CronLog, NetworkCreator, OutreachMessage,
     InternalCreatorGroup, InternalCreatorGroupMember,
+    InternalVideoGroupAttribution,
     TrackerGroup, TrackerGroupAssignment, TrackerName, TrackerCampaignLink,
     TrackerArchive,
     ManyChatMessage,
@@ -297,6 +298,34 @@ def init(database_url: Optional[str] = None):
                 "  errors              JSONB,"
                 "  triggered_by        TEXT"
                 ")"
+            ))
+            s.commit()
+    except Exception:
+        pass
+
+    # RTA-13: durable point-in-time attribution of scraped videos to groups.
+    # Snapshots the group membership of an account AT scrape time so that
+    # re-tagging an account later does not silently rewrite historical
+    # attribution.
+    try:
+        with _SessionLocal() as s:
+            sa = __import__("sqlalchemy")
+            s.execute(sa.text(
+                "CREATE TABLE IF NOT EXISTS internal_video_group_attribution ("
+                "  id          BIGSERIAL PRIMARY KEY,"
+                "  video_id    BIGINT NOT NULL REFERENCES internal_video_cache(id) ON DELETE CASCADE,"
+                "  group_id    BIGINT NOT NULL REFERENCES internal_creator_groups(id),"
+                "  resolved_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),"
+                "  CONSTRAINT uq_ivga_video_group UNIQUE (video_id, group_id)"
+                ")"
+            ))
+            s.execute(sa.text(
+                "CREATE INDEX IF NOT EXISTS idx_ivga_video "
+                "ON internal_video_group_attribution (video_id)"
+            ))
+            s.execute(sa.text(
+                "CREATE INDEX IF NOT EXISTS idx_ivga_group "
+                "ON internal_video_group_attribution (group_id)"
             ))
             s.commit()
     except Exception:
@@ -821,7 +850,14 @@ def get_internal_cache(username: str) -> List[Dict]:
 
 
 def merge_internal_cache(username: str, new_videos: List[Dict]) -> List[Dict]:
-    """Merge new videos into cache, dedupe by URL, prune >30 days old."""
+    """Merge new videos into cache, dedupe by URL, prune >30 days old.
+
+    For each newly-inserted video, also writes one
+    `InternalVideoGroupAttribution` row per group the account currently
+    belongs to. This snapshots group membership at scrape time so later
+    re-tagging of the account does not rewrite historical attribution
+    (RTA-13).
+    """
     cutoff = datetime.now() - timedelta(days=30)
     uname = username.lower()
 
@@ -836,10 +872,11 @@ def merge_internal_cache(username: str, new_videos: List[Dict]) -> List[Dict]:
         existing_urls = {v.url for v in
                          s.query(InternalVideoCache).filter_by(username=uname).all()}
 
+        new_rows: List[InternalVideoCache] = []
         for vd in new_videos:
             url = vd.get("url", "")
             if url and url not in existing_urls:
-                s.add(InternalVideoCache(
+                row = InternalVideoCache(
                     username=uname,
                     url=url,
                     song=vd.get("song", ""),
@@ -850,8 +887,47 @@ def merge_internal_cache(username: str, new_videos: List[Dict]) -> List[Dict]:
                     upload_date=vd.get("upload_date", ""),
                     timestamp=str(vd.get("timestamp", "")),
                     cached_at=datetime.now(),
-                ))
+                )
+                s.add(row)
+                new_rows.append(row)
                 existing_urls.add(url)
+
+        # Flush so new_rows get their PK ids before we write attribution.
+        if new_rows:
+            s.flush()
+
+            # Resolve the account's CURRENT group memberships once.
+            group_ids = [
+                gid
+                for (gid,) in s.query(InternalCreatorGroupMember.group_id)
+                .filter(func.lower(InternalCreatorGroupMember.username) == uname)
+                .all()
+            ]
+
+            if group_ids:
+                # One attribution row per (new video × current group).
+                # Idempotent: dedup against any existing rows by the
+                # (video_id, group_id) unique constraint.
+                existing_pairs = set()
+                new_video_ids = [r.id for r in new_rows]
+                if new_video_ids:
+                    existing_pairs = {
+                        (vid, gid)
+                        for (vid, gid) in s.query(
+                            InternalVideoGroupAttribution.video_id,
+                            InternalVideoGroupAttribution.group_id,
+                        ).filter(
+                            InternalVideoGroupAttribution.video_id.in_(new_video_ids)
+                        ).all()
+                    }
+                for row in new_rows:
+                    for gid in group_ids:
+                        if (row.id, gid) in existing_pairs:
+                            continue
+                        s.add(InternalVideoGroupAttribution(
+                            video_id=row.id,
+                            group_id=gid,
+                        ))
 
         s.commit()
 
@@ -1423,37 +1499,79 @@ def get_group_stats(group_id: int, days: int = 30) -> Optional[Dict]:
 
     Returns: { group: {...}, days, total_posts, total_views, total_likes,
                creators: [{username, posts, views, likes}], top_songs: [...] }
+
+    Source of attribution (RTA-13):
+      1. Videos with rows in `internal_video_group_attribution` for this
+         group are attributed via the side-table (point-in-time, durable
+         against later re-tagging).
+      2. Videos with NO side-table rows at all (historical, pre-RTA-13)
+         fall back to runtime membership join against
+         `internal_creator_group_members`.
+
+      As all videos get attribution rows on new scrapes, the fallback
+      shrinks over time. Backfill of historical videos is out of scope
+      for this ticket.
     """
     group = get_internal_group(group_id)
     if not group:
         return None
 
     members = get_group_members(group_id)
-    if not members:
-        return {
-            "group": group,
-            "days": int(days),
-            "total_posts": 0,
-            "total_views": 0,
-            "total_likes": 0,
-            "creators": [],
-            "top_songs": [],
-        }
-
-    members_lower = [m.lower() for m in members]
     cutoff = _cutoff_yyyymmdd(days)
 
     with get_session() as s:
-        videos = (
+        # (1) Side-table-attributed videos for this group.
+        attributed_videos = (
             s.query(InternalVideoCache)
+            .join(
+                InternalVideoGroupAttribution,
+                InternalVideoGroupAttribution.video_id == InternalVideoCache.id,
+            )
             .filter(
-                func.lower(InternalVideoCache.username).in_(members_lower),
+                InternalVideoGroupAttribution.group_id == group_id,
                 InternalVideoCache.upload_date >= cutoff,
             )
             .all()
         )
 
-        # Per-creator rollup
+        # (2) Runtime-join fallback for historical (un-attributed) videos.
+        # Anti-join: videos whose username currently belongs to the group
+        # but which have NO row in `internal_video_group_attribution` at
+        # all. Once a video has any attribution row, it's owned by the
+        # side-table — we don't double-count it through the fallback.
+        legacy_videos: List[InternalVideoCache] = []
+        members_lower = [m.lower() for m in members] if members else []
+        if members_lower:
+            attributed_ids_subq = (
+                s.query(InternalVideoGroupAttribution.video_id).subquery()
+            )
+            legacy_videos = (
+                s.query(InternalVideoCache)
+                .filter(
+                    func.lower(InternalVideoCache.username).in_(members_lower),
+                    InternalVideoCache.upload_date >= cutoff,
+                    ~InternalVideoCache.id.in_(s.query(attributed_ids_subq.c.video_id)),
+                )
+                .all()
+            )
+
+        # Union — videos are disjoint by construction (attributed set
+        # excludes legacy set via the anti-join above).
+        videos = list(attributed_videos) + list(legacy_videos)
+
+        if not videos and not members:
+            return {
+                "group": group,
+                "days": int(days),
+                "total_posts": 0,
+                "total_views": 0,
+                "total_likes": 0,
+                "creators": [],
+                "top_songs": [],
+            }
+
+        # Per-creator rollup. Seed slots for current members so a
+        # zero-post member still surfaces in the response.
         per_creator: Dict[str, Dict] = {
             m: {"username": m, "posts": 0, "views": 0, "likes": 0} for m in members_lower
         }
