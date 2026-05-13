@@ -41,7 +41,7 @@ Below the cards, the page has three tabs: **Stats**, **All Accounts**, and **Gro
 
 ### Stats tab (the default)
 
-Shows a stats card for every group, including per-person breakdowns (one card each for `jake_balik`, `john_smathers`, `sam_hudgens`, `eric_cromartie`, `johnny_balik`, `seeno_pages`) and per-label cards (`warner_pages`, `atlantic_pages`, `warner_test_pages`).
+Shows a stats card for every group, including per-person breakdowns (one card each for `jake_balik`, `john_smathers`, `sam_hudgens`, `eric_cromartie`, `johnny_balik`, `seeno`) and per-label cards (`warner`, `atlantic`, `warner_test`).
 
 Each card shows:
 - Group name

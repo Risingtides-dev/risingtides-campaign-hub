@@ -19,23 +19,23 @@ import type { InternalScrapeResults } from "@/lib/types"
 const CATEGORIES: Record<string, { title: string; groupSlugs: string[]; scrapeGroup?: string }> = {
   internal: {
     title: "Internal Pages",
-    groupSlugs: ["jake_balik", "john_smathers", "sam_hudgens", "eric_cromartie", "johnny_balik", "seeno_pages"],
+    groupSlugs: ["jake_balik", "john_smathers", "sam_hudgens", "eric_cromartie", "johnny_balik", "seeno"],
     // No scrapeGroup — scrapes all creators
   },
   warner: {
     title: "Warner Pages",
-    groupSlugs: ["warner_pages"],
-    scrapeGroup: "warner_pages",
+    groupSlugs: ["warner"],
+    scrapeGroup: "warner",
   },
   atlantic: {
     title: "Atlantic Pages",
-    groupSlugs: ["atlantic_pages"],
-    scrapeGroup: "atlantic_pages",
+    groupSlugs: ["atlantic"],
+    scrapeGroup: "atlantic",
   },
   warner_test: {
     title: "Warner Test Pages",
-    groupSlugs: ["warner_test_pages"],
-    scrapeGroup: "warner_test_pages",
+    groupSlugs: ["warner_test"],
+    scrapeGroup: "warner_test",
   },
 }
 

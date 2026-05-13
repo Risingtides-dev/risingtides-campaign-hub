@@ -150,9 +150,11 @@ Tag `pre-migration-backup` on both remotes points to the old codebase.
 - **Scraping runs in background threads.** Both campaign refresh and internal scrape use ThreadPoolExecutor with status polling. Redis + Celery is the upgrade path if needed.
 - **Dual storage mode.** db.py supports both Postgres (production) and file-based JSON/CSV (local dev). Production always uses Postgres.
 - **Creator database** aggregates stats across all campaigns -- no new DB tables needed, just cross-campaign queries on existing Creator and MatchedVideo models.
+- **Internal-group slugs are Notion-derived** (RTA-5). Slugs for `internal_creator_groups` come from `slugify()` applied to Notion's `Group` field (label axis: `warner`, `atlantic`, `warner_test`, `seeno`) and `Poster` field (booker axis: `jake_balik`, `john_smathers`, etc.). No separate naming convention -- one canonical mapping. Old `_pages`-suffixed slugs are deprecated; routes like `/api/internal/groups/warner_pages/stats` return 404 (use `warner`).
 
 ## Recent Changes
 
+- **Slug rename: drop `_pages` suffix on labels** (2026-05-12, RTA-5) -- `warner_pages` → `warner`, `atlantic_pages` → `atlantic`, `warner_test_pages` → `warner_test`, `seeno_pages` → `seeno`. Booker slugs unchanged. Run `python scripts/rename_label_slugs.py` against prod DB to migrate row values.
 - **Active/Finished campaign tabs** (2026-03-12) -- Campaigns list now splits into Active and Finished tabs. Green check (completion_status: "completed") moves a campaign to the Finished tab. PR #1 to upstream.
 - **Completion status cycling** -- Checkbox in campaigns table cycles: none → booked → completed (green check)
 
