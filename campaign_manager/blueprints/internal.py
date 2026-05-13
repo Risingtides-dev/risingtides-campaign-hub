@@ -9,9 +9,10 @@ import os
 import re
 import sys
 import threading
+import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 EST = ZoneInfo("America/New_York")
@@ -49,6 +50,51 @@ _internal_scrape_status: Dict = {
     "current_accounts": [],
     "log": [],
 }
+
+# Job registry for the per-group trigger endpoint (RTA-16).
+#
+# _jobs maps job_id -> {group, started_at, state, progress: {n,m}, last_log, error}
+# _current_job_by_group maps group slug -> active job_id (debounce key).
+#
+# In-memory only. Railway dyno recycles drop in-flight scrapes; job state
+# resets to empty after a restart. Acceptable for now — the underlying
+# scrape worker is already in-process state and shares the same limitation.
+# A persistent job store (Redis/DB row) is the upgrade path if it becomes
+# a real problem.
+_jobs: Dict[str, Dict] = {}
+_current_job_by_group: Dict[str, str] = {}
+_jobs_lock = threading.Lock()
+
+
+def _job_snapshot(job_id: str) -> Optional[Dict]:
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if not job:
+            return None
+        return {
+            "job_id": job_id,
+            "group": job.get("group"),
+            "started_at": job.get("started_at"),
+            "state": job.get("state", "running"),
+            "progress": dict(job.get("progress") or {"n": 0, "m": 0}),
+            "last_log": job.get("last_log", ""),
+            "error": job.get("error"),
+        }
+
+
+def _update_job(job_id: str, **fields) -> None:
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if not job:
+            return
+        job.update(fields)
+
+
+def _clear_current_job(group: str, job_id: str) -> None:
+    """Clear group->job mapping if it still points at this job."""
+    with _jobs_lock:
+        if _current_job_by_group.get(group) == job_id:
+            _current_job_by_group.pop(group, None)
 
 # ---------------------------------------------------------------------------
 # Data helpers
@@ -167,13 +213,40 @@ def merge_into_cache(username: str, new_videos: List[Dict]) -> List[Dict]:
 # ---------------------------------------------------------------------------
 
 def _run_internal_scrape(hours: int, creators: List[str], *,
-                         start_date_str: str = "", end_date_str: str = ""):
+                         start_date_str: str = "", end_date_str: str = "",
+                         job_id: Optional[str] = None,
+                         group_slug: Optional[str] = None):
     """Background scrape worker -- runs in a thread.
 
     When start_date_str / end_date_str are provided (YYYY-MM-DD), they
     override the hours-based window. This lets the UI request a specific
     date range like "March 15 to April 15".
+
+    When job_id is provided, the worker also writes progress + state into
+    the _jobs registry so the /api/internal/scrape/start polling shape
+    (state, progress: {n,m}, last_log) reflects real progress (RTA-16).
     """
+    def _bump(state: str, *, n: Optional[int] = None, m: Optional[int] = None,
+              last_log: Optional[str] = None, error: Optional[str] = None) -> None:
+        if not job_id:
+            return
+        fields: Dict = {"state": state}
+        if n is not None or m is not None:
+            with _jobs_lock:
+                job = _jobs.get(job_id)
+                if job:
+                    prog = dict(job.get("progress") or {"n": 0, "m": 0})
+                    if n is not None:
+                        prog["n"] = n
+                    if m is not None:
+                        prog["m"] = m
+                    fields["progress"] = prog
+        if last_log is not None:
+            fields["last_log"] = last_log
+        if error is not None:
+            fields["error"] = error
+        _update_job(job_id, **fields)
+
     from concurrent.futures import ThreadPoolExecutor, as_completed
     from collections import defaultdict
     from datetime import timedelta
@@ -191,6 +264,7 @@ def _run_internal_scrape(hours: int, creators: List[str], *,
         "current_accounts": [],
         "log": [],
     }
+    _bump("running", n=0, m=total, last_log="Starting...")
 
     # Thread-safe set for tracking in-flight accounts
     _inflight_lock = threading.Lock()
@@ -218,6 +292,9 @@ def _run_internal_scrape(hours: int, creators: List[str], *,
             "accounts_total": total, "accounts_completed": 0, "accounts_failed": 0,
             "videos_so_far": 0, "current_accounts": [], "log": [],
         }
+        _bump("error", last_log=f"Import error: {e}", error=str(e))
+        if group_slug and job_id:
+            _clear_current_job(group_slug, job_id)
         return
 
     try:
@@ -298,7 +375,14 @@ def _run_internal_scrape(hours: int, creators: List[str], *,
                 _internal_scrape_status["accounts_completed"] = completed_count
                 _internal_scrape_status["accounts_failed"] = failed
                 _internal_scrape_status["videos_so_far"] = len(all_videos)
-                _internal_scrape_status["progress"] = f"Scraped {completed_count}/{total} accounts ({successful} ok, {failed} failed)"
+                progress_str = f"Scraped {completed_count}/{total} accounts ({successful} ok, {failed} failed)"
+                _internal_scrape_status["progress"] = progress_str
+                _bump(
+                    "running",
+                    n=completed_count,
+                    m=total,
+                    last_log=f"{account}: {'ok' if not error else 'failed'} ({video_count} videos)",
+                )
 
         # Group by song
         songs_dict = defaultdict(lambda: {
@@ -344,16 +428,18 @@ def _run_internal_scrape(hours: int, creators: List[str], *,
         }
         save_internal_results(results)
 
+        done_msg = (
+            f"Done: {successful}/{total} accounts, "
+            f"{len(all_videos)} videos, "
+            f"{len(songs_list)} unique sounds"
+        )
         _internal_scrape_status.update({
             "running": False,
             "done": True,
-            "progress": (
-                f"Done: {successful}/{total} accounts, "
-                f"{len(all_videos)} videos, "
-                f"{len(songs_list)} unique sounds"
-            ),
+            "progress": done_msg,
             "current_accounts": [],
         })
+        _bump("done", n=total, m=total, last_log=done_msg)
     except Exception as e:
         _internal_scrape_status.update({
             "running": False,
@@ -361,6 +447,10 @@ def _run_internal_scrape(hours: int, creators: List[str], *,
             "progress": f"Error: {e}",
             "current_accounts": [],
         })
+        _bump("error", last_log=f"Error: {e}", error=str(e))
+    finally:
+        if group_slug and job_id:
+            _clear_current_job(group_slug, job_id)
 
 
 # ===================================================================
@@ -510,8 +600,104 @@ def trigger_scrape():
 # -------------------------------------------------------------------
 @internal_bp.get("/api/internal/scrape/status")
 def scrape_status():
-    """AJAX endpoint for polling scrape progress."""
+    """Poll scrape progress.
+
+    Two shapes:
+      - No ?job_id -- legacy global shape (used by existing UI).
+      - ?job_id=<id> -- per-job shape for the /scrape/start trigger
+        endpoint (RTA-16): {state, progress: {n,m}, last_log, ...}.
+    """
+    job_id = (request.args.get("job_id") or "").strip()
+    if job_id:
+        snap = _job_snapshot(job_id)
+        if not snap:
+            return jsonify({"error": f"job_id '{job_id}' not found"}), 404
+        return jsonify(snap)
     return jsonify(_internal_scrape_status)
+
+
+# -------------------------------------------------------------------
+# 5b. POST /api/internal/scrape/start  -- trigger per-group scrape (RTA-16)
+# -------------------------------------------------------------------
+@internal_bp.post("/api/internal/scrape/start")
+def scrape_start():
+    """Kick off a scrape for a single creator group and return a job id.
+
+    Body: {"group": "<slug>", "hours": 168}
+    Response: {"job_id": "...", "started_at": "<iso>"}
+
+    Debounce: if a job is already running for the same group, returns
+    the existing job id rather than spawning a second worker.
+    """
+    err = _require_db()
+    if err:
+        return err
+
+    data = request.get_json(silent=True) or {}
+    group_slug = (data.get("group") or "").strip().lower()
+    if not group_slug:
+        return jsonify({"error": "group is required"}), 400
+
+    try:
+        hours = int(data.get("hours", 168))
+    except (TypeError, ValueError):
+        return jsonify({"error": "hours must be an integer"}), 400
+
+    group = _db.get_internal_group(group_slug)
+    if not group:
+        return jsonify({"error": f"Group '{group_slug}' not found."}), 404
+
+    members = _db.get_group_members(group["id"])
+    if not members:
+        return jsonify({"error": f"Group '{group_slug}' has no members."}), 400
+
+    start_date_str = (data.get("start_date") or "").strip()
+    end_date_str = (data.get("end_date") or "").strip()
+
+    # Debounce: if a job for this group is still running, return it.
+    with _jobs_lock:
+        existing_id = _current_job_by_group.get(group_slug)
+        if existing_id:
+            existing = _jobs.get(existing_id)
+            if existing and existing.get("state") == "running":
+                return jsonify({
+                    "job_id": existing_id,
+                    "started_at": existing.get("started_at"),
+                    "debounced": True,
+                })
+            # Stale pointer (state moved to done/error). Clear it.
+            _current_job_by_group.pop(group_slug, None)
+
+        job_id = uuid.uuid4().hex
+        started_at = datetime.now(EST).isoformat()
+        _jobs[job_id] = {
+            "group": group_slug,
+            "started_at": started_at,
+            "state": "running",
+            "progress": {"n": 0, "m": len(members)},
+            "last_log": "",
+            "error": None,
+        }
+        _current_job_by_group[group_slug] = job_id
+
+    # Railway dyno recycles can kill in-flight scrapes; job state then
+    # stops updating and clients should treat a stalled "running" job
+    # as lost after a sensible timeout. Persistent queueing (Redis/DB
+    # row) is the upgrade path if this becomes a real problem.
+    t = threading.Thread(
+        target=_run_internal_scrape,
+        args=(hours, members),
+        kwargs={
+            "start_date_str": start_date_str,
+            "end_date_str": end_date_str,
+            "job_id": job_id,
+            "group_slug": group_slug,
+        },
+        daemon=True,
+    )
+    t.start()
+
+    return jsonify({"job_id": job_id, "started_at": started_at}), 202
 
 
 # -------------------------------------------------------------------
