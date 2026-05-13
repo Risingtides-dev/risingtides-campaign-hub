@@ -172,5 +172,26 @@ def main() -> int:
     return 0 if not skipped_no_source else 2
 
 
+def _run_with_app_context() -> int:
+    """Build a minimal Flask app context so services that read from
+    ``current_app.config`` (campaign_manager.services.tidestracker._config)
+    work outside the web request lifecycle. Caught at first prod smoke —
+    the TidesTracker fetch raises ``RuntimeError: Working outside of
+    application context`` without this, *before* the script's existing
+    ``TidesTrackerError`` handler can fall back to campaign titles.
+
+    Uses ``from_object(Config)`` instead of ``create_app()`` because the
+    full factory registers every blueprint + scheduler + Slack bot, none
+    of which this one-shot needs.
+    """
+    from flask import Flask
+    from campaign_manager.config import Config
+
+    app = Flask(__name__)
+    app.config.from_object(Config)
+    with app.app_context():
+        return main()
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(_run_with_app_context())
