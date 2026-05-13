@@ -7,9 +7,12 @@ Trackers themselves live in TidesTracker (Supabase). This blueprint:
 """
 from __future__ import annotations
 
+import logging
 import re
 
 from flask import Blueprint, jsonify, request
+
+_log = logging.getLogger(__name__)
 
 from campaign_manager import db as _db
 from campaign_manager.services.tidestracker import (
@@ -32,6 +35,59 @@ def _slugify(text: str) -> str:
     text = (text or "").strip().lower()
     text = re.sub(r"[^a-z0-9]+", "-", text).strip("-")
     return text or "tracker"
+
+
+def _resolve_tracker_display_name(tracker_id: str, campaign_slug: str) -> str:
+    """Best-effort display name for a tracker about to be linked.
+
+    Tries the live TidesTracker name first (the authoritative label users
+    see in TidesTracker itself). Falls back to the Campaign Hub campaign
+    title so the row is never empty. Used by ``update_tracker`` to seed
+    ``tracker_names`` atomically with link creation (RTA-41).
+
+    Any failure short-circuits to "" — link creation must not be blocked
+    by a TidesTracker outage, even though it means the row will be skipped
+    in the same-transaction upsert. Emits a ``logger.warning`` when this
+    happens so the soft-fail is visible in prod logs rather than silent.
+    The next link edit or the backfill script will fill in the gap.
+    """
+    tid = (tracker_id or "").strip()
+    slug = (campaign_slug or "").strip()
+    if not tid:
+        return ""
+
+    tracker_api_error: str | None = None
+
+    # 1. TidesTracker is the source of truth for tracker names.
+    try:
+        for t in list_tracker_campaigns():
+            if (t.get("id") or "") == tid:
+                name = (t.get("name") or "").strip()
+                if name:
+                    return name
+                break
+    except TidesTrackerError as e:
+        tracker_api_error = str(e)
+
+    # 2. Fallback: the Campaign Hub campaign title.
+    if slug:
+        c = _db.get_campaign(slug)
+        if c:
+            title = (c.get("title") or c.get("name") or "").strip()
+            if title:
+                return title
+
+    # Both sources exhausted — link will commit without a tracker_names
+    # row. Backfill or the next link edit closes the gap, but log it so
+    # the soft-fail is visible.
+    _log.warning(
+        "tracker_names not populated for tracker_id=%s (campaign_slug=%s): "
+        "no TidesTracker name (%s), no campaign title fallback",
+        tid,
+        slug or "<none>",
+        tracker_api_error or "no match in tracker list",
+    )
+    return ""
 
 
 def _hydrate(
@@ -252,7 +308,13 @@ def update_tracker(tracker_id: str):
             response["campaign_slug"] = None
         else:
             slug = str(slug_raw).strip()
-            _db.set_tracker_campaign_link(tracker_id, slug)
+            # Resolve a default display name so tracker_names is populated
+            # atomically with the link (RTA-41). Prefer the live TidesTracker
+            # name; fall back to the linked campaign's title. Either source
+            # is fine — the column just needs to be non-null so name-based
+            # lookups (RTA-40) resolve without falling back to slug match.
+            display_name = _resolve_tracker_display_name(tracker_id, slug)
+            _db.set_tracker_campaign_link(tracker_id, slug, display_name=display_name)
             response["campaign_slug"] = slug
         touched = True
 
