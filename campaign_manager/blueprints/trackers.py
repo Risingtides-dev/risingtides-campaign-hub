@@ -34,6 +34,46 @@ def _slugify(text: str) -> str:
     return text or "tracker"
 
 
+def _resolve_tracker_display_name(tracker_id: str, campaign_slug: str) -> str:
+    """Best-effort display name for a tracker about to be linked.
+
+    Tries the live TidesTracker name first (the authoritative label users
+    see in TidesTracker itself). Falls back to the Campaign Hub campaign
+    title so the row is never empty. Used by ``update_tracker`` to seed
+    ``tracker_names`` atomically with link creation (RTA-41).
+
+    Any failure short-circuits to "" — link creation must not be blocked
+    by a TidesTracker outage, even though it means the row will be skipped
+    in the same-transaction upsert. The next link edit or the backfill
+    script will fill it in.
+    """
+    tid = (tracker_id or "").strip()
+    slug = (campaign_slug or "").strip()
+    if not tid:
+        return ""
+
+    # 1. TidesTracker is the source of truth for tracker names.
+    try:
+        for t in list_tracker_campaigns():
+            if (t.get("id") or "") == tid:
+                name = (t.get("name") or "").strip()
+                if name:
+                    return name
+                break
+    except TidesTrackerError:
+        pass
+
+    # 2. Fallback: the Campaign Hub campaign title.
+    if slug:
+        c = _db.get_campaign(slug)
+        if c:
+            title = (c.get("title") or c.get("name") or "").strip()
+            if title:
+                return title
+
+    return ""
+
+
 def _hydrate(
     tracker: dict,
     assignments: dict,
@@ -252,7 +292,13 @@ def update_tracker(tracker_id: str):
             response["campaign_slug"] = None
         else:
             slug = str(slug_raw).strip()
-            _db.set_tracker_campaign_link(tracker_id, slug)
+            # Resolve a default display name so tracker_names is populated
+            # atomically with the link (RTA-41). Prefer the live TidesTracker
+            # name; fall back to the linked campaign's title. Either source
+            # is fine — the column just needs to be non-null so name-based
+            # lookups (RTA-40) resolve without falling back to slug match.
+            display_name = _resolve_tracker_display_name(tracker_id, slug)
+            _db.set_tracker_campaign_link(tracker_id, slug, display_name=display_name)
             response["campaign_slug"] = slug
         touched = True
 

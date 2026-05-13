@@ -1850,12 +1850,26 @@ def get_campaign_to_tracker_map() -> Dict[str, str]:
     return result
 
 
-def set_tracker_campaign_link(tracker_id: str, campaign_slug: Optional[str]) -> None:
-    """Link tracker to a campaign by slug, or clear if slug is None/empty."""
+def set_tracker_campaign_link(
+    tracker_id: str,
+    campaign_slug: Optional[str],
+    display_name: Optional[str] = None,
+) -> None:
+    """Link tracker to a campaign by slug, or clear if slug is None/empty.
+
+    When ``display_name`` is provided and no ``tracker_names`` row exists
+    for this tracker yet, populate one in the same transaction. Existing
+    name overrides are never clobbered — users can rename freely without
+    fear of a re-link wiping their label.
+
+    Atomic: the link row and the name row land in one commit. This is the
+    forward fix for RTA-41 (tracker_names population gap).
+    """
     tid = (tracker_id or "").strip()
     if not tid:
         return
     slug = (campaign_slug or "").strip()
+    cleaned_name = (display_name or "").strip()
     with get_session() as s:
         existing = s.query(TrackerCampaignLink).filter_by(tracker_id=tid).first()
         if not slug:
@@ -1867,6 +1881,15 @@ def set_tracker_campaign_link(tracker_id: str, campaign_slug: Optional[str]) -> 
             existing.campaign_slug = slug
         else:
             s.add(TrackerCampaignLink(tracker_id=tid, campaign_slug=slug))
+
+        # Ensure tracker_names has a row for this tracker. Only fill it
+        # in when the caller supplied a name and no override exists —
+        # never overwrite a manual rename.
+        if cleaned_name:
+            existing_name = s.query(TrackerName).filter_by(tracker_id=tid).first()
+            if not existing_name:
+                s.add(TrackerName(tracker_id=tid, display_name=cleaned_name))
+
         s.commit()
 
 
