@@ -157,7 +157,19 @@ def main() -> int:
                   f"{len(already_present)} already had names. "
                   f"{len(skipped_no_source)} unresolvable (need manual rename or a TidesTracker fetch).")
 
-    return 0 if not skipped_no_source else 0  # report-but-don't-fail
+        # Loud, scannable summary of trackers that need manual attention.
+        # Easier to copy into a Linear comment than re-running the script.
+        if skipped_no_source:
+            print("\nUnresolvable tracker_ids (no TidesTracker name, no campaign title):",
+                  file=sys.stderr)
+            for tid in skipped_no_source:
+                print(f"  - {tid}", file=sys.stderr)
+
+    # Non-zero exit when any link couldn't be resolved so automation
+    # wrappers (and the human running this) notice. The resolved rows
+    # still committed — this signals "partial success, manual cleanup
+    # needed for the list above", not "rollback everything".
+    return 0 if not skipped_no_source else 2
 
 
 if __name__ == "__main__":

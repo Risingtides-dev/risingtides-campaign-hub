@@ -7,9 +7,12 @@ Trackers themselves live in TidesTracker (Supabase). This blueprint:
 """
 from __future__ import annotations
 
+import logging
 import re
 
 from flask import Blueprint, jsonify, request
+
+_log = logging.getLogger(__name__)
 
 from campaign_manager import db as _db
 from campaign_manager.services.tidestracker import (
@@ -44,13 +47,16 @@ def _resolve_tracker_display_name(tracker_id: str, campaign_slug: str) -> str:
 
     Any failure short-circuits to "" — link creation must not be blocked
     by a TidesTracker outage, even though it means the row will be skipped
-    in the same-transaction upsert. The next link edit or the backfill
-    script will fill it in.
+    in the same-transaction upsert. Emits a ``logger.warning`` when this
+    happens so the soft-fail is visible in prod logs rather than silent.
+    The next link edit or the backfill script will fill in the gap.
     """
     tid = (tracker_id or "").strip()
     slug = (campaign_slug or "").strip()
     if not tid:
         return ""
+
+    tracker_api_error: str | None = None
 
     # 1. TidesTracker is the source of truth for tracker names.
     try:
@@ -60,8 +66,8 @@ def _resolve_tracker_display_name(tracker_id: str, campaign_slug: str) -> str:
                 if name:
                     return name
                 break
-    except TidesTrackerError:
-        pass
+    except TidesTrackerError as e:
+        tracker_api_error = str(e)
 
     # 2. Fallback: the Campaign Hub campaign title.
     if slug:
@@ -71,6 +77,16 @@ def _resolve_tracker_display_name(tracker_id: str, campaign_slug: str) -> str:
             if title:
                 return title
 
+    # Both sources exhausted — link will commit without a tracker_names
+    # row. Backfill or the next link edit closes the gap, but log it so
+    # the soft-fail is visible.
+    _log.warning(
+        "tracker_names not populated for tracker_id=%s (campaign_slug=%s): "
+        "no TidesTracker name (%s), no campaign title fallback",
+        tid,
+        slug or "<none>",
+        tracker_api_error or "no match in tracker list",
+    )
     return ""
 
 
