@@ -213,9 +213,35 @@ def init_scheduler(database_url: str, hour: int = 6, minute: int = 0):
         misfire_grace_time=3600,
     )
 
+    # Notion sync (RTA-10): pull master pages -> resolve memberships every N
+    # minutes. Lives in notion_sync.py (not this module) so the test suite
+    # can exercise it without importing apscheduler. `coalesce=True` collapses
+    # missed ticks on long-pauses; `next_run_time=None` defers the first run
+    # until one full interval has elapsed (same hands-off behavior as the
+    # cron-style jobs above — no surprise scrape on app boot).
+    from campaign_manager.services.notion_sync import (
+        get_notion_sync_interval_minutes,
+        run_notion_sync,
+    )
+    notion_interval = get_notion_sync_interval_minutes()
+    _scheduler.add_job(
+        run_notion_sync,
+        "interval",
+        minutes=notion_interval,
+        id="notion_sync",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=300,
+        next_run_time=None,
+    )
+
     _scheduler.start()
-    log.info("Scheduler started: campaign_refresh at %02d:%02d, internal_scrape at %02d:%02d EST",
-             hour, minute, internal_hour, internal_minute)
+    log.info(
+        "Scheduler started: campaign_refresh at %02d:%02d, internal_scrape at "
+        "%02d:%02d EST, notion_sync every %d minutes",
+        hour, minute, internal_hour, internal_minute, notion_interval,
+    )
 
 
 def get_scheduler_status() -> dict:

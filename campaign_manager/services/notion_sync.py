@@ -661,3 +661,115 @@ def resolve_memberships(
 
     result.sync_log_id = log_id_written
     return result
+
+
+# ===========================================================================
+# RTA-10: Cron tick (sync -> resolve, every N minutes)
+# ===========================================================================
+
+
+# Defaults + bounds for the scheduler interval. The job is fast (a few
+# hundred ms on the current ~50-row mirror) so even 1 minute is safe; the
+# 1440 ceiling is just a sanity guard so a typo can't disable the cron.
+NOTION_SYNC_DEFAULT_INTERVAL_MINUTES = 15
+NOTION_SYNC_MIN_INTERVAL_MINUTES = 1
+NOTION_SYNC_MAX_INTERVAL_MINUTES = 1440
+
+
+# In-flight guard. The scheduler is configured single-worker (file lock in
+# `create_app`), but `coalesce=True + max_instances=1` plus this boolean
+# belt-and-suspenders ensures a slow Notion API can never produce two
+# concurrent runs that step on each other's diffs.
+_notion_sync_in_progress = False
+_notion_sync_lock = __import__("threading").Lock()
+
+
+def get_notion_sync_interval_minutes() -> int:
+    """Resolve the cron interval from the env var, clamped to defensive bounds.
+
+    Bounds: ``NOTION_SYNC_MIN_INTERVAL_MINUTES`` <= n <= ``NOTION_SYNC_MAX_INTERVAL_MINUTES``.
+    Falls back to the default on missing / unparseable / out-of-bounds values.
+    """
+    raw = os.environ.get("NOTION_SYNC_INTERVAL_MINUTES", "")
+    if not raw:
+        return NOTION_SYNC_DEFAULT_INTERVAL_MINUTES
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "NOTION_SYNC_INTERVAL_MINUTES=%r is not an integer; using default %d",
+            raw, NOTION_SYNC_DEFAULT_INTERVAL_MINUTES,
+        )
+        return NOTION_SYNC_DEFAULT_INTERVAL_MINUTES
+    if n < NOTION_SYNC_MIN_INTERVAL_MINUTES or n > NOTION_SYNC_MAX_INTERVAL_MINUTES:
+        logger.warning(
+            "NOTION_SYNC_INTERVAL_MINUTES=%d out of bounds [%d, %d]; using default %d",
+            n, NOTION_SYNC_MIN_INTERVAL_MINUTES, NOTION_SYNC_MAX_INTERVAL_MINUTES,
+            NOTION_SYNC_DEFAULT_INTERVAL_MINUTES,
+        )
+        return NOTION_SYNC_DEFAULT_INTERVAL_MINUTES
+    return n
+
+
+def run_notion_sync() -> None:
+    """One cron tick: sync_master_pages -> resolve_memberships.
+
+    - Skipped (no-op) when a previous tick is still running.
+    - Never raises. Any exception from either stage is caught and logged at
+      ERROR so APScheduler's worker thread stays alive.
+    - resolve_memberships is only invoked when the sync stage returns a
+      non-zero log id AND fetched at least one page. A failed fetch leaves
+      the mirror unchanged, so there's nothing new for the resolver to
+      reconcile against.
+    """
+    global _notion_sync_in_progress
+
+    with _notion_sync_lock:
+        if _notion_sync_in_progress:
+            logger.info("CRON: notion_sync skipped (previous tick still in flight)")
+            return
+        _notion_sync_in_progress = True
+
+    sync_log_id: Optional[int] = None
+    try:
+        logger.info("CRON: starting notion_sync")
+        try:
+            sync_result = sync_master_pages(triggered_by="cron")
+            sync_log_id = sync_result.sync_log_id or None
+            logger.info(
+                "CRON: notion_sync stage 1 (sync) done — fetched=%d added=%d updated=%d deleted=%d errors=%d log_id=%s",
+                sync_result.pages_fetched,
+                sync_result.pages_added,
+                sync_result.pages_updated,
+                sync_result.pages_deleted,
+                len(sync_result.errors),
+                sync_log_id,
+            )
+        except Exception:
+            logger.exception("CRON: notion_sync stage 1 (sync) raised; skipping resolve")
+            return
+
+        if sync_result.pages_fetched == 0:
+            # Either no Notion data or fetch_failed (sync_master_pages handles
+            # both internally and never raises). Nothing for resolve to do.
+            logger.info("CRON: notion_sync resolve skipped (sync fetched 0 pages)")
+            return
+
+        try:
+            resolve_result = resolve_memberships(
+                triggered_by="cron", sync_log_id=sync_log_id,
+            )
+            logger.info(
+                "CRON: notion_sync stage 2 (resolve) done — rows=%d added=%d removed=%d groups_created=%d errors=%d log_id=%s",
+                resolve_result.rows_processed,
+                resolve_result.memberships_added,
+                resolve_result.memberships_removed,
+                resolve_result.groups_created,
+                len(resolve_result.errors),
+                resolve_result.sync_log_id,
+            )
+        except Exception:
+            logger.exception("CRON: notion_sync stage 2 (resolve) raised")
+    finally:
+        with _notion_sync_lock:
+            _notion_sync_in_progress = False
