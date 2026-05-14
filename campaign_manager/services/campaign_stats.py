@@ -40,7 +40,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as _dc_replace
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -231,11 +231,13 @@ def _hydrate_field_gaps(
         if not match:
             hydrated.append(s)
             continue
-        if not s.posted_at:
-            s.posted_at = str(match.get("upload_date") or "")
-        # follower_count isn't on MatchedVideo today — skip; future
-        # ticket adds it. Left here to document the gap.
-        hydrated.append(s)
+        # Build a new Submission rather than mutating — the original
+        # may be sitting in the module-level cache, and we want the
+        # cache to represent exactly what the API returned. The
+        # follower_count gap stays at the default 0 until the public
+        # API surfaces it (RTA-43 follow-up).
+        new_posted = s.posted_at or str(match.get("upload_date") or "")
+        hydrated.append(_dc_replace(s, posted_at=new_posted))
     return hydrated
 
 

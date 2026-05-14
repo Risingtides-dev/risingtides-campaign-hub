@@ -191,6 +191,26 @@ class TestGetCampaignStats:
             get_campaign_stats("eps", force_refresh=True)
             assert mocked.call_count == 2
 
+    def test_hydration_does_not_mutate_cached_submission(self, db):
+        # Cache integrity: the cached Submission must stay pristine after
+        # field-gap hydration so subsequent reads see the API's true
+        # output, not a hydrated derivative.
+        cid = _seed_campaign_with_tracker("kappa", "tk-k")
+        _seed_matched_videos(cid, [
+            dict(url="https://tt.com/v/p", account="@u", views=0, likes=0,
+                 upload_date="2026-04-01"),
+        ])
+        original_sub = Submission(video_url="https://tt.com/v/p", views=500, posted_at="")
+        with patch.object(
+            campaign_stats, "fetch_campaign_submissions",
+            return_value=_ok_fetch("tk-k", [original_sub]),
+        ):
+            result = get_campaign_stats("kappa")
+        # The hydrated result reflects scraper data.
+        assert result.submissions[0].posted_at == "2026-04-01"
+        # The original submission passed into the cache is unchanged.
+        assert original_sub.posted_at == ""
+
     def test_field_gap_hydrates_posted_at_from_scraper(self, db):
         cid = _seed_campaign_with_tracker("zeta", "tk-6")
         _seed_matched_videos(cid, [
