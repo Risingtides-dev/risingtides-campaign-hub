@@ -25,6 +25,7 @@ from campaign_manager.models import (
     TrackerArchive,
     ManyChatMessage,
     NotionMasterPage, NotionSyncLog,
+    TidesTrackerSyncLog,
 )
 
 _engine = None

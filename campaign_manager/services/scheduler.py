@@ -236,11 +236,35 @@ def init_scheduler(database_url: str, hour: int = 6, minute: int = 0):
         next_run_time=None,
     )
 
+    # Tides Tracker pull (RTA-42): hit the public stats API for every
+    # tracker in `tracker_names` every N minutes (default 30). Same
+    # cron knobs as notion_sync — `coalesce=True` + `max_instances=1`,
+    # first run deferred one interval so a deploy never produces a
+    # surprise stats fetch.
+    from campaign_manager.services.tides_tracker import (
+        get_tides_tracker_interval_minutes,
+        run_tides_tracker_pull,
+    )
+    tides_interval = get_tides_tracker_interval_minutes()
+    _scheduler.add_job(
+        run_tides_tracker_pull,
+        "interval",
+        minutes=tides_interval,
+        id="tides_tracker_pull",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=300,
+        next_run_time=None,
+    )
+
     _scheduler.start()
     log.info(
         "Scheduler started: campaign_refresh at %02d:%02d, internal_scrape at "
-        "%02d:%02d EST, notion_sync every %d minutes",
+        "%02d:%02d EST, notion_sync every %d minutes, "
+        "tides_tracker_pull every %d minutes",
         hour, minute, internal_hour, internal_minute, notion_interval,
+        tides_interval,
     )
 
 
