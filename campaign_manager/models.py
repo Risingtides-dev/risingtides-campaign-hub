@@ -757,3 +757,29 @@ class NotionSyncLog(Base):
     memberships_removed = Column(Integer)
     errors = Column(JSONB)                                 # list of {row_id, error_kind, detail}
     triggered_by = Column(Text)                            # cron | manual:<user> | webhook
+
+
+# ===================================================================
+# Tides Tracker public-API pull audit (RTA-42)
+# ===================================================================
+#
+# One row per cron tick. Mirrors the `notion_sync_log` shape so the two
+# audit trails share an operational mental model. Per-tracker outcomes
+# live in `errors` (list of {tracker_id, error_kind, detail}) — including
+# the success entries so we can tell "tried 49, got 47 ok, 2 failed"
+# from a single row instead of joining against another table.
+
+class TidesTrackerSyncLog(Base):
+    """Audit row for each Tides Tracker stats-pull run."""
+    __tablename__ = "tides_tracker_sync_log"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    started_at = Column(DateTime(timezone=True), nullable=False)
+    finished_at = Column(DateTime(timezone=True))
+    sync_type = Column(Text, nullable=False)               # pull | manual
+    trackers_total = Column(Integer)
+    trackers_succeeded = Column(Integer)
+    trackers_failed = Column(Integer)
+    submissions_fetched = Column(Integer)
+    errors = Column(JSONB)                                 # list of {tracker_id, error_kind, detail}
+    triggered_by = Column(Text)                            # cron | manual:<user>
