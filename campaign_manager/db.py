@@ -47,8 +47,26 @@ def init(database_url: Optional[str] = None):
     _engine = create_engine(url, pool_pre_ping=True, pool_size=5, max_overflow=10)
     _SessionLocal = sessionmaker(bind=_engine)
 
-    # Create all tables
-    Base.metadata.create_all(_engine)
+    # Create all tables.
+    #
+    # `create_all` does a reflection pass and only issues CREATE for tables
+    # that look missing — but gunicorn boots 4 workers in parallel, all of
+    # which call into here, and the reflection / CREATE window is racy.
+    # Two workers can both observe a new table as missing and both try to
+    # CREATE it; the loser crashes with `DuplicateTable` /
+    # `pg_class_relname_nsp_index` and gunicorn marks the worker dead.
+    #
+    # We swallow that specific failure mode so worker N+1 boots fine when
+    # worker N already won the create race. Anything else still raises
+    # so a genuinely broken migration surfaces loudly.
+    try:
+        Base.metadata.create_all(_engine)
+    except Exception as exc:
+        msg = str(exc)
+        if "already exists" in msg or "pg_class_relname_nsp_index" in msg:
+            pass
+        else:
+            raise
 
     # Add completion_status column if missing (create_all won't add columns to existing tables)
     try:
