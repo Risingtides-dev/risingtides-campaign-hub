@@ -28,8 +28,55 @@ from campaign_manager.utils.helpers import (
     save_json,
 )
 from campaign_manager.utils.budget import calc_budget, calc_stats
+from campaign_manager.services.campaign_stats import (
+    CampaignStatsResult,
+    get_campaign_stats,
+    overlay_video_stats,
+)
 
 campaigns_bp = Blueprint("campaigns", __name__)
+
+# ---------------------------------------------------------------------------
+# Stats helpers (RTA-43)
+# ---------------------------------------------------------------------------
+
+def _stats_from_result(
+    meta: Dict,
+    creators: List[Dict],
+    result: CampaignStatsResult,
+) -> Dict:
+    """Build the `stats` block from a CampaignStatsResult.
+
+    Keeps the existing keys (`live_posts`, `total_views`, `cpm`) so the
+    frontend doesn't need to learn a new shape, and tacks on
+    API-sourced fields plus a `source`/`stale_since` provenance block.
+    `live_posts` continues to come from creator post counts — that's an
+    operational signal ("Jake checked off these as live"), not a stats
+    number, so it stays scraper-side until RTA-44.
+    """
+    active = [c for c in creators if c.get("status", "active") != "removed"]
+    live_posts = sum(int(c.get("posts_done", 0) or 0) for c in active)
+
+    total_views = result.total_views
+    booked = sum(float(c.get("total_rate", 0) or 0) for c in active)
+    cpm = (booked / total_views) * 1_000 if total_views > 0 and booked > 0 else None
+
+    return {
+        "live_posts": live_posts,
+        "total_views": total_views,
+        "total_likes": result.total_likes,
+        "total_comments": result.total_comments,
+        "total_shares": result.total_shares,
+        "post_count": result.post_count,
+        "cpm": cpm,
+        # Source provenance — frontend can show a "live" / "cached" /
+        # "stale" indicator. Existing callers that only read
+        # total_views/cpm keep working.
+        "source": result.source,
+        "fetched_at": result.fetched_at,
+        "stale_since": result.stale_since,
+    }
+
 
 # ---------------------------------------------------------------------------
 # Path constants
@@ -168,7 +215,12 @@ def _save_meta(slug: str, meta: Dict, campaign_dir=None):
 
 
 def get_campaigns() -> List[Dict]:
-    """Return all active campaigns with budget/stats attached."""
+    """Return all active campaigns with budget/stats attached.
+
+    Stats come from the Tides Tracker API path (RTA-43) via
+    `get_campaign_stats`. Falls back to scraper data per-campaign if a
+    tracker is missing or the API is unavailable.
+    """
     if _db.is_active():
         metas = _db.list_campaigns(status="active")
         items = []
@@ -176,7 +228,8 @@ def get_campaigns() -> List[Dict]:
             slug = meta["slug"]
             creators = _db.get_creators(slug)
             budget = calc_budget(meta, creators)
-            stats = calc_stats(meta, creators)
+            result = get_campaign_stats(slug)
+            stats = _stats_from_result(meta, creators, result)
             items.append({
                 "slug": slug,
                 "meta": meta,
@@ -198,6 +251,8 @@ def get_campaigns() -> List[Dict]:
             continue
         creators = load_creators(d)
         budget = calc_budget(meta, creators)
+        # File mode is dev-only; the API path requires DB-resident
+        # tracker links, so fall back to the legacy calc here.
         stats = calc_stats(meta, creators)
 
         items.append({
@@ -425,7 +480,19 @@ def campaign_detail(slug: str):
     active = [c for c in creators if c.get("status", "active") != "removed"]
     active.sort(key=lambda c: c.get("username", ""))
     budget = calc_budget(meta, creators)
-    stats = calc_stats(meta, creators)
+
+    # RTA-43: pull stats from Tides Tracker API path (cached) with
+    # scraper fallback. Overlay API per-video numbers onto matched
+    # rows so the per-video table view shows live counts while
+    # preserving scraper row identity (id, dismissed_at, song, etc.).
+    if _db.is_active():
+        stats_result = get_campaign_stats(slug, matched_videos=matched_videos)
+        matched_videos = overlay_video_stats(matched_videos, stats_result.submissions)
+        stats = _stats_from_result(meta, creators, stats_result)
+    else:
+        # File-mode dev path keeps the legacy calc — file-mode doesn't
+        # carry tracker links.
+        stats = calc_stats(meta, creators)
 
     return jsonify({
         "slug": slug,
@@ -1302,7 +1369,15 @@ def _get_all_campaigns_data():
 
 @campaigns_bp.get("/api/creators")
 def list_creators():
-    """List all unique creators with aggregated stats across campaigns."""
+    """List all unique creators with aggregated stats across campaigns.
+
+    Per-creator view totals come from the Tides Tracker API path
+    (RTA-43); falls back to scraper data per-campaign if a tracker is
+    missing or the API is unavailable. Username matching uses the
+    overlay'd row, so a creator booked on a linked tracker shows live
+    numbers while a creator on an unlinked campaign keeps showing
+    scraper data.
+    """
     all_campaigns = _get_all_campaigns_data()
 
     # Aggregate by username (case-insensitive)
@@ -1314,6 +1389,15 @@ def list_creators():
         title = campaign_title(meta)
         creators = camp["creators"]
         matched_videos = camp["matched_videos"]
+
+        # RTA-43: overlay API view/like counts onto matched rows before
+        # aggregating. Falls back to scraper numbers when no API path.
+        if _db.is_active():
+            try:
+                stats_result = get_campaign_stats(slug, matched_videos=matched_videos)
+                matched_videos = overlay_video_stats(matched_videos, stats_result.submissions)
+            except Exception:
+                pass  # leave scraper numbers in place on unexpected failure
 
         # Build a views-by-account map for this campaign. Skip rows the
         # team has dismissed as false-positive matches (issue #32).
@@ -1415,6 +1499,15 @@ def creator_profile(username: str):
         title = campaign_title(meta)
         creators = camp["creators"]
         matched_videos = camp["matched_videos"]
+
+        # RTA-43: overlay API counts so the creator's per-video table
+        # and per-campaign rollup reflect live numbers.
+        if _db.is_active():
+            try:
+                stats_result = get_campaign_stats(slug, matched_videos=matched_videos)
+                matched_videos = overlay_video_stats(matched_videos, stats_result.submissions)
+            except Exception:
+                pass
 
         # Find this creator in the campaign
         creator_entry = None
