@@ -24,15 +24,20 @@ from campaign_manager import db as _db
 log = logging.getLogger(__name__)
 
 
-# ── Scraper imports (yt-dlp + HTML extraction, free) ────────────────
+# ── Scraper imports (yt-dlp discovery only — RTA-44) ────────────────
 def _import_scraper():
-    """Lazy-import master_tracker functions. Returns (scrape_tiktok_account, extract_sound_ids_parallel, match_video_to_sounds) or raises ImportError."""
+    """Lazy-import master_tracker functions.
+
+    Returns (scrape_tiktok_account, match_video_to_sounds). Sound-ID HTML
+    enrichment was removed in RTA-44 — performance stats now come from the
+    Tides Tracker public API via campaign_stats. Matching falls back to
+    yt-dlp's `music_id` field plus song/artist text keys.
+    """
     from src.scrapers.master_tracker import (
         scrape_tiktok_account,
-        extract_sound_ids_parallel,
         match_video_to_sounds,
     )
-    return scrape_tiktok_account, extract_sound_ids_parallel, match_video_to_sounds
+    return scrape_tiktok_account, match_video_to_sounds
 
 
 # Concurrency caps — kept low to avoid burst-rate-limit from TikTok.
@@ -81,7 +86,7 @@ def _scrape_creator_accounts_v2(usernames, start_date=None, max_workers=DEFAULT_
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    scrape_tiktok_account, _, _ = _import_scraper()
+    scrape_tiktok_account, _ = _import_scraper()
 
     all_videos = []
     accounts_scraped = 0
@@ -138,21 +143,6 @@ def _scrape_creator_accounts_v2(usernames, start_date=None, max_workers=DEFAULT_
     return all_videos, accounts_scraped, errors, outcomes
 
 
-def _enhance_sound_ids(videos, max_workers=3):
-    """Extract sound IDs via HTML for videos that don't have them."""
-    _, extract_sound_ids_parallel, _ = _import_scraper()
-
-    needing = [v for v in videos if not v.get("extracted_sound_id")]
-    if not needing:
-        return videos
-
-    try:
-        enhanced = extract_sound_ids_parallel(needing, max_workers=max_workers)
-        enhanced_dict = {v["url"]: v for v in enhanced}
-        return [enhanced_dict.get(v.get("url"), v) for v in videos]
-    except Exception as e:
-        log.warning("Sound ID extraction failed: %s", e)
-        return videos
 EST = ZoneInfo("America/New_York")
 
 _scheduler: Optional[BackgroundScheduler] = None
@@ -384,8 +374,6 @@ def run_campaign_refresh():
                 start_date=earliest_start,
                 max_workers=DEFAULT_MAX_WORKERS,
             )
-            # Extract sound IDs for all videos at once (much more efficient)
-            all_scraped = _enhance_sound_ids(all_scraped, max_workers=3)
             # Index by account
             for v in all_scraped:
                 acct = (v.get("account", "") or "").lstrip("@").lower()
@@ -497,7 +485,7 @@ def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None) 
         merge_matched_videos, update_creator_post_counts,
     )
 
-    _, _, match_video_to_sounds = _import_scraper()
+    _, match_video_to_sounds = _import_scraper()
 
     creators = _db.get_creators(slug)
     existing_videos = _db.get_matched_videos(slug)
@@ -547,7 +535,6 @@ def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None) 
         if scrape_errors:
             for err in scrape_errors[:5]:
                 log.warning("CRON: scrape error for %s: %s", slug, err)
-        all_videos = _enhance_sound_ids(all_videos, max_workers=3)
 
     # Filter by campaign start_date
     start_date_str = meta.get("start_date", "")
@@ -771,9 +758,6 @@ def run_internal_scrape():
             for err in scrape_errors[:5]:
                 log.warning("CRON: internal scrape error: %s", err)
 
-        # Extract real sound IDs for better song grouping
-        all_videos = _enhance_sound_ids(all_videos, max_workers=3)
-
         # Filter to last 48 hours
         cutoff = datetime.now(EST) - timedelta(hours=48)
         filtered = []
@@ -813,16 +797,12 @@ def run_internal_scrape():
 
         # Group filtered videos.
         #
-        # OLD behavior: group by "{song_title} - {artist}" text. This collapses
-        # every distinct "Original Sound - Stella Lefty" entry into ONE group
-        # even though TikTok treats them as different sounds with different
-        # numeric IDs (I-Know-I-Know vs Boston are both labeled "Original
-        # Sound - Stella Lefty" but have different sound IDs).
-        #
-        # NEW behavior: prefer extracted_sound_id as the grouping key when
-        # available. Each unique sound ID = one group. Title + artist are kept
-        # as display metadata. Falls back to title-based key only when no
-        # sound ID was extracted (rare).
+        # Group by sound id when available, falling back to title+artist text.
+        # Per-video HTML enrichment was removed in RTA-44, so `extracted_sound_id`
+        # is now only present on apify-sourced rows; cron-scraped rows fall back
+        # to yt-dlp's `music_id` field. Either is the same canonical TikTok
+        # sound id, which preserves the I-Know-I-Know vs Boston disambiguation
+        # the title-only key used to collapse.
         def _normalize_key(s: str) -> str:
             return re.sub(r"[^\w\s]", "", s.lower()).strip()
 
