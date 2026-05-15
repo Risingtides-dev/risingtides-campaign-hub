@@ -19,8 +19,22 @@ SAFETY:
   delete.
 - The DELETE itself filters on `kind='booked_by'` again — a typo or
   race that flipped the kind cannot escape into a label/custom group.
+- FK references in `internal_video_group_attribution` (RTA-13 audit
+  side-table) are pre-checked. Any group with one or more attribution
+  rows pointing at it is reported and SKIPPED, not deleted. That table
+  is durable point-in-time audit history; deleting the group would
+  either violate the FK (ON DELETE NO ACTION) or, with a cascade,
+  nuke the audit row. Both are wrong here. A follow-up design ticket
+  owns the long-term migration path.
+- Each live DELETE runs inside its own SAVEPOINT so an unexpected
+  constraint violation skips that row instead of aborting the whole
+  transaction. Defense-in-depth against FK constraints we don't know
+  about yet.
 
-Idempotent — a second run finds nothing to delete and is a no-op.
+Idempotent — a second run finds nothing new to delete and is a no-op.
+If an attribution row is later cleared (or the schema gains a
+`replaced_by_group_id` migration path), a re-run picks up the
+previously-blocked group automatically.
 
 Usage:
     DATABASE_URL=postgres://... python scripts/cleanup_drained_booker_groups.py --dry-run
@@ -92,57 +106,104 @@ def main() -> int:
                 conn.rollback()
                 return 0
 
+            # Pre-check FK references in the RTA-13 attribution audit
+            # table. Any group with attribution rows pointing at it is
+            # SKIPPED (see module docstring for the rationale).
+            candidate_ids = [r["id"] for r in candidates]
+            cur.execute(
+                """
+                SELECT group_id, COUNT(*) AS n
+                FROM internal_video_group_attribution
+                WHERE group_id = ANY(%s)
+                GROUP BY group_id
+                """,
+                (candidate_ids,),
+            )
+            attribution_count = {r["group_id"]: r["n"] for r in cur.fetchall()}
+
+            to_delete = [r for r in candidates if r["id"] not in attribution_count]
+            to_skip_fk = [r for r in candidates if r["id"] in attribution_count]
+
             print(f"Found {len(candidates)} drained booker group(s):")
-            for row in candidates:
-                print(f"  - id={row['id']} slug={row['slug']!r} title={row['title']!r}")
+            print(f"  - to delete:        {len(to_delete)}")
+            print(f"  - to skip (FK ref): {len(to_skip_fk)}")
+            print()
+
+            for row in to_delete:
+                print(f"  + DELETE id={row['id']} slug={row['slug']!r} title={row['title']!r}")
+            for row in to_skip_fk:
+                n = attribution_count[row["id"]]
+                print(
+                    f"  - SKIP   id={row['id']} slug={row['slug']!r} title={row['title']!r}: "
+                    f"{n} row(s) in internal_video_group_attribution reference this group"
+                )
 
             if args.dry_run:
                 print(
-                    f"\nDRY RUN: would delete {len(candidates)} row(s). "
+                    f"\nDRY RUN: would delete {len(to_delete)} row(s), "
+                    f"skip {len(to_skip_fk)} row(s) for FK references. "
                     f"No changes committed.",
                 )
                 conn.rollback()
                 return 0
 
-            # Live run. Per-row re-check + kind-locked DELETE so a row
-            # that gained a member between the scan and the delete is
-            # safely skipped, and a kind mutation (shouldn't happen, but
-            # defensive) cannot leak into a label/custom group.
+            # Live run. Each delete runs in its own SAVEPOINT so an
+            # unexpected constraint violation skips that row instead of
+            # aborting the whole transaction. Per-row re-check of
+            # membership count handles a member added between scan and
+            # delete (rare race). The DELETE itself filters on
+            # kind='booked_by' again — defense in depth.
             deleted = 0
-            skipped = []
-            for row in candidates:
+            skipped_race = 0
+            skipped_other = []
+            print()
+            for row in to_delete:
                 cur.execute(
                     "SELECT COUNT(*) AS n FROM internal_creator_group_members "
                     "WHERE group_id = %s",
                     (row["id"],),
                 )
                 if cur.fetchone()["n"] > 0:
-                    skipped.append(row)
+                    skipped_race += 1
                     print(
                         f"  ! SKIP id={row['id']} slug={row['slug']!r}: "
                         f"gained a member between scan and delete"
                     )
                     continue
 
-                cur.execute(
-                    "DELETE FROM internal_creator_groups "
-                    "WHERE id = %s AND kind = 'booked_by'",
-                    (row["id"],),
-                )
-                if cur.rowcount == 1:
-                    deleted += 1
-                    print(f"  -> DELETED id={row['id']} slug={row['slug']!r}")
-                else:
-                    skipped.append(row)
+                cur.execute(f"SAVEPOINT sp_{row['id']}")
+                try:
+                    cur.execute(
+                        "DELETE FROM internal_creator_groups "
+                        "WHERE id = %s AND kind = 'booked_by'",
+                        (row["id"],),
+                    )
+                    if cur.rowcount == 1:
+                        cur.execute(f"RELEASE SAVEPOINT sp_{row['id']}")
+                        deleted += 1
+                        print(f"  -> DELETED id={row['id']} slug={row['slug']!r}")
+                    else:
+                        cur.execute(f"ROLLBACK TO SAVEPOINT sp_{row['id']}")
+                        skipped_other.append((row, f"rowcount={cur.rowcount}"))
+                        print(
+                            f"  ! SKIP id={row['id']}: delete returned "
+                            f"rowcount={cur.rowcount}"
+                        )
+                except psycopg2.Error as exc:
+                    cur.execute(f"ROLLBACK TO SAVEPOINT sp_{row['id']}")
+                    skipped_other.append((row, str(exc).strip()))
                     print(
-                        f"  ! SKIP id={row['id']}: delete returned "
-                        f"rowcount={cur.rowcount}"
+                        f"  ! SKIP id={row['id']} slug={row['slug']!r}: "
+                        f"{type(exc).__name__}: {str(exc).strip()}"
                     )
 
             conn.commit()
             print(
-                f"\nDone: deleted {deleted} row(s), "
-                f"skipped {len(skipped)} row(s). Committed.",
+                f"\nDone: deleted {deleted} row(s); "
+                f"skipped {len(to_skip_fk)} for FK refs, "
+                f"{skipped_race} for race re-check, "
+                f"{len(skipped_other)} for other errors. "
+                f"Committed.",
             )
     finally:
         conn.close()
