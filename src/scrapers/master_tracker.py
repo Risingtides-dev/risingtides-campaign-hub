@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
 """
-Master Tracker - Enhanced campaign tracking with parallel processing and Instagram support
-Optimized for speed, accuracy, and reliable data collection
+Master Tracker - Discovery-only campaign tracking with parallel processing and Instagram support
+
+Scope (post-RTA-44): new-post discovery via yt-dlp + matching against tracked
+sounds. Per-video sound-ID HTML enrichment was removed because performance
+stats now flow from the Tides Tracker public API
+(`campaign_manager/services/campaign_stats.py`), so the per-video HTML fetch
+that used to burn Decodo bandwidth is no longer load-bearing for stats. Sound
+matching falls back to yt-dlp's `music_id` field plus song/artist text keys.
 
 Features:
 - Parallel account scraping (5-10x faster)
-- Smart sound ID caching (3-5x faster on re-scrapes)
+- Smart caching (3-5x faster on re-scrapes)
 - Early termination for cached videos
 - Instagram support via Instaloader
 - Comprehensive validation and error checking
-- Retry logic with exponential backoff
 - Progress bars and detailed logging
 - No hallucinations - validates all data
 
@@ -31,9 +36,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 
-# Import new dependencies
-import requests
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from tqdm import tqdm
 
 # Instagram support
@@ -54,47 +56,11 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 
 # Timeout settings (much more generous)
 TIKTOK_SCRAPE_TIMEOUT = 600  # 10 minutes per account
-SOUND_ID_FETCH_TIMEOUT = 30  # 30 seconds per video (up from 15)
-# Parallel workers for sound ID extraction. 3 by default — TikTok 403s heavily
-# when bursting from a single IP. Override via SOUND_ID_WORKERS env var.
-MAX_WORKERS = int(os.environ.get("SOUND_ID_WORKERS", "3"))
 MAX_ACCOUNT_WORKERS = 5  # Parallel account scraping workers
-SOUND_ID_REQUEST_DELAY = 0.2  # Per-worker delay before each sound ID request
 
 # Early termination settings
 EARLY_TERMINATION_ENABLED = True
 CONSECUTIVE_CACHED_THRESHOLD = 20  # Stop after this many consecutive cached videos
-
-# Retry settings
-MAX_RETRIES = 4
-RETRY_WAIT_MIN = 2
-RETRY_WAIT_MAX = 20
-
-# Residential proxy (optional). When set, all requests.get() calls below go
-# through this URL. TikTok rate-limits datacenter IPs aggressively, so the
-# per-video sound-ID extraction needs residential exits to keep success
-# rates above ~50%.
-#
-# Format expected: http://USER:PASS@HOST:PORT  (Decodo rotating-residential
-# endpoint generator → "URL" output). Leave unset to use Railway's IP.
-PROXY_URL = os.environ.get("RESIDENTIAL_PROXY_URL", "").strip()
-
-
-def _get_proxies():
-    """Return a requests-compatible proxies dict, or None if unconfigured."""
-    if not PROXY_URL:
-        return None
-    return {"http": PROXY_URL, "https": PROXY_URL}
-
-
-class RetryableHTTPError(Exception):
-    """HTTP status codes worth retrying (403/429/5xx). Raised from
-    extract_sound_id_from_video_robust so tenacity can re-issue the request
-    with a fresh proxy IP."""
-    def __init__(self, status_code: int, url: str):
-        self.status_code = status_code
-        self.url = url
-        super().__init__(f"HTTP {status_code} for {url}")
 
 # Validation settings
 VALIDATION_ENABLED = True
@@ -174,143 +140,6 @@ def validate_video_data(video_data: Dict, platform: str) -> bool:
                 video_data[field] = 0
 
     return True
-
-
-@retry(
-    stop=stop_after_attempt(MAX_RETRIES),
-    wait=wait_exponential(multiplier=1, min=RETRY_WAIT_MIN, max=RETRY_WAIT_MAX),
-    retry=retry_if_exception_type((requests.Timeout, requests.ConnectionError, RetryableHTTPError))
-)
-def extract_sound_id_from_video_robust(video_url: str) -> Tuple[Optional[str], Optional[str]]:
-    """
-    Extract sound ID from TikTok video with retry logic and validation.
-
-    Routes through RESIDENTIAL_PROXY_URL if configured. On 403/429/5xx,
-    raises RetryableHTTPError so the @retry decorator can re-issue the
-    request — with a rotating residential proxy, the retry usually lands
-    on a fresh IP and succeeds.
-
-    Returns: (sound_id, song_title) or (None, None) if not found
-    """
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        }
-
-        response = requests.get(
-            video_url,
-            headers=headers,
-            timeout=SOUND_ID_FETCH_TIMEOUT,
-            proxies=_get_proxies(),
-        )
-
-        # Retryable: anti-bot / rate-limit / server error. Surface the status
-        # so tenacity gets a chance with a fresh IP.
-        if response.status_code in (403, 429) or response.status_code >= 500:
-            log(f"HTTP {response.status_code} for {video_url} (retryable)", "WARNING")
-            raise RetryableHTTPError(response.status_code, video_url)
-
-        if response.status_code != 200:
-            log(f"HTTP {response.status_code} for {video_url}", "WARNING")
-            return None, None
-
-        html = response.text
-
-        # Extract JSON data
-        pattern = r'<script[^>]*id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>(.*?)</script>'
-        matches = re.findall(pattern, html, re.DOTALL)
-
-        if not matches:
-            log(f"No JSON data found in page: {video_url}", "WARNING")
-            return None, None
-
-        data = json.loads(matches[0])
-
-        # Navigate to music object with validation
-        try:
-            music = data['__DEFAULT_SCOPE__']['webapp.video-detail']['itemInfo']['itemStruct']['music']
-            sound_id = music.get('id')
-            song_title = music.get('title', '')
-
-            # Validate sound_id is numeric
-            if sound_id and not str(sound_id).isdigit():
-                log(f"Invalid sound_id format: {sound_id}", "WARNING")
-                return None, song_title
-
-            return sound_id, song_title
-        except (KeyError, TypeError) as e:
-            log(f"Error parsing JSON structure: {e}", "WARNING")
-            return None, None
-
-    except requests.Timeout:
-        log(f"Timeout fetching {video_url}", "WARNING")
-        raise  # Let retry handle it
-    except requests.ConnectionError:
-        log(f"Connection error for {video_url}", "WARNING")
-        raise  # Let retry handle it
-    except RetryableHTTPError:
-        raise  # Let retry handle it — don't let the broad catch below swallow it
-    except Exception as e:
-        log(f"Error extracting sound ID from {video_url}: {e}", "ERROR")
-        return None, None
-
-
-def extract_sound_ids_parallel(videos: List[Dict], max_workers: Optional[int] = None) -> List[Dict]:
-    """
-    Extract sound IDs from multiple videos in parallel with progress bar
-
-    This is the KEY optimization - 10-20x faster than serial processing
-    """
-    if max_workers is None:
-        max_workers = MAX_WORKERS
-    proxy_status = "via residential proxy" if PROXY_URL else "DIRECT (no proxy configured)"
-    log(f"Extracting sound IDs from {len(videos)} videos, {max_workers} workers, {proxy_status}")
-
-    def process_video(video):
-        """Process a single video and add sound ID"""
-        video_url = video['url']
-
-        # Add delay to avoid rate limiting
-        if SOUND_ID_REQUEST_DELAY > 0:
-            time.sleep(SOUND_ID_REQUEST_DELAY)
-
-        sound_id, song_title_from_page = extract_sound_id_from_video_robust(video_url)
-
-        video_copy = video.copy()
-        video_copy['extracted_sound_id'] = sound_id
-        video_copy['extracted_song_title'] = song_title_from_page
-
-        return video_copy
-
-    enhanced_videos = []
-
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Submit all tasks
-        future_to_video = {executor.submit(process_video, video): video for video in videos}
-
-        # Process with progress bar
-        successful_count = 0
-        with tqdm(total=len(videos), desc="Extracting sound IDs", unit="video",
-                  bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]') as pbar:
-            for future in as_completed(future_to_video):
-                try:
-                    result = future.result()
-                    enhanced_videos.append(result)
-                    if result.get('extracted_sound_id'):
-                        successful_count += 1
-                    pbar.set_postfix_str(f"Extracted: {successful_count}")
-                except Exception as e:
-                    video = future_to_video[future]
-                    log(f"Failed to process video {video.get('url')}: {e}", "ERROR")
-                    enhanced_videos.append(video)  # Add without sound ID
-                finally:
-                    pbar.update(1)
-
-    # Count successful extractions
-    successful = sum(1 for v in enhanced_videos if v.get('extracted_sound_id'))
-    log(f"Successfully extracted {successful}/{len(videos)} sound IDs")
-
-    return enhanced_videos
 
 
 def get_cache_file(account: str, platform: str) -> Optional[Path]:
@@ -806,7 +635,7 @@ def load_campaign_csv(csv_path: str) -> Tuple[set, set, Dict]:
 
 
 def process_campaign(csv_path: str, start_date: Optional[datetime] = None,
-                    platform: str = 'tiktok', limit: int = 500, workers: int = 10) -> Dict:
+                    platform: str = 'tiktok', limit: int = 500) -> Dict:
     """
     Process a campaign: scrape accounts and match videos to sounds
 
@@ -873,28 +702,6 @@ def process_campaign(csv_path: str, start_date: Optional[datetime] = None,
                     pbar.update(1)
 
     log(f"Scraped {len(all_videos)} total videos from {len(all_accounts)} accounts")
-
-    # Extract sound IDs in parallel - ONLY for videos without cached sound IDs
-    if platform in ['tiktok', 'both']:
-        tiktok_videos = [v for v in all_videos if v.get('platform') == 'tiktok']
-
-        # Filter to only videos that don't already have sound IDs cached
-        videos_needing_sound_ids = [v for v in tiktok_videos if not v.get('extracted_sound_id')]
-        videos_with_sound_ids = [v for v in tiktok_videos if v.get('extracted_sound_id')]
-
-        if videos_needing_sound_ids:
-            log(f"Extracting sound IDs from {len(videos_needing_sound_ids)}/{len(tiktok_videos)} TikTok videos (skipping {len(videos_with_sound_ids)} cached)...")
-            print(f"\n{'='*60}")
-            print(f"SOUND ID EXTRACTION: 0/{len(videos_needing_sound_ids)} videos processed")
-            print(f"{'='*60}\n")
-            newly_extracted = extract_sound_ids_parallel(videos_needing_sound_ids, max_workers=workers)
-
-            # Combine videos with existing sound IDs and newly extracted ones
-            enhanced_dict = {v['url']: v for v in newly_extracted + videos_with_sound_ids}
-            all_videos = [enhanced_dict.get(v['url'], v) if v.get('platform') == 'tiktok' else v
-                         for v in all_videos]
-        else:
-            log(f"All {len(tiktok_videos)} TikTok videos already have cached sound IDs - skipping extraction!")
 
     # Match videos to sounds
     log("Matching videos to tracked sounds...")
@@ -972,8 +779,6 @@ def main():
     parser.add_argument('--limit', help='Max videos per account', type=int, default=500)
     parser.add_argument('--output', help='Output CSV file path', type=str)
     parser.add_argument('--no-cache', help='Disable caching', action='store_true')
-    parser.add_argument('--workers', help='Parallel workers for sound ID extraction',
-                       type=int, default=10)
 
     args = parser.parse_args()
 
@@ -1009,7 +814,6 @@ def main():
             start_date=start_date,
             platform=args.platform,
             limit=limit,
-            workers=args.workers
         )
 
         # Save results

@@ -695,7 +695,6 @@ def refresh_stats(slug: str):
     try:
         from src.scrapers.master_tracker import (
             scrape_tiktok_account,
-            extract_sound_ids_parallel,
             match_video_to_sounds,
         )
     except ImportError as e:
@@ -739,16 +738,6 @@ def refresh_stats(slug: str):
             else:
                 all_videos.extend(videos)
                 accounts_scraped += 1
-
-    # Extract sound IDs for videos that don't have them
-    tiktok_needing = [v for v in all_videos if not v.get("extracted_sound_id")]
-    if tiktok_needing:
-        try:
-            enhanced = extract_sound_ids_parallel(tiktok_needing, max_workers=10)
-            enhanced_dict = {v["url"]: v for v in enhanced}
-            all_videos = [enhanced_dict.get(v.get("url"), v) for v in all_videos]
-        except Exception:
-            pass
 
     # Match videos to campaign sound
     # Build a set of core song words for fuzzy fallback matching
