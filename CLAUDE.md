@@ -137,6 +137,12 @@ Tag `pre-migration-backup` on both remotes points to the old codebase.
 | `NOTION_CRM_DATABASE_ID` | `1961465b-b829-80c9-a1b5-c4cb3284149a` |
 | `PORT` | Auto-set by Railway |
 
+#### Decodo proxy
+
+- `TIKTOK_PROXY` — full URL `http://USER:PASS@gate.decodo.com:PORT`. Consumed by yt-dlp via `src/scrapers/yt_dlp_runner.py:build_tiktok_cmd()` (reads `os.environ["TIKTOK_PROXY"]` and passes to yt-dlp's `--proxy` flag). Required for TikTok scraping in prod. Current rotation uses NA-only IPs with sticky 10-minute sessions on port `10001`.
+- `DECODO_API_KEY` — staged for future agent observability (bandwidth checks, sub status, endpoint listing). Not currently consumed by any code path. Decodo API base: `https://api.decodo.com/v2/` — auth via `Authorization: Bearer ${DECODO_API_KEY}`. Reference: TODO — confirm exact endpoint paths from Decodo dashboard docs before wiring up observability.
+- `RESIDENTIAL_PROXY_URL` — **dead post-RTA-44.** Do not set. Was used by deleted `extract_sound_id_from_video_robust` in `src/scrapers/master_tracker.py`; no longer read by any code on `origin/main`. If it appears on a Railway service from a pre-RTA-44 deploy, it's safe to unset (cosmetic only).
+
 ### Vercel (Frontend)
 
 | Variable | Purpose |
