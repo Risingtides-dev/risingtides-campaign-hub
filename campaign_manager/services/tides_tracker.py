@@ -1,4 +1,5 @@
 """Tides Tracker public-API stats client + cron (RTA-42).
+See also: services/tidestracker.py — folder overlay + scrape-queue cross-check.
 
 Pulls per-tracker submission stats from the Tides Tracker public
 endpoint:
@@ -52,6 +53,7 @@ import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List
+from uuid import UUID
 
 import requests
 
@@ -221,6 +223,7 @@ def fetch_campaign_submissions(tracker_id: str) -> TidesTrackerFetchResult:
     `error_kind` from this closed set:
 
         - ``missing_tracker_id`` — empty/None input
+        - ``invalid_tracker_id`` — non-UUID input
         - ``timeout``            — `requests.Timeout`
         - ``connection``         — `requests.ConnectionError`
         - ``request_error``      — any other `requests.RequestException`
@@ -240,6 +243,15 @@ def fetch_campaign_submissions(tracker_id: str) -> TidesTrackerFetchResult:
             tracker_id="",
             error_kind="missing_tracker_id",
             detail="tracker_id was empty",
+        )
+    try:
+        UUID(tid)
+    except ValueError:
+        return TidesTrackerFetchResult(
+            ok=False,
+            tracker_id=tid,
+            error_kind="invalid_tracker_id",
+            detail="tracker_id must be a UUID",
         )
 
     url = f"{TIDES_TRACKER_PUBLIC_BASE}/api/public/{tid}"
