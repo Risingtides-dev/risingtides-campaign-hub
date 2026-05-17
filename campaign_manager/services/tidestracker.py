@@ -1,4 +1,5 @@
 """TidesTracker API client.
+See also: services/tides_tracker.py — public-API stats pipeline client + cron pull.
 
 Talks to the TidesTracker service via its `/api/campaigns` endpoint.
 TidesTracker is the source of truth for tracker data; Campaign Hub only

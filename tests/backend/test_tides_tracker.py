@@ -9,6 +9,8 @@ import requests
 from campaign_manager.models import TidesTrackerSyncLog, TrackerName
 from campaign_manager.services import tides_tracker
 
+VALID_TRACKER_ID = "123e4567-e89b-12d3-a456-426614174000"
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -173,9 +175,9 @@ class TestFetchCampaignSubmissions:
             tides_tracker.requests, "get",
             return_value=_mock_response(200, payload),
         ):
-            r = tides_tracker.fetch_campaign_submissions("abc-123")
+            r = tides_tracker.fetch_campaign_submissions(VALID_TRACKER_ID)
         assert r.ok is True
-        assert r.tracker_id == "abc-123"
+        assert r.tracker_id == VALID_TRACKER_ID
         assert r.count == 2
         assert r.submissions[0].video_url.endswith("/video/1")
         assert r.submissions[1].creator_username == "b"
@@ -195,12 +197,19 @@ class TestFetchCampaignSubmissions:
         assert r.ok is False
         assert r.error_kind == "missing_tracker_id"
 
+    def test_invalid_tracker_id_rejected_before_http_call(self):
+        with patch.object(tides_tracker.requests, "get") as get_mock:
+            r = tides_tracker.fetch_campaign_submissions("/../../etc/passwd")
+        assert r.ok is False
+        assert r.error_kind == "invalid_tracker_id"
+        get_mock.assert_not_called()
+
     def test_timeout_returns_fail_soft(self):
         with patch.object(
             tides_tracker.requests, "get",
             side_effect=requests.Timeout("timed out"),
         ):
-            r = tides_tracker.fetch_campaign_submissions("abc")
+            r = tides_tracker.fetch_campaign_submissions(VALID_TRACKER_ID)
         assert r.ok is False
         assert r.error_kind == "timeout"
         assert r.submissions == []
@@ -210,7 +219,7 @@ class TestFetchCampaignSubmissions:
             tides_tracker.requests, "get",
             side_effect=requests.ConnectionError("dns fail"),
         ):
-            r = tides_tracker.fetch_campaign_submissions("abc")
+            r = tides_tracker.fetch_campaign_submissions(VALID_TRACKER_ID)
         assert r.ok is False
         assert r.error_kind == "connection"
 
@@ -219,7 +228,7 @@ class TestFetchCampaignSubmissions:
             tides_tracker.requests, "get",
             side_effect=requests.RequestException("weird"),
         ):
-            r = tides_tracker.fetch_campaign_submissions("abc")
+            r = tides_tracker.fetch_campaign_submissions(VALID_TRACKER_ID)
         assert r.ok is False
         assert r.error_kind == "request_error"
 
@@ -228,7 +237,7 @@ class TestFetchCampaignSubmissions:
             tides_tracker.requests, "get",
             return_value=_mock_response(404, {"error": "not found"}),
         ):
-            r = tides_tracker.fetch_campaign_submissions("abc")
+            r = tides_tracker.fetch_campaign_submissions(VALID_TRACKER_ID)
         assert r.ok is False
         assert r.error_kind == "http_4xx"
         assert r.status_code == 404
@@ -238,7 +247,7 @@ class TestFetchCampaignSubmissions:
             tides_tracker.requests, "get",
             return_value=_mock_response(503, {}),
         ):
-            r = tides_tracker.fetch_campaign_submissions("abc")
+            r = tides_tracker.fetch_campaign_submissions(VALID_TRACKER_ID)
         assert r.ok is False
         assert r.error_kind == "http_5xx"
         assert r.status_code == 503
@@ -248,7 +257,7 @@ class TestFetchCampaignSubmissions:
             tides_tracker.requests, "get",
             return_value=_mock_response(200, raise_json=True),
         ):
-            r = tides_tracker.fetch_campaign_submissions("abc")
+            r = tides_tracker.fetch_campaign_submissions(VALID_TRACKER_ID)
         assert r.ok is False
         assert r.error_kind == "bad_json"
 
@@ -257,7 +266,7 @@ class TestFetchCampaignSubmissions:
             tides_tracker.requests, "get",
             return_value=_mock_response(200, {"unexpected": "shape"}),
         ):
-            r = tides_tracker.fetch_campaign_submissions("abc")
+            r = tides_tracker.fetch_campaign_submissions(VALID_TRACKER_ID)
         assert r.ok is False
         assert r.error_kind == "bad_payload"
 
@@ -268,7 +277,7 @@ class TestFetchCampaignSubmissions:
             tides_tracker.requests, "get",
             return_value=_mock_response(200, payload),
         ):
-            r = tides_tracker.fetch_campaign_submissions("abc")
+            r = tides_tracker.fetch_campaign_submissions(VALID_TRACKER_ID)
         assert r.ok is True
         assert r.count == 2
 
@@ -278,7 +287,7 @@ class TestFetchCampaignSubmissions:
             tides_tracker.requests, "get",
             return_value=_mock_response(200, {"videos": []}),
         ):
-            r = tides_tracker.fetch_campaign_submissions("abc")
+            r = tides_tracker.fetch_campaign_submissions(VALID_TRACKER_ID)
         assert r.ok is True
         assert r.fetched_at != ""
 
