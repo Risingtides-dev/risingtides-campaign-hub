@@ -61,9 +61,95 @@ _internal_scrape_status: Dict = {
 # scrape worker is already in-process state and shares the same limitation.
 # A persistent job store (Redis/DB row) is the upgrade path if it becomes
 # a real problem.
+#
+# RTA-46: terminal entries (state in {"done", "error"}) are pruned by
+# `_prune_jobs` whenever a new job is inserted. Without pruning, the dict
+# grows one entry per scrape for the lifetime of the dyno.
 _jobs: Dict[str, Dict] = {}
 _current_job_by_group: Dict[str, str] = {}
 _jobs_lock = threading.Lock()
+
+# Default 24-hour retention for terminal (done/error) job entries. Tuneable
+# via the ``INTERNAL_JOBS_TTL_HOURS`` env var. Bounds mirror the defensive
+# pattern used by RTA-10's ``NOTION_SYNC_INTERVAL_MINUTES``: a typo or
+# out-of-range value falls back to the default rather than disabling
+# pruning entirely (which would reintroduce the unbounded-growth bug).
+INTERNAL_JOBS_DEFAULT_TTL_HOURS = 24
+INTERNAL_JOBS_MIN_TTL_HOURS = 1
+INTERNAL_JOBS_MAX_TTL_HOURS = 720  # 30 days
+
+
+def get_internal_jobs_ttl_hours() -> int:
+    """Resolve the _jobs registry TTL from the env var, clamped to bounds.
+
+    Bounds: ``INTERNAL_JOBS_MIN_TTL_HOURS`` <= n <= ``INTERNAL_JOBS_MAX_TTL_HOURS``.
+    Falls back to the default on missing / unparseable / out-of-bounds values.
+    """
+    raw = os.environ.get("INTERNAL_JOBS_TTL_HOURS", "")
+    if not raw:
+        return INTERNAL_JOBS_DEFAULT_TTL_HOURS
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return INTERNAL_JOBS_DEFAULT_TTL_HOURS
+    if n < INTERNAL_JOBS_MIN_TTL_HOURS or n > INTERNAL_JOBS_MAX_TTL_HOURS:
+        return INTERNAL_JOBS_DEFAULT_TTL_HOURS
+    return n
+
+
+def _prune_jobs() -> int:
+    """Sweep terminal _jobs entries older than the TTL. Returns count pruned.
+
+    MUST be called with ``_jobs_lock`` held by the caller. This keeps the
+    prune + insert in ``scrape_start`` inside one critical section, which
+    is the only correctness-relevant ordering. Tests acquire the lock
+    explicitly before calling.
+
+    Pruning rules:
+      - state == "running": NEVER pruned. The worker thread is still
+        writing to the dict; its ``_current_job_by_group`` pointer is
+        also live (the debounce check reads from it).
+      - state in {"done", "error"}: pruned iff ``started_at`` is older
+        than ``get_internal_jobs_ttl_hours()`` hours. A missing or
+        unparseable ``started_at`` on a terminal job is treated as
+        ancient and pruned (defensive cleanup; this shape should never
+        occur in practice).
+
+    Idempotent: re-running with no eligible entries is a no-op.
+    """
+    from datetime import timedelta
+
+    ttl_hours = get_internal_jobs_ttl_hours()
+    cutoff = datetime.now(EST) - timedelta(hours=ttl_hours)
+
+    to_drop: List[str] = []
+    for job_id, job in _jobs.items():
+        state = job.get("state", "running")
+        if state == "running":
+            continue
+        started = job.get("started_at")
+        if not started or not isinstance(started, str):
+            to_drop.append(job_id)
+            continue
+        try:
+            started_dt = datetime.fromisoformat(started)
+        except ValueError:
+            to_drop.append(job_id)
+            continue
+        if started_dt < cutoff:
+            to_drop.append(job_id)
+
+    for job_id in to_drop:
+        _jobs.pop(job_id, None)
+        # Defensive: clear any stale group->job pointer that still
+        # references a pruned entry. In practice _clear_current_job runs
+        # when the worker finishes, but if a worker died mid-flight the
+        # pointer could linger past the TTL alongside its terminal entry.
+        for group, gid in list(_current_job_by_group.items()):
+            if gid == job_id:
+                _current_job_by_group.pop(group, None)
+
+    return len(to_drop)
 
 
 def _job_snapshot(job_id: str) -> Optional[Dict]:
@@ -667,6 +753,11 @@ def scrape_start():
                 })
             # Stale pointer (state moved to done/error). Clear it.
             _current_job_by_group.pop(group_slug, None)
+
+        # RTA-46: sweep terminal entries older than the TTL before
+        # inserting a new job, so the dict can't grow unboundedly across
+        # the dyno's lifetime.
+        _prune_jobs()
 
         job_id = uuid.uuid4().hex
         started_at = datetime.now(EST).isoformat()
