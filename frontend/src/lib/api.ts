@@ -12,6 +12,8 @@ import type {
   InternalScrapeResults,
   InternalSongResult,
   ScrapeStatus,
+  ScrapeStartResponse,
+  JobScrapeStatus,
   InboxItem,
   InboxCreator,
   ApiOk,
@@ -214,6 +216,28 @@ export const api = {
       method: "POST",
       body: JSON.stringify(params),
     }),
+
+  // Per-group scrape trigger (RTA-16)
+  // Backend: POST /api/internal/scrape/start  body {group, hours}
+  //   -> { job_id, started_at, debounced? }
+  // Debounced=true means an existing in-flight job for this group was returned;
+  // callers should poll the returned job_id rather than treat it as an error.
+  startInternalScrape: (params: { group: string; hours?: number }) =>
+    request<ScrapeStartResponse>("/api/internal/scrape/start", {
+      method: "POST",
+      body: JSON.stringify({
+        group: params.group,
+        hours: params.hours ?? 168,
+      }),
+    }),
+
+  // Per-job poll for the /scrape/start trigger above.
+  // Backend: GET /api/internal/scrape/status?job_id=<id>
+  //   -> { state: "running"|"done"|"error", progress: {n,m}, last_log, error? }
+  getInternalScrapeJobStatus: (job_id: string) =>
+    request<JobScrapeStatus>(
+      `/api/internal/scrape/status?job_id=${encodeURIComponent(job_id)}`
+    ),
 
   // Inbox
   getInbox: (status?: string) =>

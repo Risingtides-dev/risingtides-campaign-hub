@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { api } from "./api"
-import type { ScrapeStatus } from "./types"
+import type { ScrapeStatus, JobScrapeStatus } from "./types"
 
 // Query keys
 export const keys = {
@@ -14,6 +14,8 @@ export const keys = {
   internalCreators: ["internal", "creators"] as const,
   internalResults: ["internal", "results"] as const,
   internalScrapeStatus: ["internal", "scrape-status"] as const,
+  internalScrapeJob: (jobId: string) =>
+    ["internal", "scrape-job", jobId] as const,
   internalCreator: (username: string) =>
     ["internal", "creator", username] as const,
   internalGroups: ["internal", "groups"] as const,
@@ -427,6 +429,42 @@ export function useTriggerGroupScrape() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: keys.internalScrapeStatus })
     },
+  })
+}
+
+// --- RTA-16: Per-group scrape trigger + per-job status polling ---
+
+/** Trigger a scrape for a single group via the RTA-16 endpoint.
+ * Returns { job_id, started_at, debounced? }.
+ * Debounced=true means the backend returned an existing in-flight job
+ * for the same group; callers should poll that job_id, not treat it
+ * as an error. */
+export function useStartInternalScrape() {
+  return useMutation({
+    mutationFn: (params: { group: string; hours?: number }) =>
+      api.startInternalScrape(params),
+  })
+}
+
+/** Poll the per-job scrape status every 2s until state !== "running".
+ * Pass jobId = null/undefined to disable. On completion, the caller
+ * is responsible for invalidating results queries and showing toasts. */
+export function useInternalScrapeJobStatus(jobId: string | null | undefined) {
+  return useQuery<JobScrapeStatus>({
+    queryKey: keys.internalScrapeJob(jobId ?? ""),
+    queryFn: () => api.getInternalScrapeJobStatus(jobId as string),
+    enabled: !!jobId,
+    refetchInterval: (query) => {
+      // Stop polling as soon as we see a terminal state.
+      const state = query.state.data?.state
+      if (state === "done" || state === "error") return false
+      return 2000
+    },
+    // Avoid showing stale "done" snapshots from a previous job_id under
+    // the same key shape; keys are job-id-scoped so this is belt-and-
+    // suspenders.
+    staleTime: 0,
+    refetchOnWindowFocus: false,
   })
 }
 
