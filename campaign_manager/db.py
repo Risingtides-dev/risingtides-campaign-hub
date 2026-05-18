@@ -7,13 +7,13 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 EST = ZoneInfo("America/New_York")
 
 from sqlalchemy import create_engine, desc, func
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session, selectinload, sessionmaker
 
 from campaign_manager.models import (
     Base, Campaign, Creator, MatchedVideo, ScrapeLog,
@@ -487,6 +487,41 @@ def list_campaigns(status: str = "active", exclude_completed: bool = False) -> L
             query = query.filter(Campaign.completion_status != "completed")
         campaigns = query.all()
         return [c.to_meta_dict() for c in campaigns]
+
+
+def list_campaigns_with_creators(
+    status: str = "active",
+    *,
+    with_matched_videos: bool = False,
+) -> List[Tuple[Dict, List[Dict], List[Dict]]]:
+    """List campaigns with their creators (and optionally matched_videos)
+    eagerly loaded.
+
+    Replaces the per-campaign N+1 of calling `get_creators(slug)` (and
+    optionally `get_matched_videos(slug)`) in a loop. Issues 2 queries
+    when `with_matched_videos=False`, 3 when True — independent of the
+    campaign count.
+
+    Returns a list of (meta_dict, creators_list, matched_videos_list)
+    tuples. When `with_matched_videos=False`, the third element is an
+    empty list.
+    """
+    options = [selectinload(Campaign.creators)]
+    if with_matched_videos:
+        options.append(selectinload(Campaign.matched_videos))
+    with get_session() as s:
+        query = s.query(Campaign).options(*options)
+        if status:
+            query = query.filter_by(status=status)
+        campaigns = query.all()
+        return [
+            (
+                c.to_meta_dict(),
+                [cr.to_dict() for cr in c.creators],
+                [mv.to_dict() for mv in c.matched_videos] if with_matched_videos else [],
+            )
+            for c in campaigns
+        ]
 
 
 def campaign_exists(slug: str) -> bool:

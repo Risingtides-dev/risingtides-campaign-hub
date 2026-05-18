@@ -220,15 +220,25 @@ def get_campaigns() -> List[Dict]:
     Stats come from the Tides Tracker API path (RTA-43) via
     `get_campaign_stats`. Falls back to scraper data per-campaign if a
     tracker is missing or the API is unavailable.
+
+    Bulk-loads creators, matched_videos, and tracker_id mappings up
+    front so the per-campaign work below is pure-Python + cache lookups
+    (no DB roundtrips inside the loop). See CAMP-40.
     """
     if _db.is_active():
-        metas = _db.list_campaigns(status="active")
+        rows = _db.list_campaigns_with_creators(
+            status="active", with_matched_videos=True
+        )
+        tracker_map = _db.get_campaign_to_tracker_map()
         items = []
-        for meta in metas:
+        for meta, creators, matched_videos in rows:
             slug = meta["slug"]
-            creators = _db.get_creators(slug)
             budget = calc_budget(meta, creators)
-            result = get_campaign_stats(slug)
+            result = get_campaign_stats(
+                slug,
+                matched_videos=matched_videos,
+                tracker_id=tracker_map.get(slug, ""),
+            )
             stats = _stats_from_result(meta, creators, result)
             items.append({
                 "slug": slug,
