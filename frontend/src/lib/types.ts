@@ -209,6 +209,37 @@ export interface ScrapeStatus {
   log: ScrapeAccountLog[]
 }
 
+// --- Per-group scrape trigger (RTA-16: POST /api/internal/scrape/start) ---
+
+export interface ScrapeStartResponse {
+  job_id: string
+  started_at: string
+  /** Present (and true) when the backend returned an already-running job
+   * for this group instead of starting a new one. */
+  debounced?: boolean
+}
+
+export type JobScrapeState = "running" | "done" | "error"
+
+export interface JobScrapeProgress {
+  /** Accounts completed so far. */
+  n: number
+  /** Total accounts in this job. */
+  m: number
+}
+
+export interface JobScrapeStatus {
+  state: JobScrapeState
+  progress: JobScrapeProgress
+  last_log: string
+  /** Populated only when state === "error". */
+  error?: string | null
+  /** Echoed by the backend snapshot for client-side display. */
+  job_id?: string
+  group?: string
+  started_at?: string
+}
+
 // Inbox types
 export interface InboxCreator {
   username: string
