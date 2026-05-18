@@ -717,13 +717,19 @@ def _filter_by_date(videos, start_date):
     filtered = []
     excluded_no_ts = 0
     for v in videos:
-        ts = v.get("timestamp", "")
-        if not ts or not isinstance(ts, str):
+        ts = v.get("timestamp")
+        if not ts:
             excluded_no_ts += 1
             continue
-        try:
-            vdt = datetime.fromisoformat(ts).date()
-        except Exception:
+        vdt = None
+        if isinstance(ts, datetime):
+            vdt = ts.date()
+        elif isinstance(ts, str):
+            try:
+                vdt = datetime.fromisoformat(ts).date()
+            except Exception:
+                vdt = None
+        if vdt is None:
             excluded_no_ts += 1
             continue
         if vdt < start_date:
