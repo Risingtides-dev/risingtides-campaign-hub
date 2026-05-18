@@ -161,11 +161,14 @@ def list_trackers():
 
     # Build sound-ID auto-suggestions: tracker_id -> [{slug, title, matched_sound_ids}]
     # Only consider active campaigns that aren't completed.
+    # CAMP-50: pre-resolve manual_links + archived_tids once and thread them
+    # through `find_trackers_for_campaign` so the loop body does no DB work.
     tracker_to_suggestions: dict = {}
     try:
         from campaign_manager.services.tracker_discovery import (
             find_trackers_for_campaign,
         )
+        archived_tids = set(archives.keys())
         for c in all_campaigns:
             if (c.get("completion_status") or "") == "completed":
                 continue
@@ -173,7 +176,11 @@ def list_trackers():
                 continue
             slug = c.get("slug") or ""
             title = c.get("title") or c.get("name") or slug
-            for hit in find_trackers_for_campaign(c):
+            for hit in find_trackers_for_campaign(
+                c,
+                manual_links=campaign_links,
+                archived_tids=archived_tids,
+            ):
                 # Only surface auto-detected (sound_id) hits as suggestions
                 # — manual links are already reflected in `campaign_slug`.
                 if hit.get("link_source") == "manual":
