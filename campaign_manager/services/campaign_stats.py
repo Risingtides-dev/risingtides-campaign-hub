@@ -279,6 +279,7 @@ def get_campaign_stats(
     slug: str,
     *,
     matched_videos: Optional[List[Dict[str, Any]]] = None,
+    tracker_id: Optional[str] = None,
     force_refresh: bool = False,
 ) -> CampaignStatsResult:
     """Resolve performance stats for one campaign.
@@ -287,7 +288,13 @@ def get_campaign_stats(
         slug: campaign slug.
         matched_videos: optional pre-loaded scraper rows for fallback +
             field-gap hydration. Pass when the caller already has them
-            in hand (e.g. campaign_detail) to avoid a redundant query.
+            in hand (e.g. campaign_detail, list-endpoint bulk path) to
+            avoid a redundant DB query.
+        tracker_id: optional pre-resolved tracker UUID. Pass empty string
+            to declare "no tracker, go straight to fallback" (saves a DB
+            lookup in the list-endpoint bulk path). When None, the
+            function resolves the tracker itself (legacy single-call
+            behaviour).
         force_refresh: bypass the cache and re-fetch from the API.
 
     Never raises. Always returns a populated result — `source` tells
@@ -298,12 +305,13 @@ def get_campaign_stats(
         return CampaignStatsResult(slug=s, source=SOURCE_EMPTY)
 
     # Resolve linked tracker. No tracker = scraper-only campaign.
-    tracker_id = ""
-    try:
-        tracker_id = _db.get_tracker_id_for_campaign(s)
-    except Exception:
-        logger.exception("campaign_stats: failed to resolve tracker_id for %s", s)
+    if tracker_id is None:
         tracker_id = ""
+        try:
+            tracker_id = _db.get_tracker_id_for_campaign(s)
+        except Exception:
+            logger.exception("campaign_stats: failed to resolve tracker_id for %s", s)
+            tracker_id = ""
 
     if not tracker_id:
         return _fallback(s, matched_videos, tracker_id="", error_kind="no_tracker")

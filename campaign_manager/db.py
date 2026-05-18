@@ -491,21 +491,35 @@ def list_campaigns(status: str = "active", exclude_completed: bool = False) -> L
 
 def list_campaigns_with_creators(
     status: str = "active",
-) -> List[Tuple[Dict, List[Dict]]]:
-    """List campaigns with their creators eagerly loaded.
+    *,
+    with_matched_videos: bool = False,
+) -> List[Tuple[Dict, List[Dict], List[Dict]]]:
+    """List campaigns with their creators (and optionally matched_videos)
+    eagerly loaded.
 
-    One query for campaigns, one for creators (via selectinload) — replaces
-    the previous N+1 pattern of calling get_creators(slug) per campaign in a
-    loop. Returns a list of (meta_dict, creators_list) tuples preserving the
-    same shape callers expect.
+    Replaces the per-campaign N+1 of calling `get_creators(slug)` (and
+    optionally `get_matched_videos(slug)`) in a loop. Issues 2 queries
+    when `with_matched_videos=False`, 3 when True — independent of the
+    campaign count.
+
+    Returns a list of (meta_dict, creators_list, matched_videos_list)
+    tuples. When `with_matched_videos=False`, the third element is an
+    empty list.
     """
+    options = [selectinload(Campaign.creators)]
+    if with_matched_videos:
+        options.append(selectinload(Campaign.matched_videos))
     with get_session() as s:
-        query = s.query(Campaign).options(selectinload(Campaign.creators))
+        query = s.query(Campaign).options(*options)
         if status:
             query = query.filter_by(status=status)
         campaigns = query.all()
         return [
-            (c.to_meta_dict(), [cr.to_dict() for cr in c.creators])
+            (
+                c.to_meta_dict(),
+                [cr.to_dict() for cr in c.creators],
+                [mv.to_dict() for mv in c.matched_videos] if with_matched_videos else [],
+            )
             for c in campaigns
         ]
 
