@@ -128,4 +128,22 @@ def cron_diag():
     except Exception as e:
         result["scrape_test_error"] = str(e)
 
+    # Sound-ID enrichment test — fetches a known TikTok video's HTML through
+    # TIKTOK_PROXY and verifies extract_sound_meta_from_video can pull the
+    # music.id field. If yt-dlp works but this fails, the proxy is rejecting
+    # plain `requests` calls (no TLS fingerprinting) and we need to switch
+    # the enrichment fetch to curl_cffi or pass through a different exit.
+    try:
+        from src.scrapers.master_tracker import extract_sound_meta_from_video
+        enrich_url = "https://www.tiktok.com/@narravis/video/7639385764266036502"
+        expected_sid = "7623218788412082177"
+        sid, title = extract_sound_meta_from_video(enrich_url, timeout=20)
+        result["enrich_test_target"] = enrich_url
+        result["enrich_test_expected_sid"] = expected_sid
+        result["enrich_test_extracted_sid"] = sid
+        result["enrich_test_extracted_title"] = title
+        result["enrich_test_match"] = (sid == expected_sid)
+    except Exception as e:
+        result["enrich_test_error"] = str(e)
+
     return jsonify(result)
