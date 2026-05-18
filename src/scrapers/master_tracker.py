@@ -449,22 +449,26 @@ def scrape_tiktok_account(account: str, start_date: Optional[datetime] = None,
             except json.JSONDecodeError:
                 continue
 
-        # Sound-ID enrichment for genuinely new videos only. Cached videos
-        # were already enriched on a prior scrape (or pre-date this code, in
-        # which case strategies 2-5 in match_video_to_sounds still cover
-        # song-key/title fallbacks). Re-enriching cached entries would burn
-        # proxy bandwidth on every cron tick for no gain.
-        if new_videos:
-            counts = enrich_videos_with_sound_ids(new_videos)
+        # Combine cached and new
+        all_videos = (cached_videos or []) + new_videos
+
+        # Sound-ID enrichment. Runs on ANY video missing the field — both
+        # genuinely-new yt-dlp output and pre-fix cached entries that were
+        # saved before this code existed (the cache lives on a Railway
+        # volume, so old entries survive deploys). Field-presence check
+        # (`'extracted_sound_id' not in v`) means videos we've already
+        # tried but couldn't extract from — sentinel '' — aren't retried,
+        # only ones we've never attempted. First run after this fix backfills
+        # the whole cache once; steady-state only the day's new posts.
+        needs_enrich = [v for v in all_videos if 'extracted_sound_id' not in v]
+        if needs_enrich:
+            counts = enrich_videos_with_sound_ids(needs_enrich)
             log(
                 f"TikTok @{username} sound-id enrich: "
                 f"{counts['ok']}/{counts['total']} hit"
             )
 
-        # Combine cached and new
-        all_videos = (cached_videos or []) + new_videos
-
-        # Save cache (all videos, unfiltered)
+        # Save cache (enriched in place above, so this persists sound IDs)
         if use_cache:
             save_account_cache(account, 'tiktok', all_videos, datetime.now().date())
 
