@@ -1,26 +1,50 @@
-import { useState, useCallback, useMemo } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useParams, Link } from "react-router-dom"
 import { useQueryClient } from "@tanstack/react-query"
+import { toast } from "sonner"
 import {
   useInternalCreators,
   useInternalGroups,
-  useTriggerGroupScrape,
-  useInternalScrapeStatus,
   useInternalResults,
+  useStartInternalScrape,
+  useInternalScrapeJobStatus,
   keys,
 } from "@/lib/queries"
-import { ScrapeProgress } from "@/components/internal/ScrapeProgress"
 import { SongsResults } from "@/components/internal/SongsResults"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Loader2, ArrowLeft, RefreshCw } from "lucide-react"
-import type { InternalScrapeResults } from "@/lib/types"
+import { Loader2, ArrowLeft, RefreshCw, Play } from "lucide-react"
+import type { InternalScrapeResults, JobScrapeStatus } from "@/lib/types"
 
-const CATEGORIES: Record<string, { title: string; groupSlugs: string[]; scrapeGroup?: string }> = {
+/**
+ * CATEGORIES drives the per-page config for /internal/scrape/:category.
+ *
+ * Each category maps to:
+ *  - title: page heading
+ *  - groupSlugs: which group rows feed the accounts list / count
+ *  - scrapeGroup: the single group slug we pass to the RTA-16
+ *    /api/internal/scrape/start endpoint
+ *
+ * The "internal" category aggregates several booker groups and therefore
+ * has no single scrapeGroup. The RTA-16 endpoint only accepts one group
+ * per call, so Run-now is disabled on that category until the backend
+ * grows multi-group support.
+ */
+const CATEGORIES: Record<
+  string,
+  { title: string; groupSlugs: string[]; scrapeGroup?: string }
+> = {
   internal: {
     title: "Internal Pages",
-    groupSlugs: ["jake_balik", "john_smathers", "sam_hudgens", "eric_cromartie", "johnny_balik", "seeno"],
-    // No scrapeGroup — scrapes all creators
+    groupSlugs: [
+      "jake_balik",
+      "john_smathers",
+      "sam_hudgens",
+      "eric_cromartie",
+      "johnny_balik",
+      "seeno",
+    ],
+    // No scrapeGroup -- aggregated category, see comment above.
   },
   warner: {
     title: "Warner Pages",
@@ -39,39 +63,110 @@ const CATEGORIES: Record<string, { title: string; groupSlugs: string[]; scrapeGr
   },
 }
 
-function todayStr(): string {
-  return new Date().toISOString().slice(0, 10)
-}
-
-function daysAgoStr(n: number): string {
-  const d = new Date()
-  d.setDate(d.getDate() - n)
-  return d.toISOString().slice(0, 10)
-}
+const DEFAULT_HOURS = 168 // 7 days -- matches RTA-16 backend default
 
 export default function InternalScrapeView() {
   const { category } = useParams<{ category: string }>()
   const config = CATEGORIES[category || ""] || CATEGORIES.internal
+  const canRunNow = !!config.scrapeGroup
 
-  const [startDate, setStartDate] = useState(daysAgoStr(30))
-  const [endDate, setEndDate] = useState(todayStr())
-  const [scraping, setScraping] = useState(false)
+  const [hours, setHours] = useState<number>(DEFAULT_HOURS)
+  // jobId is the only piece of UI state we own; everything else is derived
+  // from the mutation + per-job query. This keeps setState out of effects
+  // (avoids react-hooks/set-state-in-effect cascading-render warnings).
+  const [jobId, setJobId] = useState<string | null>(null)
+  // Track which jobs we've already toasted/invalidated for, so the effect
+  // doesn't double-fire across polling refetches.
+  const handledJobIdsRef = useRef<Set<string>>(new Set())
 
   const queryClient = useQueryClient()
   const { data: groups } = useInternalGroups()
   const { data: creators } = useInternalCreators()
-  const { data: results, isLoading: resultsLoading, refetch: refetchResults } = useInternalResults()
-  const scrape = useTriggerGroupScrape()
-  const { data: scrapeStatus } = useInternalScrapeStatus(true)
-  const isRunning = scraping || !!scrapeStatus?.running
+  const {
+    data: results,
+    isLoading: resultsLoading,
+    refetch: refetchResults,
+  } = useInternalResults()
 
-  const handleScrapeComplete = useCallback(() => {
-    setScraping(false)
-    // Refetch results after scrape completes so links show up
-    queryClient.invalidateQueries({ queryKey: keys.internalResults })
-  }, [queryClient])
+  const startScrape = useStartInternalScrape()
+  const { data: jobStatus } = useInternalScrapeJobStatus(jobId)
 
-  // Get account count from groups
+  // ---------------------------------------------------------------------------
+  // Derived state -- single source of truth for the button label / disabled
+  // ---------------------------------------------------------------------------
+
+  const isStarting = startScrape.isPending
+  const isRunning =
+    !isStarting && jobId !== null && jobStatus?.state === "running"
+  const isActive = isStarting || isRunning
+
+  // ---------------------------------------------------------------------------
+  // Trigger handler
+  // ---------------------------------------------------------------------------
+
+  const handleStart = useCallback(() => {
+    if (!config.scrapeGroup) return
+    startScrape.mutate(
+      { group: config.scrapeGroup, hours },
+      {
+        onSuccess: (resp) => {
+          setJobId(resp.job_id)
+          if (resp.debounced) {
+            // Soft toast -- attaching to an existing run, not an error.
+            toast("Scrape already in progress", {
+              description: "Attaching to the existing job for this group.",
+            })
+          } else {
+            toast.success(`Scrape started for ${config.title.toLowerCase()}`)
+          }
+        },
+        onError: (err: unknown) => {
+          const message =
+            err instanceof Error ? err.message : "Failed to start scrape"
+          toast.error("Could not start scrape", { description: message })
+        },
+      }
+    )
+  }, [config.scrapeGroup, config.title, hours, startScrape])
+
+  // ---------------------------------------------------------------------------
+  // Terminal-state side effects (toast + invalidate + clear jobId)
+  //
+  // Guarded by handledJobIdsRef so a given jobId only fires once even if the
+  // status query refetches after the terminal frame.
+  // ---------------------------------------------------------------------------
+
+  useEffect(() => {
+    if (!jobId || !jobStatus) return
+    const terminal = jobStatus.state === "done" || jobStatus.state === "error"
+    if (!terminal) return
+    if (handledJobIdsRef.current.has(jobId)) return
+    handledJobIdsRef.current.add(jobId)
+
+    if (jobStatus.state === "done") {
+      queryClient.invalidateQueries({ queryKey: keys.internalResults })
+      queryClient.invalidateQueries({ queryKey: keys.internalCreators })
+      const { n, m } = jobStatus.progress
+      toast.success(`Scrape complete -- ${n} of ${m} accounts done`)
+    } else {
+      toast.error("Scrape failed", {
+        description: jobStatus.error || "Unknown error",
+      })
+    }
+
+    // Async cleanup of jobId so the button returns to idle without
+    // synchronously setting state inside the effect body.
+    const t = window.setTimeout(
+      () => setJobId(null),
+      jobStatus.state === "done" ? 1500 : 3000
+    )
+    return () => window.clearTimeout(t)
+  }, [jobId, jobStatus, queryClient])
+
+  // ---------------------------------------------------------------------------
+  // Page derived data
+  // ---------------------------------------------------------------------------
+
   const accountCount = useMemo(() => {
     if (!groups) return 0
     return groups
@@ -79,86 +174,111 @@ export default function InternalScrapeView() {
       .reduce((sum, g) => sum + g.member_count, 0)
   }, [groups, config.groupSlugs])
 
-  // Filter results to only show songs/videos from this category's accounts
-  // Since we don't have per-account group membership in the results, we show
-  // all results after a category-scoped scrape. The scrape itself is scoped
-  // so the results will naturally be limited to the right accounts.
-  // For "internal" (scrape all), we show everything.
+  // The results endpoint is global, not per-group. After a scoped scrape the
+  // results naturally narrow to the scope; per-scope filtering on the read
+  // side is a separate task.
   const filteredResults = useMemo((): InternalScrapeResults | undefined => {
     if (!results) return undefined
-    // After a scoped scrape, results contain only that scope's data
-    // so we pass through as-is
     return results
   }, [results])
 
-  function handleScrape() {
-    setScraping(true)
-    const params: Record<string, string> = { start_date: startDate, end_date: endDate }
-    if (config.scrapeGroup) {
-      params.group = config.scrapeGroup
-    }
-    scrape.mutate(params)
-  }
+  const buttonDisabled = !canRunNow || isActive
+  const disabledReason = !canRunNow
+    ? "Run-now not available for this category yet."
+    : undefined
 
   return (
     <div>
       {/* Header */}
       <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
         <div>
-          <Link to="/internal" className="text-[#0b62d6] text-sm hover:underline flex items-center gap-1 mb-1">
+          <Link
+            to="/internal"
+            className="text-[#0b62d6] text-sm hover:underline flex items-center gap-1 mb-1"
+          >
             <ArrowLeft className="size-3.5" /> Internal TikTok
           </Link>
           <h1 className="text-[22px] font-semibold">{config.title}</h1>
           <p className="text-[#888] text-sm">{accountCount} accounts</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Input
-            type="date"
-            value={startDate}
-            onChange={(e) => setStartDate(e.target.value)}
-            className="w-[145px] h-8 text-sm"
-          />
-          <span className="text-[#888] text-sm">to</span>
-          <Input
-            type="date"
-            value={endDate}
-            onChange={(e) => setEndDate(e.target.value)}
-            className="w-[145px] h-8 text-sm"
-          />
-          <Button
-            onClick={handleScrape}
-            className="bg-[#0b62d6] hover:bg-[#0951b5] text-white"
-            disabled={isRunning}
-          >
-            {isRunning ? (
-              <><Loader2 className="size-4 animate-spin" /> Scraping...</>
-            ) : (
-              `Scrape ${config.title}`
-            )}
-          </Button>
+          <label className="flex items-center gap-1.5 text-sm text-[#555]">
+            <span className="text-[#888]">Hours</span>
+            <Input
+              type="number"
+              min={1}
+              max={24 * 30}
+              value={hours}
+              onChange={(e) => {
+                const n = parseInt(e.target.value, 10)
+                setHours(Number.isFinite(n) && n > 0 ? n : DEFAULT_HOURS)
+              }}
+              className="w-[90px] h-8 text-sm"
+              disabled={isActive}
+            />
+          </label>
+          {/* Wrap so the title shows on disabled state too -- a disabled
+              <button> swallows pointer events. */}
+          <span title={disabledReason}>
+            <Button
+              onClick={handleStart}
+              className="bg-[#0b62d6] hover:bg-[#0951b5] text-white"
+              disabled={buttonDisabled}
+              aria-label={
+                disabledReason
+                  ? `Run scrape now (${disabledReason})`
+                  : "Run scrape now"
+              }
+            >
+              {isStarting ? (
+                <>
+                  <Loader2 className="size-4 animate-spin" /> Starting...
+                </>
+              ) : isRunning ? (
+                <>
+                  <Loader2 className="size-4 animate-spin" /> Scraping...
+                </>
+              ) : (
+                <>
+                  <Play className="size-4" /> Run scrape now
+                </>
+              )}
+            </Button>
+          </span>
         </div>
       </div>
 
-      {/* Scrape progress */}
-      <ScrapeProgress enabled={isRunning} onComplete={handleScrapeComplete} />
+      {/* Inline progress strip while a job is running */}
+      {isActive && (
+        <ScrapeJobProgressStrip status={jobStatus} starting={isStarting} />
+      )}
 
       {/* Accounts list */}
       {creators && (
         <div className="bg-white border border-[#e8e8ef] rounded-[10px] overflow-hidden mb-5">
           <div className="px-4 py-3 border-b border-[#e8e8ef]">
-            <h3 className="text-[15px] font-semibold">Accounts ({accountCount})</h3>
+            <h3 className="text-[15px] font-semibold">
+              Accounts ({accountCount})
+            </h3>
           </div>
           <div className="px-4 py-2 flex flex-wrap gap-2">
             {creators
               .filter(() => {
-                // Show all creators for "internal" category
-                // For warner/atlantic, we'd need to filter by group membership
-                // Since we don't have that data easily, show all for now
-                // The scrape is already scoped correctly
+                // Show all creators for "internal" category.
+                // For warner/atlantic the scrape itself is already group-
+                // scoped, so showing the broader list here is acceptable
+                // until we surface per-group membership on the read side.
                 return true
               })
               .sort((a, b) => (b.total_views ?? 0) - (a.total_views ?? 0))
-              .slice(0, category === "internal" ? undefined : accountCount > 0 ? accountCount * 3 : 20)
+              .slice(
+                0,
+                category === "internal"
+                  ? undefined
+                  : accountCount > 0
+                    ? accountCount * 3
+                    : 20
+              )
               .map((c) => (
                 <Link
                   key={c.username}
@@ -178,10 +298,16 @@ export default function InternalScrapeView() {
           Scrape Results
           {results?.scraped_at && (
             <span className="text-[13px] text-[#888] font-normal ml-2">
-              Last scraped: {new Date(results.scraped_at).toLocaleString("en-US", {
-                month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
-                hour12: true, timeZone: "America/New_York",
-              })} EST
+              Last scraped:{" "}
+              {new Date(results.scraped_at).toLocaleString("en-US", {
+                month: "short",
+                day: "numeric",
+                hour: "numeric",
+                minute: "2-digit",
+                hour12: true,
+                timeZone: "America/New_York",
+              })}{" "}
+              EST
             </span>
           )}
         </h2>
@@ -197,6 +323,48 @@ export default function InternalScrapeView() {
 
       {/* Songs + links output */}
       <SongsResults results={filteredResults} isLoading={resultsLoading} />
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Inline progress strip
+// ---------------------------------------------------------------------------
+
+interface ProgressStripProps {
+  status: JobScrapeStatus | undefined
+  starting: boolean
+}
+
+function ScrapeJobProgressStrip({ status, starting }: ProgressStripProps) {
+  const n = status?.progress?.n ?? 0
+  const m = status?.progress?.m ?? 0
+  const pct = m > 0 ? Math.round((n / m) * 100) : 0
+  const lastLog = status?.last_log?.trim()
+
+  return (
+    <div className="mb-4">
+      <div className="bg-white border border-[#e8e8ef] rounded-[10px] px-4 py-3 border-l-[3px] border-l-[#0b62d6]">
+        <div className="flex items-center justify-between mb-1.5 gap-3">
+          <span className="text-[13px] font-medium text-[#1a1a2e]">
+            {starting ? "Starting scrape..." : `${n} of ${m} done`}
+          </span>
+          {!starting && (
+            <span className="text-[11px] text-[#888]">{pct}%</span>
+          )}
+        </div>
+        <div className="w-full h-2 bg-[#f0f0f5] rounded-full overflow-hidden">
+          <div
+            className="h-full bg-[#0b62d6] rounded-full transition-all duration-500 ease-out"
+            style={{ width: starting ? "5%" : `${pct}%` }}
+          />
+        </div>
+        {!starting && lastLog && (
+          <div className="text-[11px] text-[#888] mt-2 truncate">
+            {lastLog}
+          </div>
+        )}
+      </div>
     </div>
   )
 }
