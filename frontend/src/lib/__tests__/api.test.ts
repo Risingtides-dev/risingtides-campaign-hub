@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { api, ApiError } from '@/lib/api'
 
 type FetchMock = ReturnType<typeof vi.fn>
