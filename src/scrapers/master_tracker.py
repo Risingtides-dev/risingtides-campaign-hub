@@ -279,8 +279,11 @@ def enrich_videos_with_sound_ids(videos: List[Dict],
     each video by fetching its TikTok page. Returns a counter dict so the
     cron summary can report how many enrichments hit vs missed.
 
-    Failures leave the field as empty string — match_video_to_sounds gracefully
-    falls through other strategies.
+    Only sets the field on a successful extraction. On any failure (proxy 403,
+    network hiccup, parse error) the field is left absent — the gate in
+    scrape_tiktok_account picks it up next run via `not v.get(...)`, so a
+    transient Decodo failure doesn't permanently mask a video. URL-missing
+    is the one case where we set sentinel '' (we'll never be able to fetch).
     """
     counts = {"total": len(videos), "ok": 0, "missing": 0}
     if not videos:
@@ -291,10 +294,12 @@ def enrich_videos_with_sound_ids(videos: List[Dict],
         time.sleep(random.uniform(0.1, 0.6))
         url = v.get("url")
         if not url:
-            v["extracted_sound_id"] = ""
+            v["extracted_sound_id"] = ""  # permanently unfetchable
             return
         sid, title = extract_sound_meta_from_video(url)
-        v["extracted_sound_id"] = sid or ""
+        if sid:
+            v["extracted_sound_id"] = sid
+        # else: leave field absent so next run retries
         if title:
             v["extracted_song_title"] = title
 
@@ -459,9 +464,13 @@ def scrape_tiktok_account(account: str, start_date: Optional[datetime] = None,
         # already matched live in matched_videos from past working runs;
         # re-enriching them just burns proxy bandwidth.
         #
-        # Field-presence check (`'extracted_sound_id' not in v`) means
-        # videos we've already tried but couldn't extract from — sentinel
-        # '' — aren't retried, only ones we've never attempted.
+        # Falsy check (`not v.get('extracted_sound_id')`) — catches both
+        # absent (never tried) AND empty-string (tried and got cached as
+        # '' from a previous failure). The latter case was masking real
+        # matches: a single Decodo 403 during a run would write '' to the
+        # cache, and field-presence (`not in`) would skip the retry
+        # forever. enrich_videos_with_sound_ids now leaves the field
+        # absent on transient failure so retries land here on the next run.
         start_date_norm = (
             start_date.date() if isinstance(start_date, datetime) else start_date
         ) if start_date else None
@@ -477,7 +486,7 @@ def scrape_tiktok_account(account: str, start_date: Optional[datetime] = None,
 
         needs_enrich = [
             v for v in all_videos
-            if 'extracted_sound_id' not in v and _in_enrich_window(v)
+            if not v.get('extracted_sound_id') and _in_enrich_window(v)
         ]
         if needs_enrich:
             counts = enrich_videos_with_sound_ids(needs_enrich)
