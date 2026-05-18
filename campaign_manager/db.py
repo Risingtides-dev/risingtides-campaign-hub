@@ -1114,6 +1114,37 @@ def get_cron_log_by_id(log_id: int) -> Optional[Dict]:
         return log.to_dict() if log else None
 
 
+def reap_orphaned_cron_logs(threshold_minutes: int = 30) -> List[int]:
+    """Mark cron_log rows stuck in 'running' beyond threshold as 'failed'.
+
+    Daemon threads spawned by /api/cron/trigger die on worker recycle, leaving
+    the cron_log row at status='running' forever. This sweeps those and
+    surfaces them in the cron logs view as failures rather than lying about
+    in-flight work.
+    """
+    threshold = datetime.now(EST).replace(tzinfo=None) - timedelta(
+        minutes=threshold_minutes,
+    )
+    reaped: List[int] = []
+    with get_session() as s:
+        stale = (
+            s.query(CronLog)
+            .filter(CronLog.status == "running", CronLog.started_at < threshold)
+            .all()
+        )
+        for row in stale:
+            row.status = "failed"
+            row.finished_at = datetime.now(EST).replace(tzinfo=None)
+            row.summary = {
+                "error": "orphaned: worker recycle killed the daemon thread",
+                "threshold_minutes": threshold_minutes,
+            }
+            reaped.append(row.id)
+        if reaped:
+            s.commit()
+    return reaped
+
+
 # ── Network Creators ─────────────────────────────────────────────────
 
 def get_network_creators() -> List[Dict]:

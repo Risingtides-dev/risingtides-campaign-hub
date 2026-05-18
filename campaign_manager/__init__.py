@@ -1,5 +1,7 @@
 """Campaign Manager Flask application factory."""
+import logging
 import os
+import sys
 from pathlib import Path
 
 from flask import Flask, send_from_directory
@@ -7,6 +9,30 @@ from flask_cors import CORS
 
 from campaign_manager.config import Config
 from campaign_manager import db
+
+
+def _configure_app_logging():
+    """Route app logs to stdout so Railway picks them up.
+
+    Without this, log.info() calls hit the default lastResort handler
+    (stderr, WARNING+) and INFO-level messages from the cron job and
+    blueprints are silently dropped — leaving no breadcrumbs when a
+    scrape hangs.
+    """
+    level_name = os.environ.get("LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    ))
+    root = logging.getLogger()
+    root.setLevel(level)
+    has_stdout_stream = any(
+        isinstance(h, logging.StreamHandler) and getattr(h, "stream", None) is sys.stdout
+        for h in root.handlers
+    )
+    if not has_stdout_stream:
+        root.addHandler(handler)
 
 # Frontend build directory (built by Vite into frontend/dist)
 FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
@@ -37,6 +63,11 @@ def _materialize_tiktok_cookies():
 
 
 def create_app(config=None):
+    # Configure root logging BEFORE anything else — without this, every
+    # log.info from blueprints, scheduler, and services is swallowed by
+    # the default lastResort handler. Idempotent across workers.
+    _configure_app_logging()
+
     # Materialize cookies BEFORE anything else uses TIKTOK_COOKIES_FILE.
     _materialize_tiktok_cookies()
 
