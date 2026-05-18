@@ -29,6 +29,7 @@ import csv
 import re
 import argparse
 import pickle
+import random
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
@@ -36,6 +37,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 
+import requests
 from tqdm import tqdm
 
 # Instagram support
@@ -57,6 +59,13 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 # Timeout settings (much more generous)
 TIKTOK_SCRAPE_TIMEOUT = 600  # 10 minutes per account
 MAX_ACCOUNT_WORKERS = 5  # Parallel account scraping workers
+
+# Sound-ID enrichment: per-video HTML fetch to pull music.id from the embedded
+# __UNIVERSAL_DATA_FOR_REHYDRATION__ payload. Required because --flat-playlist
+# (which the profile scrape uses) omits music_id. 3 workers keeps the burst
+# rate low enough that the Decodo proxy's rotating IPs absorb 403s gracefully.
+SOUND_ID_WORKERS = int(os.environ.get("SOUND_ID_WORKERS", "3"))
+SOUND_ID_FETCH_TIMEOUT = 30
 
 # Early termination settings
 EARLY_TERMINATION_ENABLED = True
@@ -186,6 +195,118 @@ def save_account_cache(account: str, platform: str, videos: List[Dict], scrape_d
         log(f"Saved cache for {account}: {len(videos)} videos")
     except Exception as e:
         log(f"Error saving cache for {account}: {e}", "WARNING")
+
+
+_SOUND_ID_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/131.0.0.0 Safari/537.36"
+)
+
+_UNIVERSAL_DATA_RE = re.compile(
+    r'<script[^>]*id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>(.*?)</script>',
+    re.DOTALL,
+)
+
+
+def _tiktok_proxy_dict() -> Optional[Dict[str, str]]:
+    """requests-compatible proxies dict from TIKTOK_PROXY, or None if unset."""
+    url = (os.environ.get("TIKTOK_PROXY") or "").strip()
+    if not url:
+        return None
+    return {"http": url, "https": url}
+
+
+def extract_sound_meta_from_video(video_url: str, timeout: int = SOUND_ID_FETCH_TIMEOUT
+                                  ) -> Tuple[Optional[str], Optional[str]]:
+    """Fetch a TikTok video page and pull (sound_id, song_title) from the
+    embedded __UNIVERSAL_DATA_FOR_REHYDRATION__ JSON payload.
+
+    Routed through TIKTOK_PROXY when set. One inline retry on 403/429/5xx/
+    timeout — the Decodo proxy rotates IPs per session so a retry usually
+    lands on a fresh exit. Returns (None, None) on any failure; the caller
+    treats sound_id as optional.
+
+    yt-dlp's --flat-playlist (which the profile scrape uses) does not
+    return music_id, so without this enrichment new videos have no
+    reliable handle to match against tracked campaign sounds. Sound ID
+    is the only matcher that doesn't lie when TikTok mislabels artist/track.
+    """
+    proxies = _tiktok_proxy_dict()
+    headers = {"User-Agent": _SOUND_ID_USER_AGENT}
+
+    for attempt in range(2):
+        try:
+            r = requests.get(video_url, headers=headers, timeout=timeout, proxies=proxies)
+            if r.status_code in (403, 429) or r.status_code >= 500:
+                if attempt == 0:
+                    time.sleep(random.uniform(1.5, 3.0))
+                    continue
+                return None, None
+            if r.status_code != 200:
+                return None, None
+
+            m = _UNIVERSAL_DATA_RE.search(r.text)
+            if not m:
+                return None, None
+            data = json.loads(m.group(1))
+            music = (
+                data.get("__DEFAULT_SCOPE__", {})
+                    .get("webapp.video-detail", {})
+                    .get("itemInfo", {})
+                    .get("itemStruct", {})
+                    .get("music", {})
+            )
+            sound_id = music.get("id")
+            song_title = music.get("title", "") or None
+            if sound_id and str(sound_id).isdigit():
+                return str(sound_id), song_title
+            return None, song_title
+        except (requests.Timeout, requests.ConnectionError):
+            if attempt == 0:
+                time.sleep(random.uniform(1.5, 3.0))
+                continue
+            return None, None
+        except Exception as e:
+            log(f"sound-id extract failed for {video_url}: {e}", "WARNING")
+            return None, None
+    return None, None
+
+
+def enrich_videos_with_sound_ids(videos: List[Dict],
+                                 max_workers: int = SOUND_ID_WORKERS) -> Dict[str, int]:
+    """Populate `extracted_sound_id` (and `extracted_song_title`) in-place on
+    each video by fetching its TikTok page. Returns a counter dict so the
+    cron summary can report how many enrichments hit vs missed.
+
+    Failures leave the field as empty string — match_video_to_sounds gracefully
+    falls through other strategies.
+    """
+    counts = {"total": len(videos), "ok": 0, "missing": 0}
+    if not videos:
+        return counts
+
+    def _enrich_one(v: Dict) -> None:
+        # Per-request jitter so 3 workers don't fire in lockstep.
+        time.sleep(random.uniform(0.1, 0.6))
+        url = v.get("url")
+        if not url:
+            v["extracted_sound_id"] = ""
+            return
+        sid, title = extract_sound_meta_from_video(url)
+        v["extracted_sound_id"] = sid or ""
+        if title:
+            v["extracted_song_title"] = title
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        list(pool.map(_enrich_one, videos))
+
+    for v in videos:
+        if v.get("extracted_sound_id"):
+            counts["ok"] += 1
+        else:
+            counts["missing"] += 1
+    return counts
 
 
 def scrape_tiktok_account(account: str, start_date: Optional[datetime] = None,
@@ -327,6 +448,18 @@ def scrape_tiktok_account(account: str, start_date: Optional[datetime] = None,
 
             except json.JSONDecodeError:
                 continue
+
+        # Sound-ID enrichment for genuinely new videos only. Cached videos
+        # were already enriched on a prior scrape (or pre-date this code, in
+        # which case strategies 2-5 in match_video_to_sounds still cover
+        # song-key/title fallbacks). Re-enriching cached entries would burn
+        # proxy bandwidth on every cron tick for no gain.
+        if new_videos:
+            counts = enrich_videos_with_sound_ids(new_videos)
+            log(
+                f"TikTok @{username} sound-id enrich: "
+                f"{counts['ok']}/{counts['total']} hit"
+            )
 
         # Combine cached and new
         all_videos = (cached_videos or []) + new_videos
