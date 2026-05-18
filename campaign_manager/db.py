@@ -7,13 +7,13 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 EST = ZoneInfo("America/New_York")
 
 from sqlalchemy import create_engine, desc, func
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session, selectinload, sessionmaker
 
 from campaign_manager.models import (
     Base, Campaign, Creator, MatchedVideo, ScrapeLog,
@@ -487,6 +487,27 @@ def list_campaigns(status: str = "active", exclude_completed: bool = False) -> L
             query = query.filter(Campaign.completion_status != "completed")
         campaigns = query.all()
         return [c.to_meta_dict() for c in campaigns]
+
+
+def list_campaigns_with_creators(
+    status: str = "active",
+) -> List[Tuple[Dict, List[Dict]]]:
+    """List campaigns with their creators eagerly loaded.
+
+    One query for campaigns, one for creators (via selectinload) — replaces
+    the previous N+1 pattern of calling get_creators(slug) per campaign in a
+    loop. Returns a list of (meta_dict, creators_list) tuples preserving the
+    same shape callers expect.
+    """
+    with get_session() as s:
+        query = s.query(Campaign).options(selectinload(Campaign.creators))
+        if status:
+            query = query.filter_by(status=status)
+        campaigns = query.all()
+        return [
+            (c.to_meta_dict(), [cr.to_dict() for cr in c.creators])
+            for c in campaigns
+        ]
 
 
 def campaign_exists(slug: str) -> bool:

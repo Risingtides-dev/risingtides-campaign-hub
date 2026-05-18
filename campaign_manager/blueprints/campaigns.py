@@ -222,11 +222,10 @@ def get_campaigns() -> List[Dict]:
     tracker is missing or the API is unavailable.
     """
     if _db.is_active():
-        metas = _db.list_campaigns(status="active")
+        rows = _db.list_campaigns_with_creators(status="active")
         items = []
-        for meta in metas:
+        for meta, creators in rows:
             slug = meta["slug"]
-            creators = _db.get_creators(slug)
             budget = calc_budget(meta, creators)
             result = get_campaign_stats(slug)
             stats = _stats_from_result(meta, creators, result)
