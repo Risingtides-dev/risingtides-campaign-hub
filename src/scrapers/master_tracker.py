@@ -452,15 +452,33 @@ def scrape_tiktok_account(account: str, start_date: Optional[datetime] = None,
         # Combine cached and new
         all_videos = (cached_videos or []) + new_videos
 
-        # Sound-ID enrichment. Runs on ANY video missing the field — both
-        # genuinely-new yt-dlp output and pre-fix cached entries that were
-        # saved before this code existed (the cache lives on a Railway
-        # volume, so old entries survive deploys). Field-presence check
-        # (`'extracted_sound_id' not in v`) means videos we've already
-        # tried but couldn't extract from — sentinel '' — aren't retried,
-        # only ones we've never attempted. First run after this fix backfills
-        # the whole cache once; steady-state only the day's new posts.
-        needs_enrich = [v for v in all_videos if 'extracted_sound_id' not in v]
+        # Sound-ID enrichment. Bounded to the same date window the matcher
+        # will use (start_date) — pre-fix cache can hold years of videos per
+        # creator, but only videos within the campaign's lookback window are
+        # candidates for new matches anyway. Ancient cached videos that
+        # already matched live in matched_videos from past working runs;
+        # re-enriching them just burns proxy bandwidth.
+        #
+        # Field-presence check (`'extracted_sound_id' not in v`) means
+        # videos we've already tried but couldn't extract from — sentinel
+        # '' — aren't retried, only ones we've never attempted.
+        start_date_norm = (
+            start_date.date() if isinstance(start_date, datetime) else start_date
+        ) if start_date else None
+
+        def _in_enrich_window(v: Dict) -> bool:
+            if start_date_norm is None:
+                return True
+            ts = v.get('timestamp')
+            if not ts:
+                return True  # no timestamp → include, can't filter safely
+            ts_d = ts.date() if isinstance(ts, datetime) else ts
+            return ts_d >= start_date_norm
+
+        needs_enrich = [
+            v for v in all_videos
+            if 'extracted_sound_id' not in v and _in_enrich_window(v)
+        ]
         if needs_enrich:
             counts = enrich_videos_with_sound_ids(needs_enrich)
             log(
