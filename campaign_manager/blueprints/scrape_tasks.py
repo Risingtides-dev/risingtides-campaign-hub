@@ -22,6 +22,8 @@ from datetime import datetime
 from flask import Blueprint, jsonify, request
 
 from campaign_manager import db as _db
+from sqlalchemy import or_
+
 from campaign_manager.models import MatchedVideo, Campaign
 
 scrape_tasks_bp = Blueprint("scrape_tasks", __name__)
@@ -88,7 +90,7 @@ def queue():
             .filter(MatchedVideo.tracked_at.is_(None))
             .filter(MatchedVideo.dismissed_at.is_(None))
             .filter(Campaign.status == "active")
-            .filter(Campaign.completion_status != "completed")
+            .filter(or_(Campaign.completion_status.is_(None), Campaign.completion_status != "completed"))
         )
         if campaign_filter:
             q = q.filter(Campaign.slug == campaign_filter)
