@@ -151,6 +151,20 @@ def test_queue_excludes_completed_campaigns(client, seeded_campaign):
     assert after["campaigns"] == []
 
 
+
+def test_queue_includes_campaigns_with_null_completion_status(client, seeded_campaign):
+    """Campaigns with NULL completion_status are still active and should appear."""
+    slug = seeded_campaign["slug"]
+
+    with db.get_session() as s:
+        camp = s.query(Campaign).filter_by(slug=slug).first()
+        camp.completion_status = None
+        s.commit()
+
+    body = client.get("/api/scrape-tasks/queue").get_json()
+    assert body["total_untracked"] == 3
+    assert any(c["slug"] == slug for c in body["campaigns"])
+
 def test_dismiss_rejects_invalid_body(client, seeded_campaign):
     # Empty list
     resp = client.post("/api/scrape-tasks/dismiss", json={"matched_video_ids": []})
