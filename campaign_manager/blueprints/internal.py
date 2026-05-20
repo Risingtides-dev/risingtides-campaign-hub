@@ -265,17 +265,29 @@ def _most_recent_job_locked() -> Optional[Dict]:
     copy) so internal helpers can also use it for state inspection.
     Callers that hand data outward should copy via ``_legacy_status_from_job``.
 
-    Ordering uses string compare on the ISO ``started_at`` field. With the
-    default ``datetime.isoformat()`` output that includes timezone offset,
-    lexicographic compare is monotonic for any single TZ and our worker
-    always stamps with ``EST``.
+    Ordering parses ``started_at`` into a timezone-aware ``datetime`` and
+    compares those. Lexicographic compare on the raw ISO string is
+    monotonic within a single timezone offset, but ``EST`` (America/New_York)
+    transitions between ``-05:00`` and ``-04:00`` across DST boundaries —
+    a pre-DST string can lex-sort after a post-DST string emitted later
+    in real time. Comparing parsed datetimes sidesteps that entirely.
+
+    Entries with a missing or malformed ``started_at`` (defensive — this
+    shape should never appear in production) sort to the bottom so they
+    never become the "most recent" by accident.
     """
     latest: Optional[Dict] = None
-    latest_ts: str = ""
+    latest_dt: Optional[datetime] = None
     for job in _jobs.values():
-        ts = str(job.get("started_at") or "")
-        if ts > latest_ts:
-            latest_ts = ts
+        raw = job.get("started_at")
+        if not raw or not isinstance(raw, str):
+            continue
+        try:
+            dt = datetime.fromisoformat(raw)
+        except ValueError:
+            continue
+        if latest_dt is None or dt > latest_dt:
+            latest_dt = dt
             latest = job
     return latest
 
@@ -877,7 +889,11 @@ def trigger_scrape():
             "legacy_status": legacy_status,
         }
 
-    # Launch scrape in background thread
+    # Launch scrape in background thread. RTA-45: if thread launch
+    # fails (e.g. RuntimeError under OS thread-limit pressure), roll
+    # back the _jobs entry so its state="running" doesn't permanently
+    # trip the single-flight guard. Without this, every subsequent
+    # legacy POST returns 409 until the process restarts.
     t = threading.Thread(
         target=_run_internal_scrape,
         args=(hours, creators),
@@ -892,7 +908,14 @@ def trigger_scrape():
         },
         daemon=True,
     )
-    t.start()
+    try:
+        t.start()
+    except Exception as exc:
+        with _jobs_lock:
+            _jobs.pop(job_id, None)
+        return jsonify({
+            "error": f"Failed to start scrape worker thread: {exc}",
+        }), 500
 
     return jsonify({
         "ok": True,
@@ -1015,6 +1038,12 @@ def scrape_start():
     # stops updating and clients should treat a stalled "running" job
     # as lost after a sensible timeout. Persistent queueing (Redis/DB
     # row) is the upgrade path if this becomes a real problem.
+    #
+    # RTA-45: if thread launch itself fails (rare — OS thread-limit
+    # pressure), roll back the inserted job entry and the
+    # _current_job_by_group pointer. Otherwise the running-state entry
+    # would permanently debounce every future scrape_start call for
+    # this group until the process restarts.
     t = threading.Thread(
         target=_run_internal_scrape,
         args=(hours, members),
@@ -1026,7 +1055,16 @@ def scrape_start():
         },
         daemon=True,
     )
-    t.start()
+    try:
+        t.start()
+    except Exception as exc:
+        with _jobs_lock:
+            _jobs.pop(job_id, None)
+            if _current_job_by_group.get(group_slug) == job_id:
+                _current_job_by_group.pop(group_slug, None)
+        return jsonify({
+            "error": f"Failed to start scrape worker thread: {exc}",
+        }), 500
 
     return jsonify({"job_id": job_id, "started_at": started_at}), 202
 

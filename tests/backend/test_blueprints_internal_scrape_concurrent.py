@@ -520,3 +520,176 @@ class TestLegacyEndpointKindIsolation:
             ]
         for jid in legacy_ids:
             multi_fake_worker["released"].setdefault(jid, threading.Event()).set()
+
+
+# ---------------------------------------------------------------------------
+# 5. DST-safe ordering in `_most_recent_job_locked` (RTA-45 round 2).
+# ---------------------------------------------------------------------------
+
+class TestMostRecentJobDSTSafeOrdering:
+    """``_most_recent_job_locked`` previously used lexicographic string
+    compare on the ISO ``started_at`` field. ``datetime.now(EST).isoformat()``
+    emits offsets that shift between ``-05:00`` and ``-04:00`` across DST
+    boundaries — a pre-DST string can lex-sort AFTER a post-DST string
+    emitted later in real time, surfacing the wrong job via the legacy
+    status endpoint. Round 2 of RTA-45 swaps the compare to parsed
+    datetimes; this test pins that behavior."""
+
+    def _seed(self, job_id: str, started_at: str, *, kind: str = "group") -> None:
+        internal_bp._jobs[job_id] = {
+            "group": "x",
+            "started_at": started_at,
+            "state": "running",
+            "progress": {"n": 0, "m": 1},
+            "last_log": "",
+            "error": None,
+            "kind": kind,
+            "legacy_status": internal_bp._empty_legacy_status(),
+        }
+
+    def test_post_dst_offset_does_not_lex_misorder_pre_dst(self):
+        """The bug shape: ``2026-03-08T01:30:00-05:00`` (1:30 EST, before
+        the spring-forward) vs ``2026-03-08T03:30:00-04:00`` (3:30 EDT,
+        30 minutes later in real time). Lex compare picks the EDT string
+        as larger only because ``03`` > ``01``. Now reverse the example:
+        a slightly earlier wall-clock EDT timestamp can still represent
+        a LATER real time than an EST timestamp because of the offset
+        shift. Test the worst case — two timestamps where lex compare
+        would pick the wrong one."""
+        # 2:00 UTC -- this is 21:00 EST (-05:00) on prior day.
+        self._seed("older", "2026-03-08T01:00:00-05:00")  # 06:00 UTC
+        # 2:30 UTC -- 30 min later, but EDT format would be 22:30 EDT.
+        # Use a contrived but legal mismatch: same real-time later but
+        # offset shifts, leading to numerically smaller wall-clock str.
+        self._seed("newer", "2026-03-08T03:30:00-04:00")  # 07:30 UTC
+
+        with internal_bp._jobs_lock:
+            latest = internal_bp._most_recent_job_locked()
+
+        # By real time, "newer" is 90 min after "older". Parsed-datetime
+        # compare must pick "newer". (String compare would also happen
+        # to pick this one because '03' > '01' — so we additionally
+        # test the inverse case below where strings disagree with real
+        # time.)
+        assert latest is not None
+        assert latest["started_at"] == "2026-03-08T03:30:00-04:00"
+
+    def test_string_compare_disagrees_with_real_time_picks_real_time(self):
+        """Construct timestamps where lex string compare picks one
+        winner but parsed-datetime compare picks the other. Earlier
+        real-time wall clock with later offset (e.g. 01:00-04:00 =
+        05:00 UTC) vs later real-time wall clock with earlier offset
+        (e.g. 02:00-05:00 = 07:00 UTC). String compare would prefer
+        ``02:00-05:00`` (true), which is also actually later — so swap
+        the offsets to flip it:
+          - A: ``2026-11-01T02:00:00-04:00`` → 06:00 UTC (real time A)
+          - B: ``2026-11-01T01:30:00-05:00`` → 06:30 UTC (real time B,
+            later than A by 30 min)
+        Lex compare prefers A (``02:00...`` > ``01:30...``); real time
+        prefers B. The fix returns B."""
+        self._seed("lex-winner", "2026-11-01T02:00:00-04:00")  # 06:00 UTC
+        self._seed("real-winner", "2026-11-01T01:30:00-05:00")  # 06:30 UTC
+
+        with internal_bp._jobs_lock:
+            latest = internal_bp._most_recent_job_locked()
+
+        assert latest is not None
+        # The fix must pick the real-time-later one, NOT the lex-larger one.
+        assert latest["started_at"] == "2026-11-01T01:30:00-05:00"
+
+    def test_missing_or_malformed_started_at_does_not_become_most_recent(self):
+        """A defensive case: a job whose ``started_at`` is missing or
+        non-parseable shouldn't win the comparison just by virtue of
+        being non-empty. It sorts to the bottom."""
+        self._seed("good", "2024-01-01T12:00:00-05:00")
+        self._seed("missing", "")
+        internal_bp._jobs["missing"]["started_at"] = None
+        self._seed("malformed", "not-a-timestamp")
+
+        with internal_bp._jobs_lock:
+            latest = internal_bp._most_recent_job_locked()
+
+        assert latest is not None
+        assert latest["started_at"] == "2024-01-01T12:00:00-05:00"
+
+
+# ---------------------------------------------------------------------------
+# 6. Thread-launch failure rollback (RTA-45 round 2).
+# ---------------------------------------------------------------------------
+
+class TestThreadLaunchFailureRollback:
+    """If ``threading.Thread.start()`` raises (e.g. OS thread-limit
+    pressure), the route inserted a ``_jobs`` entry with
+    ``state="running"`` BEFORE the thread call. Without rollback, that
+    entry permanently trips the single-flight guard (legacy) or the
+    per-group debounce (RTA-16), 409-ing every future call until process
+    restart. Both routes now wrap ``t.start()`` and clean up on failure."""
+
+    def test_legacy_endpoint_rolls_back_job_when_thread_start_fails(
+        self, client, db, monkeypatch,
+    ):
+        db.save_internal_creators(["solo"])
+
+        # Force Thread.start to raise the first time it's called.
+        original_start = threading.Thread.start
+        call_count = {"n": 0}
+
+        def boom_then_normal(self):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise RuntimeError("can't start new thread")
+            return original_start(self)
+
+        monkeypatch.setattr(threading.Thread, "start", boom_then_normal)
+
+        resp = client.post("/api/internal/scrape", json={"hours": 24})
+        assert resp.status_code == 500
+        body = resp.get_json()
+        assert "failed to start" in (body.get("error") or "").lower()
+
+        # No running legacy job should remain.
+        with internal_bp._jobs_lock:
+            running_legacy = [
+                jid for jid, j in internal_bp._jobs.items()
+                if j.get("kind") == "legacy" and j.get("state") == "running"
+            ]
+        assert running_legacy == []
+
+        # And the single-flight guard must NOT be tripped — second call
+        # should not 409 because the failed entry was rolled back.
+        assert internal_bp._most_recent_legacy_job_running() is False
+
+    def test_scrape_start_rolls_back_job_and_pointer_when_thread_start_fails(
+        self, client, db, monkeypatch,
+    ):
+        _seed_group(db, "warner_fail", ["w"])
+
+        original_start = threading.Thread.start
+        call_count = {"n": 0}
+
+        def boom_then_normal(self):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise RuntimeError("can't start new thread")
+            return original_start(self)
+
+        monkeypatch.setattr(threading.Thread, "start", boom_then_normal)
+
+        resp = client.post(
+            "/api/internal/scrape/start",
+            json={"group": "warner_fail", "hours": 24},
+        )
+        assert resp.status_code == 500
+        body = resp.get_json()
+        assert "failed to start" in (body.get("error") or "").lower()
+
+        # The _jobs entry must be gone AND the _current_job_by_group
+        # pointer for this group must be cleared so debounce doesn't
+        # permanently 409 future calls.
+        with internal_bp._jobs_lock:
+            assert "warner_fail" not in internal_bp._current_job_by_group
+            running = [
+                jid for jid, j in internal_bp._jobs.items()
+                if j.get("kind") == "group" and j.get("state") == "running"
+            ]
+        assert running == []
