@@ -239,6 +239,7 @@ def get_campaigns() -> List[Dict]:
                 slug,
                 matched_videos=matched_videos,
                 tracker_id=tracker_map.get(slug, ""),
+                start_date=meta.get("start_date", ""),
             )
             stats = _stats_from_result(meta, creators, result)
             items.append({
@@ -497,7 +498,11 @@ def campaign_detail(slug: str):
     # rows so the per-video table view shows live counts while
     # preserving scraper row identity (id, dismissed_at, song, etc.).
     if _db.is_active():
-        stats_result = get_campaign_stats(slug, matched_videos=matched_videos)
+        stats_result = get_campaign_stats(
+            slug,
+            matched_videos=matched_videos,
+            start_date=meta.get("start_date", ""),
+        )
         matched_videos = overlay_video_stats(matched_videos, stats_result.submissions)
         stats = _stats_from_result(meta, creators, stats_result)
     else:
@@ -1423,6 +1428,7 @@ def list_creators():
                     slug,
                     matched_videos=matched_videos,
                     tracker_id=camp.get("tracker_id"),
+                    start_date=meta.get("start_date", ""),
                 )
                 matched_videos = overlay_video_stats(matched_videos, stats_result.submissions)
             except Exception:
@@ -1533,7 +1539,11 @@ def creator_profile(username: str):
         # and per-campaign rollup reflect live numbers.
         if _db.is_active():
             try:
-                stats_result = get_campaign_stats(slug, matched_videos=matched_videos)
+                stats_result = get_campaign_stats(
+                    slug,
+                    matched_videos=matched_videos,
+                    start_date=meta.get("start_date", ""),
+                )
                 matched_videos = overlay_video_stats(matched_videos, stats_result.submissions)
             except Exception:
                 pass
