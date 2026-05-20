@@ -16,6 +16,7 @@ from campaign_manager.services.campaign_stats import (
     SOURCE_SCRAPER_FALLBACK,
     _normalize_url,
     get_campaign_stats,
+    get_campaign_stats_bulk,
     invalidate_cache,
     overlay_video_stats,
 )
@@ -242,6 +243,174 @@ class TestGetCampaignStats:
         assert result.source == SOURCE_API
         assert result.tracker_id == "tk-omega"
         assert result.total_views == 42
+
+
+class TestFallbackRoundFilter:
+    """CAMP-55: scraper-fallback path must scope matched_videos to the
+    campaign's ``start_date`` so a round-2 campaign doesn't roll up
+    round-1 view counts when the API path is unavailable.
+    """
+
+    def test_no_tracker_fallback_excludes_pre_start_videos(self, db):
+        cid = _seed_campaign_no_tracker("r2-no-tracker")
+        _seed_matched_videos(cid, [
+            # Round 1 post — should be filtered out.
+            dict(url="https://tt.com/v/r1", account="@a",
+                 timestamp="2026-04-15T14:32:00",
+                 upload_date="20260415",
+                 views=10_000, likes=500),
+            # Round 2 post — kept.
+            dict(url="https://tt.com/v/r2", account="@a",
+                 timestamp="2026-05-10T09:00:00",
+                 upload_date="20260510",
+                 views=200, likes=20),
+        ])
+        result = get_campaign_stats("r2-no-tracker", start_date="2026-05-01")
+        assert result.source == SOURCE_SCRAPER_FALLBACK
+        assert result.error_kind == "no_tracker"
+        assert result.post_count == 1
+        assert result.total_views == 200
+        assert result.total_likes == 20
+
+    def test_api_failure_fallback_excludes_pre_start_videos(self, db):
+        cid = _seed_campaign_with_tracker("r2-api-down", "tk-r2")
+        _seed_matched_videos(cid, [
+            dict(url="https://tt.com/v/r1a", account="@a",
+                 timestamp="2026-04-10T10:00:00", upload_date="20260410",
+                 views=5_000, likes=100),
+            dict(url="https://tt.com/v/r2a", account="@a",
+                 timestamp="2026-05-05T10:00:00", upload_date="20260505",
+                 views=120, likes=12),
+        ])
+        with patch.object(
+            campaign_stats, "fetch_campaign_submissions",
+            return_value=_err_fetch("tk-r2", "http_5xx"),
+        ):
+            result = get_campaign_stats("r2-api-down", start_date="2026-05-01")
+        assert result.source == SOURCE_SCRAPER_FALLBACK
+        assert result.error_kind == "http_5xx"
+        assert result.post_count == 1
+        assert result.total_views == 120
+
+    def test_fallback_keeps_videos_with_no_post_date(self, db):
+        """Fail-open: legacy rows missing timestamp + upload_date stay visible.
+
+        Mirrors ``video_posted_before_start`` semantics — hiding a real
+        match because metadata is incomplete is worse than the duplicate-
+        in-Cobrand symptom this filter exists to prevent.
+        """
+        cid = _seed_campaign_no_tracker("r2-legacy")
+        _seed_matched_videos(cid, [
+            dict(url="https://tt.com/v/legacy", account="@a", views=100, likes=10),
+        ])
+        result = get_campaign_stats("r2-legacy", start_date="2026-05-01")
+        assert result.source == SOURCE_SCRAPER_FALLBACK
+        assert result.post_count == 1
+        assert result.total_views == 100
+
+    def test_fallback_with_no_start_date_keeps_all_videos(self, db):
+        """Default behaviour (no start_date passed) matches pre-CAMP-55."""
+        cid = _seed_campaign_no_tracker("r1-only")
+        _seed_matched_videos(cid, [
+            dict(url="https://tt.com/v/old", account="@a",
+                 timestamp="2026-01-01T00:00:00", upload_date="20260101",
+                 views=999, likes=99),
+            dict(url="https://tt.com/v/new", account="@a",
+                 timestamp="2026-05-15T00:00:00", upload_date="20260515",
+                 views=1, likes=0),
+        ])
+        result = get_campaign_stats("r1-only")
+        assert result.source == SOURCE_SCRAPER_FALLBACK
+        assert result.post_count == 2
+        assert result.total_views == 1000
+
+    def test_fallback_uses_upload_date_when_timestamp_missing(self, db):
+        cid = _seed_campaign_no_tracker("r2-upload-date-only")
+        _seed_matched_videos(cid, [
+            dict(url="https://tt.com/v/r1", account="@a",
+                 upload_date="20260420", views=999),
+            dict(url="https://tt.com/v/r2", account="@a",
+                 upload_date="20260520", views=42),
+        ])
+        result = get_campaign_stats(
+            "r2-upload-date-only", start_date="2026-05-01",
+        )
+        assert result.post_count == 1
+        assert result.total_views == 42
+
+    def test_api_success_ignores_start_date(self, db):
+        """When the API path serves the result, ``start_date`` is a no-op.
+
+        The tracker is round-scoped server-side, so we don't double-
+        filter; the scraper rows only get touched for field-gap
+        hydration of ``posted_at``/``follower_count``.
+        """
+        cid = _seed_campaign_with_tracker("api-ok", "tk-api-ok")
+        _seed_matched_videos(cid, [
+            # A "round 1" scraper row — would be filtered if we ran it
+            # through video_posted_before_start.
+            dict(url="https://tt.com/v/api", account="@a",
+                 timestamp="2026-04-10T00:00:00", upload_date="20260410"),
+        ])
+        with patch.object(
+            campaign_stats, "fetch_campaign_submissions",
+            return_value=_ok_fetch("tk-api-ok", [
+                Submission(video_url="https://tt.com/v/api", views=777,
+                           posted_at=""),
+            ]),
+        ):
+            result = get_campaign_stats("api-ok", start_date="2026-05-01")
+        # API path serves the submission; pre-start scraper row contributes
+        # only its posted_at to field-gap hydration.
+        assert result.source == SOURCE_API
+        assert result.post_count == 1
+        assert result.total_views == 777
+        # ``posted_at`` is hydrated from the scraper row as-is — the API
+        # path doesn't re-filter by date because the tracker is already
+        # round-scoped server-side.
+        assert result.submissions[0].posted_at == "20260410"
+
+
+class TestGetCampaignStatsBulk:
+    def test_threads_start_date_per_slug_into_fallback(self, db):
+        cid_a = _seed_campaign_no_tracker("bulk-a")
+        cid_b = _seed_campaign_no_tracker("bulk-b")
+        _seed_matched_videos(cid_a, [
+            dict(url="https://tt.com/v/a-r1", account="@a",
+                 timestamp="2026-04-10T00:00:00", upload_date="20260410",
+                 views=1000),
+            dict(url="https://tt.com/v/a-r2", account="@a",
+                 timestamp="2026-05-10T00:00:00", upload_date="20260510",
+                 views=10),
+        ])
+        _seed_matched_videos(cid_b, [
+            dict(url="https://tt.com/v/b-pre", account="@b",
+                 timestamp="2026-03-01T00:00:00", upload_date="20260301",
+                 views=5000),
+            dict(url="https://tt.com/v/b-post", account="@b",
+                 timestamp="2026-06-01T00:00:00", upload_date="20260601",
+                 views=20),
+        ])
+        out = get_campaign_stats_bulk(
+            ["bulk-a", "bulk-b"],
+            start_date_by_slug={
+                "bulk-a": "2026-05-01",
+                "bulk-b": "2026-05-15",
+            },
+        )
+        assert out["bulk-a"].total_views == 10
+        assert out["bulk-b"].total_views == 20
+
+    def test_missing_slug_in_start_date_map_falls_back_open(self, db):
+        cid = _seed_campaign_no_tracker("bulk-c")
+        _seed_matched_videos(cid, [
+            dict(url="https://tt.com/v/c1", account="@c",
+                 timestamp="2026-01-01T00:00:00", upload_date="20260101",
+                 views=999),
+        ])
+        out = get_campaign_stats_bulk(["bulk-c"], start_date_by_slug={})
+        # Missing → empty string → no filter → row kept.
+        assert out["bulk-c"].total_views == 999
 
 
 class TestOverlayVideoStats:

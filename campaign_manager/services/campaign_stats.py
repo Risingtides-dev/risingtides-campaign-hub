@@ -45,6 +45,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from campaign_manager import db as _db
+from campaign_manager.utils.helpers import video_posted_before_start
 from campaign_manager.services.tides_tracker import (
     Submission,
     fetch_campaign_submissions,
@@ -280,6 +281,7 @@ def get_campaign_stats(
     *,
     matched_videos: Optional[List[Dict[str, Any]]] = None,
     tracker_id: Optional[str] = None,
+    start_date: str = "",
     force_refresh: bool = False,
 ) -> CampaignStatsResult:
     """Resolve performance stats for one campaign.
@@ -295,6 +297,13 @@ def get_campaign_stats(
             lookup in the list-endpoint bulk path). When None, the
             function resolves the tracker itself (legacy single-call
             behaviour).
+        start_date: campaign's ``start_date`` ("YYYY-MM-DD"). Used by the
+            scraper-fallback path to drop pre-start matched videos (CAMP-
+            55 / CAMP-42 follow-up). Empty disables the filter — the
+            API path is already round-scoped via its tracker, so this
+            only matters when ``tracker_id`` is empty or the API call
+            fails. Fail-open on missing/unparseable dates per
+            ``video_posted_before_start``.
         force_refresh: bypass the cache and re-fetch from the API.
 
     Never raises. Always returns a populated result — `source` tells
@@ -314,7 +323,10 @@ def get_campaign_stats(
             tracker_id = ""
 
     if not tracker_id:
-        return _fallback(s, matched_videos, tracker_id="", error_kind="no_tracker")
+        return _fallback(
+            s, matched_videos, tracker_id="", error_kind="no_tracker",
+            start_date=start_date,
+        )
 
     ttl = _cache_ttl_seconds()
     cached = None if force_refresh else _cache_get(tracker_id)
@@ -365,7 +377,10 @@ def get_campaign_stats(
         )
 
     # No cache, no API. Last resort: scraper data.
-    return _fallback(s, matched_videos, tracker_id=tracker_id, error_kind=fetch.error_kind)
+    return _fallback(
+        s, matched_videos, tracker_id=tracker_id, error_kind=fetch.error_kind,
+        start_date=start_date,
+    )
 
 
 def _result_from_api(
@@ -402,13 +417,25 @@ def _fallback(
     *,
     tracker_id: str,
     error_kind: str,
+    start_date: str = "",
 ) -> CampaignStatsResult:
     if matched_videos is None:
         try:
             matched_videos = _db.get_matched_videos(slug)
         except Exception:
             matched_videos = []
-    subs = _submissions_from_matched_videos(matched_videos or [])
+    # CAMP-55: scope scraper rows to this campaign's date window before
+    # synthesising submissions. Mirrors the CAMP-42 display-layer filter
+    # on the scrape-tasks queue + campaign detail; without it a round-2
+    # campaign that's still on the fallback path (no tracker, or API
+    # erroring with no cache) would inflate stats with round-1 posts.
+    # Fail-open on missing/unparseable post dates per
+    # ``video_posted_before_start``.
+    in_window = [
+        v for v in (matched_videos or [])
+        if not video_posted_before_start(v, start_date)
+    ]
+    subs = _submissions_from_matched_videos(in_window)
     return CampaignStatsResult(
         slug=slug,
         tracker_id=tracker_id,
@@ -467,6 +494,7 @@ def get_campaign_stats_bulk(
     slugs: List[str],
     *,
     matched_videos_by_slug: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+    start_date_by_slug: Optional[Dict[str, str]] = None,
 ) -> Dict[str, CampaignStatsResult]:
     """Resolve stats for many campaigns in one call.
 
@@ -476,9 +504,18 @@ def get_campaign_stats_bulk(
     stays modest (<200). If this becomes hot we can batch the live
     fetches with a thread pool, but the cache + 30-min cron should
     keep most ticks at zero outbound calls.
+
+    Pass ``start_date_by_slug`` so each campaign's fallback path scopes
+    its matched videos to the right date window (CAMP-55). Slugs absent
+    from the map fall through with no date filter (fail-open).
     """
     out: Dict[str, CampaignStatsResult] = {}
     mv = matched_videos_by_slug or {}
+    sd = start_date_by_slug or {}
     for s in slugs:
-        out[s] = get_campaign_stats(s, matched_videos=mv.get(s))
+        out[s] = get_campaign_stats(
+            s,
+            matched_videos=mv.get(s),
+            start_date=sd.get(s, ""),
+        )
     return out
