@@ -264,9 +264,10 @@ function SortableHeader({
   )
 }
 
-type SortOption = "start_date" | "a-z" | "cost" | "spend_pct" | "remaining"
+type SortOption = "start_date" | "a-z" | "cost" | "spend_pct" | "remaining" | "total_views"
 
 const sortOptions: { value: SortOption; label: string }[] = [
+  { value: "total_views", label: "Total Views" },
   { value: "start_date", label: "Start Date" },
   { value: "a-z", label: "A–Z" },
   { value: "cost", label: "Overall Cost" },
@@ -277,6 +278,8 @@ const sortOptions: { value: SortOption; label: string }[] = [
 function sortCampaigns(data: CampaignSummary[], by: SortOption): CampaignSummary[] {
   const sorted = [...data]
   switch (by) {
+    case "total_views":
+      return sorted.sort((a, b) => b.stats.total_views - a.stats.total_views)
     case "start_date":
       return sorted.sort((a, b) => (b.start_date || "").localeCompare(a.start_date || ""))
     case "a-z":
@@ -297,7 +300,7 @@ interface CampaignsTableProps {
 export function CampaignsTable({ data }: CampaignsTableProps) {
   const navigate = useNavigate()
   const qc = useQueryClient()
-  const [sortBy, setSortBy] = useState<SortOption>("start_date")
+  const [sortBy, setSortBy] = useState<SortOption>("total_views")
   const [sorting, setSorting] = useState<SortingState>([])
 
   const handleToggleCompletion = useCallback(
