@@ -26,6 +26,7 @@ from campaign_manager.utils.helpers import (
     parse_sort_datetime,
     load_json,
     save_json,
+    video_posted_before_start,
 )
 from campaign_manager.utils.budget import calc_budget, calc_stats
 from campaign_manager.services.campaign_stats import (
@@ -504,6 +505,17 @@ def campaign_detail(slug: str):
         # carry tracker links.
         stats = calc_stats(meta, creators)
 
+    # CAMP-42: scope matched_videos to this campaign's date window. When
+    # a round-2 campaign shares creators with round 1, the round-1 posts
+    # persist in matched_videos and would otherwise show up in the
+    # round-2 view (and then leak into Cobrand uploads as duplicates).
+    campaign_start = (meta.get("start_date") or "").strip()
+    if campaign_start:
+        matched_videos = [
+            v for v in matched_videos
+            if not video_posted_before_start(v, campaign_start)
+        ]
+
     return jsonify({
         "slug": slug,
         "title": campaign_title(meta),
@@ -878,6 +890,15 @@ def campaign_links(slug: str):
         meta = load_json(campaign_dir / "campaign.json")
         matched = load_matched_videos(campaign_dir)
         scrape_log = load_json(campaign_dir / "scrape_log.json")
+
+    # CAMP-42: keep round 1 posts out of round 2's link list when the
+    # two campaigns share creators (see campaign_detail for context).
+    campaign_start = (meta.get("start_date") or "").strip()
+    if campaign_start:
+        matched = [
+            v for v in matched
+            if not video_posted_before_start(v, campaign_start)
+        ]
 
     return jsonify({
         "slug": slug,

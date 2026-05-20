@@ -164,3 +164,35 @@ def is_original_sound(song: str, artist: str) -> bool:
     if s.startswith("son original") or s.startswith("suara asli"):
         return True
     return False
+
+
+def video_posted_before_start(video: Dict, start_date: str) -> bool:
+    """Return True if `video` was definitively posted before `start_date`.
+
+    Used to scope a campaign's matched videos to its own date window so
+    that a round-2 campaign doesn't pull in posts already uploaded under
+    round 1 (CAMP-42). Cobrand only dedupes within a single round, so
+    leaking pre-start-date posts into a later round creates duplicates
+    in the client report.
+
+    `start_date` is the campaign's ``start_date`` ("YYYY-MM-DD"). The
+    video's post date is read from ``timestamp`` (ISO format) when
+    present, falling back to ``upload_date`` ("YYYYMMDD"). When neither
+    field is parseable — or `start_date` is empty — returns False so
+    the caller keeps the row. Fail-open is deliberate: hiding a real
+    match because metadata is missing is worse than the duplicate-in-
+    Cobrand symptom this filter exists to prevent.
+    """
+    if not start_date:
+        return False
+
+    timestamp = (video.get("timestamp") or "").strip()
+    if timestamp and len(timestamp) >= 10 and timestamp[4] == "-" and timestamp[7] == "-":
+        return timestamp[:10] < start_date
+
+    upload_date = (video.get("upload_date") or "").strip()
+    if len(upload_date) == 8 and upload_date.isdigit():
+        normalized = f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:8]}"
+        return normalized < start_date
+
+    return False
