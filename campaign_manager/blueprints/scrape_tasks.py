@@ -25,6 +25,7 @@ from campaign_manager import db as _db
 from sqlalchemy import or_
 
 from campaign_manager.models import MatchedVideo, Campaign
+from campaign_manager.utils.helpers import video_posted_before_start
 
 scrape_tasks_bp = Blueprint("scrape_tasks", __name__)
 
@@ -106,6 +107,16 @@ def queue():
     by_campaign: dict = {}
     total = 0
     for mv, camp in rows:
+        # CAMP-42: when a round-2 campaign reuses creators from round 1,
+        # those creators' pre-start-date posts persist as matched_videos
+        # rows. Cobrand only dedupes within a single round, so leaking
+        # them into the queue produces duplicate uploads in the client
+        # report. Exclude videos posted before the campaign's start_date.
+        if video_posted_before_start(
+            {"timestamp": mv.timestamp or "", "upload_date": mv.upload_date or ""},
+            camp.start_date or "",
+        ):
+            continue
         slug = camp.slug or ""
         if slug not in by_campaign:
             by_campaign[slug] = {
@@ -315,8 +326,18 @@ def mark_campaign_tracked():
             .filter(MatchedVideo.dismissed_at.is_(None))
             .all()
         )
+        campaign_start = camp.start_date or ""
         count = 0
         for row in rows:
+            # CAMP-42: skip pre-start-date rows so a bulk-tracked sweep
+            # doesn't claim we uploaded round-1 posts under round 2 — the
+            # queue itself hides those rows, so they're not part of what
+            # the user just sent to Cobrand.
+            if video_posted_before_start(
+                {"timestamp": row.timestamp or "", "upload_date": row.upload_date or ""},
+                campaign_start,
+            ):
+                continue
             row.tracked_at = now
             if tracked_by:
                 row.tracked_by = tracked_by
