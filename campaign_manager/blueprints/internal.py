@@ -39,7 +39,14 @@ INTERNAL_CACHE_DIR = DATA_ROOT / "internal_cache"
 # ---------------------------------------------------------------------------
 # Background scrape state (module-level, shared by routes + worker thread)
 # ---------------------------------------------------------------------------
-_internal_scrape_status: Dict = {
+#
+# RTA-45: legacy global status is now derived from `_jobs`. The module-level
+# `_internal_scrape_status` symbol is kept ONLY as the empty-default shape
+# returned by `most_recent_job_status()` when the registry is empty. It is
+# never mutated by the worker or routes — concurrent group scrapes (RTA-16)
+# could otherwise clobber each other's view of this dict. All per-scrape
+# state now lives inside `_jobs[job_id]` (see below).
+_INTERNAL_SCRAPE_STATUS_EMPTY: Dict = {
     "running": False,
     "done": False,
     "progress": "",
@@ -51,9 +58,25 @@ _internal_scrape_status: Dict = {
     "log": [],
 }
 
-# Job registry for the per-group trigger endpoint (RTA-16).
+# Back-compat alias. External code (and the existing RTA-16 test fixture)
+# touches `internal._internal_scrape_status` directly. It still exists as
+# the empty-default snapshot; production code paths no longer write to it.
+_internal_scrape_status: Dict = dict(_INTERNAL_SCRAPE_STATUS_EMPTY)
+
+# Job registry — single source of truth for in-flight + recently-completed
+# scrapes. RTA-45 widens each entry to carry the legacy global-status shape
+# under `legacy_status`, so two concurrent group scrapes can't overwrite
+# each other's view of the world.
 #
-# _jobs maps job_id -> {group, started_at, state, progress: {n,m}, last_log, error}
+# _jobs maps job_id -> {
+#     group, started_at, state, progress: {n,m}, last_log, error,
+#     kind: "legacy" | "group",          # which entrypoint created this job
+#     legacy_status: {                   # the shape returned to non-job_id
+#         running, done, progress,       # callers of /scrape/status (RTA-45)
+#         accounts_total, accounts_completed, accounts_failed,
+#         videos_so_far, current_accounts, log,
+#     },
+# }
 # _current_job_by_group maps group slug -> active job_id (debounce key).
 #
 # In-memory only. Railway dyno recycles drop in-flight scrapes; job state
@@ -182,6 +205,142 @@ def _clear_current_job(group: str, job_id: str) -> None:
         if _current_job_by_group.get(group) == job_id:
             _current_job_by_group.pop(group, None)
 
+
+# ---------------------------------------------------------------------------
+# RTA-45: legacy `/api/internal/scrape/status` (no job_id) backing helpers
+# ---------------------------------------------------------------------------
+
+def _empty_legacy_status() -> Dict:
+    """Return a fresh, independent empty legacy-shape dict.
+
+    Used as the default for new ``_jobs`` entries' ``legacy_status`` field
+    and as the response when no jobs exist at all.
+
+    IMPORTANT: this MUST return fresh ``list`` instances for
+    ``current_accounts`` and ``log`` on every call. A shallow ``dict(...)``
+    copy of a shared template would leave every job's legacy_status
+    pointing at the SAME list objects, defeating the entire isolation
+    guarantee — every concurrent scrape would append into the same log.
+    """
+    return {
+        "running": False,
+        "done": False,
+        "progress": "",
+        "accounts_total": 0,
+        "accounts_completed": 0,
+        "accounts_failed": 0,
+        "videos_so_far": 0,
+        "current_accounts": [],
+        "log": [],
+    }
+
+
+def _legacy_status_from_job(job: Optional[Dict]) -> Dict:
+    """Project a ``_jobs`` entry into the legacy global-status wire shape.
+
+    Returns a *copy* — callers must not mutate the registry through this.
+    A ``None`` job (registry empty) collapses to the empty default.
+    """
+    if not job:
+        return _empty_legacy_status()
+    status = job.get("legacy_status") or _empty_legacy_status()
+    # Copy mutable substructures so the caller can't mutate the live job.
+    return {
+        "running": bool(status.get("running", False)),
+        "done": bool(status.get("done", False)),
+        "progress": str(status.get("progress", "")),
+        "accounts_total": int(status.get("accounts_total", 0)),
+        "accounts_completed": int(status.get("accounts_completed", 0)),
+        "accounts_failed": int(status.get("accounts_failed", 0)),
+        "videos_so_far": int(status.get("videos_so_far", 0)),
+        "current_accounts": list(status.get("current_accounts") or []),
+        "log": list(status.get("log") or []),
+    }
+
+
+def _most_recent_job_locked() -> Optional[Dict]:
+    """Return the live ``_jobs`` entry with the latest ``started_at``.
+
+    MUST be called with ``_jobs_lock`` held. Returns the live dict (no
+    copy) so internal helpers can also use it for state inspection.
+    Callers that hand data outward should copy via ``_legacy_status_from_job``.
+
+    Ordering uses string compare on the ISO ``started_at`` field. With the
+    default ``datetime.isoformat()`` output that includes timezone offset,
+    lexicographic compare is monotonic for any single TZ and our worker
+    always stamps with ``EST``.
+    """
+    latest: Optional[Dict] = None
+    latest_ts: str = ""
+    for job in _jobs.values():
+        ts = str(job.get("started_at") or "")
+        if ts > latest_ts:
+            latest_ts = ts
+            latest = job
+    return latest
+
+
+def most_recent_job_status() -> Dict:
+    """Public helper: return the legacy-shape status for the most-recent job.
+
+    Used by ``GET /api/internal/scrape/status`` when no ``job_id`` is
+    provided. Returns the empty default if the registry is empty.
+
+    Thread-safe (acquires ``_jobs_lock``).
+    """
+    with _jobs_lock:
+        return _legacy_status_from_job(_most_recent_job_locked())
+
+
+def _most_recent_legacy_job_running() -> bool:
+    """Is there a running job that was kicked off via the legacy entrypoint?
+
+    The legacy ``POST /api/internal/scrape`` route is single-flight by
+    contract: it returns 409 if a scrape is already running. RTA-45
+    preserves that semantic without blocking concurrent *group* scrapes
+    triggered via ``POST /api/internal/scrape/start`` (RTA-16) — only
+    legacy-kind jobs gate the legacy entrypoint.
+    """
+    with _jobs_lock:
+        for job in _jobs.values():
+            if job.get("kind") == "legacy" and job.get("state") == "running":
+                return True
+        return False
+
+
+def _patch_legacy_status(job_id: str, **fields) -> None:
+    """Merge ``fields`` into ``_jobs[job_id]['legacy_status']`` under lock.
+
+    No-ops if the job has been pruned. Lists/dicts in ``fields`` are
+    written in place — callers should hand over already-built copies.
+    """
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if not job:
+            return
+        status = job.get("legacy_status")
+        if not isinstance(status, dict):
+            status = _empty_legacy_status()
+            job["legacy_status"] = status
+        status.update(fields)
+
+
+def _append_legacy_log(job_id: str, entry: Dict) -> None:
+    """Append a per-account log entry under the lock."""
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if not job:
+            return
+        status = job.get("legacy_status")
+        if not isinstance(status, dict):
+            status = _empty_legacy_status()
+            job["legacy_status"] = status
+        log = status.get("log")
+        if not isinstance(log, list):
+            log = []
+            status["log"] = log
+        log.append(entry)
+
 # ---------------------------------------------------------------------------
 # Data helpers
 # ---------------------------------------------------------------------------
@@ -308,9 +467,15 @@ def _run_internal_scrape(hours: int, creators: List[str], *,
     override the hours-based window. This lets the UI request a specific
     date range like "March 15 to April 15".
 
-    When job_id is provided, the worker also writes progress + state into
-    the _jobs registry so the /api/internal/scrape/start polling shape
-    (state, progress: {n,m}, last_log) reflects real progress (RTA-16).
+    RTA-45: ``job_id`` is now effectively required — both the legacy
+    ``POST /api/internal/scrape`` route and the per-group RTA-16 route
+    create a ``_jobs`` entry before launching the worker. All progress
+    state (per-job slim shape AND legacy global-shape) writes through
+    ``_jobs[job_id]`` under ``_jobs_lock``. Two concurrent scrapes can no
+    longer overwrite each other's view of the world.
+
+    The legacy global ``_internal_scrape_status`` symbol is still
+    importable as an empty-default constant; the worker never mutates it.
     """
     def _bump(state: str, *, n: Optional[int] = None, m: Optional[int] = None,
               last_log: Optional[str] = None, error: Optional[str] = None) -> None:
@@ -337,34 +502,40 @@ def _run_internal_scrape(hours: int, creators: List[str], *,
     from collections import defaultdict
     from datetime import timedelta
 
-    global _internal_scrape_status
     total = len(creators)
-    _internal_scrape_status = {
-        "running": True,
-        "done": False,
-        "progress": "Starting...",
-        "accounts_total": total,
-        "accounts_completed": 0,
-        "accounts_failed": 0,
-        "videos_so_far": 0,
-        "current_accounts": [],
-        "log": [],
-    }
+    if job_id:
+        _patch_legacy_status(
+            job_id,
+            running=True,
+            done=False,
+            progress="Starting...",
+            accounts_total=total,
+            accounts_completed=0,
+            accounts_failed=0,
+            videos_so_far=0,
+            current_accounts=[],
+            log=[],
+        )
     _bump("running", n=0, m=total, last_log="Starting...")
 
-    # Thread-safe set for tracking in-flight accounts
+    # Thread-safe set for tracking in-flight accounts. Scoped per-worker
+    # so concurrent scrapes don't mingle each other's in-flight sets.
     _inflight_lock = threading.Lock()
     _inflight: set = set()
 
     def _add_inflight(account: str):
         with _inflight_lock:
             _inflight.add(account)
-            _internal_scrape_status["current_accounts"] = sorted(_inflight)
+            snapshot = sorted(_inflight)
+        if job_id:
+            _patch_legacy_status(job_id, current_accounts=snapshot)
 
     def _remove_inflight(account: str):
         with _inflight_lock:
             _inflight.discard(account)
-            _internal_scrape_status["current_accounts"] = sorted(_inflight)
+            snapshot = sorted(_inflight)
+        if job_id:
+            _patch_legacy_status(job_id, current_accounts=snapshot)
 
     utils_dir = str(PROJECT_ROOT / "src" / "utils")
     if utils_dir not in sys.path:
@@ -373,11 +544,19 @@ def _run_internal_scrape(hours: int, creators: List[str], *,
     try:
         from get_post_links_by_song import scrape_account_videos, normalize_song_key, ScrapeError
     except ImportError as e:
-        _internal_scrape_status = {
-            "running": False, "done": True, "progress": f"Import error: {e}",
-            "accounts_total": total, "accounts_completed": 0, "accounts_failed": 0,
-            "videos_so_far": 0, "current_accounts": [], "log": [],
-        }
+        if job_id:
+            _patch_legacy_status(
+                job_id,
+                running=False,
+                done=True,
+                progress=f"Import error: {e}",
+                accounts_total=total,
+                accounts_completed=0,
+                accounts_failed=0,
+                videos_so_far=0,
+                current_accounts=[],
+                log=[],
+            )
         _bump("error", last_log=f"Import error: {e}", error=str(e))
         if group_slug and job_id:
             _clear_current_job(group_slug, job_id)
@@ -428,12 +607,13 @@ def _run_internal_scrape(hours: int, creators: List[str], *,
                 video_count = len(videos)
                 if error:
                     failed += 1
-                    _internal_scrape_status["log"].append({
-                        "username": account,
-                        "status": "failed",
-                        "video_count": 0,
-                        "error": error,
-                    })
+                    if job_id:
+                        _append_legacy_log(job_id, {
+                            "username": account,
+                            "status": "failed",
+                            "video_count": 0,
+                            "error": error,
+                        })
                 else:
                     # Merge into per-account cache
                     serializable = []
@@ -452,17 +632,22 @@ def _run_internal_scrape(hours: int, creators: List[str], *,
                     merge_into_cache(account.lstrip("@"), serializable)
                     all_videos.extend(serializable)
                     successful += 1
-                    _internal_scrape_status["log"].append({
-                        "username": account,
-                        "status": "ok",
-                        "video_count": video_count,
-                    })
+                    if job_id:
+                        _append_legacy_log(job_id, {
+                            "username": account,
+                            "status": "ok",
+                            "video_count": video_count,
+                        })
 
-                _internal_scrape_status["accounts_completed"] = completed_count
-                _internal_scrape_status["accounts_failed"] = failed
-                _internal_scrape_status["videos_so_far"] = len(all_videos)
                 progress_str = f"Scraped {completed_count}/{total} accounts ({successful} ok, {failed} failed)"
-                _internal_scrape_status["progress"] = progress_str
+                if job_id:
+                    _patch_legacy_status(
+                        job_id,
+                        accounts_completed=completed_count,
+                        accounts_failed=failed,
+                        videos_so_far=len(all_videos),
+                        progress=progress_str,
+                    )
                 _bump(
                     "running",
                     n=completed_count,
@@ -519,20 +704,24 @@ def _run_internal_scrape(hours: int, creators: List[str], *,
             f"{len(all_videos)} videos, "
             f"{len(songs_list)} unique sounds"
         )
-        _internal_scrape_status.update({
-            "running": False,
-            "done": True,
-            "progress": done_msg,
-            "current_accounts": [],
-        })
+        if job_id:
+            _patch_legacy_status(
+                job_id,
+                running=False,
+                done=True,
+                progress=done_msg,
+                current_accounts=[],
+            )
         _bump("done", n=total, m=total, last_log=done_msg)
     except Exception as e:
-        _internal_scrape_status.update({
-            "running": False,
-            "done": True,
-            "progress": f"Error: {e}",
-            "current_accounts": [],
-        })
+        if job_id:
+            _patch_legacy_status(
+                job_id,
+                running=False,
+                done=True,
+                progress=f"Error: {e}",
+                current_accounts=[],
+            )
         _bump("error", last_log=f"Error: {e}", error=str(e))
     finally:
         if group_slug and job_id:
@@ -624,8 +813,13 @@ def trigger_scrape():
       - hours: lookback window (default 48) -- used when start_date/end_date not set
       - start_date: explicit start date (YYYY-MM-DD), overrides hours
       - end_date: explicit end date (YYYY-MM-DD), defaults to now
+
+    RTA-45: the legacy single-flight guard now checks only legacy-kind
+    jobs in the registry. Concurrent per-group scrapes triggered via
+    ``POST /api/internal/scrape/start`` do not block this endpoint and
+    vice versa — the two entrypoints have independent in-flight semantics.
     """
-    if _internal_scrape_status.get("running"):
+    if _most_recent_legacy_job_running():
         return jsonify({"error": "A scrape is already running. Please wait."}), 409
 
     data = request.get_json(silent=True) or {}
@@ -660,11 +854,42 @@ def trigger_scrape():
     start_date_str = (data.get("start_date") or "").strip()
     end_date_str = (data.get("end_date") or "").strip()
 
+    # RTA-45: create a _jobs entry so the worker can write progress + the
+    # legacy-shape status to its own slot, not a module-global. Tagged
+    # ``kind="legacy"`` so the in-flight guard above can identify it.
+    with _jobs_lock:
+        # Prune terminal entries on insert (mirrors scrape_start; keeps the
+        # registry bounded across the dyno's lifetime).
+        _prune_jobs()
+        job_id = uuid.uuid4().hex
+        started_at = datetime.now(EST).isoformat()
+        legacy_status = _empty_legacy_status()
+        legacy_status["running"] = True
+        legacy_status["accounts_total"] = len(creators)
+        _jobs[job_id] = {
+            "group": group_slug or None,
+            "started_at": started_at,
+            "state": "running",
+            "progress": {"n": 0, "m": len(creators)},
+            "last_log": "",
+            "error": None,
+            "kind": "legacy",
+            "legacy_status": legacy_status,
+        }
+
     # Launch scrape in background thread
     t = threading.Thread(
         target=_run_internal_scrape,
         args=(hours, creators),
-        kwargs={"start_date_str": start_date_str, "end_date_str": end_date_str},
+        kwargs={
+            "start_date_str": start_date_str,
+            "end_date_str": end_date_str,
+            "job_id": job_id,
+            # group_slug intentionally NOT passed: this is the legacy
+            # entrypoint and doesn't participate in per-group debounce
+            # (_current_job_by_group) regardless of whether a group filter
+            # was supplied.
+        },
         daemon=True,
     )
     t.start()
@@ -689,7 +914,13 @@ def scrape_status():
     """Poll scrape progress.
 
     Two shapes:
-      - No ?job_id -- legacy global shape (used by existing UI).
+      - No ?job_id -- legacy global shape (used by existing UI). RTA-45:
+        backed by the most-recent ``_jobs`` entry's ``legacy_status``
+        snapshot rather than a module-global dict. If the registry is
+        empty (no scrape has run since boot), returns the empty default.
+        Wire format unchanged: {running, done, progress, accounts_total,
+        accounts_completed, accounts_failed, videos_so_far,
+        current_accounts, log}.
       - ?job_id=<id> -- per-job shape for the /scrape/start trigger
         endpoint (RTA-16): {state, progress: {n,m}, last_log, ...}.
     """
@@ -699,7 +930,7 @@ def scrape_status():
         if not snap:
             return jsonify({"error": f"job_id '{job_id}' not found"}), 404
         return jsonify(snap)
-    return jsonify(_internal_scrape_status)
+    return jsonify(most_recent_job_status())
 
 
 # -------------------------------------------------------------------
@@ -761,6 +992,13 @@ def scrape_start():
 
         job_id = uuid.uuid4().hex
         started_at = datetime.now(EST).isoformat()
+        # RTA-45: seed legacy_status so a poll between insert and the
+        # worker's first _patch_legacy_status() call (or before the worker
+        # thread is even scheduled) sees a sensible "running" shape with
+        # the correct accounts_total rather than the empty default.
+        legacy_status = _empty_legacy_status()
+        legacy_status["running"] = True
+        legacy_status["accounts_total"] = len(members)
         _jobs[job_id] = {
             "group": group_slug,
             "started_at": started_at,
@@ -768,6 +1006,8 @@ def scrape_start():
             "progress": {"n": 0, "m": len(members)},
             "last_log": "",
             "error": None,
+            "kind": "group",
+            "legacy_status": legacy_status,
         }
         _current_job_by_group[group_slug] = job_id
 
