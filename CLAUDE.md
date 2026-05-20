@@ -35,13 +35,14 @@ Internal campaign management platform for Rising Tides -- a social media marketi
 
 | Component | URL | Infra |
 |---|---|---|
-| Frontend (React) | https://risingtides-campaign-hub.vercel.app | Vercel |
-| Backend (Flask API) | https://risingtides-campaign-hub-production.up.railway.app | Railway |
+| App (frontend + API) | https://risingtides-campaign-hub-production.up.railway.app | Railway |
 | Database | PostgreSQL | Railway plugin |
+
+**Single-surface deploy:** the Dockerfile builds the Vite SPA and bundles it into the same container that runs the Flask API, so Railway serves both. The frontend is at `/`, the API is under `/api/*`. There is no separate Vercel deployment — the old `risingtides-campaign-hub.vercel.app` project was deleted on 2026-05-20 (it had stopped auto-deploying on 2026-04-17 and was returning 404s from a stale state).
 
 ## Architecture
 
-**Frontend:** Vite + React + TypeScript + shadcn/ui + Tailwind (Vercel)
+**Frontend:** Vite + React + TypeScript + shadcn/ui + Tailwind (served by Railway)
 **Backend:** Flask API (Python) + SQLAlchemy + PostgreSQL (Railway)
 **Integrations:** Cobrand (live post tracking), Notion CRM (campaign intake via webhook/polling), Slack (booking intake via agent)
 
@@ -134,7 +135,7 @@ Campaign Hub <-- Cobrand (live performance stats)
 
 | Remote | Repo | Purpose |
 |---|---|---|
-| `origin` | https://github.com/Risingtides-dev/risingtides-campaign-hub | Deploy fork — where new work lands and Railway + Vercel deploy from |
+| `origin` | https://github.com/Risingtides-dev/risingtides-campaign-hub | Deploy fork — where new work lands and Railway deploys from |
 | `upstream` | https://github.com/jakebalik-bit/risingtides-campaign-hub | Jake's repo — local emergency fallback. Only gets rebased forward from the fork **after** a change is proven in production. |
 
 Tag `pre-migration-backup` on both remotes points to the old codebase.
@@ -143,7 +144,7 @@ Tag `pre-migration-backup` on both remotes points to the old codebase.
 1. Branch off `origin/main`
 2. Push branch to `origin` (the fork)
 3. `gh pr create --repo Risingtides-dev/risingtides-campaign-hub --base main` → open PR against the fork
-4. Merge PR → Railway + Vercel auto-deploy from Risingtides-dev/main
+4. Merge PR → Railway auto-deploys from Risingtides-dev/main
 
 **Do NOT push branches or open PRs to `upstream` (jakebalik-bit) for in-flight work.** Jake's repo is a quick fallback we can revert to locally if the fork breaks. It only gets rebased forward from the fork *after* a feature is fully green in production.
 
@@ -155,7 +156,7 @@ Tag `pre-migration-backup` on both remotes points to the old codebase.
 |---|---|
 | `DATABASE_URL` | PostgreSQL connection (auto-set by Railway Postgres plugin) |
 | `SECRET_KEY` | Flask session secret |
-| `CORS_ORIGINS` | `https://risingtides-campaign-hub.vercel.app` |
+| `CORS_ORIGINS` | Set to the Railway URL (`https://risingtides-campaign-hub-production.up.railway.app`). Frontend and API share an origin now, so CORS is mostly belt-and-suspenders. |
 | `NOTION_API_KEY` | Notion internal integration token |
 | `NOTION_CRM_DATABASE_ID` | `1961465b-b829-80c9-a1b5-c4cb3284149a` |
 | `PORT` | Auto-set by Railway |
@@ -166,11 +167,9 @@ Tag `pre-migration-backup` on both remotes points to the old codebase.
 - `DECODO_API_KEY` — staged for future agent observability (bandwidth checks, sub status, endpoint listing). Not currently consumed by any code path. Decodo API base: `https://api.decodo.com/v2/` — auth via `Authorization: Bearer ${DECODO_API_KEY}`. Reference: TODO — confirm exact endpoint paths from Decodo dashboard docs before wiring up observability.
 - `RESIDENTIAL_PROXY_URL` — **dead post-RTA-44.** Do not set. Was used by deleted `extract_sound_id_from_video_robust` in `src/scrapers/master_tracker.py`; no longer read by any code on `origin/main`. If it appears on a Railway service from a pre-RTA-44 deploy, it's safe to unset (cosmetic only).
 
-### Vercel (Frontend)
+### Frontend build (Vite)
 
-| Variable | Purpose |
-|---|---|
-| `VITE_API_URL` | `https://risingtides-campaign-hub-production.up.railway.app` |
+The SPA is built inside the Railway Dockerfile (`npm run build` in the `frontend/` stage) and copied into the Flask container's static dir. There is no separate frontend deploy. `VITE_API_URL` is empty / unset — the SPA calls the API on the same origin (`/api/*`), no cross-origin wiring required.
 
 ## Key Technical Decisions
 
