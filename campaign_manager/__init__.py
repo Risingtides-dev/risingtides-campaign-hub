@@ -119,7 +119,12 @@ def create_app(config=None):
     # Initialize Slack bot (no-op if credentials aren't set)
     if app.config.get("SLACK_BOT_TOKEN"):
         from campaign_manager.services.slack_bot import init_slack_app
-        init_slack_app()
+        try:
+            init_slack_app()
+        except Exception as e:
+            logging.getLogger(__name__).error(
+                "Slack bot initialization failed (app will continue without Slack): %s", e
+            )
 
     # Initialize scheduler (only if enabled and DB is active).
     # Use a file lock so only one gunicorn worker runs the scheduler.
