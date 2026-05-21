@@ -267,8 +267,8 @@ function SortableHeader({
 type SortOption = "start_date" | "a-z" | "cost" | "spend_pct" | "remaining" | "total_views"
 
 const sortOptions: { value: SortOption; label: string }[] = [
-  { value: "total_views", label: "Total Views" },
   { value: "start_date", label: "Start Date" },
+  { value: "total_views", label: "Total Views" },
   { value: "a-z", label: "A–Z" },
   { value: "cost", label: "Overall Cost" },
   { value: "spend_pct", label: "Spend %" },
@@ -300,7 +300,7 @@ interface CampaignsTableProps {
 export function CampaignsTable({ data }: CampaignsTableProps) {
   const navigate = useNavigate()
   const qc = useQueryClient()
-  const [sortBy, setSortBy] = useState<SortOption>("total_views")
+  const [sortBy, setSortBy] = useState<SortOption>("start_date")
   const [sorting, setSorting] = useState<SortingState>([])
 
   const handleToggleCompletion = useCallback(
