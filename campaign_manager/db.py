@@ -189,12 +189,6 @@ def init(database_url: Optional[str] = None):
     # - tracked_at: set when a human marks "I copied this into Cobrand"
     # - tracked_by: optional audit trail
     # - match_strategy: how the match was found (sound_id|fuzzy|internal_creator)
-    #
-    # IMPORTANT: backfill tracked_at = NOW() for every PRE-EXISTING matched
-    # video so the Scrape Tasks tab starts at a clean zero queue. Only NEW
-    # matches from the next cron run forward show up as untracked. Without
-    # this backfill, your employee opens the tab and sees thousands of
-    # historical videos all flagged as "needs tracking" which is useless.
     try:
         with _SessionLocal() as s:
             sa = __import__("sqlalchemy")
@@ -239,20 +233,20 @@ def init(database_url: Optional[str] = None):
                 "ON matched_videos (dismissed_at)"
             ))
 
-            # Backfill ONLY rows that haven't been seen before — covers a
-            # fresh deploy where pre-existing rows should be considered
-            # already-handled. Idempotent: subsequent runs are no-ops.
+            # Backfill first_seen_at for any pre-existing row that doesn't
+            # have one yet. Idempotent because the WHERE clause only catches
+            # NULLs, and once stamped a row never goes back.
             s.execute(sa.text(
                 "UPDATE matched_videos "
                 "SET first_seen_at = NOW() "
                 "WHERE first_seen_at IS NULL"
             ))
-            s.execute(sa.text(
-                "UPDATE matched_videos "
-                "SET tracked_at = NOW() "
-                "WHERE tracked_at IS NULL "
-                "AND first_seen_at < NOW() - INTERVAL '5 minutes'"
-            ))
+            # NOTE: the previous boot-time auto-track UPDATE was removed.
+            # It marked any untracked row older than 5 minutes as tracked
+            # on EVERY boot — which nuked the Scrape Tasks queue every
+            # deploy. The original "fresh deploy starts with a clean
+            # queue" goal was only relevant the day the feature shipped;
+            # leaving it in turned every redeploy into a queue-wipe.
             s.commit()
     except Exception:
         pass
