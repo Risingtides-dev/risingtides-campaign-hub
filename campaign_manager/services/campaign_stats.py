@@ -495,27 +495,93 @@ def get_campaign_stats_bulk(
     *,
     matched_videos_by_slug: Optional[Dict[str, List[Dict[str, Any]]]] = None,
     start_date_by_slug: Optional[Dict[str, str]] = None,
+    tracker_id_by_slug: Optional[Dict[str, str]] = None,
 ) -> Dict[str, CampaignStatsResult]:
     """Resolve stats for many campaigns in one call.
 
-    Just a loop today — kept as its own entry point so the list
-    endpoints have a stable API. Each campaign still hits the cache
-    independently, which keeps things simple while the tracker count
-    stays modest (<200). If this becomes hot we can batch the live
-    fetches with a thread pool, but the cache + 30-min cron should
-    keep most ticks at zero outbound calls.
+    Pre-warms the in-process tides-tracker cache for every tracker
+    that's currently cold/stale, in parallel, BEFORE calling
+    ``get_campaign_stats`` per slug. Each per-slug call then hits a
+    fresh cache and returns immediately.
+
+    Why the pre-warm: ``/api/campaigns`` calls this for ~25 active
+    campaigns. Without parallelism, a cold cache (any time after a
+    Railway deploy resets the in-process dict) means 25 sequential
+    ~50ms HTTP calls = 1.2s on the user's first page load. Pre-warming
+    in parallel collapses that to one round-trip (~150ms).
 
     Pass ``start_date_by_slug`` so each campaign's fallback path scopes
     its matched videos to the right date window (CAMP-55). Slugs absent
     from the map fall through with no date filter (fail-open).
+
+    Pass ``tracker_id_by_slug`` when the caller already resolved
+    slug->tracker_id in bulk (campaigns list endpoint does) to avoid
+    re-querying per-slug. Falls back to per-slug resolution when not
+    provided.
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     out: Dict[str, CampaignStatsResult] = {}
     mv = matched_videos_by_slug or {}
     sd = start_date_by_slug or {}
+    tracker_map = tracker_id_by_slug
+    if tracker_map is None:
+        tracker_map = {}
+        for s in slugs:
+            try:
+                tracker_map[s] = _db.get_tracker_id_for_campaign(s) or ""
+            except Exception:
+                tracker_map[s] = ""
+
+    # Collect distinct cold tracker_ids that need a live fetch.
+    ttl = _cache_ttl_seconds()
+    cold_tracker_ids: List[str] = []
+    seen: set = set()
+    for s in slugs:
+        tid = tracker_map.get(s, "")
+        if not tid or tid in seen:
+            continue
+        seen.add(tid)
+        cached = _cache_get(tid)
+        if not (cached and _is_fresh(cached, ttl)):
+            cold_tracker_ids.append(tid)
+
+    # Parallel pre-warm. Bounded worker count — past ~10 the gains
+    # tail off and a flood of concurrent connections can saturate the
+    # Tides Tracker upstream.
+    if cold_tracker_ids:
+        max_workers = min(10, len(cold_tracker_ids))
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futures = {
+                ex.submit(fetch_campaign_submissions, tid): tid
+                for tid in cold_tracker_ids
+            }
+            for fut in as_completed(futures):
+                tid = futures[fut]
+                try:
+                    fres = fut.result()
+                except Exception:
+                    logger.exception(
+                        "campaign_stats: prewarm fetch raised for tracker %s", tid,
+                    )
+                    continue
+                if not fres.ok:
+                    # Don't poison the cache with a failure; per-slug call
+                    # below will serve stale-cache or scraper fallback.
+                    continue
+                _cache_set(tid, _CacheEntry(
+                    submissions=fres.submissions,
+                    fetched_at=datetime.now(timezone.utc),
+                    api_fetched_at=fres.fetched_at,
+                ))
+
+    # Per-slug pass — now hitting a warm cache for every tracker we
+    # successfully pre-warmed.
     for s in slugs:
         out[s] = get_campaign_stats(
             s,
             matched_videos=mv.get(s),
+            tracker_id=tracker_map.get(s, ""),
             start_date=sd.get(s, ""),
         )
     return out

@@ -231,16 +231,37 @@ def get_campaigns() -> List[Dict]:
             status="active", with_matched_videos=True
         )
         tracker_map = _db.get_campaign_to_tracker_map()
+
+        # Bulk-resolve stats with a parallel cache pre-warm. The previous
+        # per-slug loop went serial across the Tides Tracker API on every
+        # cold cache (after each deploy), making the first /api/campaigns
+        # load take ~1s per ~25 campaigns. The bulk path does the cold
+        # fetches concurrently and returns the same per-slug results.
+        from campaign_manager.services.campaign_stats import get_campaign_stats_bulk
+        slugs = [meta["slug"] for meta, _c, _mv in rows]
+        matched_videos_by_slug = {meta["slug"]: mv for meta, _c, mv in rows}
+        start_date_by_slug = {meta["slug"]: meta.get("start_date", "") for meta, _c, _mv in rows}
+        bulk_results = get_campaign_stats_bulk(
+            slugs,
+            matched_videos_by_slug=matched_videos_by_slug,
+            start_date_by_slug=start_date_by_slug,
+            tracker_id_by_slug=tracker_map,
+        )
+
         items = []
         for meta, creators, matched_videos in rows:
             slug = meta["slug"]
             budget = calc_budget(meta, creators)
-            result = get_campaign_stats(
-                slug,
-                matched_videos=matched_videos,
-                tracker_id=tracker_map.get(slug, ""),
-                start_date=meta.get("start_date", ""),
-            )
+            result = bulk_results.get(slug)
+            if result is None:
+                # Shouldn't happen — bulk returns an entry per slug — but
+                # don't break the listing if it does.
+                result = get_campaign_stats(
+                    slug,
+                    matched_videos=matched_videos,
+                    tracker_id=tracker_map.get(slug, ""),
+                    start_date=meta.get("start_date", ""),
+                )
             stats = _stats_from_result(meta, creators, result)
             items.append({
                 "slug": slug,
