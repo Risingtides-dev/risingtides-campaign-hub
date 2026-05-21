@@ -6,6 +6,7 @@ from pathlib import Path
 
 from flask import Flask, send_from_directory
 from flask_cors import CORS
+from flask_compress import Compress
 
 from campaign_manager.config import Config
 from campaign_manager import db
@@ -78,6 +79,13 @@ def create_app(config=None):
 
     # Initialize CORS
     CORS(app, origins=app.config["CORS_ORIGINS"])
+
+    # Initialize gzip/brotli response compression. The bundled SPA assets
+    # (>700 KB of JS, ~70 KB CSS) and the campaigns list (~80 KB JSON) all
+    # have terrible compression-ratio-to-cost without this — turning it on
+    # cuts the user-facing payload roughly 4× across the board with
+    # negligible CPU cost.
+    Compress(app)
 
     # Initialize database
     db.init(app.config.get("DATABASE_URL"))
