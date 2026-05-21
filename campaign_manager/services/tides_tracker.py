@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -61,6 +62,19 @@ from campaign_manager import db as _db
 from campaign_manager.models import TidesTrackerSyncLog, TrackerName
 
 logger = logging.getLogger(__name__)
+
+# TikTok URL pattern: /video/<19-ish-digit-id>. Used to dedupe Scrape Tasks
+# queue rows against the URLs already submitted to a Tides Tracker /
+# Cobrand campaign — same video_id means the same TikTok post regardless
+# of host (vm.tiktok.com vs www.tiktok.com) or query-string noise.
+_TIKTOK_VIDEO_ID_RE = re.compile(r"/video/(\d{6,25})")
+
+
+def _extract_tiktok_video_id(url: str) -> str:
+    if not url:
+        return ""
+    m = _TIKTOK_VIDEO_ID_RE.search(url)
+    return m.group(1) if m else ""
 
 
 # Pinned to the canonical Tides Tracker domain. The auth-free public
@@ -521,3 +535,122 @@ def run_tides_tracker_pull() -> None:
     finally:
         with _tides_tracker_pull_lock:
             _tides_tracker_pull_in_progress = False
+
+
+# ---------------------------------------------------------------------------
+# Scrape Tasks queue ↔ Tides Tracker dedupe
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class AutoTrackResult:
+    """Outcome of one ``auto_track_submitted_videos`` pass."""
+
+    trackers_polled: int = 0
+    trackers_failed: int = 0
+    submission_ids_found: int = 0
+    queue_rows_auto_tracked: int = 0
+    errors: List[Dict[str, Any]] = field(default_factory=list)
+
+
+def auto_track_submitted_videos(triggered_by: str = "cron") -> AutoTrackResult:
+    """Mark Scrape Tasks queue rows as tracked when the same TikTok video
+    has already been submitted to a Cobrand tracker.
+
+    Walks every tracker_id in ``tracker_names``, fetches its public-API
+    submissions in parallel, builds a set of TikTok video IDs, then marks
+    any matched_videos row (untracked + undismissed) whose URL parses to
+    one of those video IDs as ``tracked_by='auto:tides_tracker'`` —
+    distinguishable from a human tick in audits.
+
+    Designed to be called at the tail of the ``campaign_refresh`` cron
+    so the Scrape Tasks queue self-cleans on every run: human only has
+    to handle the truly-new work.
+
+    Fail-soft: per-tracker fetch errors are bucketed into ``errors`` but
+    the function still applies dedupes for the trackers it did reach.
+    Returns whatever it managed to do — never raises.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    result = AutoTrackResult()
+
+    try:
+        tracker_ids = _list_tracker_ids()
+    except Exception as exc:
+        logger.exception("auto_track_submitted_videos: list tracker ids failed")
+        result.errors.append({"phase": "list_trackers", "detail": str(exc)[:300]})
+        return result
+
+    if not tracker_ids:
+        return result
+
+    submitted: set = set()
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        futures = {ex.submit(fetch_campaign_submissions, tid): tid for tid in tracker_ids}
+        for fut in as_completed(futures):
+            tid = futures[fut]
+            try:
+                fres = fut.result()
+            except Exception as exc:
+                result.trackers_failed += 1
+                result.errors.append({
+                    "tracker_id": tid,
+                    "error_kind": "unexpected",
+                    "detail": str(exc)[:300],
+                })
+                continue
+            result.trackers_polled += 1
+            if not fres.ok:
+                result.trackers_failed += 1
+                result.errors.append({
+                    "tracker_id": tid,
+                    "error_kind": fres.error_kind,
+                    "detail": fres.detail[:300] if fres.detail else "",
+                })
+                continue
+            for sub in fres.submissions:
+                vid = _extract_tiktok_video_id(sub.video_url)
+                if vid:
+                    submitted.add(vid)
+
+    result.submission_ids_found = len(submitted)
+    if not submitted:
+        return result
+
+    # Pull the current untracked queue and intersect in Python. Keeps the
+    # SQL simple (no regex extraction in WHERE) and the queue sizes
+    # involved (a few thousand rows max) make this cheap.
+    try:
+        import sqlalchemy as sa
+        with _db.get_session() as s:
+            rows = s.execute(sa.text(
+                "SELECT id, url FROM matched_videos "
+                "WHERE tracked_at IS NULL AND dismissed_at IS NULL"
+            )).fetchall()
+            matching_ids: List[int] = []
+            for row_id, url in rows:
+                vid = _extract_tiktok_video_id(url or "")
+                if vid and vid in submitted:
+                    matching_ids.append(int(row_id))
+
+            if matching_ids:
+                upd = s.execute(sa.text(
+                    "UPDATE matched_videos "
+                    "SET tracked_at = NOW(), tracked_by = :marker "
+                    "WHERE id = ANY(:ids) "
+                    "  AND tracked_at IS NULL"
+                ), {"marker": "auto:tides_tracker", "ids": matching_ids})
+                result.queue_rows_auto_tracked = upd.rowcount or 0
+                s.commit()
+    except Exception as exc:
+        logger.exception("auto_track_submitted_videos: UPDATE phase failed")
+        result.errors.append({"phase": "update", "detail": str(exc)[:300]})
+
+    logger.info(
+        "auto_track_submitted_videos (%s): trackers polled=%d failed=%d "
+        "submitted_ids=%d queue_rows_auto_tracked=%d",
+        triggered_by, result.trackers_polled, result.trackers_failed,
+        result.submission_ids_found, result.queue_rows_auto_tracked,
+    )
+    return result
