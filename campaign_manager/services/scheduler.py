@@ -441,6 +441,40 @@ def run_campaign_refresh():
                 errors.append(f"{slug}: {e}")
                 log.error("CRON: campaign %s failed: %s", slug, e)
 
+        # Auto-dedupe against Tides Tracker submissions BEFORE summarizing
+        # so the queue is clean before any Slack notifications go out.
+        # Marks every freshly-matched video that's already in a Cobrand
+        # tracker as tracked_by='auto:tides_tracker', so the human only
+        # sees the truly-new work in the Scrape Tasks tab.
+        auto_dedupe_stats: dict = {
+            "trackers_polled": 0,
+            "trackers_failed": 0,
+            "submission_ids_found": 0,
+            "queue_rows_auto_tracked": 0,
+        }
+        try:
+            from campaign_manager.services.tides_tracker import (
+                auto_track_submitted_videos,
+            )
+            dedupe_result = auto_track_submitted_videos(triggered_by="cron")
+            auto_dedupe_stats = {
+                "trackers_polled": dedupe_result.trackers_polled,
+                "trackers_failed": dedupe_result.trackers_failed,
+                "submission_ids_found": dedupe_result.submission_ids_found,
+                "queue_rows_auto_tracked": dedupe_result.queue_rows_auto_tracked,
+            }
+            log.info(
+                "CRON: auto-dedupe done — trackers=%d/%d submission_ids=%d "
+                "queue_rows_auto_tracked=%d",
+                dedupe_result.trackers_polled,
+                dedupe_result.trackers_polled + dedupe_result.trackers_failed,
+                dedupe_result.submission_ids_found,
+                dedupe_result.queue_rows_auto_tracked,
+            )
+        except Exception as e:
+            # Dedupe is a hygiene pass; never let it sink the whole cron run.
+            log.warning("CRON: auto-dedupe failed (non-fatal): %s", e)
+
         # Anomaly detection
         # 1. Empty rate — % of creators that returned 0 videos. >70% is the
         #    rate-limit signal (TikTok blocked us, yt-dlp returned empty).
@@ -476,6 +510,7 @@ def run_campaign_refresh():
             "creators_scraped_total": total_creators_scraped,
             "empty_creator_rate": round(empty_rate, 3),
             "degraded": is_degraded,
+            "auto_dedupe": auto_dedupe_stats,
         }
 
         _db.finish_cron_log(log_id, "completed", summary)

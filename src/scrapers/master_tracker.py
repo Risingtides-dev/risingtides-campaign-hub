@@ -683,11 +683,19 @@ def match_video_to_sounds(video: Dict, sound_ids: set, sound_keys: set) -> bool:
         if video_key in sound_keys:
             return True
 
-    # Strategy 4: Match by extracted song title
+    # Strategy 4: Match by extracted song title — EXACT match against the
+    # song-portion of the sound_key, not substring. Substring matching was
+    # the original behavior but it produced catastrophic false positives:
+    # a video with extracted_song_title='original sound' would match every
+    # 'original sound - <artist>' sound_key in the system. Exact equality
+    # forces the title to match the campaign's song title literally.
     if video.get('extracted_song_title'):
-        for sound_key in sound_keys:
-            if video['extracted_song_title'].lower() in sound_key.lower():
-                return True
+        ext = video['extracted_song_title'].lower().strip()
+        if ext:
+            for sound_key in sound_keys:
+                song_part = sound_key.split(' - ', 1)[0].strip().lower()
+                if song_part and song_part == ext:
+                    return True
 
     # Strategy 5: For Instagram, match by caption text (approximate matching)
     if video.get('platform') == 'instagram' and video.get('caption'):
