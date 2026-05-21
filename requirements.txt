@@ -36,6 +36,9 @@ tqdm>=4.66.0
 # CORS support
 flask-cors>=4.0.0
 
+# Response compression (gzip/brotli) for the SPA bundle + JSON APIs
+flask-compress>=1.14
+
 # Slack bot (Events API integration)
 slack-bolt>=1.18.0
 
