@@ -24,6 +24,24 @@ def core_song_name(s: str) -> str:
     return s.strip().lower()
 
 
+# Song titles that are TikTok's default label for unattributed creator
+# audio (or otherwise carry no fuzzy-matching signal). A campaign whose
+# `song` is one of these can't drive song-key or word-overlap matching
+# without false-positive-matching every single original-sound video on
+# TikTok — for those campaigns, sound_id alone is the only safe path.
+_GENERIC_SONG_TITLES = frozenset({
+    "",
+    "original sound",
+    "original audio",
+    "sound",
+    "audio",
+})
+
+
+def _is_generic_song_title(title: str) -> bool:
+    return core_song_name(title or "") in _GENERIC_SONG_TITLES
+
+
 def build_sound_sets(meta: dict) -> Tuple[Set[str], Set[str], Set[str]]:
     """Build matching sets from campaign metadata.
 
@@ -48,20 +66,24 @@ def build_sound_sets(meta: dict) -> Tuple[Set[str], Set[str], Set[str]]:
     tt_track = (meta.get("tt_track_name") or "").strip()
 
     sound_keys: Set[str] = set()
-    # Always add the campaign artist/song key
-    if song and artist:
+    # Always add the campaign artist/song key, UNLESS the song title is
+    # generic (e.g. 'original sound') — in that case the key would match
+    # every original-sound video on TikTok.
+    if song and artist and not _is_generic_song_title(song):
         sound_keys.add(f"{song.lower().strip()} - {artist.lower().strip()}")
         core = core_song_name(song)
         sound_keys.add(f"{core} - {artist.lower().strip()}")
 
-    # If TikTok labels are set, add those as matching keys too
-    if tt_track and tt_artist:
+    # If TikTok labels are set, add those as matching keys too. Same
+    # generic-title guard applies.
+    if tt_track and tt_artist and not _is_generic_song_title(tt_track):
         sound_keys.add(f"{tt_track.lower().strip()} - {tt_artist.lower().strip()}")
         core_tt = core_song_name(tt_track)
         sound_keys.add(f"{core_tt} - {tt_artist.lower().strip()}")
 
+    # Word-overlap matching is also unsafe on generic titles. Skip.
     core_song_words: Set[str] = set()
-    if song:
+    if song and not _is_generic_song_title(song):
         core = core_song_name(song)
         core_song_words = {w for w in core.split() if len(w) > 2}
 
