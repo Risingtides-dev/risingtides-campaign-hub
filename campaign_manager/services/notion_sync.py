@@ -70,7 +70,7 @@ logger = logging.getLogger(__name__)
 # via env var only if pointing at a staging/copy database.
 MASTER_PAGES_DATABASE_ID = os.environ.get(
     "NOTION_MASTER_PAGES_DATABASE_ID",
-    "3271465b-b829-8037-97b8-000bc1612218",
+    "3271465b-b829-805d-b21e-d6656edcfada",
 )
 
 # Notion paginates database query results. 100 is the API max page size.
