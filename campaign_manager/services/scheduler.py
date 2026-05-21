@@ -206,9 +206,8 @@ def init_scheduler(database_url: str, hour: int = 6, minute: int = 0):
     # Notion sync (RTA-10): pull master pages -> resolve memberships every N
     # minutes. Lives in notion_sync.py (not this module) so the test suite
     # can exercise it without importing apscheduler. `coalesce=True` collapses
-    # missed ticks on long-pauses; `next_run_time=None` defers the first run
-    # until one full interval has elapsed (same hands-off behavior as the
-    # cron-style jobs above — no surprise scrape on app boot).
+    # missed ticks on long-pauses. First fire is APScheduler's interval-trigger
+    # default of (now + interval) — no surprise scrape on app boot.
     from campaign_manager.services.notion_sync import (
         get_notion_sync_interval_minutes,
         run_notion_sync,
@@ -223,14 +222,13 @@ def init_scheduler(database_url: str, hour: int = 6, minute: int = 0):
         coalesce=True,
         max_instances=1,
         misfire_grace_time=300,
-        next_run_time=None,
     )
 
     # Tides Tracker pull (RTA-42): hit the public stats API for every
     # tracker in `tracker_names` every N minutes (default 30). Same
     # cron knobs as notion_sync — `coalesce=True` + `max_instances=1`,
-    # first run deferred one interval so a deploy never produces a
-    # surprise stats fetch.
+    # first fire is (now + interval) so a deploy doesn't trigger an
+    # immediate stats fetch.
     from campaign_manager.services.tides_tracker import (
         get_tides_tracker_interval_minutes,
         run_tides_tracker_pull,
@@ -245,7 +243,6 @@ def init_scheduler(database_url: str, hour: int = 6, minute: int = 0):
         coalesce=True,
         max_instances=1,
         misfire_grace_time=300,
-        next_run_time=None,
     )
 
     # Cron-log janitor: reaps cron_log rows stuck in 'running' beyond
