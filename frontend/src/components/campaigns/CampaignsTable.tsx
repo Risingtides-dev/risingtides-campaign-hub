@@ -268,6 +268,7 @@ type SortOption = "start_date" | "a-z" | "cost" | "spend_pct" | "remaining"
 
 const sortOptions: { value: SortOption; label: string }[] = [
   { value: "start_date", label: "Start Date" },
+  { value: "total_views", label: "Total Views" },
   { value: "a-z", label: "A–Z" },
   { value: "cost", label: "Overall Cost" },
   { value: "spend_pct", label: "Spend %" },
