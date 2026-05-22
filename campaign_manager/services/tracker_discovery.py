@@ -23,7 +23,10 @@ Cached for the duration of a process / cron run, refresh once per call.
 from __future__ import annotations
 
 import json
+import logging
+import os
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Set, Tuple
@@ -35,6 +38,8 @@ from campaign_manager.services.tidestracker import (
     TIDESTRACKER_PUBLIC_URL,
 )
 
+logger = logging.getLogger(__name__)
+
 
 # Cache: in-process, module-level. Cleared on process restart.
 _sound_to_trackers_cache: Optional[Dict[str, List[Dict]]] = None
@@ -42,8 +47,109 @@ _cache_timestamp: float = 0.0
 _CACHE_TTL = 600  # 10 minutes — cron runs daily but ad-hoc refreshes need fresh-ish data
 
 
+# ── Sound-ID fetch: prefer Tides Tracker public API, fall back to scrape ──
+#
+# Up to 2026-05-22 every gunicorn worker scraped 89 Cobrand share pages
+# to build the sound map — ~8s on a cold worker, repeated on each
+# 10-minute cache expiry. The tidestracker repo now exposes the same
+# sound IDs at `/api/public/<id>?type=sounds` (served through Vercel's
+# edge cache), so we call that instead.
+#
+# The fallback path stays so this PR is safe to merge before the
+# tidestracker endpoint deploys — and so a tidestracker outage doesn't
+# black-hole the Campaign Hub. After ~one week of clean API traffic we
+# can drop `_extract_promo_data` and its fallback wiring.
+TIDES_PUBLIC_BASE = os.environ.get(
+    "TIDES_TRACKER_PUBLIC_BASE_URL",
+    "https://risingtides-tracker.com",
+).rstrip("/")
+TIDES_SOUNDS_API_TIMEOUT = float(os.environ.get("TIDES_SOUNDS_API_TIMEOUT", "8"))
+
+# When True (default), try the tidestracker API; on any failure for a
+# given tracker, fall back to scraping its Cobrand share page directly.
+# Flip to "false" to force the legacy scrape — useful if the API is
+# returning bad data and we need to roll back without redeploying.
+USE_TIDES_SOUNDS_API = os.environ.get(
+    "USE_TIDES_SOUNDS_API", "true"
+).lower() in ("1", "true", "yes")
+
+# Module-level flag flipped by the first 404 we see. Without this we'd
+# pay one wasted HTTP request per tracker per cache rebuild during the
+# window between merging this code and deploying the tidestracker
+# endpoint. Process-local — a fresh worker re-probes once.
+_tides_sounds_api_available: Optional[bool] = None
+_tides_sounds_api_lock = threading.Lock()
+
+
+def _fetch_sounds_via_tides_api(tracker_id: str) -> Optional[List[Dict]]:
+    """Fetch the configured sound IDs for a tracker via tidestracker public API.
+
+    Returns:
+        - list of {sound_id, sound_title, platform, activation_name} on success
+        - None on any failure (timeout, non-200, bad JSON, missing 'sounds').
+          Caller falls back to the Cobrand share-page scrape.
+
+    Side effect: on the first 404 we see, sets the module-level
+    `_tides_sounds_api_available=False` so subsequent calls in this
+    worker skip the network round-trip and go straight to fallback.
+    Cleared on process restart.
+    """
+    global _tides_sounds_api_available
+    if not tracker_id:
+        return None
+    if _tides_sounds_api_available is False:
+        return None
+    url = f"{TIDES_PUBLIC_BASE}/api/public/{tracker_id}?type=sounds"
+    try:
+        resp = _requests.get(
+            url,
+            timeout=TIDES_SOUNDS_API_TIMEOUT,
+            headers={"Accept": "application/json"},
+        )
+    except _requests.RequestException as e:
+        logger.debug("tides sounds API request failed for %s: %s", tracker_id, e)
+        return None
+    if resp.status_code == 404:
+        # 404 here means the endpoint itself isn't deployed yet (route
+        # missing). 4xx on a known route would still 200 with success:false.
+        # Latch off and stop probing until process restart.
+        with _tides_sounds_api_lock:
+            if _tides_sounds_api_available is None:
+                logger.info(
+                    "tides sounds API returned 404 — endpoint not deployed yet, "
+                    "falling back to Cobrand share-page scrape until process restart"
+                )
+                _tides_sounds_api_available = False
+        return None
+    if resp.status_code != 200:
+        logger.debug(
+            "tides sounds API returned %s for %s", resp.status_code, tracker_id
+        )
+        return None
+    try:
+        payload = resp.json()
+    except ValueError:
+        return None
+    if not isinstance(payload, dict) or not payload.get("success"):
+        return None
+    sounds = payload.get("sounds")
+    if not isinstance(sounds, list):
+        return None
+    # First success after a None probe flips us to True so future calls
+    # skip the latch check at the top.
+    if _tides_sounds_api_available is None:
+        with _tides_sounds_api_lock:
+            if _tides_sounds_api_available is None:
+                _tides_sounds_api_available = True
+    return sounds
+
+
 def _extract_promo_data(share_url: str) -> Optional[dict]:
-    """Fetch a Cobrand share page and pull the embedded promotion JSON."""
+    """Fallback: fetch a Cobrand share page and pull the embedded promotion JSON.
+
+    Kept as a safety net behind `_fetch_sounds_via_tides_api()`. See
+    the module-level comment above the import block for the migration plan.
+    """
     if not share_url or "music.cobrand.com" not in share_url:
         return None
     try:
@@ -65,6 +171,55 @@ def _extract_promo_data(share_url: str) -> Optional[dict]:
         return d.get("props", {}).get("pageProps", {}).get("promotion") or None
     except Exception:
         return None
+
+
+def _sounds_for_tracker(t: Dict) -> Tuple[str, List[Dict], Optional[dict]]:
+    """Resolve the sound IDs for one tracker.
+
+    Returns (tracker_id, sounds_list, promo_or_none) where:
+      - `sounds_list` is the normalised list of {sound_id, sound_title,
+        platform, activation_name} either from the tidestracker API or
+        synthesised from the scraped promo JSON
+      - `promo_or_none` is the raw promo dict if we fell back to
+        scraping (only used to preserve `promo_name` in the legacy
+        path); always None when the API call succeeded
+
+    Pulling this out of the loop body keeps `build_sound_to_trackers_map`
+    readable and lets the ThreadPoolExecutor fan-out work either path
+    identically.
+    """
+    tid = t.get("id") or ""
+    if not tid:
+        return ("", [], None)
+
+    if USE_TIDES_SOUNDS_API:
+        sounds = _fetch_sounds_via_tides_api(tid)
+        if sounds is not None:
+            # Empty list is a valid answer — a tracker can have no
+            # sounds attached yet. We still return success so the
+            # fallback scrape doesn't fire.
+            return (tid, sounds, None)
+
+    # Fallback to share-page scrape. Normalise to the same shape the
+    # API returns so the caller doesn't branch on source.
+    share = t.get("cobrand_share_link") or ""
+    promo = _extract_promo_data(share)
+    if not promo:
+        return (tid, [], None)
+    synthesised: List[Dict] = []
+    for activation in promo.get("activations") or []:
+        seg = activation.get("segment") or {}
+        for sound in seg.get("social_sounds") or []:
+            sid = str(sound.get("id_platform") or "")
+            if not sid:
+                continue
+            synthesised.append({
+                "sound_id": sid,
+                "sound_title": sound.get("title") or "",
+                "platform": (sound.get("platform") or "tiktok").lower(),
+                "activation_name": activation.get("name") or "",
+            })
+    return (tid, synthesised, promo)
 
 
 def build_sound_to_trackers_map(force_refresh: bool = False) -> Dict[str, List[Dict]]:
@@ -100,56 +255,56 @@ def build_sound_to_trackers_map(force_refresh: bool = False) -> Dict[str, List[D
     except Exception:
         archived_ids = set()
 
-    # Fan out the Cobrand share-page fetches in parallel. Each
-    # `_extract_promo_data` was a 15s-timeout HTTP request previously
-    # issued sequentially — with ~66 trackers the cold-cache rebuild
-    # took ~25s wall time. Cap concurrency at 20 to avoid hammering
-    # Cobrand's edge while still amortising network latency. See CAMP-50.
+    # Fan out the per-tracker sound-ID lookups in parallel. Each one
+    # tries the tidestracker public API first (sub-second when warm at
+    # Vercel's edge; ~1s cold) and only falls back to scraping the
+    # Cobrand share page (~1-2s/each) if the API returns nothing.
+    #
+    # History: pre-API, every tracker scraped a Cobrand share page
+    # with a 15s timeout — sequential was ~25s wall time (CAMP-50), and
+    # even after parallelising to 20 workers it was ~8s cold on every
+    # gunicorn worker. The API path moves that work out of the request
+    # critical path.
     fetchable = [
         t for t in trackers
         if t.get("id") and t["id"] not in archived_ids
     ]
-    shares_by_tid: Dict[str, Optional[dict]] = {}
+    sounds_by_tid: Dict[str, Tuple[List[Dict], Optional[dict]]] = {}
     if fetchable:
         with ThreadPoolExecutor(max_workers=20) as ex:
-            shares_by_tid = {
-                t["id"]: promo
-                for t, promo in zip(
-                    fetchable,
-                    ex.map(
-                        lambda t: _extract_promo_data(t.get("cobrand_share_link") or ""),
-                        fetchable,
-                    ),
-                )
-            }
+            for tid, sounds, promo in ex.map(_sounds_for_tracker, fetchable):
+                if tid:
+                    sounds_by_tid[tid] = (sounds, promo)
 
     for t in fetchable:
         tid = t["id"]
         share = t.get("cobrand_share_link") or ""
         name = t.get("name") or ""
 
-        promo = shares_by_tid.get(tid)
-        if not promo:
+        sounds, promo = sounds_by_tid.get(tid, ([], None))
+        if not sounds:
             continue
 
-        promo_name = promo.get("name") or name
-        for activation in promo.get("activations") or []:
-            seg = activation.get("segment") or {}
-            for sound in seg.get("social_sounds") or []:
-                sid = str(sound.get("id_platform") or "")
-                title = sound.get("title") or ""
-                if not sid:
-                    continue
-                sound_map.setdefault(sid, []).append({
-                    "tracker_id": tid,
-                    "tracker_name": name or promo_name,
-                    "tracker_slug": t.get("slug", ""),
-                    "tracker_is_active": t.get("is_active", True),
-                    "promo_name": promo_name,
-                    "activation_name": activation.get("name") or "",
-                    "sound_title": title,
-                    "cobrand_share_link": share,
-                })
+        # `promo_name` came from the scraped promo JSON in the legacy
+        # path. The API doesn't return it (the activation_name is on
+        # each sound), so fall through to the tracker name for the
+        # API-served case. Keeps the response shape stable for callers.
+        promo_name = (promo or {}).get("name") or name
+
+        for sound in sounds:
+            sid = str(sound.get("sound_id") or "")
+            if not sid:
+                continue
+            sound_map.setdefault(sid, []).append({
+                "tracker_id": tid,
+                "tracker_name": name or promo_name,
+                "tracker_slug": t.get("slug", ""),
+                "tracker_is_active": t.get("is_active", True),
+                "promo_name": promo_name,
+                "activation_name": sound.get("activation_name") or "",
+                "sound_title": sound.get("sound_title") or "",
+                "cobrand_share_link": share,
+            })
 
     _sound_to_trackers_cache = sound_map
     _cache_timestamp = now
