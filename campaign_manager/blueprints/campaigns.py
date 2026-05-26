@@ -220,25 +220,15 @@ def get_campaigns() -> List[Dict]:
     Stats come from the Tides Tracker API path (RTA-43) via
     `get_campaign_stats`. Falls back to scraper data per-campaign if a
     tracker is missing or the API is unavailable.
-
-    Bulk-loads creators, matched_videos, and tracker_id mappings up
-    front so the per-campaign work below is pure-Python + cache lookups
-    (no DB roundtrips inside the loop). See CAMP-40.
     """
     if _db.is_active():
-        rows = _db.list_campaigns_with_creators(
-            status="active", with_matched_videos=True
-        )
-        tracker_map = _db.get_campaign_to_tracker_map()
+        metas = _db.list_campaigns(status="active")
         items = []
-        for meta, creators, matched_videos in rows:
+        for meta in metas:
             slug = meta["slug"]
+            creators = _db.get_creators(slug)
             budget = calc_budget(meta, creators)
-            result = get_campaign_stats(
-                slug,
-                matched_videos=matched_videos,
-                tracker_id=tracker_map.get(slug, ""),
-            )
+            result = get_campaign_stats(slug)
             stats = _stats_from_result(meta, creators, result)
             items.append({
                 "slug": slug,
@@ -1325,28 +1315,24 @@ def _get_all_campaigns_data():
     """Return all campaigns (active + completed) with creators and matched videos.
 
     Works in both DB and file-based mode.  Returns a list of dicts, each with
-    keys: slug, meta, creators, matched_videos, tracker_id.
-
-    DB path bulk-loads everything in 3 queries (campaigns + creators +
-    matched_videos via selectinload) + 2 for the tracker map, then groups
-    in Python. See CAMP-49.
+    keys: slug, meta, creators, matched_videos.
     """
     results = []
 
     if _db.is_active():
-        rows = _db.list_campaigns_with_creators(
-            status=None, with_matched_videos=True
-        )
-        tracker_map = _db.get_campaign_to_tracker_map()
-        for meta, creators, matched_videos in rows:
-            slug = meta["slug"]
-            results.append({
-                "slug": slug,
-                "meta": meta,
-                "creators": creators,
-                "matched_videos": matched_videos,
-                "tracker_id": tracker_map.get(slug, ""),
-            })
+        # Query all campaigns regardless of status
+        for status in ("active", "completed"):
+            metas = _db.list_campaigns(status=status)
+            for meta in metas:
+                slug = meta["slug"]
+                creators = _db.get_creators(slug)
+                matched_videos = _db.get_matched_videos(slug)
+                results.append({
+                    "slug": slug,
+                    "meta": meta,
+                    "creators": creators,
+                    "matched_videos": matched_videos,
+                })
     else:
         ensure_dirs()
         for parent_dir in (ACTIVE_DIR, COMPLETED_DIR):
@@ -1365,7 +1351,6 @@ def _get_all_campaigns_data():
                     "meta": meta,
                     "creators": creators,
                     "matched_videos": matched_videos,
-                    "tracker_id": None,  # file mode resolves via DB-less fallback
                 })
 
     return results
@@ -1398,11 +1383,7 @@ def list_creators():
         # aggregating. Falls back to scraper numbers when no API path.
         if _db.is_active():
             try:
-                stats_result = get_campaign_stats(
-                    slug,
-                    matched_videos=matched_videos,
-                    tracker_id=camp.get("tracker_id"),
-                )
+                stats_result = get_campaign_stats(slug, matched_videos=matched_videos)
                 matched_videos = overlay_video_stats(matched_videos, stats_result.submissions)
             except Exception:
                 pass  # leave scraper numbers in place on unexpected failure

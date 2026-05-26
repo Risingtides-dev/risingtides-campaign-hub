@@ -7,13 +7,13 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 EST = ZoneInfo("America/New_York")
 
 from sqlalchemy import create_engine, desc, func
-from sqlalchemy.orm import Session, selectinload, sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 
 from campaign_manager.models import (
     Base, Campaign, Creator, MatchedVideo, ScrapeLog,
@@ -487,41 +487,6 @@ def list_campaigns(status: str = "active", exclude_completed: bool = False) -> L
             query = query.filter(Campaign.completion_status != "completed")
         campaigns = query.all()
         return [c.to_meta_dict() for c in campaigns]
-
-
-def list_campaigns_with_creators(
-    status: str = "active",
-    *,
-    with_matched_videos: bool = False,
-) -> List[Tuple[Dict, List[Dict], List[Dict]]]:
-    """List campaigns with their creators (and optionally matched_videos)
-    eagerly loaded.
-
-    Replaces the per-campaign N+1 of calling `get_creators(slug)` (and
-    optionally `get_matched_videos(slug)`) in a loop. Issues 2 queries
-    when `with_matched_videos=False`, 3 when True — independent of the
-    campaign count.
-
-    Returns a list of (meta_dict, creators_list, matched_videos_list)
-    tuples. When `with_matched_videos=False`, the third element is an
-    empty list.
-    """
-    options = [selectinload(Campaign.creators)]
-    if with_matched_videos:
-        options.append(selectinload(Campaign.matched_videos))
-    with get_session() as s:
-        query = s.query(Campaign).options(*options)
-        if status:
-            query = query.filter_by(status=status)
-        campaigns = query.all()
-        return [
-            (
-                c.to_meta_dict(),
-                [cr.to_dict() for cr in c.creators],
-                [mv.to_dict() for mv in c.matched_videos] if with_matched_videos else [],
-            )
-            for c in campaigns
-        ]
 
 
 def campaign_exists(slug: str) -> bool:
@@ -1112,37 +1077,6 @@ def get_cron_log_by_id(log_id: int) -> Optional[Dict]:
     with get_session() as s:
         log = s.query(CronLog).filter_by(id=log_id).first()
         return log.to_dict() if log else None
-
-
-def reap_orphaned_cron_logs(threshold_minutes: int = 30) -> List[int]:
-    """Mark cron_log rows stuck in 'running' beyond threshold as 'failed'.
-
-    Daemon threads spawned by /api/cron/trigger die on worker recycle, leaving
-    the cron_log row at status='running' forever. This sweeps those and
-    surfaces them in the cron logs view as failures rather than lying about
-    in-flight work.
-    """
-    threshold = datetime.now(EST).replace(tzinfo=None) - timedelta(
-        minutes=threshold_minutes,
-    )
-    reaped: List[int] = []
-    with get_session() as s:
-        stale = (
-            s.query(CronLog)
-            .filter(CronLog.status == "running", CronLog.started_at < threshold)
-            .all()
-        )
-        for row in stale:
-            row.status = "failed"
-            row.finished_at = datetime.now(EST).replace(tzinfo=None)
-            row.summary = {
-                "error": "orphaned: worker recycle killed the daemon thread",
-                "threshold_minutes": threshold_minutes,
-            }
-            reaped.append(row.id)
-        if reaped:
-            s.commit()
-    return reaped
 
 
 # ── Network Creators ─────────────────────────────────────────────────

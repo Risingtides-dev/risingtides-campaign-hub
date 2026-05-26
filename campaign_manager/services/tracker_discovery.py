@@ -25,7 +25,6 @@ from __future__ import annotations
 import json
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Set, Tuple
 
 import requests as _requests
@@ -100,35 +99,16 @@ def build_sound_to_trackers_map(force_refresh: bool = False) -> Dict[str, List[D
     except Exception:
         archived_ids = set()
 
-    # Fan out the Cobrand share-page fetches in parallel. Each
-    # `_extract_promo_data` was a 15s-timeout HTTP request previously
-    # issued sequentially — with ~66 trackers the cold-cache rebuild
-    # took ~25s wall time. Cap concurrency at 20 to avoid hammering
-    # Cobrand's edge while still amortising network latency. See CAMP-50.
-    fetchable = [
-        t for t in trackers
-        if t.get("id") and t["id"] not in archived_ids
-    ]
-    shares_by_tid: Dict[str, Optional[dict]] = {}
-    if fetchable:
-        with ThreadPoolExecutor(max_workers=20) as ex:
-            shares_by_tid = {
-                t["id"]: promo
-                for t, promo in zip(
-                    fetchable,
-                    ex.map(
-                        lambda t: _extract_promo_data(t.get("cobrand_share_link") or ""),
-                        fetchable,
-                    ),
-                )
-            }
-
-    for t in fetchable:
-        tid = t["id"]
+    for t in trackers:
+        tid = t.get("id")
         share = t.get("cobrand_share_link") or ""
         name = t.get("name") or ""
+        if not tid:
+            continue
+        if tid in archived_ids:
+            continue
 
-        promo = shares_by_tid.get(tid)
+        promo = _extract_promo_data(share)
         if not promo:
             continue
 
@@ -179,12 +159,7 @@ def _campaign_sound_ids(meta: dict) -> List[str]:
     return out
 
 
-def find_trackers_for_campaign(
-    meta: dict,
-    *,
-    manual_links: Optional[Dict[str, str]] = None,
-    archived_tids: Optional[Set[str]] = None,
-) -> List[Dict]:
+def find_trackers_for_campaign(meta: dict) -> List[Dict]:
     """Return list of tracker entries linked to this campaign.
 
     Two sources, unioned:
@@ -200,10 +175,6 @@ def find_trackers_for_campaign(
       - `matched_sound_ids`: which campaign sounds overlap (may be empty
         if the link is manual-only)
       - `link_source`: "sound_id" | "manual" | "both"
-
-    Bulk callers (e.g. `list_trackers` looping over all campaigns) can
-    pre-resolve `manual_links` and `archived_tids` once and pass them in
-    to skip the per-campaign DB roundtrip. See CAMP-50.
     """
     from campaign_manager import db as _db
 
@@ -229,16 +200,14 @@ def find_trackers_for_campaign(
 
     # Source 2: manual links (overlay table)
     if slug:
-        if manual_links is None:
-            try:
-                manual_links = _db.get_tracker_campaign_links()  # {tracker_id: slug}
-            except Exception:
-                manual_links = {}
-        if archived_tids is None:
-            try:
-                archived_tids = set(_db.get_tracker_archives().keys())
-            except Exception:
-                archived_tids = set()
+        try:
+            manual_links = _db.get_tracker_campaign_links()  # {tracker_id: slug}
+        except Exception:
+            manual_links = {}
+        try:
+            archived_tids = set(_db.get_tracker_archives().keys())
+        except Exception:
+            archived_tids = set()
         manually_linked_tids = {
             tid
             for tid, s in manual_links.items()

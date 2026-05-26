@@ -1,4 +1,5 @@
-import { useState, useMemo } from "react"
+import { useEffect, useMemo, useState } from "react"
+import { useSearchParams } from "react-router-dom"
 import { useCampaigns } from "@/lib/queries"
 import { CampaignsTable } from "@/components/campaigns/CampaignsTable"
 import { CreateCampaignForm } from "@/components/campaigns/CreateCampaignForm"
@@ -11,8 +12,20 @@ type Tab = "active" | "finished"
 export default function CampaignsList() {
   const { data: campaigns, isLoading, isError, error } = useCampaigns()
   const [showCreate, setShowCreate] = useState(false)
+  const [searchParams, setSearchParams] = useSearchParams()
   const [search, setSearch] = useState("")
   const [tab, setTab] = useState<Tab>("active")
+
+  useEffect(() => {
+    if (searchParams.get("action") === "new") {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev)
+        next.delete("action")
+        return next
+      }, { replace: true })
+      setShowCreate(true)
+    }
+  }, [searchParams, setSearchParams])
 
   const { active, finished } = useMemo(() => {
     if (!campaigns) return { active: [], finished: [] }

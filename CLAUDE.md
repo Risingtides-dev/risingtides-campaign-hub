@@ -4,29 +4,6 @@
 > **Status:** Frontend and backend deployed. Active development on campaign management features.
 > **Handoff:** Read `docs/handoff.md` for next steps and migration plan.
 
-## Team & Repo Routing
-
-**This repo is the canonical home for the `Campaign Hub` Linear team.** Linear issue prefix: `CAMP-NNN`.
-
-Team is the routing primitive — not project. Workspace-wide map:
-
-| Linear team | Canonical GitHub repo |
-|---|---|
-| Campaign Hub | `Risingtides-dev/risingtides-campaign-hub` *(this repo)* |
-| Sales-Agents | `Risingtides-dev/sales-agent` |
-| Ocean-OS    | `Risingtides-dev/ocean-os` |
-| Content-hub | `KINGMAKER-SYSTEMS/content-posting-lab` |
-
-**Rules for agents working on `CAMP-NNN` issues:**
-
-- Use **only** `Risingtides-dev/risingtides-campaign-hub` for implementation, branches, commits, PRs, and code investigation.
-- If a Linear issue mentions or links to a different repo, **flag it as misrouted** and state which repo it should belong to — do not start implementation.
-- Before coding, inspect the issue title, description, parent/related issues, existing GitHub links, and recent PRs to confirm repo fit. If still ambiguous, **stop and ask** instead of guessing.
-- Post all implementation updates back to the Linear issue: branch name, PR link, merge status, and any required follow-up steps.
-- Never open PRs in `sales-agent`, `ocean-os`, or `content-posting-lab` for Campaign Hub work.
-
-**Hard rule:** do not guess the repository. Do not silently switch repositories. If cross-repo work is genuinely required, state that explicitly on the Linear issue before proceeding.
-
 ## What This Is
 
 Internal campaign management platform for Rising Tides -- a social media marketing agency running TikTok/Instagram UGC influencer campaigns for major record labels. This app is where we stage campaigns, book creators, scrape for post links, track budgets/payments, and pull live performance data from Cobrand.

@@ -248,45 +248,14 @@ def init_scheduler(database_url: str, hour: int = 6, minute: int = 0):
         next_run_time=None,
     )
 
-    # Cron-log janitor: reaps cron_log rows stuck in 'running' beyond
-    # CRON_REAP_THRESHOLD_MINUTES (default 30). Daemon threads spawned
-    # from /api/cron/trigger die on worker recycle and leave their rows
-    # stuck forever otherwise.
-    reap_threshold = int(os.environ.get("CRON_REAP_THRESHOLD_MINUTES", "30"))
-    _scheduler.add_job(
-        run_cron_log_janitor,
-        "interval",
-        minutes=5,
-        id="cron_log_janitor",
-        replace_existing=True,
-        coalesce=True,
-        max_instances=1,
-        misfire_grace_time=300,
-        kwargs={"threshold_minutes": reap_threshold},
-    )
-
     _scheduler.start()
     log.info(
         "Scheduler started: campaign_refresh at %02d:%02d, internal_scrape at "
         "%02d:%02d EST, notion_sync every %d minutes, "
-        "tides_tracker_pull every %d minutes, "
-        "cron_log_janitor every 5 minutes (threshold=%d min)",
+        "tides_tracker_pull every %d minutes",
         hour, minute, internal_hour, internal_minute, notion_interval,
-        tides_interval, reap_threshold,
+        tides_interval,
     )
-
-
-def run_cron_log_janitor(threshold_minutes: int = 30):
-    """Reap orphaned cron_log rows. Scheduled every 5 minutes by init_scheduler."""
-    try:
-        reaped = _db.reap_orphaned_cron_logs(threshold_minutes=threshold_minutes)
-        if reaped:
-            log.warning(
-                "JANITOR: reaped %d orphaned cron_log row(s): %s",
-                len(reaped), reaped,
-            )
-    except Exception as e:
-        log.error("JANITOR: failed to reap orphaned cron_log rows: %s", e)
 
 
 def get_scheduler_status() -> dict:
@@ -748,19 +717,13 @@ def _filter_by_date(videos, start_date):
     filtered = []
     excluded_no_ts = 0
     for v in videos:
-        ts = v.get("timestamp")
-        if not ts:
+        ts = v.get("timestamp", "")
+        if not ts or not isinstance(ts, str):
             excluded_no_ts += 1
             continue
-        vdt = None
-        if isinstance(ts, datetime):
-            vdt = ts.date()
-        elif isinstance(ts, str):
-            try:
-                vdt = datetime.fromisoformat(ts).date()
-            except Exception:
-                vdt = None
-        if vdt is None:
+        try:
+            vdt = datetime.fromisoformat(ts).date()
+        except Exception:
             excluded_no_ts += 1
             continue
         if vdt < start_date:

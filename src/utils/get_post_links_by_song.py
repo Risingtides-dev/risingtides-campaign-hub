@@ -13,10 +13,13 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 # Scraping configuration
-IMPERSONATE_TARGETS = ['chrome', 'safari', None]  # Fallback chain
 REQUEST_DELAY = 2.5  # Seconds between accounts to avoid rate limiting
-MAX_RETRIES = 3  # Max retry attempts per impersonation target
+MAX_RETRIES = 3  # Max retry attempts per account
 RATE_LIMIT_WAIT = 60  # Base wait time for 429 errors (multiplied by attempt)
 
 
@@ -34,28 +37,23 @@ def build_profile_url(username):
     """Build TikTok profile URL from username"""
     return f"https://www.tiktok.com/@{username}"
 
-def build_yt_dlp_command(profile_url, limit, impersonate_target=None):
-    """Build yt-dlp command with optional impersonation"""
-    import shutil
+def build_yt_dlp_command(profile_url, limit):
+    """Build the shared hardened yt-dlp command for TikTok."""
+    from src.scrapers.yt_dlp_runner import build_tiktok_cmd
 
-    # Determine yt-dlp command
-    if shutil.which('yt-dlp'):
-        cmd = ['yt-dlp']
-    else:
-        cmd = [sys.executable, '-m', 'yt_dlp']
+    return build_tiktok_cmd(
+        profile_url,
+        flat_playlist=True,
+        dump_json=True,
+        playlist_end=limit,
+    )
 
-    cmd.extend([
-        '--flat-playlist',
-        '--dump-json',
-        '--playlist-end', str(limit),
-    ])
 
-    # Add impersonation if specified
-    if impersonate_target:
-        cmd.extend(['--impersonate', impersonate_target])
+def diagnose_yt_dlp_failure(stderr):
+    """Classify yt-dlp stderr using the shared scraper diagnostics."""
+    from src.scrapers.yt_dlp_runner import diagnose_failure
 
-    cmd.append(profile_url)
-    return cmd
+    return diagnose_failure(stderr)
 
 
 class ScrapeError(Exception):
@@ -76,52 +74,49 @@ def scrape_account_videos(account, start_datetime=None, end_datetime=None, limit
     profile_url = build_profile_url(username)
     print(f"  Scraping @{username}...")
 
-    # Try each impersonation target with retries
     last_error = None
-    for impersonate_target in IMPERSONATE_TARGETS:
-        target_name = impersonate_target or 'none'
+    for attempt in range(MAX_RETRIES):
+        cmd = build_yt_dlp_command(profile_url, limit)
 
-        for attempt in range(MAX_RETRIES):
-            cmd = build_yt_dlp_command(profile_url, limit, impersonate_target)
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
 
-            try:
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            # Check if we got valid output. yt-dlp may still emit warnings on
+            # stderr, so stdout is the source of truth for a successful scrape.
+            if result.stdout.strip():
+                videos, total_fetched, skipped_old = parse_video_output(
+                    result.stdout, username, start_datetime, end_datetime
+                )
 
-                # Check for rate limiting (429)
-                if '429' in result.stderr or 'Too Many Requests' in result.stderr:
-                    wait_time = RATE_LIMIT_WAIT * (attempt + 1)
-                    print(f"    [RATE LIMITED] Waiting {wait_time}s before retry ({attempt + 1}/{MAX_RETRIES})...")
-                    time.sleep(wait_time)
-                    continue
+                date_info = ""
+                if start_datetime and end_datetime:
+                    date_info = f" (window: {start_datetime.strftime('%Y-%m-%d %H:%M')} to {end_datetime.strftime('%Y-%m-%d %H:%M')})"
+                elif start_datetime:
+                    date_info = f" (after {start_datetime.strftime('%Y-%m-%d %H:%M')})"
 
-                # Check if we got valid output (yt-dlp may return non-zero even with warnings)
-                if result.stdout.strip():
-                    # Success - parse the output
-                    videos, total_fetched, skipped_old = parse_video_output(
-                        result.stdout, username, start_datetime, end_datetime
-                    )
+                print(f"    Fetched {total_fetched} posts | {len(videos)} within window{date_info} | {skipped_old} too old")
+                return videos
 
-                    date_info = ""
-                    if start_datetime and end_datetime:
-                        date_info = f" (window: {start_datetime.strftime('%Y-%m-%d %H:%M')} to {end_datetime.strftime('%Y-%m-%d %H:%M')})"
-                    elif start_datetime:
-                        date_info = f" (after {start_datetime.strftime('%Y-%m-%d %H:%M')})"
-
-                    impersonate_info = f" [impersonate={target_name}]" if impersonate_target else ""
-                    print(f"    Fetched {total_fetched} posts | {len(videos)} within window{date_info} | {skipped_old} too old{impersonate_info}")
-                    return videos
-
-                # No output - save error and try next target
-                last_error = result.stderr[:300] if result.stderr else "yt-dlp returned no output (likely blocked)"
-                break  # Move to next impersonation target
-
-            except subprocess.TimeoutExpired:
-                last_error = f"Timeout after 120s"
-                print(f"    [TIMEOUT] Attempt {attempt + 1}/{MAX_RETRIES} with impersonate={target_name}")
+            reason = diagnose_yt_dlp_failure(result.stderr)
+            last_error = (
+                f"[{reason}] {result.stderr[:300]}"
+                if result.stderr
+                else f"[{reason}] yt-dlp returned no output (likely blocked)"
+            )
+            if reason in {"rate_limited", "forbidden", "timeout"} and attempt < MAX_RETRIES - 1:
+                wait_time = RATE_LIMIT_WAIT * (attempt + 1)
+                print(f"    [{reason.upper()}] Waiting {wait_time}s before retry ({attempt + 1}/{MAX_RETRIES})...")
+                time.sleep(wait_time)
                 continue
-            except Exception as e:
-                last_error = str(e)
-                break  # Move to next impersonation target
+            break
+
+        except subprocess.TimeoutExpired:
+            last_error = "Timeout after 120s"
+            print(f"    [TIMEOUT] Attempt {attempt + 1}/{MAX_RETRIES}")
+            continue
+        except Exception as e:
+            last_error = str(e)
+            break
 
     # All attempts failed — raise so caller knows this wasn't "0 videos in window"
     error_msg = f"yt-dlp failed for @{username}: {last_error}"
@@ -510,4 +505,3 @@ Examples:
 
 if __name__ == '__main__':
     main()
-
