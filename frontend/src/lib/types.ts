@@ -139,6 +139,7 @@ export interface InternalGroup {
   kind: string
   sort_order: number
   member_count: number
+  tracker_id: string
   created_at: string
 }
 

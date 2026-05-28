@@ -7,18 +7,19 @@ Stage 1 — `sync_master_pages` (RTA-8):
     Pulls every row from Notion and mirrors it into `notion_master_pages`.
     Records one `notion_sync_log` row per run with counts + per-row errors.
 
-Stage 2 — `resolve_memberships` (RTA-9):
+Stage 2 — `resolve_memberships` (RTA-9; cluster model per CAMP cluster work):
     Reads `notion_master_pages` and reconciles the
     `internal_creator_group_members` table against it. Each Notion row
-    resolves to at most one label group (from `notion_group`) and one
-    booker group (from `poster`); both are slugified via the canonical
-    `slugify()` helper. Missing groups are auto-created with the right
-    kind. Memberships that the mirror no longer attests get removed.
+    resolves to at most one CLUSTER group (from `notion_subgroup`, i.e. the
+    Notion `Group` field), slugified via the canonical `slugify()` helper.
+    Missing cluster groups are auto-created. Memberships the mirror no
+    longer attests get removed. Label (`notion_group`) and booker (`poster`)
+    are NOT read — label is page metadata, booker is not a grouping concept.
 
-    CRITICAL CONSTRAINT: the cleanup pass NEVER touches memberships in
-    groups with `kind='custom'` (e.g. `general`). Those are managed by
-    humans outside the sync; the resolver only owns the label/booker
-    axes.
+    CRITICAL CONSTRAINT: the cleanup pass only touches `kind='cluster'`
+    groups. `kind='custom'` (e.g. `general`) and any legacy
+    `label`/`booked_by` groups left over from the old model are never
+    touched — they're either human-maintained or pending one-time deletion.
 
 Key design choices (apply to both stages):
 - Reuses the property extractor helpers from `campaign_manager.services.notion`
@@ -387,10 +388,16 @@ class ResolveResult:
     sync_log_id: int = 0
 
 
-# Only memberships in these group kinds are managed by the resolver. Anything
-# else (notably `kind='custom'`, e.g. the `general` group) is humanmaintained
-# and survives the cleanup pass intact.
-_MANAGED_KINDS = ("label", "booked_by")
+# Only memberships in this group kind are managed by the resolver. Anything
+# else (notably `kind='custom'`, e.g. the `general` group, and any legacy
+# `label`/`booked_by` groups pending cleanup) is human-maintained and survives
+# the cleanup pass intact.
+#
+# A `cluster` is one bucket of pages — sourced 1:1 from Notion's `Group` field
+# (mirrored as `notion_subgroup`) and mapped 1:1 to a Cobrand sheet /
+# TidesTracker. This is the ONLY axis the resolver classifies by. Label is
+# metadata the resolver never reads; booker is not a grouping concept at all.
+_MANAGED_KINDS = ("cluster",)
 
 
 def _title_from_notion_value(value: str, kind: str) -> str:
@@ -454,9 +461,11 @@ def _desired_memberships_from_mirror(
     """Walk `notion_master_pages` and return the set of (group_id, username)
     tuples that the Notion mirror currently attests.
 
-    Side effects: auto-creates missing label/booker groups, appends informational
-    "group_created" entries to ``errors``, and increments the mutable counters
-    passed in by the caller (list-of-one used as a mutable int).
+    Classifies pages by ONE axis — the cluster (Notion `Group`, mirrored as
+    `notion_subgroup`). Label and booker are deliberately ignored: label is
+    metadata, booker isn't a grouping concept. Side effects: auto-creates
+    missing cluster groups, appends informational "group_created" entries to
+    ``errors``, and increments the mutable counters passed in by the caller.
     """
     cache: Dict[str, InternalCreatorGroup] = {}
     desired: Set[Tuple[int, str]] = set()
@@ -475,41 +484,23 @@ def _desired_memberships_from_mirror(
             })
             continue
 
-        label_raw = (row.notion_group or "").strip()
-        poster_raw = (row.poster or "").strip()
+        cluster_raw = (row.notion_subgroup or "").strip()
 
         resolved_any = False
 
-        if label_raw:
-            label_slug = slugify(label_raw)
-            if label_slug:
+        if cluster_raw:
+            cluster_slug = slugify(cluster_raw)
+            if cluster_slug:
                 group, created = _ensure_group(
-                    session, slug=label_slug, kind="label",
-                    title_source=label_raw, cache=cache,
+                    session, slug=cluster_slug, kind="cluster",
+                    title_source=cluster_raw, cache=cache,
                 )
                 if created:
                     groups_created[0] += 1
                     errors.append({
                         "row_id": page_id,
                         "error_kind": "group_created",
-                        "detail": f"label group {label_slug!r} created",
-                    })
-                desired.add((int(group.id), username))
-                resolved_any = True
-
-        if poster_raw:
-            poster_slug = slugify(poster_raw)
-            if poster_slug:
-                group, created = _ensure_group(
-                    session, slug=poster_slug, kind="booked_by",
-                    title_source=poster_raw, cache=cache,
-                )
-                if created:
-                    groups_created[0] += 1
-                    errors.append({
-                        "row_id": page_id,
-                        "error_kind": "group_created",
-                        "detail": f"booked_by group {poster_slug!r} created",
+                        "detail": f"cluster group {cluster_slug!r} created",
                     })
                 desired.add((int(group.id), username))
                 resolved_any = True
@@ -518,7 +509,7 @@ def _desired_memberships_from_mirror(
             errors.append({
                 "row_id": page_id,
                 "error_kind": "no_attribution",
-                "detail": "no label or booker on this Notion page",
+                "detail": "no cluster (Group) on this Notion page",
             })
 
     return desired

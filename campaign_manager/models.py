@@ -473,19 +473,25 @@ class CronLog(Base):
 # ===================================================================
 
 class InternalCreatorGroup(Base):
-    """Named grouping of internal TikTok creators.
+    """Named grouping of internal TikTok creators — a "cluster" of pages.
 
-    Groups let us bucket creators by who books them (Johnny/Sam/Eric/etc.),
-    by niche, by label (Warner Pages), or by any custom criteria. A creator
-    can belong to many groups via InternalCreatorGroupMember.
+    A cluster = one bucket of pages running a shared catalog/playlist, sourced
+    1:1 from Notion's `Group` field and mapped 1:1 to a Cobrand sheet /
+    TidesTracker. A creator can belong to many groups via
+    InternalCreatorGroupMember. (`kind='custom'` groups like `general` are
+    human-maintained and never touched by the Notion resolver.)
     """
     __tablename__ = "internal_creator_groups"
 
     id = Column(Integer, primary_key=True)
     slug = Column(String(100), unique=True, nullable=False, index=True)
     title = Column(String(255), nullable=False)
-    kind = Column(String(50), default="custom")  # booked_by | label | niche | custom
+    kind = Column(String(50), default="custom")  # cluster | custom (legacy: booked_by | label | niche)
     sort_order = Column(Integer, default=0)
+    # Explicit 1:1 link to a TidesTracker (Cobrand share sheet) UUID. Pinned
+    # by UUID rather than name-matched so it survives tracker/cluster renames.
+    # NULL until set deliberately. See db.set_internal_group_tracker.
+    tracker_id = Column(String(64), default=None)
     created_at = Column(DateTime, default=datetime.now)
 
     members = relationship(
@@ -501,6 +507,7 @@ class InternalCreatorGroup(Base):
             "title": self.title or "",
             "kind": self.kind or "custom",
             "sort_order": self.sort_order or 0,
+            "tracker_id": self.tracker_id or "",
             "created_at": self.created_at.isoformat() if self.created_at else "",
             "member_count": member_count if member_count is not None else len(self.members or []),
         }
