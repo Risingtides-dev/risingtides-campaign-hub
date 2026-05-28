@@ -239,6 +239,13 @@ def init(database_url: Optional[str] = None):
                 "ALTER TABLE internal_creator_groups "
                 "ADD COLUMN IF NOT EXISTS tracker_id VARCHAR(64) NULL"
             ))
+            # Enforce the 1:1 invariant in the schema: no two clusters may pin
+            # the same tracker. Partial so the many NULL (unpinned) groups are
+            # exempt -- only set tracker_ids must be unique.
+            s.execute(sa.text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_internal_groups_tracker_id "
+                "ON internal_creator_groups (tracker_id) WHERE tracker_id IS NOT NULL"
+            ))
 
             # Backfill first_seen_at for any pre-existing row that doesn't
             # have one yet. Idempotent because the WHERE clause only catches

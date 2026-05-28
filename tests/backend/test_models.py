@@ -173,6 +173,12 @@ class TestSmallModels:
         d = g.to_dict(member_count=5)
         assert d["slug"] == "g1"
         assert d["member_count"] == 5
+        assert d["tracker_id"] == ""  # unset cluster->tracker link defaults to ""
+
+    def test_internal_group_to_dict_exposes_tracker_id(self):
+        g = InternalCreatorGroup(slug="sam_barber", title="Sam Barber",
+                                 kind="cluster", tracker_id="1bf00979-0d71")
+        assert g.to_dict()["tracker_id"] == "1bf00979-0d71"
 
     def test_tracker_group_to_dict(self):
         g = TrackerGroup(slug="t1", title="Trackers")

@@ -5,7 +5,7 @@ from datetime import date, datetime
 
 from sqlalchemy import (
     BigInteger, Boolean, Column, Date, DateTime, Float, ForeignKey, Index,
-    Integer, String, Text, UniqueConstraint, create_engine, func
+    Integer, String, Text, UniqueConstraint, create_engine, func, text
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, relationship, sessionmaker
@@ -493,6 +493,20 @@ class InternalCreatorGroup(Base):
     # NULL until set deliberately. See db.set_internal_group_tracker.
     tracker_id = Column(String(64), default=None)
     created_at = Column(DateTime, default=datetime.now)
+
+    __table_args__ = (
+        # Enforce the 1:1 cluster->tracker invariant in the schema, not just in
+        # code: no two groups may pin the same tracker_id. Partial, so the many
+        # NULL (unpinned) groups are exempt. postgresql_where is ignored on
+        # SQLite (tests), where NULLs are already distinct in a unique index —
+        # so the test DB is unaffected.
+        Index(
+            "uq_internal_groups_tracker_id",
+            "tracker_id",
+            unique=True,
+            postgresql_where=text("tracker_id IS NOT NULL"),
+        ),
+    )
 
     members = relationship(
         "InternalCreatorGroupMember",
