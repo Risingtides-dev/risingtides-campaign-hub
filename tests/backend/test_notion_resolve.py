@@ -194,6 +194,31 @@ class TestLegacyKindProtection:
             assert _members(s, "sam_barber") == ["alice"]
 
 
+class TestTrackerIdUniqueness:
+    def test_two_clusters_cannot_pin_same_tracker(self, db):
+        import pytest
+        from sqlalchemy.exc import IntegrityError
+
+        with db.get_session() as s:
+            s.add(InternalCreatorGroup(slug="sam_barber", title="Sam Barber",
+                                       kind="cluster", tracker_id="trk-1"))
+            s.commit()
+        with pytest.raises(IntegrityError):
+            with db.get_session() as s:
+                s.add(InternalCreatorGroup(slug="jack_harlow", title="Jack Harlow",
+                                           kind="cluster", tracker_id="trk-1"))
+                s.commit()
+
+    def test_multiple_clusters_may_have_null_tracker(self, db):
+        # The common case: unpinned clusters all carry NULL and must coexist.
+        with db.get_session() as s:
+            s.add(InternalCreatorGroup(slug="a", title="A", kind="cluster"))
+            s.add(InternalCreatorGroup(slug="b", title="B", kind="cluster"))
+            s.commit()
+            assert _members(s, "a") == []  # both inserted without an IntegrityError
+            assert _members(s, "b") == []
+
+
 class TestErrorPaths:
     def test_row_with_no_cluster_logs_no_attribution(self, db):
         with db.get_session() as s:
