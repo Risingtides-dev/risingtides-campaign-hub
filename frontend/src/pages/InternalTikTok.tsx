@@ -9,11 +9,8 @@ import {
 } from "@/lib/queries"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Loader2, ChevronRight, X, Plus, Trash2 } from "lucide-react"
+import { Loader2, ChevronRight, X, Plus, Trash2, ExternalLink } from "lucide-react"
 import type { InternalGroup } from "@/lib/types"
-
-const PERSON_GROUPS = ["jake_balik", "john_smathers", "sam_hudgens", "eric_cromartie", "johnny_balik", "seeno"]
-const LABEL_GROUPS = ["warner", "atlantic", "warner_test"]
 
 function formatNum(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
@@ -37,20 +34,38 @@ function daysBetween(start: string, end: string): number {
   return Math.max(1, Math.round((e.getTime() - s.getTime()) / (1000 * 60 * 60 * 24)))
 }
 
+// A cluster card: stats from the internal scrape, linking to the cluster's
+// detail/scrape page, plus a deep-link to its TidesTracker when one is pinned.
 function GroupStatsCard({ group, days }: { group: InternalGroup; days: number }) {
   const { data: stats, isLoading } = useInternalGroupStats(group.slug, days)
 
   return (
-    <Link
-      to={`/internal/group/${group.slug}`}
-      className="block bg-white border border-[#e8e8ef] rounded-[10px] p-5 hover:border-[#0b62d6]/40 hover:shadow-sm transition-all"
-    >
+    <div className="bg-white border border-[#e8e8ef] rounded-[10px] p-5 hover:border-[#0b62d6]/40 hover:shadow-sm transition-all">
       <div className="flex items-start justify-between mb-3">
         <div>
-          <h3 className="text-[16px] font-semibold text-[#1a1a2e]">{group.title}</h3>
+          <Link
+            to={`/internal/group/${group.slug}`}
+            className="text-[16px] font-semibold text-[#1a1a2e] hover:text-[#0b62d6]"
+          >
+            {group.title}
+          </Link>
           <p className="text-[12px] text-[#888]">{group.member_count} accounts</p>
         </div>
-        <ChevronRight className="size-4 text-[#888]" />
+        {group.tracker_id ? (
+          <a
+            href={`https://risingtides-tracker.com/${group.tracker_id}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1 text-[12px] text-[#0b62d6] font-medium hover:underline"
+            title="Open Tides Tracker"
+          >
+            Tracker <ExternalLink className="size-3" />
+          </a>
+        ) : (
+          <Link to={`/internal/group/${group.slug}`}>
+            <ChevronRight className="size-4 text-[#888]" />
+          </Link>
+        )}
       </div>
       {isLoading ? (
         <div className="flex items-center gap-2 text-[#888] text-xs">
@@ -72,30 +87,7 @@ function GroupStatsCard({ group, days }: { group: InternalGroup; days: number })
           </div>
         </div>
       ) : null}
-    </Link>
-  )
-}
-
-function ScrapeCard({
-  title,
-  count,
-  linkTo,
-}: {
-  title: string
-  count: number
-  linkTo: string
-}) {
-  return (
-    <Link
-      to={linkTo}
-      className="block bg-white border border-[#e8e8ef] rounded-[10px] p-4 hover:border-[#0b62d6]/40 hover:shadow-sm transition-all"
-    >
-      <div className="text-[14px] font-semibold text-[#1a1a2e] mb-1">{title}</div>
-      <div className="text-[12px] text-[#888] mb-2">{count} accounts</div>
-      <div className="text-[13px] text-[#0b62d6] font-medium">
-        Scrape &amp; View Links →
-      </div>
-    </Link>
+    </div>
   )
 }
 
@@ -116,22 +108,15 @@ export default function InternalTikTok() {
   const addCreators = useAddInternalCreators()
   const removeCreator = useRemoveInternalCreator()
 
-  const personGroups = (groups || [])
-    .filter((g) => PERSON_GROUPS.includes(g.slug))
-    .sort((a, b) => (a.sort_order ?? 99) - (b.sort_order ?? 99))
-
-  const labelGroups = (groups || [])
-    .filter((g) => LABEL_GROUPS.includes(g.slug))
-    .sort((a, b) => (a.sort_order ?? 99) - (b.sort_order ?? 99))
+  // Clusters are the single grouping axis — one bucket of pages per Notion
+  // `Group` value (kind="cluster"), each 1:1 with a Tides Tracker.
+  const clusterGroups = (groups || [])
+    .filter((g) => g.kind === "cluster" && g.member_count > 0)
+    .sort((a, b) => (a.sort_order ?? 99) - (b.sort_order ?? 99) || a.title.localeCompare(b.title))
 
   const allGroups = (groups || [])
     .filter((g) => g.member_count > 0 || g.slug === "general")
     .sort((a, b) => (a.sort_order ?? 99) - (b.sort_order ?? 99))
-
-  const internalCount = personGroups.reduce((sum, g) => sum + g.member_count, 0)
-  const warnerGroup = (groups || []).find((g) => g.slug === "warner")
-  const atlanticGroup = (groups || []).find((g) => g.slug === "atlantic")
-  const warnerTestGroup = (groups || []).find((g) => g.slug === "warner_test")
 
   const sortedCreators = [...(creators || [])].sort(
     (a, b) => (b.total_views ?? 0) - (a.total_views ?? 0)
@@ -188,30 +173,6 @@ export default function InternalTikTok() {
         </div>
       </div>
 
-      {/* Scrape cards — click to enter scrape view with date picker + results */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <ScrapeCard
-          title="Internal Pages"
-          count={internalCount}
-          linkTo="/internal/scrape/internal"
-        />
-        <ScrapeCard
-          title="Warner Pages"
-          count={warnerGroup?.member_count ?? 0}
-          linkTo="/internal/scrape/warner"
-        />
-        <ScrapeCard
-          title="Atlantic Pages"
-          count={atlanticGroup?.member_count ?? 0}
-          linkTo="/internal/scrape/atlantic"
-        />
-        <ScrapeCard
-          title="Warner Test Pages"
-          count={warnerTestGroup?.member_count ?? 0}
-          linkTo="/internal/scrape/warner_test"
-        />
-      </div>
-
       {/* Tabs */}
       <div className="flex gap-1 mb-5 border-b border-[#e8e8ef]">
         {[
@@ -260,28 +221,21 @@ export default function InternalTikTok() {
             <div className="flex items-center justify-center py-12">
               <Loader2 className="size-5 animate-spin text-[#888]" />
             </div>
-          ) : (
+          ) : clusterGroups.length > 0 ? (
             <>
-              {/* Person groups */}
-              <h2 className="text-[15px] font-semibold text-[#1a1a2e] mb-3">Internal Pages</h2>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-                {personGroups.map((g) => (
+              {/* Clusters — one card per Notion `Group`, each 1:1 with a tracker */}
+              <h2 className="text-[15px] font-semibold text-[#1a1a2e] mb-3">Clusters</h2>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {clusterGroups.map((g) => (
                   <GroupStatsCard key={g.slug} group={g} days={statsDays} />
                 ))}
               </div>
-
-              {/* Label groups */}
-              {labelGroups.length > 0 && (
-                <>
-                  <h2 className="text-[15px] font-semibold text-[#1a1a2e] mb-3">Label Pages</h2>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {labelGroups.map((g) => (
-                      <GroupStatsCard key={g.slug} group={g} days={statsDays} />
-                    ))}
-                  </div>
-                </>
-              )}
             </>
+          ) : (
+            <div className="text-center py-12 text-[#888] text-sm">
+              No clusters yet. Clusters populate from the Notion <code>Group</code> field
+              on the next sync — add a <code>Group</code> value to pages in Master Pages.
+            </div>
           )}
         </div>
       )}
@@ -380,9 +334,7 @@ export default function InternalTikTok() {
               onChange={(e) => setNewGroupKind(e.target.value)}
               className="h-9 px-2 text-sm border border-[#e8e8ef] rounded-md bg-white text-[#1a1a2e]"
             >
-              <option value="booked_by">booked_by</option>
-              <option value="label">label</option>
-              <option value="niche">niche</option>
+              <option value="cluster">cluster</option>
               <option value="custom">custom</option>
             </select>
             <Button type="submit" size="sm" className="bg-[#0b62d6] hover:bg-[#0951b5] text-white h-9 px-4">

@@ -233,6 +233,13 @@ def init(database_url: Optional[str] = None):
                 "ON matched_videos (dismissed_at)"
             ))
 
+            # Explicit cluster -> TidesTracker link (CAMP cluster work).
+            # A cluster of pages maps 1:1 to a Cobrand sheet / tracker UUID.
+            s.execute(sa.text(
+                "ALTER TABLE internal_creator_groups "
+                "ADD COLUMN IF NOT EXISTS tracker_id VARCHAR(64) NULL"
+            ))
+
             # Backfill first_seen_at for any pre-existing row that doesn't
             # have one yet. Idempotent because the WHERE clause only catches
             # NULLs, and once stamped a row never goes back.
@@ -1342,6 +1349,7 @@ def _group_to_dict(group: "InternalCreatorGroup", member_count: int) -> Dict:
         "title": group.title or "",
         "kind": group.kind or "custom",
         "sort_order": group.sort_order or 0,
+        "tracker_id": getattr(group, "tracker_id", None) or "",
         "created_at": group.created_at.isoformat() if group.created_at else "",
         "member_count": member_count,
     }
@@ -1418,6 +1426,10 @@ def update_internal_group(group_id: int, fields: Dict) -> Optional[Dict]:
                 g.sort_order = int(fields["sort_order"])
             except (TypeError, ValueError):
                 pass
+        if "tracker_id" in fields:
+            # "" / None clears the link; any other value pins the UUID.
+            tid = fields["tracker_id"]
+            g.tracker_id = (str(tid).strip() or None) if tid else None
         s.commit()
         n = s.query(func.count(InternalCreatorGroupMember.username))\
             .filter_by(group_id=g.id).scalar() or 0

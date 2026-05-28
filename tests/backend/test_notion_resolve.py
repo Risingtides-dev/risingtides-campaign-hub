@@ -1,7 +1,11 @@
-"""Tests for resolve_memberships (RTA-9).
+"""Tests for resolve_memberships — cluster model (CAMP cluster work).
 
 These tests bypass the Notion fetch entirely — they seed the
 `notion_master_pages` mirror directly and exercise the resolver.
+
+The resolver classifies pages by ONE axis: the cluster, sourced from
+`notion_subgroup` (Notion's `Group` field). Label (`notion_group`) and
+booker (`poster`) are NOT read.
 """
 from __future__ import annotations
 
@@ -25,17 +29,22 @@ def _seed_mirror(
     session,
     *,
     account_username: str,
+    cluster: str = "",
     notion_group: str = "",
     poster: str = "",
     page_id: UUID | None = None,
     last_edited: datetime | None = None,
 ) -> UUID:
+    """Seed one mirror row. ``cluster`` is the grouping axis (notion_subgroup);
+    ``notion_group`` (label) and ``poster`` (booker) are metadata the resolver
+    must ignore — they're here so tests can prove they're ignored."""
     pid = page_id or uuid4()
     session.add(NotionMasterPage(
         notion_page_id=pid,
         account_username=account_username,
         notion_group=notion_group or None,
         poster=poster or None,
+        notion_subgroup=cluster or None,
         notion_last_edited_at=last_edited or datetime.now(timezone.utc),
     ))
     session.commit()
@@ -43,8 +52,7 @@ def _seed_mirror(
 
 
 def _members(session, slug: str):
-    """Return sorted list of usernames in the group with this slug. Empty list
-    if the group itself does not exist."""
+    """Return sorted usernames in the group with this slug. Empty if no group."""
     grp = session.query(InternalCreatorGroup).filter_by(slug=slug).one_or_none()
     if grp is None:
         return []
@@ -62,66 +70,82 @@ def _seed_group(session, *, slug: str, kind: str, title: str | None = None) -> i
 
 
 # ---------------------------------------------------------------------------
-# Slug helper
+# Title helper
 # ---------------------------------------------------------------------------
 
 class TestTitleHelper:
-    def test_label_titlecases_allcaps(self):
-        assert notion_sync._title_from_notion_value("WARNER", "label") == "Warner"
-
-    def test_booker_keeps_freetext_casing(self):
-        assert notion_sync._title_from_notion_value("Jake Balik", "booked_by") == "Jake Balik"
+    def test_cluster_preserves_casing(self):
+        # Cluster titles keep their Notion casing — "Warner UGC", not "Warner Ugc".
+        assert notion_sync._title_from_notion_value("Warner UGC", "cluster") == "Warner UGC"
 
     def test_empty_string_passes_through(self):
-        assert notion_sync._title_from_notion_value("", "label") == ""
+        assert notion_sync._title_from_notion_value("", "cluster") == ""
 
 
 # ---------------------------------------------------------------------------
-# resolve_memberships
+# resolve_memberships — cluster axis
 # ---------------------------------------------------------------------------
 
 class TestHappyPath:
-    def test_three_rows_create_warner_and_jake_memberships(self, db):
+    def test_rows_create_cluster_groups(self, db):
         with db.get_session() as s:
-            for u in ("brew.pilled", "beaujenkins", "codyjames6.7"):
-                _seed_mirror(s, account_username=u, notion_group="WARNER", poster="Jake Balik")
+            for u in ("brew.pilled", "beaujenkins"):
+                _seed_mirror(s, account_username=u, cluster="Sam Barber")
 
         result = notion_sync.resolve_memberships(triggered_by="manual:test")
 
-        assert result.rows_processed == 3
-        assert result.memberships_added == 6  # 3 users x 2 axes
+        assert result.rows_processed == 2
+        assert result.memberships_added == 2   # one cluster axis only
         assert result.memberships_removed == 0
-        assert result.groups_created == 2  # warner + jake_balik
+        assert result.groups_created == 1       # sam_barber
         assert result.sync_log_id > 0
 
         with db.get_session() as s:
-            assert _members(s, "warner") == ["beaujenkins", "brew.pilled", "codyjames6.7"]
-            assert _members(s, "jake_balik") == ["beaujenkins", "brew.pilled", "codyjames6.7"]
+            grp = s.query(InternalCreatorGroup).filter_by(slug="sam_barber").one()
+            assert grp.kind == "cluster"
+            assert grp.title == "Sam Barber"
+            assert _members(s, "sam_barber") == ["beaujenkins", "brew.pilled"]
 
-    def test_groups_get_correct_kind_when_auto_created(self, db):
+    def test_label_and_booker_are_ignored(self, db):
+        # A page with a label + booker but NO cluster resolves to nothing.
         with db.get_session() as s:
-            _seed_mirror(s, account_username="alice", notion_group="ATLANTIC", poster="Eric Cromartie")
+            _seed_mirror(s, account_username="alice", notion_group="WARNER", poster="Jake Balik")
 
-        notion_sync.resolve_memberships()
+        result = notion_sync.resolve_memberships()
+
+        assert result.memberships_added == 0
+        assert result.groups_created == 0
+        with db.get_session() as s:
+            # No label/booker groups were created.
+            assert s.query(InternalCreatorGroup).filter_by(slug="warner").one_or_none() is None
+            assert s.query(InternalCreatorGroup).filter_by(slug="jake_balik").one_or_none() is None
+        # It's logged as unattributed.
+        assert [e for e in result.errors if e["error_kind"] == "no_attribution"]
+
+
+class TestSlugNormalization:
+    def test_cluster_variants_collapse_to_one_group(self, db):
+        with db.get_session() as s:
+            _seed_mirror(s, account_username="alice", cluster="Mon Rovia")
+            _seed_mirror(s, account_username="bob", cluster="mon rovia")
+            _seed_mirror(s, account_username="carol", cluster="Mon Rovia ")
+
+        result = notion_sync.resolve_memberships()
+        assert result.groups_created == 1  # mon_rovia, only
 
         with db.get_session() as s:
-            atl = s.query(InternalCreatorGroup).filter_by(slug="atlantic").one()
-            eric = s.query(InternalCreatorGroup).filter_by(slug="eric_cromartie").one()
-            assert atl.kind == "label"
-            assert atl.title == "Atlantic"
-            assert eric.kind == "booked_by"
-            assert eric.title == "Eric Cromartie"
+            assert _members(s, "mon_rovia") == ["alice", "bob", "carol"]
 
 
 class TestIdempotency:
     def test_second_run_is_a_noop(self, db):
         with db.get_session() as s:
-            _seed_mirror(s, account_username="alice", notion_group="WARNER", poster="Jake")
+            _seed_mirror(s, account_username="alice", cluster="Warner UGC")
 
         first = notion_sync.resolve_memberships()
         second = notion_sync.resolve_memberships()
 
-        assert first.memberships_added == 2
+        assert first.memberships_added == 1
         assert second.memberships_added == 0
         assert second.memberships_removed == 0
         assert second.groups_created == 0
@@ -129,68 +153,51 @@ class TestIdempotency:
 
 class TestRemoval:
     def test_membership_no_longer_in_mirror_gets_removed(self, db):
-        # Stage A: alice is in WARNER per Notion -> resolver adds her.
         with db.get_session() as s:
-            _seed_mirror(s, account_username="alice", notion_group="WARNER")
+            _seed_mirror(s, account_username="alice", cluster="Sam Barber")
         notion_sync.resolve_memberships()
 
-        # Stage B: Notion now says alice is in ATLANTIC instead. Mirror gets
-        # rewritten (the sync stage would do this; we simulate it).
+        # Notion now says alice is in Jack Harlow instead.
         with db.get_session() as s:
             s.query(NotionMasterPage).delete()
             s.commit()
-            _seed_mirror(s, account_username="alice", notion_group="ATLANTIC")
+            _seed_mirror(s, account_username="alice", cluster="Jack Harlow")
 
         result = notion_sync.resolve_memberships()
-        assert result.memberships_added == 1   # atlantic
-        assert result.memberships_removed == 1  # warner
+        assert result.memberships_added == 1    # jack_harlow
+        assert result.memberships_removed == 1  # sam_barber
 
         with db.get_session() as s:
-            assert _members(s, "warner") == []
-            assert _members(s, "atlantic") == ["alice"]
+            assert _members(s, "sam_barber") == []
+            assert _members(s, "jack_harlow") == ["alice"]
 
 
-class TestCustomKindProtection:
-    def test_custom_group_membership_survives_resolve(self, db):
-        # Pre-create a `general` (custom) group with a member that has
-        # nothing to do with Notion.
+class TestLegacyKindProtection:
+    def test_custom_and_legacy_groups_survive_resolve(self, db):
+        # A `general` (custom) group and a leftover `label` group both have
+        # members unrelated to the cluster axis. Neither may be touched.
         with db.get_session() as s:
             gid = _seed_group(s, slug="general", kind="custom", title="General")
             s.add(InternalCreatorGroupMember(group_id=gid, username="random_internal_account"))
+            lid = _seed_group(s, slug="warner", kind="label", title="Warner Pages")
+            s.add(InternalCreatorGroupMember(group_id=lid, username="legacy_warner_acct"))
             s.commit()
-
-            # Seed Notion mirror with a totally different account.
-            _seed_mirror(s, account_username="alice", notion_group="WARNER")
+            _seed_mirror(s, account_username="alice", cluster="Sam Barber")
 
         notion_sync.resolve_memberships()
 
         with db.get_session() as s:
-            # The custom-group membership is untouched.
+            # Both legacy/custom memberships untouched.
             assert _members(s, "general") == ["random_internal_account"]
-            # The Notion-driven membership is added.
-            assert _members(s, "warner") == ["alice"]
-
-    def test_custom_membership_for_user_also_in_notion_survives(self, db):
-        # Edge case: the SAME username is in a custom group AND a Notion
-        # label group. The custom membership must not be touched by the
-        # resolver's removal pass even though the user is "covered" elsewhere.
-        with db.get_session() as s:
-            gid = _seed_group(s, slug="general", kind="custom")
-            s.add(InternalCreatorGroupMember(group_id=gid, username="alice"))
-            s.commit()
-            _seed_mirror(s, account_username="alice", notion_group="WARNER")
-
-        notion_sync.resolve_memberships()
-
-        with db.get_session() as s:
-            assert _members(s, "general") == ["alice"]
-            assert _members(s, "warner") == ["alice"]
+            assert _members(s, "warner") == ["legacy_warner_acct"]
+            # The cluster membership is added.
+            assert _members(s, "sam_barber") == ["alice"]
 
 
 class TestErrorPaths:
-    def test_row_with_no_group_or_poster_logs_no_attribution(self, db):
+    def test_row_with_no_cluster_logs_no_attribution(self, db):
         with db.get_session() as s:
-            pid = _seed_mirror(s, account_username="orphan", notion_group="", poster="")
+            pid = _seed_mirror(s, account_username="orphan", cluster="")
 
         result = notion_sync.resolve_memberships()
         assert result.memberships_added == 0
@@ -199,13 +206,11 @@ class TestErrorPaths:
         assert no_attr[0]["row_id"] == str(pid)
 
     def test_missing_account_username_in_mirror_logs_error(self, db):
-        # account_username is NOT NULL in the schema, but the resolver
-        # still defends in case of ' ' / ''.
         with db.get_session() as s:
             s.add(NotionMasterPage(
                 notion_page_id=uuid4(),
                 account_username="   ",  # whitespace, strip()s to ''
-                notion_group="WARNER",
+                notion_subgroup="Sam Barber",
                 notion_last_edited_at=datetime.now(timezone.utc),
             ))
             s.commit()
@@ -215,27 +220,10 @@ class TestErrorPaths:
         assert result.memberships_added == 0
 
 
-class TestSlugNormalization:
-    def test_freetext_poster_variants_collapse_to_one_group(self, db):
-        # Notion has the same booker spelled three different ways across
-        # three different rows. Resolver should slugify each to `jake_balik`
-        # and write all three accounts into the same group.
-        with db.get_session() as s:
-            _seed_mirror(s, account_username="alice", poster="Jake Balik")
-            _seed_mirror(s, account_username="bob", poster="jake balik")
-            _seed_mirror(s, account_username="carol", poster="Jake Balik ")
-
-        result = notion_sync.resolve_memberships()
-        assert result.groups_created == 1  # jake_balik, only
-
-        with db.get_session() as s:
-            assert _members(s, "jake_balik") == ["alice", "bob", "carol"]
-
-
 class TestSyncLogIntegration:
     def test_writes_fresh_log_row_when_no_id_passed(self, db):
         with db.get_session() as s:
-            _seed_mirror(s, account_username="alice", notion_group="WARNER")
+            _seed_mirror(s, account_username="alice", cluster="Sam Barber")
 
         result = notion_sync.resolve_memberships(triggered_by="manual:test")
 
@@ -245,13 +233,10 @@ class TestSyncLogIntegration:
             assert log.triggered_by == "manual:test"
             assert log.memberships_added == 1
             assert log.memberships_removed == 0
-            # Page-level counts are untouched (this stage didn't fetch).
             assert log.pages_fetched is None
             assert log.pages_added is None
 
     def test_updates_existing_log_row_when_id_passed(self, db):
-        # Simulate the cron's natural flow: sync_master_pages writes a row,
-        # then resolve_memberships adds its counts to the same row.
         with db.get_session() as s:
             existing = NotionSyncLog(
                 started_at=datetime.now(timezone.utc),
@@ -265,7 +250,7 @@ class TestSyncLogIntegration:
             s.commit()
             existing_id = existing.id
 
-            _seed_mirror(s, account_username="alice", notion_group="WARNER")
+            _seed_mirror(s, account_username="alice", cluster="Sam Barber")
 
         result = notion_sync.resolve_memberships(
             triggered_by="cron", sync_log_id=existing_id,
@@ -274,28 +259,21 @@ class TestSyncLogIntegration:
 
         with db.get_session() as s:
             log = s.query(NotionSyncLog).filter_by(id=existing_id).one()
-            # Original page-level counts preserved.
             assert log.pages_fetched == 10
             assert log.pages_added == 10
             assert log.sync_type == "full"
-            # Membership counts layered on.
             assert log.memberships_added == 1
             assert log.memberships_removed == 0
-            # finished_at updated.
             assert log.finished_at is not None
-            # Errors are MERGED: original sync-stage entry preserved + any
-            # informational entries the resolver appended (e.g. "group_created"
-            # when warner gets auto-created here).
             errors = log.errors or []
             kinds = [e["error_kind"] for e in errors]
-            assert "missing_account_username" in kinds  # the original
-            assert "group_created" in kinds  # added by the resolver
+            assert "missing_account_username" in kinds   # the original
+            assert "group_created" in kinds              # added by the resolver
 
     def test_falls_through_to_fresh_log_if_passed_id_does_not_exist(self, db):
         with db.get_session() as s:
-            _seed_mirror(s, account_username="alice", notion_group="WARNER")
+            _seed_mirror(s, account_username="alice", cluster="Sam Barber")
 
-        # ID 999999 doesn't exist -> resolver should still record audit.
         result = notion_sync.resolve_memberships(sync_log_id=999999)
         assert result.sync_log_id != 999999
         assert result.sync_log_id > 0
