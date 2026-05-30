@@ -1,3 +1,15 @@
+// Controlled vocabulary for creator niches.
+// Extend this list to add new niches — the UI derives its picker options from here.
+export const NICHE_VOCAB = [
+  "trucks",
+  "country face",
+  "anime",
+  "movie edits",
+  "naturetok",
+] as const
+
+export type Niche = typeof NICHE_VOCAB[number]
+
 // Campaign types
 export interface CampaignBudget {
   total: number
@@ -272,6 +284,7 @@ export interface CreatorProfile {
   username: string
   platform: string
   paypal_email: string
+  niches: string[]
   stats: {
     campaigns_count: number
     total_posts_owed: number

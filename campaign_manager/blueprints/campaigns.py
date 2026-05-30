@@ -1644,10 +1644,26 @@ def creator_profile(username: str):
     if total_views > 0:
         avg_cpm = round((total_spend / total_views) * 1_000, 2)
 
+    # Merge niches from all creator rows for this username
+    niches: List[str] = []
+    if _db.is_active():
+        with _db.get_session() as s:
+            from campaign_manager.models import Creator as _Creator
+            from sqlalchemy import func as _func
+            rows = s.query(_Creator.niches).filter(
+                _func.lower(_Creator.username) == uname_lower,
+                _Creator.niches.isnot(None),
+            ).all()
+        for (row_niches,) in rows:
+            for n in (row_niches or []):
+                if n and n not in niches:
+                    niches.append(n)
+
     return jsonify({
         "username": username,
         "platform": platform,
         "paypal_email": paypal_email,
+        "niches": niches,
         "stats": {
             "campaigns_count": len(campaigns_list),
             "total_posts_owed": total_posts_owed,
@@ -1661,6 +1677,45 @@ def creator_profile(username: str):
         "campaigns": campaigns_list,
         "videos": all_videos,
     })
+
+
+# -------------------------------------------------------------------
+# PATCH /api/creators/<username>/niches
+# -------------------------------------------------------------------
+@campaigns_bp.patch("/api/creators/<username>/niches")
+def update_creator_niches(username: str):
+    """Set niches on every Creator row for this username (cross-campaign).
+
+    Body: {"niches": ["trucks", "anime"]}
+    Validates against NICHE_VOCAB but passes through unknown values so
+    the list is extensible without a backend deploy.
+    """
+    data = request.get_json(silent=True) or {}
+    niches = data.get("niches")
+    if niches is None or not isinstance(niches, list):
+        return jsonify({"error": "niches must be a list"}), 400
+
+    cleaned = [str(n).strip().lower() for n in niches if str(n).strip()]
+    cleaned = list(dict.fromkeys(cleaned))  # deduplicate, preserve order
+
+    if not _db.is_active():
+        return jsonify({"error": "Database not available"}), 503
+
+    uname_lower = username.lower()
+    with _db.get_session() as s:
+        from campaign_manager.models import Creator as _Creator
+        from sqlalchemy import func as _func
+        rows = s.query(_Creator).filter(
+            _func.lower(_Creator.username) == uname_lower,
+        ).all()
+        if not rows:
+            return jsonify({"error": f"Creator @{username} not found"}), 404
+        for row in rows:
+            row.niches = cleaned
+        s.commit()
+        updated = len(rows)
+
+    return jsonify({"ok": True, "updated": updated, "niches": cleaned})
 
 
 # ---------------------------------------------------------------------------

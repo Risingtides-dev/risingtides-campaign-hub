@@ -8,7 +8,7 @@ import {
   type SortingState,
   useReactTable,
 } from "@tanstack/react-table"
-import { ArrowUpDown, ArrowUp, ArrowDown, Pencil, Trash2, Loader2, X } from "lucide-react"
+import { ArrowUpDown, ArrowUp, ArrowDown, Pencil, Trash2, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -28,6 +28,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog"
 import type { Creator } from "@/lib/types"
+import { NICHE_VOCAB } from "@/lib/types"
 
 // ---- Types ----
 
@@ -47,7 +48,6 @@ interface EditState {
   paypalEmail: string
   notes: string
   niches: string[]
-  nicheInput: string
 }
 
 // Niche color palette
@@ -152,7 +152,6 @@ export function CreatorsTable({
     paypalEmail: "",
     notes: "",
     niches: [],
-    nicheInput: "",
   })
   const editStateRef = useRef(editState)
   editStateRef.current = editState
@@ -165,6 +164,7 @@ export function CreatorsTable({
   )
   const [removeConfirm, setRemoveConfirm] = useState<string | null>(null)
   const [sorting, setSorting] = useState<SortingState>([])
+  const [nicheFilter, setNicheFilter] = useState<string | null>(null)
 
   function startEdit(creator: Creator) {
     setEditingUsername(creator.username)
@@ -174,7 +174,6 @@ export function CreatorsTable({
       paypalEmail: creator.paypal_email || "",
       notes: creator.notes || "",
       niches: creator.niches || [],
-      nicheInput: "",
     })
   }
 
@@ -183,13 +182,13 @@ export function CreatorsTable({
   }
 
   function saveEdit(username: string) {
-    const current = editStateRef.current
+    const s = editStateRef.current
     onEditCreator(username, {
-      posts_owed: parseInt(current.postsOwed, 10),
-      total_rate: parseFloat(current.totalRate),
-      paypal_email: current.paypalEmail,
-      notes: current.notes,
-      niches: current.niches,
+      posts_owed: parseInt(s.postsOwed, 10),
+      total_rate: parseFloat(s.totalRate),
+      paypal_email: s.paypalEmail,
+      notes: s.notes,
+      niches: s.niches,
     })
     setEditingUsername(null)
   }
@@ -199,11 +198,21 @@ export function CreatorsTable({
     setRemoveConfirm(null)
   }
 
-  // Filter to active creators (status !== "removed")
-  const activeCreators = useMemo(
-    () => creators.filter((c) => c.status !== "removed"),
-    [creators]
-  )
+  // All unique niches present in this campaign's creator roster
+  const allNiches = useMemo(() => {
+    const set = new Set<string>()
+    creators.forEach((c) => (c.niches || []).forEach((n) => set.add(n)))
+    return Array.from(set).sort()
+  }, [creators])
+
+  // Filter to active creators, then apply niche filter
+  const activeCreators = useMemo(() => {
+    let result = creators.filter((c) => c.status !== "removed")
+    if (nicheFilter) {
+      result = result.filter((c) => (c.niches || []).includes(nicheFilter))
+    }
+    return result
+  }, [creators, nicheFilter])
 
   const columns: ColumnDef<Creator>[] = useMemo(
     () => [
@@ -255,31 +264,33 @@ export function CreatorsTable({
         cell: ({ row }) => {
           const c = row.original
           if (editingUsername === c.username) {
+            const current = editStateRef.current.niches
             return (
-              <div className="flex flex-wrap gap-1 items-center max-w-[180px]">
-                {editStateRef.current.niches.map((n) => (
-                  <span key={n} className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-medium ${getNicheColor(n)}`}>
-                    {n}
-                    <button type="button" onClick={() => setEditState((s) => ({ ...s, niches: s.niches.filter((x) => x !== n) }))}>
-                      <X className="size-2.5" />
-                    </button>
-                  </span>
-                ))}
-                <Input
-                  value={editStateRef.current.nicheInput}
-                  onChange={(e) => setEditState((s) => ({ ...s, nicheInput: e.target.value }))}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault()
-                      const val = editStateRef.current.nicheInput.trim().toLowerCase()
-                      if (val && !editStateRef.current.niches.includes(val)) {
-                        setEditState((s) => ({ ...s, niches: [...s.niches, val], nicheInput: "" }))
+              <div className="flex flex-wrap gap-1 items-center max-w-[220px]">
+                {NICHE_VOCAB.map((n) => {
+                  const active = current.includes(n)
+                  return (
+                    <button
+                      key={n}
+                      type="button"
+                      onClick={() =>
+                        setEditState((s) => ({
+                          ...s,
+                          niches: active
+                            ? s.niches.filter((x) => x !== n)
+                            : [...s.niches, n],
+                        }))
                       }
-                    }
-                  }}
-                  placeholder="+ niche"
-                  className="w-[70px] h-6 text-[10px] px-1"
-                />
+                      className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium border transition-all ${
+                        active
+                          ? getNicheColor(n) + " border-transparent"
+                          : "bg-white text-[#999] border-[#ddd] hover:border-[#aaa]"
+                      }`}
+                    >
+                      {n}
+                    </button>
+                  )
+                })}
               </div>
             )
           }
@@ -456,6 +467,7 @@ export function CreatorsTable({
         },
       },
     ],
+    // editState is accessed via ref inside cells; no dep needed here
     [editingUsername, isEditing, isRemoving, isToggling, onTogglePaid, updateField]
   )
 
@@ -470,6 +482,36 @@ export function CreatorsTable({
 
   return (
     <>
+      {/* Niche filter chips — only shown when at least one creator has niches */}
+      {allNiches.length > 0 && (
+        <div className="flex items-center gap-1.5 flex-wrap mb-3">
+          <span className="text-[11px] text-[#999] uppercase tracking-wide">Niche:</span>
+          {allNiches.map((niche) => (
+            <button
+              key={niche}
+              type="button"
+              onClick={() => setNicheFilter(nicheFilter === niche ? null : niche)}
+              className={`inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-medium transition-all ${
+                nicheFilter === niche
+                  ? getNicheColor(niche) + " ring-2 ring-offset-1 ring-current"
+                  : "bg-[#f0f0f5] text-[#666] hover:bg-[#e4e4ed]"
+              }`}
+            >
+              {niche}
+            </button>
+          ))}
+          {nicheFilter && (
+            <button
+              type="button"
+              onClick={() => setNicheFilter(null)}
+              className="text-[11px] text-[#999] hover:text-[#555] underline"
+            >
+              clear
+            </button>
+          )}
+        </div>
+      )}
+
       <div className="bg-white border border-[#e8e8ef] rounded-[10px] overflow-hidden">
         <div className="overflow-x-auto">
         <Table>
