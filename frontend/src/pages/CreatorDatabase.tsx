@@ -259,6 +259,21 @@ export default function CreatorDatabase() {
         ),
       },
       {
+        accessorKey: "avg_recent_views",
+        header: ({ column }) => (
+          <SortableHeader column={column} label="Avg Views (30 posts)" />
+        ),
+        cell: ({ row }) => (
+          <span className="text-[14px]">
+            {row.original.avg_recent_views != null
+              ? row.original.avg_recent_views.toLocaleString("en-US")
+              : <span className="text-[#ccc]">{"—"}</span>}
+          </span>
+        ),
+        sortingFn: (rowA, rowB) =>
+          (rowA.original.avg_recent_views ?? -1) - (rowB.original.avg_recent_views ?? -1),
+      },
+      {
         accessorKey: "avg_cpm",
         header: ({ column }) => (
           <SortableHeader column={column} label="Avg CPM" />

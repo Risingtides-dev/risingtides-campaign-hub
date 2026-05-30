@@ -1457,13 +1457,22 @@ def list_creators():
 
         # Build a views-by-account map for this campaign. Skip rows the
         # team has dismissed as false-positive matches (issue #32).
+        # Also collect (upload_date, views) tuples per account for the
+        # rolling avg computation.
         views_by_account: Dict[str, int] = {}
+        video_records_by_account: Dict[str, List] = {}
         for v in matched_videos:
             if v.get("dismissed_at"):
                 continue
             acct = (v.get("account", "") or "").lstrip("@").lower()
-            if acct:
-                views_by_account[acct] = views_by_account.get(acct, 0) + int(v.get("views", 0) or 0)
+            if not acct:
+                continue
+            views_by_account[acct] = views_by_account.get(acct, 0) + int(v.get("views", 0) or 0)
+            upload_date = (v.get("upload_date", "") or "").strip()
+            if upload_date:
+                video_records_by_account.setdefault(acct, []).append(
+                    (upload_date, int(v.get("views", 0) or 0))
+                )
 
         for c in creators:
             if c.get("status", "active") == "removed":
@@ -1487,6 +1496,7 @@ def list_creators():
                     "paypal_email": c.get("paypal_email", ""),
                     "niches": [],
                     "_platforms": [],
+                    "_video_records": [],
                 }
 
             entry = creator_map[key]
@@ -1497,6 +1507,7 @@ def list_creators():
             if str(c.get("paid", "no")).lower() == "yes":
                 entry["total_payout"] += float(c.get("total_rate", 0) or 0)
             entry["total_views"] += views_by_account.get(key, 0)
+            entry["_video_records"].extend(video_records_by_account.get(key, []))
             entry["_platforms"].append(c.get("platform", "tiktok"))
 
             # Keep latest non-empty paypal
@@ -1509,7 +1520,7 @@ def list_creators():
                 if n and n not in entry["niches"]:
                     entry["niches"].append(n)
 
-    # Finalize: compute avg_cpm, pick most common platform, remove internals
+    # Finalize: compute avg_cpm, avg_recent_views, pick most common platform
     results = []
     for entry in creator_map.values():
         platforms = entry.pop("_platforms", [])
@@ -1522,6 +1533,17 @@ def list_creators():
             )
         else:
             entry["avg_cpm"] = None
+
+        # Rolling avg views: last 30 matched posts by upload date, newest first.
+        video_records = sorted(
+            entry.pop("_video_records", []),
+            key=lambda x: x[0],
+            reverse=True,
+        )
+        recent = video_records[:30]
+        entry["avg_recent_views"] = (
+            round(sum(v for _, v in recent) / len(recent)) if recent else None
+        )
 
         entry["total_spend"] = round(entry["total_spend"], 2)
         entry["total_payout"] = round(entry["total_payout"], 2)
