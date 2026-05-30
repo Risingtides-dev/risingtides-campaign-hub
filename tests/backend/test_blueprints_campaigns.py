@@ -145,3 +145,49 @@ class TestEditCampaign:
             json={"match_strategy": "strict"},
         )
         assert resp.status_code == 200
+
+
+class TestCreatorNichesRoundtrip:
+    """Regression: niches field was omitted from campaign_detail creator response,
+    causing the frontend to silently overwrite stored niches with [] on every edit."""
+
+    def _slug(self):
+        return "sam_barber_fever_dream"
+
+    def test_niches_present_in_campaign_detail_after_add(self, client):
+        _create(client)
+        client.post(
+            f"/api/campaign/{self._slug()}/creator/add",
+            json={"username": "testcreator", "posts_owed": 2, "total_rate": 400,
+                  "niches": ["fashion", "lifestyle"]},
+        )
+        detail = client.get(f"/api/campaign/{self._slug()}").get_json()
+        creator = next(c for c in detail["creators"] if c["username"] == "testcreator")
+        assert creator["niches"] == ["fashion", "lifestyle"]
+
+    def test_niches_survive_edit_roundtrip(self, client):
+        _create(client)
+        client.post(
+            f"/api/campaign/{self._slug()}/creator/add",
+            json={"username": "testcreator", "posts_owed": 2, "total_rate": 400,
+                  "niches": ["fashion"]},
+        )
+        # Edit creator, explicitly passing the niches back (as the frontend does
+        # when it reads niches from the detail response and echoes them on save).
+        client.post(
+            f"/api/campaign/{self._slug()}/creator/testcreator/edit",
+            json={"posts_owed": 3, "total_rate": 600, "niches": ["fashion"]},
+        )
+        detail = client.get(f"/api/campaign/{self._slug()}").get_json()
+        creator = next(c for c in detail["creators"] if c["username"] == "testcreator")
+        assert creator["niches"] == ["fashion"]
+
+    def test_empty_niches_field_present_when_no_niches_set(self, client):
+        _create(client)
+        client.post(
+            f"/api/campaign/{self._slug()}/creator/add",
+            json={"username": "bare", "posts_owed": 1, "total_rate": 200},
+        )
+        detail = client.get(f"/api/campaign/{self._slug()}").get_json()
+        creator = next(c for c in detail["creators"] if c["username"] == "bare")
+        assert creator["niches"] == []

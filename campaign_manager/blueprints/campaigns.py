@@ -582,6 +582,7 @@ def campaign_detail(slug: str):
                 "added_date": c.get("added_date", ""),
                 "status": c.get("status", "active"),
                 "notes": c.get("notes", ""),
+                "niches": c.get("niches", []),
             }
             for c in active
         ],
