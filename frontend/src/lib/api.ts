@@ -138,6 +138,11 @@ export const api = {
   getCreators: () => request<CreatorSummary[]>("/api/creators"),
   getCreatorProfile: (username: string) =>
     request<CreatorProfile>(`/api/creators/${username}`),
+  updateCreatorNiches: (username: string, niches: string[]) =>
+    request<ApiOk & { updated: number; niches: string[] }>(
+      `/api/creators/${username}/niches`,
+      { method: "PATCH", body: JSON.stringify({ niches }) }
+    ),
 
   // TidesTracker
   createTracker: (slug: string) =>

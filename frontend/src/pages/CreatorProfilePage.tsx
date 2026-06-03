@@ -16,8 +16,9 @@ import {
   ExternalLink,
   Loader2,
 } from "lucide-react"
-import { useCreatorProfile } from "@/lib/queries"
+import { useCreatorProfile, useUpdateCreatorNiches } from "@/lib/queries"
 import type { CreatorCampaignEntry, CreatorVideo } from "@/lib/types"
+import { NICHE_VOCAB } from "@/lib/types"
 import {
   Table,
   TableBody,
@@ -45,6 +46,28 @@ function formatViews(value: number): string {
 function formatCpm(value: number | null): string {
   if (value === null || value === undefined) return "-"
   return `$${value.toFixed(2)}`
+}
+
+// ---- Niche Colors ----
+
+const NICHE_COLORS: Record<string, string> = {}
+const COLOR_PALETTE = [
+  "bg-blue-100 text-blue-700",
+  "bg-purple-100 text-purple-700",
+  "bg-green-100 text-green-700",
+  "bg-amber-100 text-amber-700",
+  "bg-rose-100 text-rose-700",
+  "bg-cyan-100 text-cyan-700",
+  "bg-indigo-100 text-indigo-700",
+  "bg-orange-100 text-orange-700",
+  "bg-teal-100 text-teal-700",
+  "bg-pink-100 text-pink-700",
+]
+function getNicheColor(niche: string): string {
+  if (!NICHE_COLORS[niche]) {
+    NICHE_COLORS[niche] = COLOR_PALETTE[Object.keys(NICHE_COLORS).length % COLOR_PALETTE.length]
+  }
+  return NICHE_COLORS[niche]
 }
 
 // ---- TikTok Icon ----
@@ -100,6 +123,9 @@ export default function CreatorProfilePage() {
   const { data: profile, isLoading, isError, error } = useCreatorProfile(
     username!
   )
+  const updateNiches = useUpdateCreatorNiches(username!)
+  const [editingNiches, setEditingNiches] = useState(false)
+  const [pendingNiches, setPendingNiches] = useState<string[]>([])
 
   const [campaignSorting, setCampaignSorting] = useState<SortingState>([])
   const [videoSorting, setVideoSorting] = useState<SortingState>([
@@ -364,30 +390,114 @@ export default function CreatorProfilePage() {
       </div>
 
       {/* Header */}
-      <div className="bg-white border border-[#e8e8ef] rounded-[10px] px-6 py-5 flex items-center justify-between">
-        <div>
-          <h1 className="text-[22px] font-semibold text-[#1a1a2e]">
-            @{profile.username}
-          </h1>
-          {profile.paypal_email && (
-            <p className="text-[13px] text-[#888] mt-0.5">
-              PayPal: {profile.paypal_email}
-            </p>
-          )}
-        </div>
-        <a
-          href={`https://www.tiktok.com/@${profile.username}`}
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Button
-            variant="outline"
-            className="gap-2"
+      <div className="bg-white border border-[#e8e8ef] rounded-[10px] px-6 py-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex-1 min-w-0">
+            <h1 className="text-[22px] font-semibold text-[#1a1a2e]">
+              @{profile.username}
+            </h1>
+            {profile.paypal_email && (
+              <p className="text-[13px] text-[#888] mt-0.5">
+                PayPal: {profile.paypal_email}
+              </p>
+            )}
+
+            {/* Niche tags */}
+            <div className="mt-3">
+              {editingNiches ? (
+                <div className="space-y-2">
+                  <div className="flex flex-wrap gap-1.5">
+                    {NICHE_VOCAB.map((n) => {
+                      const active = pendingNiches.includes(n)
+                      return (
+                        <button
+                          key={n}
+                          type="button"
+                          onClick={() =>
+                            setPendingNiches((prev) =>
+                              active ? prev.filter((x) => x !== n) : [...prev, n]
+                            )
+                          }
+                          className={`inline-flex items-center px-2.5 py-1 rounded-full text-[12px] font-medium border transition-all ${
+                            active
+                              ? getNicheColor(n) + " border-transparent"
+                              : "bg-white text-[#999] border-[#ddd] hover:border-[#aaa]"
+                          }`}
+                        >
+                          {n}
+                        </button>
+                      )
+                    })}
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      className="bg-[#0b62d6] hover:bg-[#0951b5] text-white"
+                      disabled={updateNiches.isPending}
+                      onClick={() => {
+                        updateNiches.mutate(pendingNiches, {
+                          onSuccess: () => setEditingNiches(false),
+                        })
+                      }}
+                    >
+                      {updateNiches.isPending ? (
+                        <Loader2 className="size-3 animate-spin mr-1" />
+                      ) : null}
+                      Save
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setEditingNiches(false)}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 flex-wrap">
+                  {(profile.niches || []).length === 0 ? (
+                    <span className="text-[12px] text-[#bbb]">No niches tagged</span>
+                  ) : (
+                    (profile.niches || []).map((n) => (
+                      <span
+                        key={n}
+                        className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium ${getNicheColor(n)}`}
+                      >
+                        {n}
+                      </span>
+                    ))
+                  )}
+                  <button
+                    type="button"
+                    className="text-[11px] text-[#0b62d6] hover:underline ml-1"
+                    onClick={() => {
+                      setPendingNiches(profile.niches || [])
+                      setEditingNiches(true)
+                    }}
+                  >
+                    {(profile.niches || []).length === 0 ? "Add niches" : "Edit"}
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <a
+            href={`https://www.tiktok.com/@${profile.username}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="shrink-0"
           >
-            <TikTokIcon className="size-4" />
-            View on TikTok
-          </Button>
-        </a>
+            <Button
+              variant="outline"
+              className="gap-2"
+            >
+              <TikTokIcon className="size-4" />
+              View on TikTok
+            </Button>
+          </a>
+        </div>
       </div>
 
       {/* Stat Cards */}

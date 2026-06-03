@@ -171,6 +171,17 @@ export function useCreatorProfile(username: string) {
   })
 }
 
+export function useUpdateCreatorNiches(username: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (niches: string[]) => api.updateCreatorNiches(username, niches),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: keys.creatorProfile(username) })
+      qc.invalidateQueries({ queryKey: keys.creators })
+    },
+  })
+}
+
 // --- TidesTracker ---
 
 export function useCreateTracker(slug: string) {
