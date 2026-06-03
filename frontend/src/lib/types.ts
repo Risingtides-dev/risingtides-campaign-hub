@@ -318,6 +318,7 @@ export interface CreatorSummary {
   total_payout: number
   total_views: number
   avg_cpm: number | null
+  avg_recent_views: number | null
   platform: string
   paypal_email: string
   niches: string[]
