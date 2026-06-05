@@ -182,12 +182,19 @@ def _account_medians(session: Session, min_posts: int) -> Dict[str, int]:
     }
 
 
-def creator_drilldown(session: Session, account: str) -> Optional[Dict[str, Any]]:
+def creator_drilldown(
+    session: Session, account: str, with_outcomes: bool = False
+) -> Optional[Dict[str, Any]]:
     """Full sound-breaking story for one creator.
 
     Returns sound-by-sound performance, the velocity distribution, and
     lifecycle timing (how early in each campaign's life they posted —
     early adoption is the gold signal for sound-breakers).
+
+    When `with_outcomes` is set, also pulls per-creator Cobrand outcome data
+    (shares + comments — the sound-spread signal labels care about) from the
+    campaigns this creator appears in. This is a slower network call, so it's
+    opt-in.
     """
     norm = account if account.startswith("@") else f"@{account}"
 
@@ -244,8 +251,7 @@ def creator_drilldown(session: Session, account: str) -> Optional[Dict[str, Any]
             else "mid" if d is not None else "unknown"
         )
 
-    # Velocity distribution: histogram buckets for the sparkline/curve.
-    return {
+    result = {
         "account": norm,
         "posts": posts,
         "avg_views": round(sum(all_views) / posts),
@@ -265,7 +271,53 @@ def creator_drilldown(session: Session, account: str) -> Optional[Dict[str, Any]
             posts,
             len(sounds),
         ),
+        "outcomes": None,
     }
+
+    if with_outcomes:
+        result["outcomes"] = _aggregate_outcomes(session, norm)
+
+    return result
+
+
+def _aggregate_outcomes(session: Session, account: str) -> Optional[Dict[str, Any]]:
+    """Sum Cobrand per-creator outcomes (shares/comments) across ALL campaigns
+    that expose Cobrand data.
+
+    Important: Cobrand submissions are independent of our scraper's
+    matched_videos — a creator can have a tracked Cobrand submission on a
+    campaign where our matcher never linked their post. So we check every
+    campaign with a share URL (only a handful), not just matched ones.
+    Returns None if the creator has no reachable Cobrand submissions.
+    """
+    from campaign_manager.services.cobrand_outcomes import creator_outcomes
+
+    share_campaigns = (
+        session.query(Campaign.slug, Campaign.cobrand_share_url)
+        .filter(Campaign.cobrand_share_url != "")
+        .all()
+    )
+
+    totals: Dict[str, Any] = {"views": 0, "likes": 0, "comments": 0, "shares": 0, "posts": 0, "campaigns": 0}
+    found = False
+    for _slug, url in share_campaigns:
+        oc = creator_outcomes(url, account)
+        if not oc:
+            continue
+        found = True
+        totals["campaigns"] += 1
+        for k in ("views", "likes", "comments", "shares", "posts"):
+            totals[k] += oc.get(k, 0)
+
+    if not found:
+        return None
+
+    tv = totals["views"]
+    totals["engagement_rate"] = round(
+        (totals["likes"] + totals["comments"] + totals["shares"]) / tv * 100, 2
+    ) if tv else 0.0
+    totals["outcome_score"] = totals["shares"] + totals["comments"]
+    return totals
 
 
 def _days_after_start(upload_date: str, start_date: str) -> Optional[int]:

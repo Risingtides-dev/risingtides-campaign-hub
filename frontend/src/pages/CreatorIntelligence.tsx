@@ -8,7 +8,7 @@ import {
   Tooltip as RTooltip,
 } from "recharts"
 import { Search, Zap, TrendingUp, Layers, Radio, X } from "lucide-react"
-import { useBreakers, useCreatorIntel } from "@/lib/queries"
+import { useBreakers, useCreatorIntel, useCreatorOutcomes } from "@/lib/queries"
 import type { BreakerLens, BreakerRow, SoundTiming } from "@/lib/types"
 
 /* ============================================================
@@ -207,6 +207,8 @@ export default function CreatorIntelligence() {
    ============================================================ */
 function CreatorDrawer({ account, onClose }: { account: string; onClose: () => void }) {
   const { data, isLoading } = useCreatorIntel(account)
+  const { data: outcomeData, isLoading: outcomesLoading } = useCreatorOutcomes(account, true)
+  const outcomes = outcomeData?.outcomes ?? null
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
@@ -240,6 +242,34 @@ function CreatorDrawer({ account, onClose }: { account: string; onClose: () => v
               <Stat label="Early/scout" value={`${data.early_adopter_rate}%`} accent={data.early_adopter_rate >= 40} />
               <Stat label="Peak" value={fmtViews(data.peak_views)} />
             </div>
+
+            {/* Outcome delivered (Cobrand) — the signal labels actually care about */}
+            <section className="mt-7">
+              <SectionLabel>Outcome delivered · Cobrand</SectionLabel>
+              {outcomesLoading && (
+                <div className="mt-3 rounded-xl border border-white/6 bg-rt-bg-card/40 px-4 py-5 text-center text-xs text-rt-fg-tertiary">
+                  Pulling live outcome data…
+                </div>
+              )}
+              {!outcomesLoading && !outcomes && (
+                <div className="mt-3 rounded-xl border border-white/6 bg-rt-bg-card/40 px-4 py-5 text-center text-xs text-rt-fg-tertiary">
+                  No Cobrand submissions found for this creator.
+                </div>
+              )}
+              {outcomes && (
+                <div className="mt-3 overflow-hidden rounded-xl border border-rt-magenta/20 bg-gradient-to-br from-rt-magenta/[0.07] to-rt-purple/[0.05]">
+                  <div className="grid grid-cols-3 divide-x divide-white/6">
+                    <OutcomeStat label="Shares" value={fmtViews(outcomes.shares)} hero />
+                    <OutcomeStat label="Comments" value={fmtViews(outcomes.comments)} />
+                    <OutcomeStat label="Engagement" value={`${outcomes.engagement_rate}%`} />
+                  </div>
+                  <div className="border-t border-white/6 px-4 py-2.5 text-[11px] text-rt-fg-tertiary">
+                    across {outcomes.campaigns} campaign{outcomes.campaigns !== 1 ? "s" : ""} ·{" "}
+                    {fmtViews(outcomes.views)} tracked views · shares drive sound spread
+                  </div>
+                </div>
+              )}
+            </section>
 
             {/* Velocity distribution */}
             <section className="mt-7">
@@ -325,6 +355,17 @@ function Stat({ label, value, accent }: { label: string; value: string; accent?:
     <div className="rounded-xl border border-white/6 bg-rt-bg-card/50 px-3 py-3">
       <div className="text-[10px] uppercase tracking-[0.14em] text-rt-fg-tertiary">{label}</div>
       <div className={`rt-num mt-1 text-lg font-semibold ${accent ? "rt-gradient-text" : "text-rt-fg"}`}>
+        {value}
+      </div>
+    </div>
+  )
+}
+
+function OutcomeStat({ label, value, hero }: { label: string; value: string; hero?: boolean }) {
+  return (
+    <div className="px-4 py-4">
+      <div className="text-[10px] uppercase tracking-[0.14em] text-rt-fg-tertiary">{label}</div>
+      <div className={`rt-num mt-1 text-xl font-bold ${hero ? "rt-gradient-text" : "text-rt-fg"}`}>
         {value}
       </div>
     </div>

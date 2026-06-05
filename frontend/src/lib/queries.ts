@@ -758,3 +758,14 @@ export function useCreatorIntel(account: string | null) {
     staleTime: 5 * 60 * 1000,
   })
 }
+
+// Cobrand outcome enrichment — slower (network calls to Cobrand), loaded
+// on demand when the user opens a creator dossier.
+export function useCreatorOutcomes(account: string | null, enabled: boolean) {
+  return useQuery({
+    queryKey: ["intelligence", "creator", account, "outcomes"],
+    queryFn: () => api.getCreatorIntel(account as string, true),
+    enabled: !!account && enabled,
+    staleTime: 10 * 60 * 1000,
+  })
+}

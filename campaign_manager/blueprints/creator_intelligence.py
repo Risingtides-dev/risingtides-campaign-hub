@@ -47,10 +47,16 @@ def get_breakers():
 
 @creator_intelligence_bp.get("/api/intelligence/creator/<path:account>")
 def get_creator(account: str):
-    """Full sound-breaking drilldown for one creator."""
+    """Full sound-breaking drilldown for one creator.
+
+    Query params:
+      - outcomes: "1" to enrich with Cobrand per-creator outcome data
+        (shares/comments — slower, opt-in)
+    """
+    with_outcomes = request.args.get("outcomes") == "1"
     session = _db.get_session()
     try:
-        data = creator_drilldown(session, account)
+        data = creator_drilldown(session, account, with_outcomes=with_outcomes)
         if data is None:
             return jsonify({"error": "creator not found or has no tracked posts"}), 404
         return jsonify(data)

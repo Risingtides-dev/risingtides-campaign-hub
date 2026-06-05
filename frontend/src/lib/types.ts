@@ -611,6 +611,17 @@ export interface ViewBand {
   count: number
 }
 
+export interface CreatorOutcomes {
+  views: number
+  likes: number
+  comments: number
+  shares: number
+  posts: number
+  campaigns: number
+  engagement_rate: number
+  outcome_score: number
+}
+
 export interface CreatorDrilldown {
   account: string
   posts: number
@@ -624,4 +635,5 @@ export interface CreatorDrilldown {
   sounds: CreatorSound[]
   view_distribution: ViewBand[]
   score_balanced: number
+  outcomes: CreatorOutcomes | null
 }

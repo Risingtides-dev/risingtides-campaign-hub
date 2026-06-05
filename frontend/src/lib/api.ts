@@ -147,9 +147,9 @@ export const api = {
     request<BreakerResponse>(
       `/api/intelligence/breakers?lens=${lens}&limit=${limit}&min_posts=${minPosts}`
     ),
-  getCreatorIntel: (account: string) =>
+  getCreatorIntel: (account: string, withOutcomes = false) =>
     request<CreatorDrilldown>(
-      `/api/intelligence/creator/${encodeURIComponent(account)}`
+      `/api/intelligence/creator/${encodeURIComponent(account)}${withOutcomes ? "?outcomes=1" : ""}`
     ),
   updateCreatorNiches: (username: string, niches: string[]) =>
     request<ApiOk & { updated: number; niches: string[] }>(
