@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Campaign Hub — PR Pipeline</title>
+<style>
+  :root{
+    --bg:#060606;--bg2:#0A0A0A;--panel:#12151c;--ink:#FAFCFF;--ink2:#B8B9BB;--ink3:#6f7178;
+    --faint:rgba(255,255,255,.10);--rule:rgba(255,255,255,.07);
+    --magenta:#E100C3;--purple:#8500D7;
+    --open:#4D7CFF;--merged:#8500D7;--closed:#FF3B3B;--done:#1ED760;--review:#FFB020;}
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{background:var(--bg);color:var(--ink);font:11px/1.5 'Poppins','Helvetica Neue',Arial,sans-serif;}
+  body::before{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
+    background-image:linear-gradient(var(--rule) 1px,transparent 1px),linear-gradient(90deg,var(--rule) 1px,transparent 1px);
+    background-size:32px 32px;opacity:.5;}
+  body::after{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
+    background:radial-gradient(640px 360px at 10% -5%,rgba(225,0,195,.09),transparent 60%),radial-gradient(560px 420px at 95% 0%,rgba(133,0,215,.09),transparent 55%);}
+  #wrap{position:relative;z-index:1;max-width:1100px;margin:0 auto;padding:0 20px 60px;}
+  header{position:sticky;top:0;background:rgba(6,6,6,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--faint);padding:14px 0;display:flex;align-items:center;gap:14px;z-index:10;}
+  header .brand{font-size:12px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;
+    background:linear-gradient(90deg,var(--magenta),var(--purple));-webkit-background-clip:text;background-clip:text;color:transparent;}
+  header .sub{font-size:9px;color:var(--ink3);letter-spacing:.06em;}
+  header .live{margin-left:auto;font-size:9px;color:var(--done);letter-spacing:.08em;display:flex;align-items:center;gap:5px;}
+  header .live .dot{width:6px;height:6px;border-radius:50%;background:var(--done);animation:pulse 1.4s infinite;}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+  #prs{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px;margin:18px 0;}
+  .prcard{border:1px solid var(--faint);border-radius:10px;padding:11px 13px;background:var(--bg2);}
+  .prcard:hover{background:var(--panel);}
+  .prcard .n{font:700 10px 'SF Mono',ui-monospace,monospace;}
+  .prcard .st{font-size:7px;letter-spacing:.1em;text-transform:uppercase;padding:2px 6px;border-radius:7px;color:#060606;margin-left:5px;font-weight:700;}
+  .st.OPEN{background:var(--open);color:#fff;} .st.MERGED{background:var(--merged);color:#fff;} .st.CLOSED{background:var(--closed);color:#fff;}
+  .prcard .t{font-size:10px;font-weight:600;margin:6px 0 4px;line-height:1.3;color:var(--ink);}
+  .prcard .meta{font:8px 'SF Mono',ui-monospace,monospace;color:var(--ink3);}
+  .prcard a{color:inherit;text-decoration:none;}
+  .prcard.merge-ready{border-left:3px solid var(--done);box-shadow:0 0 30px rgba(30,215,96,.08);}
+  .prcard .ready-tag{display:inline-block;font:700 7px 'SF Mono',ui-monospace,monospace;color:var(--done);border:1px solid var(--done);border-radius:4px;padding:1px 5px;margin-top:6px;letter-spacing:.08em;}
+  h2{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink2);border-bottom:1px solid var(--faint);padding-bottom:6px;margin:24px 0 0;}
+  .ev{display:grid;grid-template-columns:64px 1fr;gap:0;border-bottom:1px solid var(--rule);}
+  .ev .when{padding:10px 8px;font:8px 'SF Mono',ui-monospace,monospace;color:var(--ink3);border-right:1px solid var(--rule);}
+  .ev .body{padding:10px 12px;}
+  .ev .who{font:700 9px 'SF Mono',ui-monospace,monospace;}
+  .ev .who.bot{color:var(--magenta);}
+  .ev .where{font:8px 'SF Mono',ui-monospace,monospace;color:var(--ink3);margin-left:6px;}
+  .ev .txt{font-size:10px;margin-top:4px;line-height:1.5;color:var(--ink2);}
+  .ev .pill{display:inline-block;font:700 7px 'SF Mono',ui-monospace,monospace;background:var(--open);color:#fff;padding:2px 6px;border-radius:3px;margin-right:6px;}
+  .ev.new{animation:flash 1.2s;}
+  @keyframes flash{from{background:rgba(225,0,195,.12);}to{background:transparent;}}
+  .empty{padding:30px;text-align:center;color:var(--ink3);font-size:10px;}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <header>
+    <div><div class="brand">Campaign Hub — PR Pipeline</div><div class="sub">review · merge · deploy — live</div></div>
+    <div class="live"><span class="dot"></span><span id="stamp">connecting…</span></div>
+  </header>
+  <div id="prs"><div class="empty">loading PRs…</div></div>
+  <h2>Review &amp; Comment Activity</h2>
+  <div id="events"><div class="empty">loading activity…</div></div>
+</div>
+<script>
+const REPO='Risingtides-dev/risingtides-campaign-hub';
+let lastStamp=null, seen=new Set();
+function esc(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+function rel(iso){if(!iso)return'';const d=new Date(iso),s=(Date.now()-d)/1000;
+  if(s<60)return Math.floor(s)+'s';if(s<3600)return Math.floor(s/60)+'m';if(s<86400)return Math.floor(s/3600)+'h';return Math.floor(s/86400)+'d';}
+function whoClass(u){return /\[bot\]|claude|codex|github-actions/i.test(u)?'bot':'';}
+async function poll(){
+  try{
+    const r=await fetch('pr-feed.json?ts='+Date.now(),{cache:'no-store'}); if(!r.ok)return; const d=await r.json();
+    if(d.updated===lastStamp){document.getElementById('stamp').textContent='synced '+rel(d.updated)+' ago';return;}
+    lastStamp=d.updated; renderPRs(d.prs||[]); renderEvents(d.events||[]);
+    document.getElementById('stamp').textContent='synced just now';
+  }catch(e){document.getElementById('stamp').textContent='waiting for feed…';}
+}
+function renderPRs(prs){
+  const el=document.getElementById('prs');
+  if(!prs.length){el.innerHTML='<div class="empty">no PRs — nothing in the pipeline yet</div>';return;}
+  el.innerHTML=prs.map(p=>{const st=(p.state||'').toUpperCase();
+    const ready=(p.mergeable==='MERGEABLE'&&st==='OPEN'&&!p.isDraft&&p.reviewDecision==='APPROVED');
+    return `<div class="prcard ${ready?'merge-ready':''}"><a href="https://github.com/${REPO}/pull/${p.number}" target="_blank">
+      <span class="n">#${p.number}</span><span class="st ${st}">${st}</span>
+      <div class="t">${esc(p.title)}</div>
+      <div class="meta">${esc(p.headRefName||'')} · ${rel(p.updatedAt)} ago${p.reviewDecision?' · '+p.reviewDecision.toLowerCase().replace('_',' '):''}</div>
+      ${ready?'<span class="ready-tag">✓ MERGE-READY</span>':''}</a></div>`;
+  }).join('');
+}
+function renderEvents(evs){
+  const el=document.getElementById('events');
+  if(!evs.length){el.innerHTML='<div class="empty">no review activity yet</div>';return;}
+  el.innerHTML=evs.map(e=>{const key=e.pr+'|'+e.at+'|'+(e.path||'');const isNew=!seen.has(key);seen.add(key);
+    return `<div class="ev ${isNew?'new':''}"><div class="when">${rel(e.at)} ago</div>
+      <div class="body"><span class="pill">PR #${e.pr}</span><span class="who ${whoClass(e.user)}">${esc(e.user)}</span>
+      <span class="where">${esc(e.path||'')}${e.line?':'+e.line:''}</span><div class="txt">${esc(e.body)}</div></div></div>`;
+  }).join('');
+}
+poll(); setInterval(poll,5000);
+</script>
+</body>
+</html>
