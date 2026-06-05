@@ -145,7 +145,7 @@ export default function CreatorProfilePage() {
           return (
             <Link
               to={`/campaign/${c.slug}`}
-              className="font-semibold text-[#0b62d6] hover:underline"
+              className="font-semibold text-rt-magenta hover:underline"
             >
               {c.title}
             </Link>
@@ -186,8 +186,8 @@ export default function CreatorProfilePage() {
             <span
               className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-semibold ${
                 isPaid
-                  ? "bg-[#f0fdf4] text-[#16a34a]"
-                  : "bg-[#fef2f2] text-[#dc2626]"
+                  ? "bg-rt-green/10 text-rt-green"
+                  : "bg-rt-red/10 text-rt-red"
               }`}
             >
               {isPaid ? "Paid" : "Unpaid"}
@@ -206,8 +206,8 @@ export default function CreatorProfilePage() {
             <span
               className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-semibold ${
                 status === "active"
-                  ? "bg-[#eef2ff] text-[#0b62d6]"
-                  : "bg-[#f5f5f5] text-[#888]"
+                  ? "bg-rt-magenta/10 text-rt-magenta"
+                  : "bg-white/5 text-rt-fg-tertiary"
               }`}
             >
               {status.charAt(0).toUpperCase() + status.slice(1)}
@@ -239,7 +239,7 @@ export default function CreatorProfilePage() {
         cell: ({ row }) => (
           <Link
             to={`/campaign/${row.original.campaign_slug}`}
-            className="text-[#0b62d6] hover:underline text-[13px]"
+            className="text-rt-magenta hover:underline text-[13px]"
           >
             {row.original.campaign_title}
           </Link>
@@ -253,7 +253,7 @@ export default function CreatorProfilePage() {
             href={row.original.url}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-[#0b62d6] hover:underline inline-flex items-center gap-1 text-[13px]"
+            className="text-rt-magenta hover:underline inline-flex items-center gap-1 text-[13px]"
           >
             View Post
             <ExternalLink className="size-3" />
@@ -319,8 +319,8 @@ export default function CreatorProfilePage() {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-20">
-        <Loader2 className="size-6 animate-spin text-[#888]" />
-        <span className="ml-2 text-[#888] text-sm">Loading creator...</span>
+        <Loader2 className="size-6 animate-spin text-rt-fg-tertiary" />
+        <span className="ml-2 text-rt-fg-tertiary text-sm">Loading creator...</span>
       </div>
     )
   }
@@ -328,13 +328,13 @@ export default function CreatorProfilePage() {
   // Error
   if (isError || !profile) {
     return (
-      <div className="bg-white border border-[#e8e8ef] rounded-[10px] p-10 text-center">
+      <div className="bg-rt-bg-card border border-white/8 rounded-[10px] p-10 text-center">
         <p className="text-red-600 text-sm">
           {error?.message || "Failed to load creator profile"}
         </p>
         <Link
           to="/creators"
-          className="text-[#0b62d6] text-sm mt-2 inline-block hover:underline"
+          className="text-rt-magenta text-sm mt-2 inline-block hover:underline"
         >
           Back to Creator Database
         </Link>
@@ -378,7 +378,7 @@ export default function CreatorProfilePage() {
   return (
     <div className="space-y-4">
       {/* Breadcrumb */}
-      <div className="flex items-center gap-1.5 text-[13px] text-[#888]">
+      <div className="flex items-center gap-1.5 text-[13px] text-rt-fg-tertiary">
         <Link
           to="/creators"
           className="hover:text-[#555] transition-colors"
@@ -390,14 +390,14 @@ export default function CreatorProfilePage() {
       </div>
 
       {/* Header */}
-      <div className="bg-white border border-[#e8e8ef] rounded-[10px] px-6 py-5">
+      <div className="bg-rt-bg-card border border-white/8 rounded-[10px] px-6 py-5">
         <div className="flex items-start justify-between gap-4">
           <div className="flex-1 min-w-0">
-            <h1 className="text-[22px] font-semibold text-[#1a1a2e]">
+            <h1 className="text-[22px] font-semibold text-rt-fg">
               @{profile.username}
             </h1>
             {profile.paypal_email && (
-              <p className="text-[13px] text-[#888] mt-0.5">
+              <p className="text-[13px] text-rt-fg-tertiary mt-0.5">
                 PayPal: {profile.paypal_email}
               </p>
             )}
@@ -421,7 +421,7 @@ export default function CreatorProfilePage() {
                           className={`inline-flex items-center px-2.5 py-1 rounded-full text-[12px] font-medium border transition-all ${
                             active
                               ? getNicheColor(n) + " border-transparent"
-                              : "bg-white text-[#999] border-[#ddd] hover:border-[#aaa]"
+                              : "bg-rt-bg-card text-rt-fg-tertiary border-white/10 hover:border-white/20"
                           }`}
                         >
                           {n}
@@ -432,7 +432,7 @@ export default function CreatorProfilePage() {
                   <div className="flex gap-2">
                     <Button
                       size="sm"
-                      className="bg-[#0b62d6] hover:bg-[#0951b5] text-white"
+                      className="bg-rt-magenta hover:bg-rt-purple text-white"
                       disabled={updateNiches.isPending}
                       onClick={() => {
                         updateNiches.mutate(pendingNiches, {
@@ -470,7 +470,7 @@ export default function CreatorProfilePage() {
                   )}
                   <button
                     type="button"
-                    className="text-[11px] text-[#0b62d6] hover:underline ml-1"
+                    className="text-[11px] text-rt-magenta hover:underline ml-1"
                     onClick={() => {
                       setPendingNiches(profile.niches || [])
                       setEditingNiches(true)
@@ -505,16 +505,16 @@ export default function CreatorProfilePage() {
         {statCards.map((card) => (
           <div
             key={card.label}
-            className="bg-white border border-[#e8e8ef] rounded-[10px] p-4"
+            className="bg-rt-bg-card border border-white/8 rounded-[10px] p-4"
           >
-            <div className="text-[#888] text-xs font-semibold uppercase tracking-wide mb-1">
+            <div className="text-rt-fg-tertiary text-xs font-semibold uppercase tracking-wide mb-1">
               {card.label}
             </div>
-            <div className="text-[22px] font-bold text-[#1a1a2e]">
+            <div className="text-[22px] font-bold text-rt-fg">
               {card.value}
             </div>
             {card.sub && (
-              <div className="text-[#888] text-[13px] mt-0.5">{card.sub}</div>
+              <div className="text-rt-fg-tertiary text-[13px] mt-0.5">{card.sub}</div>
             )}
           </div>
         ))}
@@ -522,22 +522,22 @@ export default function CreatorProfilePage() {
 
       {/* Campaign History */}
       <div>
-        <h2 className="text-[16px] font-semibold text-[#1a1a2e] mb-3">
+        <h2 className="text-[16px] font-semibold text-rt-fg mb-3">
           Campaign History
         </h2>
-        <div className="bg-white border border-[#e8e8ef] rounded-[10px] overflow-hidden">
+        <div className="bg-rt-bg-card border border-white/8 rounded-[10px] overflow-hidden">
           <div className="overflow-x-auto">
             <Table>
               <TableHeader>
                 {campaignTable.getHeaderGroups().map((headerGroup) => (
                   <TableRow
                     key={headerGroup.id}
-                    className="border-b-2 border-[#e8e8ef] hover:bg-transparent"
+                    className="border-b-2 border-white/8 hover:bg-transparent"
                   >
                     {headerGroup.headers.map((header) => (
                       <TableHead
                         key={header.id}
-                        className="text-[#888] text-xs font-semibold uppercase tracking-[0.3px] px-4 py-3 border-b-2 border-[#e8e8ef]"
+                        className="text-rt-fg-tertiary text-xs font-semibold uppercase tracking-[0.3px] px-4 py-3 border-b-2 border-white/8"
                       >
                         {header.isPlaceholder
                           ? null
@@ -555,7 +555,7 @@ export default function CreatorProfilePage() {
                   <TableRow>
                     <TableCell
                       colSpan={campaignColumns.length}
-                      className="text-center text-[#888] py-10 text-sm"
+                      className="text-center text-rt-fg-tertiary py-10 text-sm"
                     >
                       No campaign history.
                     </TableCell>
@@ -564,12 +564,12 @@ export default function CreatorProfilePage() {
                   campaignTable.getRowModel().rows.map((row) => (
                     <TableRow
                       key={row.id}
-                      className="hover:bg-[#fafaff] border-b border-[#f0f0f5]"
+                      className="hover:bg-white/[0.03] border-b border-white/5"
                     >
                       {row.getVisibleCells().map((cell) => (
                         <TableCell
                           key={cell.id}
-                          className="px-4 py-2 text-[14px] border-b border-[#f0f0f5] align-middle"
+                          className="px-4 py-2 text-[14px] border-b border-white/5 align-middle"
                         >
                           {flexRender(
                             cell.column.columnDef.cell,
@@ -589,22 +589,22 @@ export default function CreatorProfilePage() {
       {/* Live Posts */}
       {profile.videos.length > 0 && (
         <div>
-          <h2 className="text-[16px] font-semibold text-[#1a1a2e] mb-3">
+          <h2 className="text-[16px] font-semibold text-rt-fg mb-3">
             Live Posts ({profile.videos.length})
           </h2>
-          <div className="bg-white border border-[#e8e8ef] rounded-[10px] overflow-hidden">
+          <div className="bg-rt-bg-card border border-white/8 rounded-[10px] overflow-hidden">
             <div className="overflow-x-auto">
               <Table>
                 <TableHeader>
                   {videoTable.getHeaderGroups().map((headerGroup) => (
                     <TableRow
                       key={headerGroup.id}
-                      className="border-b-2 border-[#e8e8ef] hover:bg-transparent"
+                      className="border-b-2 border-white/8 hover:bg-transparent"
                     >
                       {headerGroup.headers.map((header) => (
                         <TableHead
                           key={header.id}
-                          className="text-[#888] text-xs font-semibold uppercase tracking-[0.3px] px-4 py-3 border-b-2 border-[#e8e8ef]"
+                          className="text-rt-fg-tertiary text-xs font-semibold uppercase tracking-[0.3px] px-4 py-3 border-b-2 border-white/8"
                         >
                           {header.isPlaceholder
                             ? null
@@ -621,12 +621,12 @@ export default function CreatorProfilePage() {
                   {videoTable.getRowModel().rows.map((row) => (
                     <TableRow
                       key={row.id}
-                      className="hover:bg-[#fafaff] border-b border-[#f0f0f5]"
+                      className="hover:bg-white/[0.03] border-b border-white/5"
                     >
                       {row.getVisibleCells().map((cell) => (
                         <TableCell
                           key={cell.id}
-                          className="px-4 py-2 text-[14px] border-b border-[#f0f0f5] align-middle"
+                          className="px-4 py-2 text-[14px] border-b border-white/5 align-middle"
                         >
                           {flexRender(
                             cell.column.columnDef.cell,
