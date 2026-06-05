@@ -1,16 +1,18 @@
 {
-  "updated": "2026-06-05T21:00:00.000Z",
+  "updated": "2026-06-05T23:05:00.000Z",
   "status": {
-    "CH-1": "done",
-    "CH-2": "done",
-    "CH-3": "done",
-    "CH-4": "done",
-    "CH-5": "done",
-    "CH-6": "wip",
-    "CH-7": "todo",
-    "CH-8": "todo",
-    "CH-9": "todo",
-    "CH-10": "todo",
-    "CH-11": "todo"
+    "CAMP-58": "review",
+    "CAMP-59": "review",
+    "CAMP-60": "review",
+    "CAMP-61": "review",
+    "CAMP-62": "review",
+    "CAMP-63": "review",
+    "CAMP-64": "review",
+    "CAMP-65": "todo",
+    "CAMP-66": "todo",
+    "CAMP-67": "todo",
+    "CAMP-68": "todo",
+    "CAMP-13": "todo",
+    "CAMP-18": "todo"
   }
 }
