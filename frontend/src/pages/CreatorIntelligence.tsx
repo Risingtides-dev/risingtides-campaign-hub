@@ -253,7 +253,11 @@ function CreatorDrawer({ account, onClose }: { account: string; onClose: () => v
               )}
               {!outcomesLoading && !outcomes && (
                 <div className="mt-3 rounded-xl border border-white/6 bg-rt-bg-card/40 px-4 py-5 text-center text-xs text-rt-fg-tertiary">
-                  No Cobrand submissions found for this creator.
+                  No Cobrand submissions for this creator.
+                  <div className="mt-1 text-[10px] text-rt-fg-tertiary/60">
+                    Outcome data exists for ~5% of campaigns (Cobrand-tracked only) —
+                    most originals are scrape-tracked without it.
+                  </div>
                 </div>
               )}
               {outcomes && (
