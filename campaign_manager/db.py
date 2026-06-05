@@ -358,6 +358,26 @@ def init(database_url: Optional[str] = None):
     except Exception:
         pass
 
+    # Index the hot matched_videos columns the creator-aggregation and
+    # sound-matcher paths group by (account, extracted_sound_id). The model
+    # marks them index=True so fresh DBs get them via create_all; this adds
+    # them to the existing prod table. Not CONCURRENTLY here — runs inside the
+    # app's init transaction; for a huge table apply CONCURRENTLY out-of-band.
+    try:
+        import sqlalchemy as sa
+        with _SessionLocal() as s:
+            s.execute(sa.text(
+                "CREATE INDEX IF NOT EXISTS ix_matched_videos_account "
+                "ON matched_videos (account)"
+            ))
+            s.execute(sa.text(
+                "CREATE INDEX IF NOT EXISTS ix_matched_videos_extracted_sound_id "
+                "ON matched_videos (extracted_sound_id)"
+            ))
+            s.commit()
+    except Exception:
+        pass
+
     return True
 
 

@@ -191,14 +191,17 @@ class MatchedVideo(Base):
     url = Column(Text, nullable=False)
     song = Column(String(500), default="")
     artist = Column(String(255), default="")
-    account = Column(String(255), default="")
+    # Indexed: creator-aggregation (breaker/intelligence queries group by
+    # account) and the sound matcher (groups by extracted_sound_id) both hit
+    # these as hot paths over ~10K rows.
+    account = Column(String(255), default="", index=True)
     views = Column(Integer, default=0)
     likes = Column(Integer, default=0)
     upload_date = Column(String(20), default="")
     timestamp = Column(String(30), default="")
     music_id = Column(String(50), default="")
     platform = Column(String(20), default="tiktok")
-    extracted_sound_id = Column(String(50), default="")
+    extracted_sound_id = Column(String(50), default="", index=True)
     extracted_song_title = Column(String(500), default="")
 
     # When this match was first seen by the cron (so the Scrape Tasks tab
