@@ -654,6 +654,7 @@ export interface SoundFitCreator {
   avg_views: number
   millionaires: number
   distinct_sounds: number
+  on_sound_avg: number | null
   posted_this_sound: boolean
   posted_this_artist: boolean
   reasons: string[]

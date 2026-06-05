@@ -372,16 +372,21 @@ function SoundFitRow({
         {c.reasons.length === 0 && (
           <span className="text-[10px] text-rt-fg-tertiary">general breaker</span>
         )}
-        {c.posted_this_sound && (
-          <span className="rounded-md border border-rt-magenta/40 bg-rt-magenta/10 px-2 py-0.5 text-[10px] text-rt-magenta">
-            broke this sound
-          </span>
-        )}
-        {c.posted_this_artist && !c.posted_this_sound && (
-          <span className="rounded-md border border-rt-purple/40 bg-rt-purple/10 px-2 py-0.5 text-[10px] text-rt-purple">
-            broke this artist
-          </span>
-        )}
+        {c.reasons.map((reason) => {
+          const onSound = reason.includes("on this sound")
+          return (
+            <span
+              key={reason}
+              className={`rounded-md border px-2 py-0.5 text-[10px] ${
+                onSound
+                  ? "border-rt-magenta/40 bg-rt-magenta/10 text-rt-magenta"
+                  : "border-rt-purple/40 bg-rt-purple/10 text-rt-purple"
+              }`}
+            >
+              {reason}
+            </span>
+          )
+        })}
       </div>
     </button>
   )

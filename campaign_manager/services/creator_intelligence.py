@@ -395,6 +395,13 @@ def list_sounds(session: Session, limit: int = 300) -> List[Dict[str, Any]]:
     return list(seen.values())[:limit]
 
 
+# How well a post performed on the target sound, as a 0..1 multiplier.
+# 500K+ avg on the sound = full boost; scales down linearly below that, so a
+# creator who posted the sound but flopped (e.g. 26 views) earns ~nothing.
+def _perf_mult(avg_views_on_sound: float) -> float:
+    return min(avg_views_on_sound / VIRAL_THRESHOLD, 1.0)
+
+
 def sound_fit(
     session: Session,
     sound_id: str,
@@ -403,8 +410,13 @@ def sound_fit(
     """Rank creators by fit for a specific target sound.
 
     fit_score = balanced breaker score
-                + 25 if they've posted THIS exact sound
-                + 12 if they've posted the same artist's other sounds
+                + up to 25, scaled by their VELOCITY on this exact sound
+                + up to 12, scaled by their velocity on this artist's sounds
+
+    Scaling the boost by actual performance-on-the-sound (not mere presence)
+    is what keeps a saturated sound — where 50+ creators all "posted it" —
+    from collapsing to the base ranking. A creator who hit 150K on the sound
+    ranks far above one who hit 26 views, even though both "broke" it.
     """
     target = (
         session.query(Campaign)
@@ -418,31 +430,39 @@ def sound_fit(
     # General breaker scores (the base ability).
     base = {r["account"]: r for r in breaker_leaderboard(session, lens="balanced", limit=1000)}
 
-    # Who has posted this exact sound, and who has posted this artist's sounds?
-    exact_accounts = {
-        a for (a,) in session.query(MatchedVideo.account)
+    # Per-creator AVG VIEWS on this exact sound (not just presence).
+    exact_perf: Dict[str, float] = {
+        a: float(avg or 0)
+        for a, avg in session.query(
+            MatchedVideo.account, func.avg(MatchedVideo.views)
+        )
         .filter(MatchedVideo.extracted_sound_id == sound_id)
         .filter(MatchedVideo.dismissed_at.is_(None))
         .filter(MatchedVideo.views > 0)
-        .distinct()
+        .group_by(MatchedVideo.account)
         .all()
     }
 
-    artist_accounts: set = set()
+    # Per-creator avg views across this artist's OTHER sounds.
+    artist_perf: Dict[str, float] = {}
     if artist:
         artist_sound_ids = {
             sid for (sid,) in session.query(Campaign.sound_id)
             .filter(func.lower(Campaign.artist) == artist)
             .filter(Campaign.sound_id != "")
+            .filter(Campaign.sound_id != sound_id)
             .all()
         }
         if artist_sound_ids:
-            artist_accounts = {
-                a for (a,) in session.query(MatchedVideo.account)
+            artist_perf = {
+                a: float(avg or 0)
+                for a, avg in session.query(
+                    MatchedVideo.account, func.avg(MatchedVideo.views)
+                )
                 .filter(MatchedVideo.extracted_sound_id.in_(artist_sound_ids))
                 .filter(MatchedVideo.dismissed_at.is_(None))
                 .filter(MatchedVideo.views > 0)
-                .distinct()
+                .group_by(MatchedVideo.account)
                 .all()
             }
 
@@ -450,12 +470,20 @@ def sound_fit(
     for account, row in base.items():
         fit = row["score_balanced"]
         reasons = []
-        if account in exact_accounts:
-            fit += 25
-            reasons.append("broke this sound")
-        if account in artist_accounts:
-            fit += 12
-            reasons.append(f"broke {target.artist}'s sounds")
+        on_sound = exact_perf.get(account)
+        on_artist = artist_perf.get(account)
+
+        if on_sound is not None:
+            mult = _perf_mult(on_sound)
+            fit += 25 * mult
+            # only credit it as a real signal if they actually performed
+            if mult >= 0.15:
+                reasons.append(f"{fmt_short(on_sound)} avg on this sound")
+        if on_artist is not None:
+            fit += 12 * _perf_mult(on_artist)
+            if _perf_mult(on_artist) >= 0.15:
+                reasons.append(f"broke {target.artist}'s sounds")
+
         ranked.append({
             "account": account,
             "fit_score": round(fit, 1),
@@ -464,8 +492,9 @@ def sound_fit(
             "avg_views": row["avg_views"],
             "millionaires": row["millionaires"],
             "distinct_sounds": row["distinct_sounds"],
-            "posted_this_sound": account in exact_accounts,
-            "posted_this_artist": account in artist_accounts,
+            "on_sound_avg": round(on_sound) if on_sound is not None else None,
+            "posted_this_sound": on_sound is not None,
+            "posted_this_artist": on_artist is not None,
             "reasons": reasons,
         })
 
@@ -477,3 +506,12 @@ def sound_fit(
         "campaign_slug": target.slug,
         "creators": ranked[:limit],
     }
+
+
+def fmt_short(v: float) -> str:
+    """Compact view count: 150609 -> '151K', 1437472 -> '1.4M'."""
+    if v >= 1_000_000:
+        return f"{v / 1_000_000:.1f}M"
+    if v >= 1_000:
+        return f"{round(v / 1_000)}K"
+    return str(int(v))
