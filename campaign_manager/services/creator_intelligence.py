@@ -359,3 +359,121 @@ def _distribution(views: List[int]) -> List[Dict[str, Any]]:
         count = sum(1 for v in views if lo <= v < hi)
         out.append({"band": label, "count": count})
     return out
+
+
+# ============================================================
+# SOUND FIT — given a target sound, rank creators most likely to break it.
+# ============================================================
+# We can't compute audio similarity (no BPM/genre tags). Instead we rank by
+# BEHAVIORAL fit: a creator fits a target sound if (a) they're a proven
+# breaker in general, boosted when (b) they've already performed on THIS exact
+# sound, or (c) on the same ARTIST's other sounds. That's the signal that
+# actually predicts "will this creator pop this sound" from data we have.
+
+def list_sounds(session: Session, limit: int = 300) -> List[Dict[str, Any]]:
+    """Sounds available to target, with their campaign + breaker activity."""
+    rows = (
+        session.query(
+            Campaign.sound_id.label("sound_id"),
+            Campaign.artist.label("artist"),
+            Campaign.song.label("song"),
+            Campaign.slug.label("slug"),
+        )
+        .filter(Campaign.sound_id != "")
+        .all()
+    )
+    seen: Dict[str, Dict[str, Any]] = {}
+    for r in rows:
+        if r.sound_id in seen:
+            continue
+        seen[r.sound_id] = {
+            "sound_id": r.sound_id,
+            "artist": r.artist or "",
+            "song": r.song or "",
+            "campaign_slug": r.slug,
+        }
+    return list(seen.values())[:limit]
+
+
+def sound_fit(
+    session: Session,
+    sound_id: str,
+    limit: int = 40,
+) -> Optional[Dict[str, Any]]:
+    """Rank creators by fit for a specific target sound.
+
+    fit_score = balanced breaker score
+                + 25 if they've posted THIS exact sound
+                + 12 if they've posted the same artist's other sounds
+    """
+    target = (
+        session.query(Campaign)
+        .filter(Campaign.sound_id == sound_id)
+        .first()
+    )
+    if target is None:
+        return None
+    artist = (target.artist or "").strip().lower()
+
+    # General breaker scores (the base ability).
+    base = {r["account"]: r for r in breaker_leaderboard(session, lens="balanced", limit=1000)}
+
+    # Who has posted this exact sound, and who has posted this artist's sounds?
+    exact_accounts = {
+        a for (a,) in session.query(MatchedVideo.account)
+        .filter(MatchedVideo.extracted_sound_id == sound_id)
+        .filter(MatchedVideo.dismissed_at.is_(None))
+        .filter(MatchedVideo.views > 0)
+        .distinct()
+        .all()
+    }
+
+    artist_accounts: set = set()
+    if artist:
+        artist_sound_ids = {
+            sid for (sid,) in session.query(Campaign.sound_id)
+            .filter(func.lower(Campaign.artist) == artist)
+            .filter(Campaign.sound_id != "")
+            .all()
+        }
+        if artist_sound_ids:
+            artist_accounts = {
+                a for (a,) in session.query(MatchedVideo.account)
+                .filter(MatchedVideo.extracted_sound_id.in_(artist_sound_ids))
+                .filter(MatchedVideo.dismissed_at.is_(None))
+                .filter(MatchedVideo.views > 0)
+                .distinct()
+                .all()
+            }
+
+    ranked: List[Dict[str, Any]] = []
+    for account, row in base.items():
+        fit = row["score_balanced"]
+        reasons = []
+        if account in exact_accounts:
+            fit += 25
+            reasons.append("broke this sound")
+        if account in artist_accounts:
+            fit += 12
+            reasons.append(f"broke {target.artist}'s sounds")
+        ranked.append({
+            "account": account,
+            "fit_score": round(fit, 1),
+            "breaker_score": row["score_balanced"],
+            "viral_rate": row["viral_rate"],
+            "avg_views": row["avg_views"],
+            "millionaires": row["millionaires"],
+            "distinct_sounds": row["distinct_sounds"],
+            "posted_this_sound": account in exact_accounts,
+            "posted_this_artist": account in artist_accounts,
+            "reasons": reasons,
+        })
+
+    ranked.sort(key=lambda x: x["fit_score"], reverse=True)
+    return {
+        "sound_id": sound_id,
+        "artist": target.artist or "",
+        "song": target.song or "",
+        "campaign_slug": target.slug,
+        "creators": ranked[:limit],
+    }

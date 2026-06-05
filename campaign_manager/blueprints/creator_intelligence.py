@@ -10,6 +10,8 @@ from campaign_manager import db as _db
 from campaign_manager.services.creator_intelligence import (
     breaker_leaderboard,
     creator_drilldown,
+    list_sounds,
+    sound_fit,
 )
 
 creator_intelligence_bp = Blueprint("creator_intelligence", __name__)
@@ -41,6 +43,29 @@ def get_breakers():
             "min_posts": min_posts,
             "breakers": rows,
         })
+    finally:
+        session.close()
+
+
+@creator_intelligence_bp.get("/api/intelligence/sounds")
+def get_sounds():
+    """List targetable sounds (for the sound-first picker)."""
+    session = _db.get_session()
+    try:
+        return jsonify({"sounds": list_sounds(session)})
+    finally:
+        session.close()
+
+
+@creator_intelligence_bp.get("/api/intelligence/sound-fit/<sound_id>")
+def get_sound_fit(sound_id: str):
+    """Rank creators by fit for a specific target sound."""
+    session = _db.get_session()
+    try:
+        data = sound_fit(session, sound_id)
+        if data is None:
+            return jsonify({"error": "sound not found"}), 404
+        return jsonify(data)
     finally:
         session.close()
 
