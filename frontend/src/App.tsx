@@ -4,6 +4,7 @@ import CampaignsList from "./pages/CampaignsList"
 import CampaignDetail from "./pages/CampaignDetail"
 import CampaignLinks from "./pages/CampaignLinks"
 import CreatorDatabase from "./pages/CreatorDatabase"
+import CreatorIntelligence from "./pages/CreatorIntelligence"
 import CreatorProfilePage from "./pages/CreatorProfilePage"
 import InternalTikTok from "./pages/InternalTikTok"
 import InternalCreatorDetail from "./pages/InternalCreatorDetail"
@@ -15,6 +16,7 @@ import InternalGroupDetail from "./pages/InternalGroupDetail"
 import InternalScrapeView from "./pages/InternalScrapeView"
 import SoundAssignments from "./pages/SoundAssignments"
 import ScrapeTasks from "./pages/ScrapeTasks"
+import BookingEfficiency from "./pages/BookingEfficiency"
 
 function App() {
   return (
@@ -26,6 +28,7 @@ function App() {
           <Route path="/campaign/:slug/links" element={<CampaignLinks />} />
           <Route path="/campaign/:slug/outreach" element={<CampaignOutreach />} />
           <Route path="/creators" element={<CreatorDatabase />} />
+          <Route path="/intelligence" element={<CreatorIntelligence />} />
           <Route path="/creators/:username" element={<CreatorProfilePage />} />
           <Route path="/internal" element={<InternalTikTok />} />
           <Route path="/internal/scrape/:category" element={<InternalScrapeView />} />
@@ -36,6 +39,7 @@ function App() {
           <Route path="/trackers" element={<TidesTrackers />} />
           <Route path="/sound-assignments" element={<SoundAssignments />} />
           <Route path="/scrape-tasks" element={<ScrapeTasks />} />
+          <Route path="/efficiency" element={<BookingEfficiency />} />
         </Route>
       </Routes>
     </BrowserRouter>

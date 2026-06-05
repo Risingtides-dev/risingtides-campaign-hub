@@ -566,3 +566,62 @@ export interface ScrapeTaskHealth {
   } | null
   history: ScrapeTaskHealthRun[]
 }
+
+// ---- Creator Intelligence (sound-breaking analytics) ----
+export type BreakerLens = "ceiling" | "volume" | "balanced"
+
+export interface BreakerRow {
+  account: string
+  posts: number
+  avg_views: number
+  median_views: number
+  peak_views: number
+  viral_rate: number
+  millionaires: number
+  distinct_sounds: number
+  total_views: number
+  score_ceiling: number
+  score_volume: number
+  score_balanced: number
+}
+
+export interface BreakerResponse {
+  lens: BreakerLens
+  count: number
+  min_posts: number
+  breakers: BreakerRow[]
+}
+
+export type SoundTiming = "scout" | "early" | "mid" | "late" | "unknown"
+
+export interface CreatorSound {
+  sound_id: string
+  sound_title: string
+  artist: string
+  campaign_slug: string
+  posts: number
+  total_views: number
+  peak_views: number
+  days_after_start: number | null
+  timing: SoundTiming
+}
+
+export interface ViewBand {
+  band: string
+  count: number
+}
+
+export interface CreatorDrilldown {
+  account: string
+  posts: number
+  avg_views: number
+  median_views: number
+  peak_views: number
+  viral_rate: number
+  millionaires: number
+  distinct_sounds: number
+  early_adopter_rate: number
+  sounds: CreatorSound[]
+  view_distribution: ViewBand[]
+  score_balanced: number
+}

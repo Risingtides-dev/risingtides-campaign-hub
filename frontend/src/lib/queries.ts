@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { api } from "./api"
-import type { ScrapeStatus, JobScrapeStatus } from "./types"
+import type { ScrapeStatus, JobScrapeStatus, BreakerLens } from "./types"
 
 // Query keys
 export const keys = {
@@ -738,5 +738,23 @@ export function useTriggerCron() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["scrape-tasks"] })
     },
+  })
+}
+
+// ---- Creator Intelligence ----
+export function useBreakers(lens: BreakerLens = "balanced", minPosts = 5) {
+  return useQuery({
+    queryKey: ["intelligence", "breakers", lens, minPosts],
+    queryFn: () => api.getBreakers(lens, 100, minPosts),
+    staleTime: 5 * 60 * 1000,
+  })
+}
+
+export function useCreatorIntel(account: string | null) {
+  return useQuery({
+    queryKey: ["intelligence", "creator", account],
+    queryFn: () => api.getCreatorIntel(account as string),
+    enabled: !!account,
+    staleTime: 5 * 60 * 1000,
   })
 }

@@ -1,0 +1,138 @@
+/* ============================================================
+   RISING TIDES — brand layer for Campaign Hub
+   Source of truth: brand-kit/colors_and_type.css
+   Imported by index.css. This file owns: font-face, brand
+   vars, glow/motion tokens, and reusable brand primitives.
+   The shadcn core var remap (dark + magenta) lives in index.css.
+   ============================================================ */
+
+/* ---------- Fonts (woff2 shipped in /public/fonts) ---------- */
+@font-face {
+  font-family: 'Poppins'; font-style: normal; font-weight: 400;
+  font-display: swap; src: url('/fonts/Poppins-Regular.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Poppins'; font-style: normal; font-weight: 500;
+  font-display: swap; src: url('/fonts/Poppins-Medium.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Poppins'; font-style: normal; font-weight: 600;
+  font-display: swap; src: url('/fonts/Poppins-SemiBold.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Poppins'; font-style: normal; font-weight: 700;
+  font-display: swap; src: url('/fonts/Poppins-Bold.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Poppins'; font-style: italic; font-weight: 700;
+  font-display: swap; src: url('/fonts/Poppins-BoldItalic.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Lato'; font-style: normal; font-weight: 400;
+  font-display: swap; src: url('/fonts/Lato-Regular.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Lato'; font-style: normal; font-weight: 700;
+  font-display: swap; src: url('/fonts/Lato-Bold.woff2') format('woff2');
+}
+
+:root {
+  /* brand */
+  --rt-magenta: #E100C3;
+  --rt-purple: #8500D7;
+  --rt-gradient: linear-gradient(90deg, #E100C3 0%, #8500D7 100%);
+  --rt-gradient-diag: linear-gradient(135deg, #E100C3 0%, #8500D7 100%);
+
+  /* dark surfaces */
+  --rt-bg-black: #060606;
+  --rt-bg-raised: #0A0A0A;
+  --rt-bg-elevated: #141414;
+  --rt-bg-card: #161A22;
+  --rt-bg-card-hover: #1D222C;
+
+  /* foreground */
+  --rt-fg-primary: #FAFCFF;
+  --rt-fg-secondary: #B8B9BB;
+  --rt-fg-tertiary: #909098;
+  --rt-fg-quaternary: #5A5C63;
+
+  /* accents */
+  --rt-green: #1ED760;
+  --rt-red: #FF3B3B;
+  --rt-amber: #FFB020;
+
+  /* glow */
+  --rt-glow-magenta: 0 0 60px rgba(225, 0, 195, 0.30);
+  --rt-glow-purple: 0 0 60px rgba(133, 0, 215, 0.30);
+
+  /* type */
+  --rt-font-display: 'Poppins', system-ui, -apple-system, sans-serif;
+  --rt-font-body: 'Lato', system-ui, sans-serif;
+  --rt-font-mono: 'JetBrains Mono', ui-monospace, 'Courier New', monospace;
+
+  /* motion */
+  --rt-ease: cubic-bezier(.22,.61,.36,1);
+  --rt-dur-fast: 160ms;
+  --rt-dur-base: 240ms;
+  --rt-dur-slow: 480ms;
+}
+
+/* Expose brand colors to Tailwind v4 utilities (bg-rt-magenta, text-rt-fg, …) */
+@theme inline {
+  --color-rt-magenta: var(--rt-magenta);
+  --color-rt-purple: var(--rt-purple);
+  --color-rt-green: var(--rt-green);
+  --color-rt-red: var(--rt-red);
+  --color-rt-amber: var(--rt-amber);
+  --color-rt-bg-black: var(--rt-bg-black);
+  --color-rt-bg-raised: var(--rt-bg-raised);
+  --color-rt-bg-elevated: var(--rt-bg-elevated);
+  --color-rt-bg-card: var(--rt-bg-card);
+  --color-rt-fg: var(--rt-fg-primary);
+  --color-rt-fg-secondary: var(--rt-fg-secondary);
+  --color-rt-fg-tertiary: var(--rt-fg-tertiary);
+  --font-display: var(--rt-font-display);
+  --font-mono: var(--rt-font-mono);
+}
+
+/* ---------- Brand primitives ---------- */
+.rt-gradient-text {
+  background: var(--rt-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.rt-gradient-bg { background: var(--rt-gradient); }
+.rt-glow-magenta { box-shadow: var(--rt-glow-magenta); }
+.rt-glow-purple { box-shadow: var(--rt-glow-purple); }
+
+/* Heat bar — the magenta→purple energy signature for velocity/virality */
+.rt-heat {
+  background: var(--rt-gradient);
+  border-radius: 9999px;
+}
+
+/* Grain/noise atmosphere overlay (subtle, dark-mode) */
+.rt-grain::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.025;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  z-index: 0;
+}
+
+/* Staggered entrance for dashboard rows */
+@keyframes rt-rise {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.rt-rise { animation: rt-rise var(--rt-dur-base) var(--rt-ease) both; }
+
+/* Pulse for live/elite indicators */
+@keyframes rt-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+.rt-pulse { animation: rt-pulse 2s var(--rt-ease) infinite; }

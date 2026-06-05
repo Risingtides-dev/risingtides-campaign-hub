@@ -264,7 +264,7 @@ function SortableHeader({
   )
 }
 
-type SortOption = "start_date" | "a-z" | "cost" | "spend_pct" | "remaining"
+type SortOption = "start_date" | "total_views" | "a-z" | "cost" | "spend_pct" | "remaining"
 
 const sortOptions: { value: SortOption; label: string }[] = [
   { value: "start_date", label: "Start Date" },
@@ -280,6 +280,8 @@ function sortCampaigns(data: CampaignSummary[], by: SortOption): CampaignSummary
   switch (by) {
     case "start_date":
       return sorted.sort((a, b) => (b.start_date || "").localeCompare(a.start_date || ""))
+    case "total_views":
+      return sorted.sort((a, b) => (b.stats?.total_views || 0) - (a.stats?.total_views || 0))
     case "a-z":
       return sorted.sort((a, b) => a.title.localeCompare(b.title))
     case "cost":

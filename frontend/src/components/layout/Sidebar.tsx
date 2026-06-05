@@ -10,7 +10,11 @@ const navItems = [
   },
   {
     section: "Creators",
-    links: [{ label: "Creator Database", path: "/creators" }],
+    links: [
+      { label: "Creator Database", path: "/creators" },
+      { label: "Creator Intelligence", path: "/intelligence" },
+      { label: "Booking Efficiency", path: "/efficiency" },
+    ],
   },
   {
     section: "Internal",
@@ -58,17 +62,17 @@ export function Sidebar({ open, onClose }: SidebarProps) {
       )}
 
       <nav
-        className={`fixed top-0 left-0 bottom-0 z-50 w-[220px] bg-white border-r border-[#e8e8ef] py-6 overflow-y-auto transition-transform duration-200 md:translate-x-0 ${
+        className={`fixed top-0 left-0 bottom-0 z-50 w-[220px] bg-rt-bg-raised border-r border-white/8 py-6 overflow-y-auto transition-transform duration-200 md:translate-x-0 ${
           open ? "translate-x-0" : "-translate-x-full"
         }`}
       >
-        <div className="px-6 pb-6 border-b border-[#e8e8ef]">
-          <span className="text-xl font-bold text-[#1a1a2e]">Campaign Tracker</span>
+        <div className="px-6 pb-6 border-b border-white/8">
+          <span className="text-xl font-bold font-display rt-gradient-text">Campaign Hub</span>
         </div>
 
         {navItems.map((group) => (
           <div key={group.section}>
-            <div className="pt-4 pb-1 px-6 text-[11px] font-semibold uppercase tracking-[0.5px] text-[#999]">
+            <div className="pt-4 pb-1 px-6 text-[11px] font-semibold uppercase tracking-[0.12em] text-rt-fg-tertiary">
               {group.section}
             </div>
             {group.links.map((link) => (
@@ -78,8 +82,8 @@ export function Sidebar({ open, onClose }: SidebarProps) {
                 onClick={onClose}
                 className={`flex items-center gap-2.5 px-6 py-2.5 text-sm transition-colors ${
                   isActive(link.path)
-                    ? "bg-[#eef2ff] text-[#0b62d6] font-semibold border-l-[3px] border-[#0b62d6] pl-[21px]"
-                    : "text-[#555] hover:bg-[#f0f0f5]"
+                    ? "bg-rt-magenta/10 text-rt-fg font-semibold border-l-[3px] border-rt-magenta pl-[21px]"
+                    : "text-rt-fg-secondary hover:bg-white/5 hover:text-rt-fg"
                 }`}
               >
                 {link.label}
