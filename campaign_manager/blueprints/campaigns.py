@@ -1432,6 +1432,36 @@ def list_creators():
     """
     all_campaigns = _get_all_campaigns_data()
 
+    # CAMP-72: bulk-fetch every campaign's stats in ONE concurrent wave before
+    # the loop, instead of a serial get_campaign_stats() per campaign (N
+    # sequential 15s-timeout Tides Tracker fetches = the 5-25s cold load on
+    # this page). Mirrors the get_campaigns() list-endpoint fast path.
+    bulk_stats: Dict[str, object] = {}
+    if _db.is_active():
+        try:
+            from campaign_manager.services.campaign_stats import get_campaign_stats_bulk
+            # CAMP-72: only live-refresh stats for NON-completed campaigns.
+            # Completed campaigns' matched_videos already carry their final
+            # stored view counts — a live Tides Tracker fetch for each is the
+            # bulk of the cold-load time (96 of 192 campaigns have trackers).
+            # Their scraper/stored numbers overlay fine without the round-trip.
+            live = [
+                c for c in all_campaigns
+                if c["meta"].get("completion_status") != "completed"
+            ]
+            slugs = [c["slug"] for c in live]
+            mv_by_slug = {c["slug"]: c["matched_videos"] for c in live}
+            start_by_slug = {c["slug"]: c["meta"].get("start_date", "") for c in live}
+            tid_by_slug = {c["slug"]: c.get("tracker_id", "") for c in live}
+            bulk_stats = get_campaign_stats_bulk(
+                slugs,
+                matched_videos_by_slug=mv_by_slug,
+                start_date_by_slug=start_by_slug,
+                tracker_id_by_slug=tid_by_slug,
+            )
+        except Exception:
+            bulk_stats = {}  # fall back to per-campaign overlay below
+
     # Aggregate by username (case-insensitive)
     creator_map: Dict[str, Dict] = {}
 
@@ -1443,16 +1473,16 @@ def list_creators():
         matched_videos = camp["matched_videos"]
 
         # RTA-43: overlay API view/like counts onto matched rows before
-        # aggregating. Falls back to scraper numbers when no API path.
+        # aggregating. CAMP-72: use the bulk pre-warmed result when present
+        # (non-completed campaigns). Completed campaigns aren't in bulk_stats
+        # and intentionally skip the live fetch — their stored matched_videos
+        # already carry final numbers, so no per-campaign Tides Tracker
+        # round-trip (that serial fetch was the 5-25s cold load).
         if _db.is_active():
             try:
-                stats_result = get_campaign_stats(
-                    slug,
-                    matched_videos=matched_videos,
-                    tracker_id=camp.get("tracker_id"),
-                    start_date=meta.get("start_date", ""),
-                )
-                matched_videos = overlay_video_stats(matched_videos, stats_result.submissions)
+                stats_result = bulk_stats.get(slug)
+                if stats_result is not None:
+                    matched_videos = overlay_video_stats(matched_videos, stats_result.submissions)
             except Exception:
                 pass  # leave scraper numbers in place on unexpected failure
 
