@@ -283,8 +283,18 @@ function SoundFitView({ onPickCreator }: { onPickCreator: (a: string) => void })
                   active ? "bg-rt-magenta/12 border border-rt-magenta/30" : "border border-transparent hover:bg-white/[0.03]"
                 }`}
               >
-                <div className="truncate text-sm font-medium text-rt-fg">{s.song || s.sound_id}</div>
-                <div className="truncate text-xs text-rt-fg-tertiary">{s.artist || "—"}</div>
+                <div className="flex items-center gap-2">
+                  <div className="truncate text-sm font-medium text-rt-fg">{s.song || s.sound_id}</div>
+                  {s.freshness === "fresh" && (
+                    <span className="shrink-0 rounded border border-rt-green/40 bg-rt-green/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-rt-green">
+                      fresh
+                    </span>
+                  )}
+                </div>
+                <div className="truncate text-xs text-rt-fg-tertiary">
+                  {s.artist || "—"}
+                  {s.post_count > 0 && <span className="text-rt-fg-tertiary/60"> · {s.post_count} posts</span>}
+                </div>
               </button>
             )
           })}
@@ -312,6 +322,17 @@ function SoundFitView({ onPickCreator }: { onPickCreator: (a: string) => void })
                 {picked.song} <span className="text-rt-fg-tertiary">·</span>{" "}
                 <span className="rt-gradient-text">{picked.artist}</span>
               </h2>
+              {picked.freshness === "fresh" && (
+                <p className="mt-2 flex items-start gap-1.5 text-xs text-rt-green">
+                  <span className="rounded border border-rt-green/40 bg-rt-green/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide">
+                    fresh sound
+                  </span>
+                  <span className="text-rt-fg-tertiary">
+                    Pre-breakout — ranking leans on artist history + general breaker ability,
+                    since few creators have posted it yet. This is the booking sweet spot.
+                  </span>
+                </p>
+              )}
             </div>
 
             {fitLoading && (

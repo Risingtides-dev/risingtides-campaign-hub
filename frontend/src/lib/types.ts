@@ -639,11 +639,15 @@ export interface CreatorDrilldown {
 }
 
 // ---- Sound-fit (rank creators for a specific sound) ----
+export type SoundFreshness = "fresh" | "warm" | "saturated"
+
 export interface TargetSound {
   sound_id: string
   artist: string
   song: string
   campaign_slug: string
+  post_count: number
+  freshness: SoundFreshness
 }
 
 export interface SoundFitCreator {

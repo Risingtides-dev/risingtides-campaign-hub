@@ -371,7 +371,13 @@ def _distribution(views: List[int]) -> List[Dict[str, Any]]:
 # actually predicts "will this creator pop this sound" from data we have.
 
 def list_sounds(session: Session, limit: int = 300) -> List[Dict[str, Any]]:
-    """Sounds available to target, with their campaign + breaker activity."""
+    """Sounds available to target, tagged with how saturated each one is.
+
+    `post_count` + `freshness` let the picker flag the BOOKING scenario:
+    a "fresh" sound (few/no posts yet) is one you're picking creators for
+    BEFORE it takes off — fit relies on artist + general-breaker signal, not
+    on-sound proof. A "saturated" sound already has broad coverage.
+    """
     rows = (
         session.query(
             Campaign.sound_id.label("sound_id"),
@@ -382,17 +388,35 @@ def list_sounds(session: Session, limit: int = 300) -> List[Dict[str, Any]]:
         .filter(Campaign.sound_id != "")
         .all()
     )
+
+    # Per-sound matched-post counts (how broadly the sound has been posted).
+    post_counts = dict(
+        session.query(MatchedVideo.extracted_sound_id, func.count())
+        .filter(MatchedVideo.extracted_sound_id != "")
+        .filter(MatchedVideo.dismissed_at.is_(None))
+        .filter(MatchedVideo.views > 0)
+        .group_by(MatchedVideo.extracted_sound_id)
+        .all()
+    )
+
     seen: Dict[str, Dict[str, Any]] = {}
     for r in rows:
         if r.sound_id in seen:
             continue
+        n = int(post_counts.get(r.sound_id, 0))
         seen[r.sound_id] = {
             "sound_id": r.sound_id,
             "artist": r.artist or "",
             "song": r.song or "",
             "campaign_slug": r.slug,
+            "post_count": n,
+            "freshness": "fresh" if n < 5 else "warm" if n < 40 else "saturated",
         }
-    return list(seen.values())[:limit]
+    # Fresh sounds first (that's where the picker adds the most value), then by activity.
+    return sorted(
+        seen.values(),
+        key=lambda s: (0 if s["freshness"] == "fresh" else 1, -s["post_count"]),
+    )[:limit]
 
 
 # How well a post performed on the target sound, as a 0..1 multiplier.
