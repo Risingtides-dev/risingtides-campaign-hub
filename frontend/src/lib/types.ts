@@ -637,3 +637,32 @@ export interface CreatorDrilldown {
   score_balanced: number
   outcomes: CreatorOutcomes | null
 }
+
+// ---- Sound-fit (rank creators for a specific sound) ----
+export interface TargetSound {
+  sound_id: string
+  artist: string
+  song: string
+  campaign_slug: string
+}
+
+export interface SoundFitCreator {
+  account: string
+  fit_score: number
+  breaker_score: number
+  viral_rate: number
+  avg_views: number
+  millionaires: number
+  distinct_sounds: number
+  posted_this_sound: boolean
+  posted_this_artist: boolean
+  reasons: string[]
+}
+
+export interface SoundFitResponse {
+  sound_id: string
+  artist: string
+  song: string
+  campaign_slug: string
+  creators: SoundFitCreator[]
+}

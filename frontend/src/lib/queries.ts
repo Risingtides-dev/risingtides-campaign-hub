@@ -769,3 +769,21 @@ export function useCreatorOutcomes(account: string | null, enabled: boolean) {
     staleTime: 10 * 60 * 1000,
   })
 }
+
+// Sound-fit — the sound-first entry point.
+export function useSounds() {
+  return useQuery({
+    queryKey: ["intelligence", "sounds"],
+    queryFn: () => api.getSounds(),
+    staleTime: 10 * 60 * 1000,
+  })
+}
+
+export function useSoundFit(soundId: string | null) {
+  return useQuery({
+    queryKey: ["intelligence", "sound-fit", soundId],
+    queryFn: () => api.getSoundFit(soundId as string),
+    enabled: !!soundId,
+    staleTime: 5 * 60 * 1000,
+  })
+}

@@ -30,6 +30,8 @@ import type {
   BreakerLens,
   BreakerResponse,
   CreatorDrilldown,
+  TargetSound,
+  SoundFitResponse,
 } from "./types"
 
 const API_BASE = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? "http://localhost:5055" : "")
@@ -150,6 +152,12 @@ export const api = {
   getCreatorIntel: (account: string, withOutcomes = false) =>
     request<CreatorDrilldown>(
       `/api/intelligence/creator/${encodeURIComponent(account)}${withOutcomes ? "?outcomes=1" : ""}`
+    ),
+  getSounds: () =>
+    request<{ sounds: TargetSound[] }>("/api/intelligence/sounds"),
+  getSoundFit: (soundId: string) =>
+    request<SoundFitResponse>(
+      `/api/intelligence/sound-fit/${encodeURIComponent(soundId)}`
     ),
   updateCreatorNiches: (username: string, niches: string[]) =>
     request<ApiOk & { updated: number; niches: string[] }>(

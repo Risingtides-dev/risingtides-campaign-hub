@@ -7,9 +7,21 @@ import {
   XAxis,
   Tooltip as RTooltip,
 } from "recharts"
-import { Search, Zap, TrendingUp, Layers, Radio, X } from "lucide-react"
-import { useBreakers, useCreatorIntel, useCreatorOutcomes } from "@/lib/queries"
-import type { BreakerLens, BreakerRow, SoundTiming } from "@/lib/types"
+import { Search, Zap, TrendingUp, Layers, Radio, X, Music, Users } from "lucide-react"
+import {
+  useBreakers,
+  useCreatorIntel,
+  useCreatorOutcomes,
+  useSounds,
+  useSoundFit,
+} from "@/lib/queries"
+import type {
+  BreakerLens,
+  BreakerRow,
+  SoundTiming,
+  TargetSound,
+  SoundFitCreator,
+} from "@/lib/types"
 
 /* ============================================================
    CREATOR INTELLIGENCE — "Mission Control for Sound Warfare"
@@ -40,7 +52,10 @@ function scoreFor(row: BreakerRow, lens: BreakerLens): number {
   return lens === "ceiling" ? row.score_ceiling : lens === "volume" ? row.score_volume : row.score_balanced
 }
 
+type Mode = "creators" | "sound"
+
 export default function CreatorIntelligence() {
+  const [mode, setMode] = useState<Mode>("creators")
   const [lens, setLens] = useState<BreakerLens>("balanced")
   const [query, setQuery] = useState("")
   const [selected, setSelected] = useState<string | null>(null)
@@ -77,10 +92,27 @@ export default function CreatorIntelligence() {
             Who <span className="rt-gradient-text">Breaks Sounds</span>
           </h1>
           <p className="mt-2 max-w-xl text-sm text-rt-fg-secondary">
-            Ranked by velocity per post, not follower vanity. The lens decides what
-            "best" means — breakout odds, proven scale, or a confidence-weighted blend.
+            {mode === "creators"
+              ? `Ranked by velocity per post, not follower vanity. The lens decides what "best" means — breakout odds, proven scale, or a confidence-weighted blend.`
+              : `Pick a sound and see the creators most likely to break it — ranked by proven breaker ability, boosted for those who've broken this sound or this artist before.`}
           </p>
+
+          {/* Mode toggle: creator-first vs sound-first */}
+          <div className="mt-5 inline-flex rounded-xl border border-white/8 bg-rt-bg-raised p-1">
+            <ModeBtn active={mode === "creators"} onClick={() => setMode("creators")} icon={Users}>
+              By Creator
+            </ModeBtn>
+            <ModeBtn active={mode === "sound"} onClick={() => setMode("sound")} icon={Music}>
+              By Sound
+            </ModeBtn>
+          </div>
         </header>
+
+        {mode === "sound" ? (
+          <SoundFitView onPickCreator={setSelected} />
+        ) : (
+        <>
+
 
         {/* ---- Lens toggle + search ---- */}
         <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
@@ -193,12 +225,190 @@ export default function CreatorIntelligence() {
         <p className="mt-4 text-center text-[11px] text-rt-fg-tertiary">
           {data?.count ?? 0} creators · min {data?.min_posts ?? 5} tracked posts · click any row to drill in
         </p>
+        </>
+        )}
       </div>
 
       {selected && (
         <CreatorDrawer account={selected} onClose={() => setSelected(null)} />
       )}
     </div>
+  )
+}
+
+/* ============================================================
+   SOUND-FIT VIEW — sound-first entry point
+   ============================================================ */
+function SoundFitView({ onPickCreator }: { onPickCreator: (a: string) => void }) {
+  const { data: soundsData, isLoading: soundsLoading } = useSounds()
+  const [soundQuery, setSoundQuery] = useState("")
+  const [picked, setPicked] = useState<TargetSound | null>(null)
+  const { data: fit, isLoading: fitLoading } = useSoundFit(picked?.sound_id ?? null)
+
+  const sounds = useMemo(() => {
+    const list = soundsData?.sounds ?? []
+    if (!soundQuery.trim()) return list
+    const q = soundQuery.toLowerCase()
+    return list.filter(
+      (s) => s.artist.toLowerCase().includes(q) || s.song.toLowerCase().includes(q)
+    )
+  }, [soundsData, soundQuery])
+
+  const maxFit = fit?.creators.length ? Math.max(...fit.creators.map((c) => c.fit_score)) : 1
+
+  return (
+    <div className="grid grid-cols-[300px_1fr] gap-6">
+      {/* ---- Sound picker (left) ---- */}
+      <div className="rounded-2xl border border-white/8 bg-rt-bg-raised/60 p-3 backdrop-blur">
+        <div className="mb-2 flex items-center gap-2 rounded-lg border border-white/8 bg-rt-bg-black px-3 py-2">
+          <Search className="h-3.5 w-3.5 text-rt-fg-tertiary" />
+          <input
+            value={soundQuery}
+            onChange={(e) => setSoundQuery(e.target.value)}
+            placeholder="Search sounds…"
+            className="w-full bg-transparent text-sm text-rt-fg outline-none placeholder:text-rt-fg-tertiary"
+          />
+        </div>
+        <div className="max-h-[60vh] space-y-1 overflow-y-auto pr-1">
+          {soundsLoading && (
+            <div className="px-2 py-8 text-center text-xs text-rt-fg-tertiary">Loading sounds…</div>
+          )}
+          {sounds.map((s) => {
+            const active = picked?.sound_id === s.sound_id
+            return (
+              <button
+                key={s.sound_id}
+                onClick={() => setPicked(s)}
+                className={`w-full rounded-lg px-3 py-2 text-left transition-colors ${
+                  active ? "bg-rt-magenta/12 border border-rt-magenta/30" : "border border-transparent hover:bg-white/[0.03]"
+                }`}
+              >
+                <div className="truncate text-sm font-medium text-rt-fg">{s.song || s.sound_id}</div>
+                <div className="truncate text-xs text-rt-fg-tertiary">{s.artist || "—"}</div>
+              </button>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* ---- Fit ranking (right) ---- */}
+      <div>
+        {!picked && (
+          <div className="flex h-full min-h-[300px] items-center justify-center rounded-2xl border border-dashed border-white/10 text-sm text-rt-fg-tertiary">
+            <div className="text-center">
+              <Music className="mx-auto mb-3 h-6 w-6 text-rt-fg-tertiary" />
+              Pick a sound to see who's most likely to break it.
+            </div>
+          </div>
+        )}
+
+        {picked && (
+          <>
+            <div className="mb-4">
+              <div className="text-[11px] uppercase tracking-[0.18em] text-rt-fg-tertiary">
+                Best fit for
+              </div>
+              <h2 className="font-display text-2xl font-bold text-rt-fg">
+                {picked.song} <span className="text-rt-fg-tertiary">·</span>{" "}
+                <span className="rt-gradient-text">{picked.artist}</span>
+              </h2>
+            </div>
+
+            {fitLoading && (
+              <div className="px-5 py-16 text-center text-sm text-rt-fg-tertiary">
+                Computing fit…
+              </div>
+            )}
+
+            {fit && (
+              <div className="overflow-hidden rounded-2xl border border-white/8 bg-rt-bg-raised/60 backdrop-blur">
+                <div className="grid grid-cols-[2.5rem_1fr_5rem_4.5rem_1fr] gap-3 border-b border-white/8 px-5 py-3 text-[10px] uppercase tracking-[0.16em] text-rt-fg-tertiary">
+                  <span>#</span>
+                  <span>Creator</span>
+                  <span className="text-right">Fit</span>
+                  <span className="text-right">Viral</span>
+                  <span>Why</span>
+                </div>
+                {fit.creators.slice(0, 30).map((c, i) => (
+                  <SoundFitRow key={c.account} c={c} i={i} maxFit={maxFit} onClick={() => onPickCreator(c.account)} />
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function SoundFitRow({
+  c,
+  i,
+  maxFit,
+  onClick,
+}: {
+  c: SoundFitCreator
+  i: number
+  maxFit: number
+  onClick: () => void
+}) {
+  const heat = Math.max(6, (c.fit_score / maxFit) * 100)
+  return (
+    <button
+      onClick={onClick}
+      style={{ animationDelay: `${Math.min(i * 22, 500)}ms` }}
+      className="rt-rise grid w-full grid-cols-[2.5rem_1fr_5rem_4.5rem_1fr] items-center gap-3 border-b border-white/5 px-5 py-3 text-left transition-colors hover:bg-white/[0.03]"
+    >
+      <span className="rt-num text-sm text-rt-fg-tertiary">{i + 1}</span>
+      <div className="min-w-0">
+        <div className="truncate text-sm font-medium text-rt-fg">{c.account}</div>
+        <div className="mt-1 h-1 w-full max-w-[160px] overflow-hidden rounded-full bg-white/5">
+          <div className="h-full rt-heat" style={{ width: `${heat}%` }} />
+        </div>
+      </div>
+      <span className="rt-num text-right text-sm font-semibold text-rt-fg">{c.fit_score.toFixed(0)}</span>
+      <span className="rt-num text-right text-sm text-rt-fg-secondary">{c.viral_rate}%</span>
+      <div className="flex flex-wrap gap-1">
+        {c.reasons.length === 0 && (
+          <span className="text-[10px] text-rt-fg-tertiary">general breaker</span>
+        )}
+        {c.posted_this_sound && (
+          <span className="rounded-md border border-rt-magenta/40 bg-rt-magenta/10 px-2 py-0.5 text-[10px] text-rt-magenta">
+            broke this sound
+          </span>
+        )}
+        {c.posted_this_artist && !c.posted_this_sound && (
+          <span className="rounded-md border border-rt-purple/40 bg-rt-purple/10 px-2 py-0.5 text-[10px] text-rt-purple">
+            broke this artist
+          </span>
+        )}
+      </div>
+    </button>
+  )
+}
+
+function ModeBtn({
+  active,
+  onClick,
+  icon: Icon,
+  children,
+}: {
+  active: boolean
+  onClick: () => void
+  icon: typeof Zap
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`relative flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-all ${
+        active ? "text-white" : "text-rt-fg-tertiary hover:text-rt-fg-secondary"
+      }`}
+    >
+      {active && <span className="absolute inset-0 rounded-lg rt-gradient-bg opacity-90" />}
+      <Icon className="relative z-10 h-4 w-4" />
+      <span className="relative z-10">{children}</span>
+    </button>
   )
 }
 
