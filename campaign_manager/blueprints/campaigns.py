@@ -1602,27 +1602,42 @@ def creator_profile(username: str):
     platforms = []
     paypal_email = ""
 
-    for camp in all_campaigns:
+    # CAMP-73: filter to the campaigns this creator is actually in FIRST, then
+    # bulk-fetch live stats for the non-completed ones in one concurrent wave.
+    # Previously get_campaign_stats() ran serially for ALL ~192 campaigns
+    # before the membership check — a creator in 93 campaigns paid 93+
+    # sequential 15s-timeout fetches. Now: skip non-members, bulk the rest,
+    # skip completed (their stored numbers are final — same scope as CAMP-72).
+    member_camps = [
+        c for c in all_campaigns
+        if any(
+            (cr.get("username", "") or "").lower() == uname_lower
+            and cr.get("status", "active") != "removed"
+            for cr in c["creators"]
+        )
+    ]
+    bulk_stats: Dict[str, object] = {}
+    if _db.is_active():
+        try:
+            from campaign_manager.services.campaign_stats import get_campaign_stats_bulk
+            live = [c for c in member_camps if c["meta"].get("completion_status") != "completed"]
+            if live:
+                bulk_stats = get_campaign_stats_bulk(
+                    [c["slug"] for c in live],
+                    matched_videos_by_slug={c["slug"]: c["matched_videos"] for c in live},
+                    start_date_by_slug={c["slug"]: c["meta"].get("start_date", "") for c in live},
+                    tracker_id_by_slug={c["slug"]: c.get("tracker_id", "") for c in live},
+                )
+        except Exception:
+            bulk_stats = {}
+
+    for camp in member_camps:
         slug = camp["slug"]
         meta = camp["meta"]
         title = campaign_title(meta)
         creators = camp["creators"]
         matched_videos = camp["matched_videos"]
 
-        # RTA-43: overlay API counts so the creator's per-video table
-        # and per-campaign rollup reflect live numbers.
-        if _db.is_active():
-            try:
-                stats_result = get_campaign_stats(
-                    slug,
-                    matched_videos=matched_videos,
-                    start_date=meta.get("start_date", ""),
-                )
-                matched_videos = overlay_video_stats(matched_videos, stats_result.submissions)
-            except Exception:
-                pass
-
-        # Find this creator in the campaign
         creator_entry = None
         for c in creators:
             if (c.get("username", "") or "").lower() == uname_lower and c.get("status", "active") != "removed":
@@ -1631,6 +1646,15 @@ def creator_profile(username: str):
 
         if not creator_entry:
             continue
+
+        # Overlay live counts from the bulk pre-warm (non-completed only).
+        if _db.is_active():
+            try:
+                stats_result = bulk_stats.get(slug)
+                if stats_result is not None:
+                    matched_videos = overlay_video_stats(matched_videos, stats_result.submissions)
+            except Exception:
+                pass
 
         posts_owed = int(creator_entry.get("posts_owed", 0) or 0)
         posts_done = int(creator_entry.get("posts_done", 0) or 0)
