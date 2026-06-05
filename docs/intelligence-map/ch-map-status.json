@@ -1,5 +1,5 @@
 {
-  "updated": "2026-06-05T23:05:00.000Z",
+  "updated": "2026-06-05T23:18:00.000Z",
   "status": {
     "CAMP-58": "review",
     "CAMP-59": "review",
@@ -13,6 +13,12 @@
     "CAMP-67": "todo",
     "CAMP-68": "todo",
     "CAMP-13": "todo",
-    "CAMP-18": "todo"
+    "CAMP-18": "todo",
+    "CAMP-70": "review",
+    "CAMP-71": "review",
+    "CAMP-72": "todo",
+    "CAMP-73": "todo",
+    "CAMP-74": "todo",
+    "CAMP-75": "todo"
   }
 }
