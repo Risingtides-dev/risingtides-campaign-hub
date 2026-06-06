@@ -77,6 +77,10 @@ def canonicalize_tracker_url(url: str) -> str:
         if stale in url:
             # keep the path (the UUID) after the host, swap the host
             tail = url.split(stale, 1)[1].lstrip("/")
+            # No UUID after the host → don't manufacture a bare dashboard-root
+            # link (that's a different broken link). Leave it untouched.
+            if not tail:
+                return url
             return f"{TIDESTRACKER_PUBLIC_URL.rstrip('/')}/{tail}"
     return url
 

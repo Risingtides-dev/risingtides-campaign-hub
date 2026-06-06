@@ -17,6 +17,7 @@ Three ranking lenses (the caller picks):
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from math import sqrt
@@ -26,6 +27,8 @@ from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from campaign_manager.models import Campaign, MatchedVideo
+
+logger = logging.getLogger(__name__)
 
 # A post is "viral" at/above this view count (the breakout threshold).
 VIRAL_THRESHOLD = 500_000
@@ -305,10 +308,20 @@ def _aggregate_outcomes(session: Session, account: str) -> Optional[Dict[str, An
     # per share_url, so warm dossiers are instant; the cold case fans out the
     # ~10 fetches concurrently instead of running them one at a time.
     from concurrent.futures import ThreadPoolExecutor
+    def _safe_outcomes(u: str):
+        # Per-campaign isolation: the outcome layer is enrichment, so one
+        # campaign's malformed Cobrand response must degrade (skip it), never
+        # propagate up ex.map() and 500 the whole creator drilldown.
+        try:
+            return creator_outcomes(u, account)
+        except Exception:
+            logger.debug("creator_outcomes failed for a share url", exc_info=True)
+            return None
+
     totals: Dict[str, Any] = {"views": 0, "likes": 0, "comments": 0, "shares": 0, "posts": 0, "campaigns": 0}
     found = False
     with ThreadPoolExecutor(max_workers=min(8, len(share_urls) or 1)) as ex:
-        for oc in ex.map(lambda u: creator_outcomes(u, account), share_urls):
+        for oc in ex.map(_safe_outcomes, share_urls):
             if not oc:
                 continue
             found = True

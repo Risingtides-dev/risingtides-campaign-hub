@@ -386,11 +386,18 @@ def init(database_url: Optional[str] = None):
     try:
         import sqlalchemy as sa
         with _SessionLocal() as s:
+            # Cover both stale hosts the serve-time canonicalizer treats as
+            # stale, keeping stored data consistent with the served link.
+            # Order matters: 'frontend-tidestracker.vercel.app' CONTAINS
+            # 'tidestracker.vercel.app', so replace the longer host first (inner
+            # REPLACE) before the bare one (outer) — otherwise the bare swap
+            # would leave a broken 'frontend-risingtides-tracker.com' prefix.
             s.execute(sa.text(
                 "UPDATE campaigns "
-                "SET tracker_url = REPLACE(tracker_url, "
-                "  'frontend-tidestracker.vercel.app', 'risingtides-tracker.com') "
-                "WHERE tracker_url LIKE '%frontend-tidestracker.vercel.app%'"
+                "SET tracker_url = REPLACE(REPLACE(tracker_url, "
+                "  'frontend-tidestracker.vercel.app', 'risingtides-tracker.com'), "
+                "  'tidestracker.vercel.app', 'risingtides-tracker.com') "
+                "WHERE tracker_url LIKE '%tidestracker.vercel.app%'"
             ))
             s.commit()
     except Exception:

@@ -166,6 +166,11 @@ def creator_outcomes(share_url: str, account: str) -> Optional[Dict[str, Any]]:
     submissions in that promotion.
     """
     norm = account.lstrip("@").lower()
+    # Guard against an empty account matching every author-less submission
+    # (Cobrand sometimes omits author handles, stored as "") — that would
+    # attribute unrelated creators' outcomes to one phantom account.
+    if not norm:
+        return None
     subs = fetch_submissions(share_url)
     mine = [s for s in subs if s["username"].lstrip("@").lower() == norm]
     if not mine:
