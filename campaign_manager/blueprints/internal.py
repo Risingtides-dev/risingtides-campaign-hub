@@ -304,6 +304,16 @@ def most_recent_job_status() -> Dict:
         return _legacy_status_from_job(_most_recent_job_locked())
 
 
+def _legacy_job_running_locked() -> bool:
+    """Lock-free check — caller MUST hold _jobs_lock. Used inside the atomic
+    check-and-claim in trigger_scrape (CAMP-89) so the single-flight guard and
+    the job insert can't race."""
+    for job in _jobs.values():
+        if job.get("kind") == "legacy" and job.get("state") == "running":
+            return True
+    return False
+
+
 def _most_recent_legacy_job_running() -> bool:
     """Is there a running job that was kicked off via the legacy entrypoint?
 
@@ -314,10 +324,7 @@ def _most_recent_legacy_job_running() -> bool:
     legacy-kind jobs gate the legacy entrypoint.
     """
     with _jobs_lock:
-        for job in _jobs.values():
-            if job.get("kind") == "legacy" and job.get("state") == "running":
-                return True
-        return False
+        return _legacy_job_running_locked()
 
 
 def _patch_legacy_status(job_id: str, **fields) -> None:
@@ -831,9 +838,11 @@ def trigger_scrape():
     ``POST /api/internal/scrape/start`` do not block this endpoint and
     vice versa — the two entrypoints have independent in-flight semantics.
     """
-    if _most_recent_legacy_job_running():
-        return jsonify({"error": "A scrape is already running. Please wait."}), 409
-
+    # CAMP-89: the single-flight check is done ATOMICALLY with the job insert
+    # below (inside _jobs_lock), NOT here — checking here then inserting later
+    # under a separate lock is a TOCTOU race where two concurrent requests both
+    # pass the check and both spawn full scrapes. (Sibling scrape_start already
+    # does check-and-claim atomically; this mirrors it.)
     data = request.get_json(silent=True) or {}
     hours = int(data.get("hours", 48))
 
@@ -869,25 +878,36 @@ def trigger_scrape():
     # RTA-45: create a _jobs entry so the worker can write progress + the
     # legacy-shape status to its own slot, not a module-global. Tagged
     # ``kind="legacy"`` so the in-flight guard above can identify it.
+    job_id = None
     with _jobs_lock:
-        # Prune terminal entries on insert (mirrors scrape_start; keeps the
-        # registry bounded across the dyno's lifetime).
-        _prune_jobs()
-        job_id = uuid.uuid4().hex
-        started_at = datetime.now(EST).isoformat()
-        legacy_status = _empty_legacy_status()
-        legacy_status["running"] = True
-        legacy_status["accounts_total"] = len(creators)
-        _jobs[job_id] = {
-            "group": group_slug or None,
-            "started_at": started_at,
-            "state": "running",
-            "progress": {"n": 0, "m": len(creators)},
-            "last_log": "",
-            "error": None,
-            "kind": "legacy",
-            "legacy_status": legacy_status,
-        }
+        # CAMP-89: atomic check-and-claim. If a legacy scrape is already running
+        # we must bail BEFORE inserting — and the check + insert must be in the
+        # same lock acquisition so two concurrent requests can't both pass.
+        if _legacy_job_running_locked():
+            already_running = True
+        else:
+            already_running = False
+            # Prune terminal entries on insert (mirrors scrape_start; keeps the
+            # registry bounded across the dyno's lifetime).
+            _prune_jobs()
+            job_id = uuid.uuid4().hex
+            started_at = datetime.now(EST).isoformat()
+            legacy_status = _empty_legacy_status()
+            legacy_status["running"] = True
+            legacy_status["accounts_total"] = len(creators)
+            _jobs[job_id] = {
+                "group": group_slug or None,
+                "started_at": started_at,
+                "state": "running",
+                "progress": {"n": 0, "m": len(creators)},
+                "last_log": "",
+                "error": None,
+                "kind": "legacy",
+                "legacy_status": legacy_status,
+            }
+
+    if already_running:
+        return jsonify({"error": "A scrape is already running. Please wait."}), 409
 
     # Launch scrape in background thread. RTA-45: if thread launch
     # fails (e.g. RuntimeError under OS thread-limit pressure), roll
