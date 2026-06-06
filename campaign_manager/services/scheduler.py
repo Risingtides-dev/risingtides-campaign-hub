@@ -853,20 +853,29 @@ def run_internal_scrape():
             for err in scrape_errors[:5]:
                 log.warning("CRON: internal scrape error: %s", err)
 
-        # Filter to last 48 hours
-        cutoff = datetime.now(EST) - timedelta(hours=48)
+        # Filter to last 48 hours.
+        # Sweep #5 fix: the scraper stores `timestamp` as a datetime OBJECT
+        # (master_tracker sets 'timestamp': video_dt), but this guarded only
+        # `isinstance(ts, str)` — so the check never fired and EVERY video fell
+        # through, making `filtered` == full history. The "last 48h" results +
+        # Slack summary were silently reporting the entire back-catalogue.
+        # Normalize both datetime and str forms.
+        cutoff = (datetime.now(EST) - timedelta(hours=48)).astimezone(timezone.utc)
         filtered = []
         for v in all_videos:
             ts = v.get("timestamp", "")
-            if ts and isinstance(ts, str):
+            vdt = None
+            if isinstance(ts, datetime):
+                vdt = ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+            elif ts and isinstance(ts, str):
                 try:
                     vdt = datetime.fromisoformat(ts)
                     if vdt.tzinfo is None:
                         vdt = vdt.replace(tzinfo=timezone.utc)
-                    if vdt < cutoff.astimezone(timezone.utc):
-                        continue
                 except Exception:
-                    pass
+                    vdt = None
+            if vdt is not None and vdt < cutoff:
+                continue
             filtered.append(v)
 
         # Group by account

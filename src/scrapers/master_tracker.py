@@ -435,8 +435,12 @@ def scrape_tiktok_account(account: str, start_date: Optional[datetime] = None,
                     'song': track,
                     'artist': artist,
                     'account': f"@{username}",
-                    'views': video_data.get('view_count', 0),
-                    'likes': video_data.get('like_count', 0),
+                    # `or 0` not just a default: yt-dlp --flat-playlist often
+                    # emits view_count: null (key present), and .get's default
+                    # only applies to ABSENT keys — so None would slip through.
+                    # Coalesce at parse so downstream never sees None (sweep #5).
+                    'views': video_data.get('view_count') or 0,
+                    'likes': video_data.get('like_count') or 0,
                     'upload_date': video_data.get('upload_date', ''),
                     'timestamp': video_dt,
                     'music_id': video_data.get('music_id', ''),
