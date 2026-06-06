@@ -182,10 +182,18 @@ export default function NetworkCreators() {
 
     if (!data.username) return
 
-    if (editingCreator) {
-      await editCreator.mutateAsync({ username: editingCreator.username, data })
-    } else {
-      await addCreator.mutateAsync(data)
+    // CAMP-82: only reset/close the form on SUCCESS. Previously an awaited
+    // mutateAsync rejection threw past the reset code, leaving the form open
+    // with stale state and no indication of what happened. The error itself
+    // is surfaced by the global toast (CAMP-79).
+    try {
+      if (editingCreator) {
+        await editCreator.mutateAsync({ username: editingCreator.username, data })
+      } else {
+        await addCreator.mutateAsync(data)
+      }
+    } catch {
+      return // keep the form open so the user can retry
     }
 
     setForm(emptyForm)
