@@ -1,5 +1,5 @@
 {
-  "updated": "2026-06-06T07:35:00.000Z",
+  "updated": "2026-06-06T07:40:00.000Z",
   "status": {
     "CAMP-58": "done",
     "CAMP-59": "done",
@@ -49,7 +49,7 @@
     "CAMP-91": "done",
     "CAMP-92": "done",
     "CAMP-95": "done",
-    "CAMP-96": "todo",
+    "CAMP-96": "review",
     "CAMP-97": "todo"
   }
 }
