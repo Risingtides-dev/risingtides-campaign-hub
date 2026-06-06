@@ -28,7 +28,7 @@ class CreatorMetrics:
     total_bookings: int  # posts_owed across all campaigns
     total_spend: float
     total_views: int
-    total_engagement: int  # likes + comments
+    total_engagement: int  # likes only — MatchedVideo has no comments column
 
     # Calculated metrics
     roi_ratio: float  # views per dollar
@@ -113,22 +113,30 @@ def calculate_creator_metrics(
     if total_spend == 0:
         return None
 
-    # Get performance data from matched videos (proxy for posts)
+    # CAMP-85: attribute only THIS creator's posts, not every video across
+    # their campaigns. The account is stored '@handle'; username is bare.
+    # Without this filter a creator on a 50-creator campaign was credited with
+    # all 51 creators' views — verified ~12x inflation for @theelliebarker
+    # (5544 videos attributed vs 462 actually theirs), corrupting the tier
+    # rankings this page drives budget decisions from.
     campaign_ids = [c.campaign_id for c in creators]
+    norm = creator_username.lstrip("@").lower()
     videos = session.query(MatchedVideo).filter(
         and_(
             MatchedVideo.campaign_id.in_(campaign_ids),
             MatchedVideo.first_seen_at >= cutoff_date,
+            func.lower(func.replace(MatchedVideo.account, "@", "")) == norm,
+            MatchedVideo.dismissed_at.is_(None),  # exclude false-positive matches
         )
     ).all()
 
     total_views = sum(v.views for v in videos)
-    total_engagement = sum(v.likes for v in videos)  # Simplified: just likes (could add comments)
+    # Engagement is likes-only: MatchedVideo has no comments column.
+    total_engagement = sum(v.likes for v in videos)
 
-    # If no posts yet, estimate based on typical performance
-    if total_views == 0 and videos:
-        # Use median TikTok post views (conservative estimate)
-        total_views = len(videos) * 50000
+    # No fabricated fallback (was: len(videos) * 50000). If a creator's matched
+    # posts have 0 recorded views, report 0 — inventing 50k/post produced
+    # phantom ROI and polluted the over/undervalued tiers.
 
     # Calculate derived metrics
     roi_ratio = total_views / total_spend if total_spend > 0 else 0
