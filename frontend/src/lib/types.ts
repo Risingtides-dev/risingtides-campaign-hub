@@ -682,6 +682,7 @@ export interface ReportTopPost {
   views: number
   likes: number
   upload_date: string
+  cover_url?: string
 }
 
 export interface ReportCreatorRow {

@@ -141,6 +141,7 @@ def _fetch_submissions_uncached(share_url: str, max_pages: int = 20) -> List[Dic
             eng = round((likes + comments + shares) / views * 100, 2) if views else 0.0
             out.append({
                 "username": author.get("username", ""),
+                "url": content.get("url", "") or "",
                 "views": views,
                 "likes": likes,
                 "comments": comments,

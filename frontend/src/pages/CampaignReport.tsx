@@ -92,9 +92,20 @@ export default function CampaignReport() {
             {data.top_posts.map((p, i) => (
               <div
                 key={p.url + i}
-                className="grid grid-cols-[2rem_1fr_5rem_5rem_2rem] items-center gap-3 border-b border-white/5 px-4 py-2.5 last:border-0 print:border-black/5"
+                className="grid grid-cols-[2rem_2.5rem_1fr_5rem_5rem_2rem] items-center gap-3 border-b border-white/5 px-4 py-2.5 last:border-0 print:border-black/5"
               >
                 <span className="rt-num text-sm text-rt-fg-tertiary">{i + 1}</span>
+                {/* CAMP-76: post thumbnail (cover_url), served live from Cobrand */}
+                {p.cover_url ? (
+                  <img
+                    src={p.cover_url}
+                    alt=""
+                    className="h-10 w-8 shrink-0 rounded object-cover border border-white/10"
+                    onError={(e) => { (e.currentTarget as HTMLImageElement).style.visibility = "hidden" }}
+                  />
+                ) : (
+                  <div className="h-10 w-8 shrink-0 rounded bg-white/5 border border-white/8" />
+                )}
                 <span className="truncate text-sm font-medium text-rt-fg print:text-black">{p.account}</span>
                 <span className="rt-num text-right text-sm font-semibold text-rt-fg print:text-black">{fmt(p.views)}</span>
                 <span className="rt-num text-right text-xs text-rt-fg-tertiary">{fmt(p.likes)} likes</span>
