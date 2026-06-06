@@ -385,10 +385,13 @@ export function CampaignsTable({ data }: CampaignsTableProps) {
               </TableCell>
             </TableRow>
           ) : (
-            table.getRowModel().rows.map((row) => (
+            table.getRowModel().rows.map((row, i) => (
               <TableRow
                 key={row.id}
-                className="cursor-pointer hover:bg-white/[0.03] border-b border-white/5"
+                // CAMP-load-polish: staggered entrance, matching the Creator
+                // Intelligence dashboard's clean cascade.
+                style={{ animationDelay: `${Math.min(i * 18, 500)}ms` }}
+                className="rt-rise cursor-pointer hover:bg-white/[0.03] border-b border-white/5"
                 onClick={() => navigate(`/campaign/${row.original.slug}`)}
               >
                 {row.getVisibleCells().map((cell) => (

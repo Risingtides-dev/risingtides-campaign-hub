@@ -417,10 +417,14 @@ export default function CreatorDatabase() {
                     </TableCell>
                   </TableRow>
                 ) : (
-                  table.getRowModel().rows.map((row) => (
+                  table.getRowModel().rows.map((row, i) => (
                     <TableRow
                       key={row.id}
-                      className="cursor-pointer hover:bg-white/[0.03] border-b border-white/5"
+                      // CAMP-load-polish: staggered entrance (same rt-rise
+                      // cascade as the Creator Intelligence dashboard) so rows
+                      // settle in on their own beat instead of popping at once.
+                      style={{ animationDelay: `${Math.min(i * 18, 500)}ms` }}
+                      className="rt-rise cursor-pointer hover:bg-white/[0.03] border-b border-white/5"
                       onClick={() =>
                         navigate(`/creators/${row.original.username}`)
                       }
