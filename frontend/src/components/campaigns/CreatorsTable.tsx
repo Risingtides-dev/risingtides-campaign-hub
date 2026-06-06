@@ -87,7 +87,7 @@ function SortableHeader({
   return (
     <button
       type="button"
-      className="flex items-center gap-1 hover:text-[#555] transition-colors"
+      className="flex items-center gap-1 hover:text-rt-fg transition-colors"
       onClick={() => column.toggleSorting(sorted === "asc")}
     >
       {label}
@@ -225,7 +225,7 @@ export function CreatorsTable({
           const c = row.original
           if (editingUsername === c.username) {
             return (
-              <span className="font-semibold text-[#0b62d6]">
+              <span className="font-semibold text-rt-magenta">
                 @{c.username}
               </span>
             )
@@ -234,7 +234,7 @@ export function CreatorsTable({
             <div className="flex items-center gap-2">
               <Link
                 to={`/creators/${c.username}`}
-                className="font-semibold text-[#0b62d6] hover:underline"
+                className="font-semibold text-rt-magenta hover:underline"
               >
                 @{c.username}
               </Link>
@@ -242,7 +242,7 @@ export function CreatorsTable({
                 href={`https://www.tiktok.com/@${c.username}`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-[#999] hover:text-[#333] transition-colors"
+                className="text-rt-fg-tertiary hover:text-[#333] transition-colors"
                 title="View on TikTok"
               >
                 <svg
@@ -284,7 +284,7 @@ export function CreatorsTable({
                       className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium border transition-all ${
                         active
                           ? getNicheColor(n) + " border-transparent"
-                          : "bg-white text-[#999] border-[#ddd] hover:border-[#aaa]"
+                          : "bg-rt-bg-card text-rt-fg-tertiary border-[#ddd] hover:border-[#aaa]"
                       }`}
                     >
                       {n}
@@ -414,7 +414,7 @@ export function CreatorsTable({
             )
           }
           return (
-            <span className="text-[12px] text-[#666]">{c.notes || ""}</span>
+            <span className="text-[12px] text-rt-fg-tertiary">{c.notes || ""}</span>
           )
         },
       },
@@ -430,7 +430,7 @@ export function CreatorsTable({
                   size="xs"
                   onClick={() => saveEdit(c.username)}
                   disabled={isEditing}
-                  className="bg-[#0b62d6] hover:bg-[#0951b5] text-white"
+                  className="bg-rt-magenta hover:bg-rt-purple text-white"
                 >
                   {isEditing ? (
                     <Loader2 className="size-3 animate-spin" />
@@ -485,7 +485,7 @@ export function CreatorsTable({
       {/* Niche filter chips — only shown when at least one creator has niches */}
       {allNiches.length > 0 && (
         <div className="flex items-center gap-1.5 flex-wrap mb-3">
-          <span className="text-[11px] text-[#999] uppercase tracking-wide">Niche:</span>
+          <span className="text-[11px] text-rt-fg-tertiary uppercase tracking-wide">Niche:</span>
           {allNiches.map((niche) => (
             <button
               key={niche}
@@ -494,7 +494,7 @@ export function CreatorsTable({
               className={`inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-medium transition-all ${
                 nicheFilter === niche
                   ? getNicheColor(niche) + " ring-2 ring-offset-1 ring-current"
-                  : "bg-[#f0f0f5] text-[#666] hover:bg-[#e4e4ed]"
+                  : "bg-white/5 text-rt-fg-tertiary hover:bg-white/8"
               }`}
             >
               {niche}
@@ -504,7 +504,7 @@ export function CreatorsTable({
             <button
               type="button"
               onClick={() => setNicheFilter(null)}
-              className="text-[11px] text-[#999] hover:text-[#555] underline"
+              className="text-[11px] text-rt-fg-tertiary hover:text-rt-fg underline"
             >
               clear
             </button>
@@ -512,19 +512,19 @@ export function CreatorsTable({
         </div>
       )}
 
-      <div className="bg-white border border-[#e8e8ef] rounded-[10px] overflow-hidden">
+      <div className="bg-rt-bg-card border border-white/8 rounded-[10px] overflow-hidden">
         <div className="overflow-x-auto">
         <Table>
           <TableHeader>
             {table.getHeaderGroups().map((headerGroup) => (
               <TableRow
                 key={headerGroup.id}
-                className="border-b-2 border-[#e8e8ef] hover:bg-transparent"
+                className="border-b-2 border-white/8 hover:bg-transparent"
               >
                 {headerGroup.headers.map((header) => (
                   <TableHead
                     key={header.id}
-                    className="text-[#888] text-xs font-semibold uppercase tracking-[0.3px] px-4 py-3 border-b-2 border-[#e8e8ef]"
+                    className="text-rt-fg-tertiary text-xs font-semibold uppercase tracking-[0.3px] px-4 py-3 border-b-2 border-white/8"
                   >
                     {header.isPlaceholder
                       ? null
@@ -542,7 +542,7 @@ export function CreatorsTable({
               <TableRow>
                 <TableCell
                   colSpan={columns.length}
-                  className="text-center text-[#888] py-10 text-sm"
+                  className="text-center text-rt-fg-tertiary py-10 text-sm"
                 >
                   No creators yet. Add one above.
                 </TableCell>
@@ -551,12 +551,12 @@ export function CreatorsTable({
               table.getRowModel().rows.map((row) => (
                 <TableRow
                   key={row.id}
-                  className="hover:bg-[#fafaff] border-b border-[#f0f0f5]"
+                  className="hover:bg-white/[0.03] border-b border-white/5"
                 >
                   {row.getVisibleCells().map((cell) => (
                     <TableCell
                       key={cell.id}
-                      className="px-4 py-2 text-[14px] border-b border-[#f0f0f5] align-middle"
+                      className="px-4 py-2 text-[14px] border-b border-white/5 align-middle"
                     >
                       {flexRender(
                         cell.column.columnDef.cell,

@@ -342,7 +342,7 @@ export function CampaignsTable({ data }: CampaignsTableProps) {
             className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
               sortBy === opt.value
                 ? "bg-rt-magenta text-white"
-                : "bg-white/[0.03] text-[#555] hover:bg-white/10"
+                : "bg-white/[0.03] text-rt-fg hover:bg-white/10"
             }`}
           >
             {opt.label}

@@ -45,16 +45,16 @@ function TokenRow({
     <div
       className={`flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg border ${
         isActive
-          ? "bg-white border-[#e8e8ef]"
-          : "bg-[#f9f9fb] border-[#e8e8ef] opacity-60"
+          ? "bg-rt-bg-card border-white/8"
+          : "bg-[#f9f9fb] border-white/8 opacity-60"
       }`}
     >
       <div className="flex items-center gap-2 min-w-0 flex-1">
-        <Link2 className="size-3.5 text-[#888] shrink-0" />
+        <Link2 className="size-3.5 text-rt-fg-tertiary shrink-0" />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             {token.label && (
-              <span className="text-[13px] font-medium text-[#1a1a2e] truncate">
+              <span className="text-[13px] font-medium text-rt-fg truncate">
                 {token.label}
               </span>
             )}
@@ -86,14 +86,14 @@ function TokenRow({
               href={shareUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="p-1.5 text-[#888] hover:text-[#6B21A8] hover:bg-[#6B21A8]/5 rounded-md transition-colors"
+              className="p-1.5 text-rt-fg-tertiary hover:text-[#6B21A8] hover:bg-[#6B21A8]/5 rounded-md transition-colors"
               title="Open dashboard"
             >
               <ExternalLink className="size-3.5" />
             </a>
             <button
               onClick={handleCopy}
-              className="p-1.5 text-[#888] hover:text-[#6B21A8] hover:bg-[#6B21A8]/5 rounded-md transition-colors"
+              className="p-1.5 text-rt-fg-tertiary hover:text-[#6B21A8] hover:bg-[#6B21A8]/5 rounded-md transition-colors"
               title="Copy link"
             >
               {copied ? (
@@ -108,7 +108,7 @@ function TokenRow({
           <button
             onClick={() => onRevoke(token.token)}
             disabled={isRevoking}
-            className="p-1.5 text-[#888] hover:text-red-500 hover:bg-red-50 rounded-md transition-colors disabled:opacity-50"
+            className="p-1.5 text-rt-fg-tertiary hover:text-red-500 hover:bg-red-50 rounded-md transition-colors disabled:opacity-50"
             title="Revoke token"
           >
             {isRevoking ? (
@@ -163,15 +163,15 @@ export function ShareTokenSection({ slug }: ShareTokenSectionProps) {
   }
 
   return (
-    <div className="bg-white border border-[#e8e8ef] rounded-[10px] p-5">
+    <div className="bg-rt-bg-card border border-white/8 rounded-[10px] p-5">
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
           <Share2 className="size-4 text-[#6B21A8]" />
-          <h3 className="text-sm font-semibold text-[#1a1a2e]">
+          <h3 className="text-sm font-semibold text-rt-fg">
             Share with Client
           </h3>
           {activeTokens.length > 0 && (
-            <span className="text-[11px] text-[#888] bg-[#f0f0f3] px-2 py-0.5 rounded-full">
+            <span className="text-[11px] text-rt-fg-tertiary bg-[#f0f0f3] px-2 py-0.5 rounded-full">
               {activeTokens.length} active
             </span>
           )}
@@ -210,9 +210,9 @@ export function ShareTokenSection({ slug }: ShareTokenSectionProps) {
 
       {/* Create form */}
       {isCreating && (
-        <div className="border border-[#e8e8ef] rounded-lg p-3 mb-3 space-y-3">
+        <div className="border border-white/8 rounded-lg p-3 mb-3 space-y-3">
           <div>
-            <label className="text-[11px] font-semibold text-[#888] uppercase tracking-wider mb-1 block">
+            <label className="text-[11px] font-semibold text-rt-fg-tertiary uppercase tracking-wider mb-1 block">
               Label (optional)
             </label>
             <input
@@ -220,11 +220,11 @@ export function ShareTokenSection({ slug }: ShareTokenSectionProps) {
               value={label}
               onChange={(e) => setLabel(e.target.value)}
               placeholder="e.g. Q1 Report for Warner"
-              className="w-full px-3 py-1.5 text-sm border border-[#e8e8ef] rounded-lg focus:outline-none focus:ring-1 focus:ring-[#6B21A8]/30 focus:border-[#6B21A8]/30"
+              className="w-full px-3 py-1.5 text-sm border border-white/8 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#6B21A8]/30 focus:border-[#6B21A8]/30"
             />
           </div>
           <div>
-            <label className="text-[11px] font-semibold text-[#888] uppercase tracking-wider mb-1 block">
+            <label className="text-[11px] font-semibold text-rt-fg-tertiary uppercase tracking-wider mb-1 block">
               Expires after (days, optional)
             </label>
             <input
@@ -233,7 +233,7 @@ export function ShareTokenSection({ slug }: ShareTokenSectionProps) {
               onChange={(e) => setExpiresDays(e.target.value)}
               placeholder="e.g. 30 (leave blank for no expiry)"
               min={1}
-              className="w-full px-3 py-1.5 text-sm border border-[#e8e8ef] rounded-lg focus:outline-none focus:ring-1 focus:ring-[#6B21A8]/30 focus:border-[#6B21A8]/30"
+              className="w-full px-3 py-1.5 text-sm border border-white/8 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#6B21A8]/30 focus:border-[#6B21A8]/30"
             />
           </div>
           <div className="flex items-center gap-2">
@@ -251,7 +251,7 @@ export function ShareTokenSection({ slug }: ShareTokenSectionProps) {
                 setLabel("")
                 setExpiresDays("")
               }}
-              className="px-4 py-1.5 text-sm font-medium text-[#888] hover:text-[#555] transition-colors"
+              className="px-4 py-1.5 text-sm font-medium text-rt-fg-tertiary hover:text-rt-fg transition-colors"
             >
               Cancel
             </button>

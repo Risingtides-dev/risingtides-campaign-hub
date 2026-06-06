@@ -70,11 +70,11 @@ export function AddCreatorForm({ onAdd, isPending }: AddCreatorFormProps) {
   }
 
   return (
-    <div className="bg-white border border-[#e8e8ef] rounded-[10px] p-5">
+    <div className="bg-rt-bg-card border border-white/8 rounded-[10px] p-5">
       <h3 className="text-[15px] font-semibold mb-3">Add Creator</h3>
       <form onSubmit={handleSubmit} className="flex flex-wrap items-end gap-2.5">
         <div className="w-full sm:w-auto">
-          <label className="block text-[#888] text-[13px] mb-1">Username</label>
+          <label className="block text-rt-fg-tertiary text-[13px] mb-1">Username</label>
           <CreatorAutocomplete
             value={username}
             onChange={setUsername}
@@ -84,7 +84,7 @@ export function AddCreatorForm({ onAdd, isPending }: AddCreatorFormProps) {
           />
         </div>
         <div className="w-full sm:w-auto">
-          <label className="block text-[#888] text-[13px] mb-1">Platform</label>
+          <label className="block text-rt-fg-tertiary text-[13px] mb-1">Platform</label>
           <Select value={platform} onValueChange={setPlatform}>
             <SelectTrigger className="w-full sm:w-[120px] h-9 text-[13px]">
               <SelectValue />
@@ -96,7 +96,7 @@ export function AddCreatorForm({ onAdd, isPending }: AddCreatorFormProps) {
           </Select>
         </div>
         <div className="w-full sm:w-auto">
-          <label className="block text-[#888] text-[13px] mb-1">Posts Owed</label>
+          <label className="block text-rt-fg-tertiary text-[13px] mb-1">Posts Owed</label>
           <Input
             type="number"
             min="1"
@@ -107,7 +107,7 @@ export function AddCreatorForm({ onAdd, isPending }: AddCreatorFormProps) {
           />
         </div>
         <div className="w-full sm:w-auto">
-          <label className="block text-[#888] text-[13px] mb-1">Price ($)</label>
+          <label className="block text-rt-fg-tertiary text-[13px] mb-1">Price ($)</label>
           <Input
             type="number"
             step="0.01"
@@ -118,10 +118,10 @@ export function AddCreatorForm({ onAdd, isPending }: AddCreatorFormProps) {
           />
         </div>
         <div className="w-full sm:w-auto">
-          <label className="block text-[#888] text-[13px] mb-1">
+          <label className="block text-rt-fg-tertiary text-[13px] mb-1">
             PayPal
             {lookingUpPaypal && (
-              <Loader2 className="inline size-3 ml-1 animate-spin text-[#888]" />
+              <Loader2 className="inline size-3 ml-1 animate-spin text-rt-fg-tertiary" />
             )}
           </label>
           <Input
@@ -135,7 +135,7 @@ export function AddCreatorForm({ onAdd, isPending }: AddCreatorFormProps) {
         <Button
           type="submit"
           disabled={isPending}
-          className="bg-[#0b62d6] hover:bg-[#0951b5] text-white"
+          className="bg-rt-magenta hover:bg-rt-purple text-white"
         >
           {isPending ? (
             <Loader2 className="size-3.5 animate-spin" />

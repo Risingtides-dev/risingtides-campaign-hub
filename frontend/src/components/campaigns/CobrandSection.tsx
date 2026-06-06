@@ -21,9 +21,9 @@ export function CobrandStatsCard({
 }: CobrandStatsCardProps) {
   if (isLoading) {
     return (
-      <div className="bg-white border border-[#e8e8ef] rounded-[10px] p-5">
+      <div className="bg-rt-bg-card border border-white/8 rounded-[10px] p-5">
         <h3 className="text-[15px] font-semibold mb-3">Cobrand Stats</h3>
-        <div className="flex items-center gap-2 text-[#888] text-sm py-4">
+        <div className="flex items-center gap-2 text-rt-fg-tertiary text-sm py-4">
           <Loader2 className="size-4 animate-spin" />
           Loading Cobrand data...
         </div>
@@ -33,7 +33,7 @@ export function CobrandStatsCard({
 
   if (isError) {
     return (
-      <div className="bg-white border border-[#e8e8ef] rounded-[10px] p-5">
+      <div className="bg-rt-bg-card border border-white/8 rounded-[10px] p-5">
         <h3 className="text-[15px] font-semibold mb-3">Cobrand Stats</h3>
         <div className="flex items-center gap-2 text-red-500 text-sm py-2">
           <AlertCircle className="size-4" />
@@ -53,15 +53,15 @@ export function CobrandStatsCard({
   ]
 
   return (
-    <div className="bg-white border border-[#e8e8ef] rounded-[10px] p-5">
+    <div className="bg-rt-bg-card border border-white/8 rounded-[10px] p-5">
       <h3 className="text-[15px] font-semibold mb-3">Cobrand Stats</h3>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {statItems.map((item) => (
           <div key={item.label}>
-            <div className="text-[#888] text-xs font-semibold uppercase tracking-wide mb-1">
+            <div className="text-rt-fg-tertiary text-xs font-semibold uppercase tracking-wide mb-1">
               {item.label}
             </div>
-            <div className="text-[18px] font-bold text-[#1a1a2e]">
+            <div className="text-[18px] font-bold text-rt-fg">
               {typeof item.value === "number"
                 ? item.value.toLocaleString("en-US")
                 : item.value}
@@ -107,15 +107,15 @@ export function CobrandLinkInput({
   }
 
   return (
-    <div className="bg-white border border-[#e8e8ef] rounded-[10px] p-5">
+    <div className="bg-rt-bg-card border border-white/8 rounded-[10px] p-5">
       <div className="flex items-center gap-2 mb-3">
-        <Link2 className="size-4 text-[#0b62d6]" />
+        <Link2 className="size-4 text-rt-magenta" />
         <h3 className="text-[15px] font-semibold">
           {currentShareUrl ? "Cobrand Tracking Link" : "Connect Cobrand Tracking"}
         </h3>
       </div>
       {!currentShareUrl && (
-        <p className="text-[13px] text-[#888] mb-3">
+        <p className="text-[13px] text-rt-fg-tertiary mb-3">
           Paste the Cobrand share URL to pull live performance data for this campaign.
         </p>
       )}
@@ -129,7 +129,7 @@ export function CobrandLinkInput({
         <Button
           type="submit"
           disabled={isPending || !url.trim()}
-          className="bg-[#0b62d6] hover:bg-[#0951b5] text-white whitespace-nowrap"
+          className="bg-rt-magenta hover:bg-rt-purple text-white whitespace-nowrap"
         >
           {isPending ? (
             <Loader2 className="size-3.5 animate-spin" />
@@ -186,7 +186,7 @@ export function CobrandUploadSection({
   }
 
   return (
-    <div className="bg-white border border-[#e8e8ef] rounded-[10px] p-5">
+    <div className="bg-rt-bg-card border border-white/8 rounded-[10px] p-5">
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-[15px] font-semibold">Cobrand Upload</h3>
         <div className="flex items-center gap-2">
@@ -201,7 +201,7 @@ export function CobrandUploadSection({
           <Button
             asChild
             size="sm"
-            className="bg-[#0b62d6] hover:bg-[#0951b5] text-white"
+            className="bg-rt-magenta hover:bg-rt-purple text-white"
           >
             <a href={cobrandLink} target="_blank" rel="noopener noreferrer">
               <ExternalLink className="size-3.5" />
@@ -223,12 +223,12 @@ export function CobrandUploadSection({
             />
           ) : (
             <div className="flex flex-col items-center justify-center h-[500px] border border-dashed border-[#ddd] rounded-lg bg-[#f9f9fb] px-10 text-center">
-              <p className="text-[#888] mb-3">
+              <p className="text-rt-fg-tertiary mb-3">
                 Cobrand cannot be embedded in an iframe.
               </p>
               <Button
                 asChild
-                className="bg-[#0b62d6] hover:bg-[#0951b5] text-white"
+                className="bg-rt-magenta hover:bg-rt-purple text-white"
               >
                 <a href={cobrandLink} target="_blank" rel="noopener noreferrer">
                   Open Cobrand Upload Page
