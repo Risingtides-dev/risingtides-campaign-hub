@@ -70,7 +70,7 @@ export default function TidesTrackers() {
   // on first paint (without it, the pill is undiscoverable after refresh).
   // All non-archived views filter them out client-side below.
   const viewingArchived = activeGroup === ARCHIVED_GROUP
-  const { data: trackers = [], isLoading } = useTrackers(true)
+  const { data: trackers = [], isLoading, isError, error } = useTrackers(true)
   const { data: groups = [] } = useTrackerGroups()
   const [cobrandUrl, setCobrandUrl] = useState("")
   const [name, setName] = useState("")
@@ -375,6 +375,22 @@ export default function TidesTrackers() {
               <TableRow>
                 <TableCell colSpan={7} className="text-center py-10 text-rt-fg-tertiary text-[13px]">
                   Loading…
+                </TableCell>
+              </TableRow>
+            ) : isError ? (
+              // CAMP-80: a failed /api/trackers fetch must NOT render as the
+              // "No trackers" empty state — that masked the real error and
+              // made it look like the trackers were gone when they weren't.
+              <TableRow>
+                <TableCell colSpan={7} className="py-10 text-center">
+                  <div className="mx-auto max-w-md rounded-xl border border-rt-red/30 bg-rt-red/10 px-4 py-4">
+                    <div className="text-[13px] font-medium text-rt-red">
+                      Couldn't load trackers
+                    </div>
+                    <div className="mt-1 text-[12px] text-rt-fg-tertiary">
+                      {error?.message || "The trackers API request failed — they're not gone, the request errored. Check the backend is running and TidesTracker is configured."}
+                    </div>
+                  </div>
                 </TableCell>
               </TableRow>
             ) : filteredTrackers.length === 0 ? (
