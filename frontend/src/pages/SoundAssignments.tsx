@@ -292,7 +292,12 @@ export default function SoundAssignments() {
     setSavingPosterId(posterId)
     setError(null)
     try {
-      const results = await Promise.all(
+      // allSettled (not Promise.all): with Promise.all, the FIRST rejected
+      // call abandoned the whole result set, so successful mutations on the
+      // other pages were never reflected in setPlaylists — the checkboxes
+      // desynced from the server. Now apply every fulfilled result and report
+      // a partial failure if some calls failed.
+      const settled = await Promise.allSettled(
         poster.page_ids.map(async (pageId) => {
           const has = (playlists[pageId] || []).includes(selectedSound)
           // Skip API calls that would be no-ops.
@@ -310,9 +315,15 @@ export default function SoundAssignments() {
       )
       setPlaylists((prev) => {
         const next = { ...prev }
-        for (const { pageId, sound_ids } of results) next[pageId] = sound_ids
+        for (const s of settled) {
+          if (s.status === "fulfilled") next[s.value.pageId] = s.value.sound_ids
+        }
         return next
       })
+      const failed = settled.filter((s) => s.status === "rejected").length
+      if (failed > 0) {
+        setError(`${failed} of ${settled.length} page update(s) failed — the rest were saved.`)
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Toggle failed")
     } finally {
@@ -343,7 +354,9 @@ export default function SoundAssignments() {
           else if (!allOn && !has) tasks.push({ pageId, assign: true })
         }
       }
-      const results = await Promise.all(
+      // allSettled (not Promise.all): a partial failure must still reflect the
+      // calls that DID succeed, or the checkboxes desync from the server.
+      const settled = await Promise.allSettled(
         tasks.map(async ({ pageId, assign }) => {
           const url = assign
             ? `/pages/${pageId}/playlist/songs`
@@ -357,9 +370,15 @@ export default function SoundAssignments() {
       )
       setPlaylists((prev) => {
         const next = { ...prev }
-        for (const { pageId, sound_ids } of results) next[pageId] = sound_ids
+        for (const s of settled) {
+          if (s.status === "fulfilled") next[s.value.pageId] = s.value.sound_ids
+        }
         return next
       })
+      const failed = settled.filter((s) => s.status === "rejected").length
+      if (failed > 0) {
+        setError(`${failed} of ${settled.length} page update(s) failed — the rest were saved.`)
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Bulk toggle failed")
     } finally {
