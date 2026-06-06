@@ -47,6 +47,10 @@ def build_report(slug: str) -> Optional[Dict[str, Any]]:
     total_views = sum(int(v.get("views", 0) or 0) for v in live)
     total_likes = sum(int(v.get("likes", 0) or 0) for v in live)
 
+    # CAMP-76: post thumbnails from Cobrand (cover_url), joined by normalized
+    # post URL. Served live — durable cobrand-public GCS URLs, no expiry.
+    cover_by_url = _cover_map(meta.get("cobrand_share_url", ""))
+
     # Top posts by views (the highlight reel).
     top_posts = sorted(live, key=lambda v: int(v.get("views", 0) or 0), reverse=True)[:10]
     top_posts_out = [
@@ -56,6 +60,7 @@ def build_report(slug: str) -> Optional[Dict[str, Any]]:
             "views": int(v.get("views", 0) or 0),
             "likes": int(v.get("likes", 0) or 0),
             "upload_date": v.get("upload_date", ""),
+            "cover_url": cover_by_url.get(_norm_url(v.get("url", "")), ""),
         }
         for v in top_posts
     ]
@@ -85,6 +90,36 @@ def build_report(slug: str) -> Optional[Dict[str, Any]]:
         "source": source,
         "stale_since": stale_since,
     }
+
+
+def _norm_url(url: str) -> str:
+    """Normalize a post URL for cross-source join (reuses the tracker's
+    canonical normalizer — strips www, query, trailing slash, lowercases)."""
+    if not url:
+        return ""
+    try:
+        from campaign_manager.services.tidestracker import normalize_video_url
+        return normalize_video_url(url)
+    except Exception:
+        return url.strip().lower().split("?", 1)[0].rstrip("/")
+
+
+def _cover_map(cobrand_share_url: str) -> Dict[str, str]:
+    """{normalized_post_url: cover_url} from the campaign's Cobrand submissions.
+    Best-effort — empty if the campaign has no share URL or the fetch fails."""
+    out: Dict[str, str] = {}
+    if not cobrand_share_url:
+        return out
+    try:
+        from campaign_manager.services.cobrand_outcomes import fetch_submissions
+        for sub in fetch_submissions(cobrand_share_url):
+            cover = sub.get("cover_url", "")
+            url = sub.get("url", "")
+            if cover and url:
+                out[_norm_url(url)] = cover
+    except Exception:
+        logger.debug("campaign_report: cover map unavailable for %s", cobrand_share_url, exc_info=True)
+    return out
 
 
 def _per_creator(
