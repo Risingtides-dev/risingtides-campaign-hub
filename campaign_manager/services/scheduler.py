@@ -340,9 +340,16 @@ def trigger_job(job_type: str):
 
 # ── Job 1: Campaign Refresh ──────────────────────────────────────────
 
-def run_campaign_refresh():
-    """Refresh all active campaigns: scrape creators via yt-dlp, run matching, update stats."""
-    log.info("CRON: starting campaign_refresh")
+def run_campaign_refresh(only_slugs=None):
+    """Refresh active campaigns: scrape creators via yt-dlp, run matching, update stats.
+
+    only_slugs: optional iterable of campaign slugs to limit the refresh to
+    (CAMP-24 single/selected-campaign trigger). None = all active campaigns.
+    The smart-scraper rule (active + not-completed only) still applies — a
+    completed campaign passed in only_slugs is filtered out below.
+    """
+    log.info("CRON: starting campaign_refresh%s",
+             f" (scoped to {list(only_slugs)})" if only_slugs else "")
     log_id = _db.create_cron_log("campaign_refresh")
 
     campaigns_total = 0
@@ -356,6 +363,9 @@ def run_campaign_refresh():
 
     try:
         campaigns = _db.list_campaigns(status="active", exclude_completed=True)
+        if only_slugs:
+            wanted = {s for s in only_slugs}
+            campaigns = [c for c in campaigns if c.get("slug", "") in wanted]
         campaigns_total = len(campaigns)
 
         # Improvement #4: Deduplicate creators across campaigns

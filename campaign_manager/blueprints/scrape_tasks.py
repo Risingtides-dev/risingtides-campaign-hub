@@ -30,6 +30,53 @@ from campaign_manager.utils.helpers import video_posted_before_start
 scrape_tasks_bp = Blueprint("scrape_tasks", __name__)
 
 
+# ── On-demand scrape trigger (CAMP-24) ───────────────────────────────────
+@scrape_tasks_bp.post("/api/scrape-tasks/trigger")
+def trigger_scrape_task():
+    """Fire a campaign refresh on demand (instead of waiting for the cron).
+
+    Body:
+      {"all_active": true}            -> refresh every active campaign
+      {"campaign_id": "<slug>"}       -> refresh just that campaign
+      {"slugs": ["a", "b"]}           -> refresh those campaigns
+
+    Returns {job_id, state, scope}. Debounced: a second trigger while one is
+    running returns the in-flight job (avoids doubling the scraper load).
+    """
+    from campaign_manager.services.scrape_trigger import start_scrape
+
+    data = request.get_json(silent=True) or {}
+    only_slugs = None
+    if not data.get("all_active"):
+        if data.get("campaign_id"):
+            only_slugs = [str(data["campaign_id"])]
+        elif isinstance(data.get("slugs"), list) and data["slugs"]:
+            only_slugs = [str(s) for s in data["slugs"]]
+        else:
+            return jsonify({
+                "error": "Provide all_active:true, campaign_id:<slug>, or slugs:[...]"
+            }), 400
+
+    job = start_scrape(only_slugs)
+    return jsonify(job), (200 if job.get("already_running") else 202)
+
+
+@scrape_tasks_bp.get("/api/scrape-tasks/trigger/status")
+def trigger_scrape_status():
+    """Poll a trigger job: /api/scrape-tasks/trigger/status?job_id=<id>."""
+    from campaign_manager.services.scrape_trigger import job_status, active_job
+
+    job_id = request.args.get("job_id", "")
+    if not job_id:
+        # No id -> return the active job if there is one, else idle.
+        active = active_job()
+        return jsonify(active or {"state": "idle"})
+    status = job_status(job_id)
+    if status is None:
+        return jsonify({"error": "Unknown job_id"}), 404
+    return jsonify(status)
+
+
 @scrape_tasks_bp.get("/api/scrape-tasks/queue")
 def queue():
     """Return untracked matched videos grouped by campaign.
