@@ -807,3 +807,20 @@ class TidesTrackerSyncLog(Base):
     submissions_fetched = Column(Integer)
     errors = Column(JSONB)                                 # list of {tracker_id, error_kind, detail}
     triggered_by = Column(Text)                            # cron | manual:<user>
+
+
+class TidesTrackerStatsCache(Base):
+    """Postgres-backed L2 for the Tides Tracker stats cache (CAMP-9).
+
+    The request-path cache in services/campaign_stats.py is a per-worker
+    in-process dict — it's blown away on every Railway redeploy and not shared
+    across the 4 gunicorn workers. This table persists the cached submissions
+    so a fetch by ANY worker warms the cache for ALL workers, and the cache
+    survives restarts. The in-process dict stays as a fast L1 in front of this.
+    """
+    __tablename__ = "tides_tracker_stats_cache"
+
+    tracker_id = Column(String(100), primary_key=True)
+    submissions_json = Column(JSONB, nullable=False)        # list[asdict(Submission)]
+    api_fetched_at = Column(Text, default="")              # API's reported fetched_at
+    fetched_at = Column(DateTime(timezone=True), nullable=False, default=datetime.now)
