@@ -1782,6 +1782,26 @@ def creator_profile(username: str):
 
 
 # -------------------------------------------------------------------
+# GET /api/creators/<username>/rollup  -- internal + external union (CAMP-34)
+# -------------------------------------------------------------------
+@campaigns_bp.get("/api/creators/<username>/rollup")
+def creator_rollup_endpoint(username: str):
+    """Unified per-creator activity: internal page videos + external campaign
+    matched videos, in one rollup (the 'All Activity' data)."""
+    if not _db.is_active():
+        return jsonify({"error": "DB not active"}), 503
+    from campaign_manager.services.creator_rollup import creator_rollup
+    try:
+        days = max(1, min(int(request.args.get("days", 90)), 3650))
+    except (TypeError, ValueError):
+        days = 90
+    session = _db.get_session()
+    try:
+        return jsonify(creator_rollup(session, username, days))
+    finally:
+        session.close()
+
+
 # PATCH /api/creators/<username>/niches
 # -------------------------------------------------------------------
 @campaigns_bp.patch("/api/creators/<username>/niches")

@@ -768,3 +768,20 @@ export interface BookerStats {
   by_label: BookerLabelSplit[]
   top_accounts: Array<{ account: string; label: string; views: number; likes: number; posts: number }>
 }
+
+// Per-creator unified rollup (CAMP-34 endpoint #1)
+export interface CreatorRollupCampaign {
+  campaign_id: number
+  slug: string
+  views: number
+  likes: number
+  posts: number
+}
+export interface CreatorRollup {
+  username: string
+  days: number
+  label: string | null
+  totals: { views: number; likes: number; posts: number }
+  internal: { views: number; likes: number; posts: number; label: string | null }
+  external: { views: number; likes: number; posts: number; campaigns: CreatorRollupCampaign[] }
+}

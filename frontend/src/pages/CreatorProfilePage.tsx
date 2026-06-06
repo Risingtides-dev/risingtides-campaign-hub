@@ -16,7 +16,7 @@ import {
   ExternalLink,
   Loader2,
 } from "lucide-react"
-import { useCreatorProfile, useUpdateCreatorNiches } from "@/lib/queries"
+import { useCreatorProfile, useUpdateCreatorNiches, useCreatorRollup } from "@/lib/queries"
 import type { CreatorCampaignEntry, CreatorVideo } from "@/lib/types"
 import { NICHE_VOCAB } from "@/lib/types"
 import {
@@ -124,6 +124,7 @@ export default function CreatorProfilePage() {
     username!
   )
   const updateNiches = useUpdateCreatorNiches(username!)
+  const rollup = useCreatorRollup(username ?? null, 3650)
   const [editingNiches, setEditingNiches] = useState(false)
   const [pendingNiches, setPendingNiches] = useState<string[]>([])
 
@@ -519,6 +520,45 @@ export default function CreatorProfilePage() {
           </div>
         ))}
       </div>
+
+      {/* All Activity (internal + external) — CAMP-34 */}
+      {rollup.data && (rollup.data.internal.posts > 0 || rollup.data.external.posts > 0) && (
+        <div className="mb-6">
+          <h2 className="text-[16px] font-semibold text-rt-fg mb-3">
+            All Activity{" "}
+            <span className="text-rt-fg-tertiary text-[13px] font-normal">
+              internal pages + external campaigns
+            </span>
+          </h2>
+          <div className="grid grid-cols-3 gap-4">
+            <div className="rounded-xl border border-rt-magenta/20 bg-gradient-to-br from-rt-magenta/[0.07] to-rt-purple/[0.05] px-4 py-3">
+              <div className="text-[10px] uppercase tracking-[0.14em] text-rt-fg-tertiary">Total Reach</div>
+              <div className="rt-num text-2xl font-bold rt-gradient-text">
+                {formatViews(rollup.data.totals.views)}
+              </div>
+              <div className="text-[11px] text-rt-fg-tertiary">{rollup.data.totals.posts} posts</div>
+            </div>
+            <div className="rounded-xl border border-white/8 bg-rt-bg-card/50 px-4 py-3">
+              <div className="text-[10px] uppercase tracking-[0.14em] text-rt-fg-tertiary">
+                Internal Pages{rollup.data.internal.label ? ` · ${rollup.data.internal.label}` : ""}
+              </div>
+              <div className="rt-num text-2xl font-bold text-rt-fg">
+                {formatViews(rollup.data.internal.views)}
+              </div>
+              <div className="text-[11px] text-rt-fg-tertiary">{rollup.data.internal.posts} posts</div>
+            </div>
+            <div className="rounded-xl border border-white/8 bg-rt-bg-card/50 px-4 py-3">
+              <div className="text-[10px] uppercase tracking-[0.14em] text-rt-fg-tertiary">External Campaigns</div>
+              <div className="rt-num text-2xl font-bold text-rt-fg">
+                {formatViews(rollup.data.external.views)}
+              </div>
+              <div className="text-[11px] text-rt-fg-tertiary">
+                {rollup.data.external.posts} posts · {rollup.data.external.campaigns.length} campaigns
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Campaign History */}
       <div>

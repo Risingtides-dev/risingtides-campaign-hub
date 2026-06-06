@@ -817,3 +817,13 @@ export function useBookers(days = 3650) {
 export function useBookerStats(slug: string | null, days = 3650) {
   return useQuery({ queryKey: ["internal", "booker", slug, days], queryFn: () => api.getBookerStats(slug as string, days), enabled: !!slug, staleTime: 5 * 60 * 1000 })
 }
+
+// Per-creator unified rollup (CAMP-34 endpoint #1)
+export function useCreatorRollup(username: string | null, days = 90) {
+  return useQuery({
+    queryKey: ["creator", username, "rollup", days],
+    queryFn: () => api.getCreatorRollup(username as string, days),
+    enabled: !!username,
+    staleTime: 5 * 60 * 1000,
+  })
+}
