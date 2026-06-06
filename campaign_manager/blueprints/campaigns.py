@@ -1065,6 +1065,18 @@ def edit_creator(slug: str, username: str):
     except (ValueError, TypeError):
         return jsonify({"error": "Invalid values."}), 400
 
+    # Sweep #4 fix: reject a rename that collides with another ACTIVE creator —
+    # otherwise we create a duplicate (campaign_id, username), which hits the
+    # unique constraint (500 in DB mode) or makes two colliding active rows
+    # that desync every later username-keyed lookup / payout (JSON mode).
+    if new_username and new_username != username:
+        clash = any(
+            (o.get("username") == new_username and o.get("status", "active") != "removed")
+            for o in creators
+        )
+        if clash:
+            return jsonify({"error": f"@{new_username} is already a creator on this campaign."}), 409
+
     found = False
     for c in creators:
         if c.get("username") == username and c.get("status", "active") != "removed":
@@ -1110,7 +1122,10 @@ def toggle_paid(slug: str, username: str):
     new_status = "no"
     found = False
     for c in creators:
-        if c.get("username") == username:
+        # Sweep #4: skip removed rows — matching the first by-name row could
+        # flip a leftover removed entry's paid flag instead of the active one,
+        # desyncing the live payout.
+        if c.get("username") == username and c.get("status", "active") != "removed":
             now_paid = str(c.get("paid", "no")).lower() != "yes"
             c["paid"] = "yes" if now_paid else "no"
             c["payment_date"] = str(date.today()) if now_paid else ""
@@ -1143,7 +1158,9 @@ def remove_creator(slug: str, username: str):
 
     found = False
     for c in creators:
-        if c.get("username") == username:
+        # Sweep #4: only remove an ACTIVE row — matching a leftover removed
+        # entry first would re-remove it and miss the live one.
+        if c.get("username") == username and c.get("status", "active") != "removed":
             c["status"] = "removed"
             found = True
             break
@@ -1179,7 +1196,9 @@ def remove_creator_by_body(slug: str):
 
     found = False
     for c in creators:
-        if c.get("username") == username:
+        # Sweep #4: only remove an ACTIVE row — matching a leftover removed
+        # entry first would re-remove it and miss the live one.
+        if c.get("username") == username and c.get("status", "active") != "removed":
             c["status"] = "removed"
             found = True
             break

@@ -248,10 +248,18 @@ def merge_matched_videos(
         url = v.get("url", "")
         if url in fresh_by_url:
             fresh = fresh_by_url.pop(url)
-            # Create updated copy with fresh stats but keep existing metadata
+            # Create updated copy with fresh stats but keep existing metadata.
             updated = dict(v)
-            updated["views"] = fresh.get("views", v.get("views", 0))
-            updated["likes"] = fresh.get("likes", v.get("likes", 0))
+            # Data-integrity fix (sweep #4): take the MAX of fresh vs existing
+            # for views/likes, never blindly overwrite. A re-scrape that came
+            # back 0/None (rate-limited, partial page, momentary 404 on a
+            # still-live post) was clobbering a real recorded count down to 0
+            # and persisting it to Postgres — silently deflating campaign
+            # totals / client-facing numbers. Views & likes are monotonic on
+            # TikTok, so max() is the correct merge: a real increase wins, a
+            # transient zero can't lower a count.
+            updated["views"] = max(int(v.get("views", 0) or 0), int(fresh.get("views", 0) or 0))
+            updated["likes"] = max(int(v.get("likes", 0) or 0), int(fresh.get("likes", 0) or 0))
             # Also update sound info if we now have it
             if fresh.get("extracted_sound_id") and not v.get("extracted_sound_id"):
                 updated["extracted_sound_id"] = fresh["extracted_sound_id"]
