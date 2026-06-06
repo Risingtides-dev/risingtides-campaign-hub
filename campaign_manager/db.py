@@ -411,6 +411,52 @@ def is_active() -> bool:
     return _engine is not None
 
 
+# ── Tides Tracker stats cache (CAMP-9) — Postgres L2 ──────────────────────
+def get_tides_stats_cache(tracker_id: str):
+    """Return (submissions_json, api_fetched_at, fetched_at) for a tracker, or
+    None. submissions_json is the raw JSONB list (list[dict])."""
+    if not tracker_id or not is_active():
+        return None
+    try:
+        from campaign_manager.models import TidesTrackerStatsCache
+        with _SessionLocal() as s:
+            row = s.get(TidesTrackerStatsCache, tracker_id)
+            if row is None:
+                return None
+            return (row.submissions_json, row.api_fetched_at or "", row.fetched_at)
+    except Exception:
+        return None
+
+
+def upsert_tides_stats_cache(tracker_id: str, submissions_json, api_fetched_at: str, fetched_at):
+    """Write-through upsert of one tracker's cached submissions. Best-effort —
+    a cache write must never break the request that produced the data."""
+    if not tracker_id or not is_active():
+        return
+    try:
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+        from campaign_manager.models import TidesTrackerStatsCache
+        with _SessionLocal() as s:
+            stmt = pg_insert(TidesTrackerStatsCache.__table__).values(
+                tracker_id=tracker_id,
+                submissions_json=submissions_json,
+                api_fetched_at=api_fetched_at or "",
+                fetched_at=fetched_at,
+            )
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["tracker_id"],
+                set_={
+                    "submissions_json": stmt.excluded.submissions_json,
+                    "api_fetched_at": stmt.excluded.api_fetched_at,
+                    "fetched_at": stmt.excluded.fetched_at,
+                },
+            )
+            s.execute(stmt)
+            s.commit()
+    except Exception:
+        pass
+
+
 def get_session() -> Session:
     """Get a new database session."""
     if not _SessionLocal:

@@ -85,14 +85,64 @@ _cache: Dict[str, _CacheEntry] = {}
 _cache_lock = threading.Lock()
 
 
+def _submissions_to_json(submissions: List[Submission]) -> list:
+    from dataclasses import asdict
+    return [asdict(s) for s in submissions]
+
+
+def _submissions_from_json(rows) -> List[Submission]:
+    out: List[Submission] = []
+    for r in rows or []:
+        try:
+            out.append(Submission(**r))
+        except (TypeError, ValueError):
+            # Tolerate a schema drift in stored rows — skip the bad one rather
+            # than poison the whole cached entry.
+            continue
+    return out
+
+
 def _cache_get(tracker_id: str) -> Optional[_CacheEntry]:
+    # L1: fast in-process dict (per worker).
     with _cache_lock:
-        return _cache.get(tracker_id)
+        entry = _cache.get(tracker_id)
+    if entry is not None:
+        return entry
+    # L2: Postgres (CAMP-9) — survives redeploys + shared across workers. On an
+    # L1 miss, hydrate from the DB so a fetch by any worker / pre-restart warms
+    # this worker too. Best-effort; falls through to None if the DB is absent.
+    try:
+        from campaign_manager import db as _db
+        hit = _db.get_tides_stats_cache(tracker_id)
+        if hit is not None:
+            submissions_json, api_fetched_at, fetched_at = hit
+            entry = _CacheEntry(
+                submissions=_submissions_from_json(submissions_json),
+                fetched_at=fetched_at,
+                api_fetched_at=api_fetched_at,
+            )
+            with _cache_lock:
+                _cache[tracker_id] = entry  # promote into L1
+            return entry
+    except Exception:
+        pass
+    return None
 
 
 def _cache_set(tracker_id: str, entry: _CacheEntry) -> None:
+    # Write-through: L1 in-process + L2 Postgres.
     with _cache_lock:
         _cache[tracker_id] = entry
+    try:
+        from campaign_manager import db as _db
+        _db.upsert_tides_stats_cache(
+            tracker_id,
+            _submissions_to_json(entry.submissions),
+            entry.api_fetched_at,
+            entry.fetched_at,
+        )
+    except Exception:
+        pass
 
 
 def warm_cache(tracker_id: str, submissions, api_fetched_at: str = "") -> None:
