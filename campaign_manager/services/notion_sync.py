@@ -78,6 +78,13 @@ MASTER_PAGES_DATABASE_ID = os.environ.get(
 _PAGE_SIZE = 100
 _HTTP_TIMEOUT = 30
 
+# CAMP-94 delete-floor: refuse a sync that would delete more than this fraction
+# of the existing mirror in one pass (only when there are at least
+# _DELETE_FLOOR_MIN_ROWS rows, so small/empty mirrors aren't blocked). A normal
+# sync deletes 0-few rows; a mass delete signals a truncated/anomalous fetch.
+_MAX_DELETE_FRACTION = 0.5
+_DELETE_FLOOR_MIN_ROWS = 10
+
 
 @dataclass
 class SyncResult:
@@ -171,7 +178,15 @@ def _fetch_all_pages(database_id: str) -> List[Dict[str, Any]]:
             break
         cursor = body.get("next_cursor")
         if not cursor:
-            break
+            # CAMP-94: has_more=True but no cursor is a TRUNCATED fetch, not a
+            # clean end. Returning the partial list silently would make the
+            # caller treat every un-fetched page as a DELETE (mass wipe of the
+            # mirror + group memberships). Fail loudly so the sync aborts
+            # instead of deleting.
+            raise RuntimeError(
+                "Notion pagination truncated: has_more=true but next_cursor is empty "
+                "— aborting to avoid a partial fetch driving mass deletes."
+            )
 
     return pages
 
@@ -272,10 +287,30 @@ def _apply_diff(
             existing_row.synced_at = datetime.now(timezone.utc)
             updated += 1
 
-    # DELETE (mirror-only)
-    for stale_id in existing_ids - incoming_ids:
-        session.delete(existing_by_id[stale_id])
-        deleted += 1
+    # DELETE (mirror-only) — with a CAMP-94 safety floor.
+    stale_ids = existing_ids - incoming_ids
+    # Guardrail: if a single sync would delete more than _MAX_DELETE_FRACTION of
+    # the existing mirror (and there's a meaningful number of rows), that's
+    # almost certainly a truncated/anomalous fetch, not a real bulk-unassign.
+    # Skip the delete pass and log it loudly rather than wipe attribution data;
+    # the INSERT/UPDATE work above still applies. (The _fetch_all_pages
+    # truncation guard above catches the cursor case; this catches any OTHER
+    # path that returns an anomalously small set without raising.)
+    if (
+        len(existing_ids) >= _DELETE_FLOOR_MIN_ROWS
+        and len(stale_ids) > _MAX_DELETE_FRACTION * len(existing_ids)
+    ):
+        logger.error(
+            "notion_sync: REFUSING to delete %d/%d mirror rows in one sync "
+            "(> %.0f%% — likely a partial/anomalous fetch). Skipping delete pass; "
+            "added=%d updated=%d. Investigate the Notion fetch.",
+            len(stale_ids), len(existing_ids), _MAX_DELETE_FRACTION * 100,
+            added, updated,
+        )
+    else:
+        for stale_id in stale_ids:
+            session.delete(existing_by_id[stale_id])
+            deleted += 1
 
     return added, updated, deleted
 
