@@ -77,15 +77,20 @@ export default function BookingWizard() {
     if (!picked || selected.size === 0) return
     setBooking(true)
     try {
-      const payload = Array.from(selected).map((acct) => {
-        const key = acct.replace(/^@/, "").toLowerCase()
-        const r = rateByCreator.get(key)
-        return {
-          username: acct.replace(/^@/, ""),
-          rate: r?.rate ?? 0,
-          posts: r?.posts ?? 1,
-        }
-      })
+      // Only book creators that have a real network rate (the UI already
+      // blocks selecting rate-less ones; this is the belt-and-suspenders).
+      const payload = Array.from(selected)
+        .map((acct) => {
+          const r = rateByCreator.get(acct.replace(/^@/, "").toLowerCase())
+          if (!r) return null
+          return { username: acct.replace(/^@/, ""), rate: r.rate, posts: r.posts }
+        })
+        .filter((x): x is { username: string; rate: number; posts: number } => x !== null)
+      if (payload.length === 0) {
+        toast.error("None of the selected creators have a network rate set.")
+        setBooking(false)
+        return
+      }
       const res = await api.addToOutreach(picked.campaign_slug, payload)
       toast.success(`Added ${res.added ?? payload.length} creator${payload.length !== 1 ? "s" : ""} to ${picked.song} outreach`)
       navigate(`/campaign/${picked.campaign_slug}/outreach`)
@@ -258,19 +263,26 @@ function WizardRow({
   onToggle: () => void
 }) {
   const heat = Math.max(6, (c.fit_score / maxFit) * 100)
+  // Bookable only if the creator has a network rate — otherwise booking them
+  // would silently use $0, which is wrong data. Block selection + explain.
+  const bookable = !!rate
   return (
     <button
-      onClick={onToggle}
+      onClick={bookable ? onToggle : undefined}
+      disabled={!bookable}
+      title={bookable ? undefined : "Not in your network — add them on the Outreach Hub to set a rate before booking"}
       className={`grid w-full grid-cols-[2.5rem_1fr_4.5rem_4rem_1fr] items-center gap-3 border-b border-white/5 px-5 py-3 text-left transition-colors ${
-        selected ? "bg-rt-magenta/[0.06]" : "hover:bg-white/[0.03]"
+        !bookable
+          ? "cursor-not-allowed opacity-50"
+          : selected ? "bg-rt-magenta/[0.06]" : "hover:bg-white/[0.03]"
       }`}
     >
       <span
         className={`flex h-5 w-5 items-center justify-center rounded border ${
-          selected ? "border-rt-magenta bg-rt-magenta text-white" : "border-white/15"
+          !bookable ? "border-white/10" : selected ? "border-rt-magenta bg-rt-magenta text-white" : "border-white/15"
         }`}
       >
-        {selected && <Check className="h-3.5 w-3.5" />}
+        {selected && bookable && <Check className="h-3.5 w-3.5" />}
       </span>
       <div className="min-w-0">
         <div className="truncate text-sm font-medium text-rt-fg">{c.account}</div>
@@ -280,7 +292,7 @@ function WizardRow({
       </div>
       <span className="rt-num text-right text-sm font-semibold text-rt-fg">{c.fit_score.toFixed(0)}</span>
       <span className="rt-num text-right text-sm text-rt-fg-secondary">
-        {rate ? fmtMoney(rate.rate) : "—"}
+        {rate ? fmtMoney(rate.rate) : <span className="text-[10px] text-rt-amber">no rate</span>}
       </span>
       <div className="flex flex-wrap gap-1">
         {c.reasons.length === 0 && <span className="text-[10px] text-rt-fg-tertiary">general breaker</span>}
