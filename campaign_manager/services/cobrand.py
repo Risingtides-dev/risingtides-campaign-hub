@@ -10,32 +10,56 @@ Campaign Hub is the source of truth for financial tracking.
 """
 import json
 import re
+import threading
+import time
 from typing import Dict, Optional
 
 import requests
+
+# CAMP-56: the /cobrand endpoint auto-loads on every campaign-detail page that
+# has a Cobrand link (CampaignDetail.tsx enables the query when hasCobrandShare).
+# Each call was an uncached 15s HTML scrape — the #2 load-time culprit. Add an
+# in-process TTL cache (same pattern as cobrand_outcomes.py / campaign_stats.py)
+# so repeat loads are instant, and tighten the timeout so a slow/hung Cobrand
+# can't stall the page for 15s.
+_STATS_CACHE: Dict[str, "tuple[float, Optional[Dict]]"] = {}
+_CACHE_LOCK = threading.Lock()
+_CACHE_TTL_SECS = 300  # 5 min — matches the frontend query staleTime
+_FETCH_TIMEOUT_SECS = 8
 
 
 def fetch_cobrand_stats(share_url: str) -> Optional[Dict]:
     """Fetch the Cobrand share page and extract performance data from __NEXT_DATA__.
 
-    Args:
-        share_url: Full Cobrand share URL with token, e.g.
-            https://music.cobrand.com/promote/<id>/share/?token=<token>
-
-    Returns:
-        Dict with performance fields, or None if fetch/parse fails.
-        Financial fields (budget, spend, spend_committed) are deliberately excluded.
+    Cached for 5 minutes per share_url. Returns a Dict with performance fields,
+    or None if fetch/parse fails. Financial fields (budget, spend) are excluded.
     """
     if not share_url:
         return None
 
+    now = time.monotonic()
+    with _CACHE_LOCK:
+        hit = _STATS_CACHE.get(share_url)
+        if hit and (now - hit[0]) < _CACHE_TTL_SECS:
+            return hit[1]
+
+    result = _fetch_cobrand_stats_uncached(share_url)
+
+    # Cache successes only — don't pin a transient failure for the whole TTL.
+    if result is not None:
+        with _CACHE_LOCK:
+            _STATS_CACHE[share_url] = (now, result)
+    return result
+
+
+def _fetch_cobrand_stats_uncached(share_url: str) -> Optional[Dict]:
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                           "AppleWebKit/537.36 (KHTML, like Gecko) "
                           "Chrome/120.0.0.0 Safari/537.36"
         }
-        resp = requests.get(share_url, headers=headers, timeout=15)
+        resp = requests.get(share_url, headers=headers, timeout=_FETCH_TIMEOUT_SECS)
         if resp.status_code != 200:
             return None
 
