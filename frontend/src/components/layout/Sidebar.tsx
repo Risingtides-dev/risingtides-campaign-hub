@@ -13,6 +13,7 @@ const navItems = [
     links: [
       { label: "Creator Database", path: "/creators" },
       { label: "Creator Intelligence", path: "/intelligence" },
+      { label: "Booking Wizard", path: "/booking-wizard" },
       { label: "Booking Efficiency", path: "/efficiency" },
     ],
   },

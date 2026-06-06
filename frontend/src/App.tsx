@@ -10,6 +10,7 @@ const CampaignDetail = lazy(() => import("./pages/CampaignDetail"))
 const CampaignLinks = lazy(() => import("./pages/CampaignLinks"))
 const CreatorDatabase = lazy(() => import("./pages/CreatorDatabase"))
 const CreatorIntelligence = lazy(() => import("./pages/CreatorIntelligence"))
+const BookingWizard = lazy(() => import("./pages/BookingWizard"))
 const CreatorProfilePage = lazy(() => import("./pages/CreatorProfilePage"))
 const InternalTikTok = lazy(() => import("./pages/InternalTikTok"))
 const InternalCreatorDetail = lazy(() => import("./pages/InternalCreatorDetail"))
@@ -47,6 +48,7 @@ function App() {
                   <Route path="/campaign/:slug/outreach" element={<CampaignOutreach />} />
                   <Route path="/creators" element={<CreatorDatabase />} />
                   <Route path="/intelligence" element={<CreatorIntelligence />} />
+                  <Route path="/booking-wizard" element={<BookingWizard />} />
                   <Route path="/creators/:username" element={<CreatorProfilePage />} />
                   <Route path="/internal" element={<InternalTikTok />} />
                   <Route path="/internal/scrape/:category" element={<InternalScrapeView />} />
