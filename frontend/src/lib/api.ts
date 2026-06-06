@@ -33,6 +33,9 @@ import type {
   CreatorDrilldown,
   TargetSound,
   RebookSuggestion,
+  LabelStats,
+  BookerSummary,
+  BookerStats,
   SoundFitResponse,
 } from "./types"
 
@@ -181,6 +184,13 @@ export const api = {
     request<CobrandStats>(`/api/campaign/${slug}/cobrand`),
   getCampaignReport: (slug: string) =>
     request<CampaignReport>(`/api/campaign/${slug}/report`),
+  // Attribution rollups (CAMP-34 / CAMP-38)
+  getLabelStats: (days = 3650) =>
+    request<{ labels: LabelStats[] }>(`/api/internal/labels?days=${days}`),
+  getBookers: (days = 3650) =>
+    request<{ bookers: BookerSummary[] }>(`/api/internal/bookers?days=${days}`),
+  getBookerStats: (slug: string, days = 3650) =>
+    request<BookerStats>(`/api/internal/bookers/${encodeURIComponent(slug)}/stats?days=${days}`),
 
   setCobrandLinks: (
     slug: string,

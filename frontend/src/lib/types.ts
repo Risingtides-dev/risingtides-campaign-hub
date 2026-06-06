@@ -724,3 +724,47 @@ export interface RebookSuggestion {
   days_since_booked: number | null
   opportunity_score: number
 }
+
+// ---- Attribution rollups (CAMP-38 labels + CAMP-34 bookers) ----
+export interface LabelTopAccount {
+  account: string
+  views: number
+  likes: number
+  posts: number
+}
+export interface LabelStats {
+  label: string
+  slug: string
+  days: number
+  account_count: number
+  accounts_with_videos: number
+  total_views: number
+  total_likes: number
+  post_count: number
+  top_accounts: LabelTopAccount[]
+}
+export interface BookerSummary {
+  slug: string
+  booker: string
+  account_count: number
+  total_views: number
+  post_count: number
+}
+export interface BookerLabelSplit {
+  label: string
+  views: number
+  likes: number
+  posts: number
+}
+export interface BookerStats {
+  slug: string
+  booker: string
+  days: number
+  account_count: number
+  accounts_with_videos: number
+  total_views: number
+  total_likes: number
+  post_count: number
+  by_label: BookerLabelSplit[]
+  top_accounts: Array<{ account: string; label: string; views: number; likes: number; posts: number }>
+}

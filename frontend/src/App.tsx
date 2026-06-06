@@ -12,6 +12,8 @@ const CampaignLinks = lazy(() => import("./pages/CampaignLinks"))
 const CreatorDatabase = lazy(() => import("./pages/CreatorDatabase"))
 const CreatorIntelligence = lazy(() => import("./pages/CreatorIntelligence"))
 const BookingWizard = lazy(() => import("./pages/BookingWizard"))
+const RisingTidesTracker = lazy(() => import("./pages/RisingTidesTracker"))
+const BookerDashboard = lazy(() => import("./pages/BookerDashboard"))
 const CreatorProfilePage = lazy(() => import("./pages/CreatorProfilePage"))
 const InternalTikTok = lazy(() => import("./pages/InternalTikTok"))
 const InternalCreatorDetail = lazy(() => import("./pages/InternalCreatorDetail"))
@@ -52,6 +54,8 @@ function App() {
                   <Route path="/intelligence" element={<CreatorIntelligence />} />
                   <Route path="/booking-wizard" element={<BookingWizard />} />
                   <Route path="/creators/:username" element={<CreatorProfilePage />} />
+                  <Route path="/rt-tracker" element={<RisingTidesTracker />} />
+                  <Route path="/team/:slug" element={<BookerDashboard />} />
                   <Route path="/internal" element={<InternalTikTok />} />
                   <Route path="/internal/scrape/:category" element={<InternalScrapeView />} />
                   <Route path="/internal/group/:slug" element={<InternalGroupDetail />} />

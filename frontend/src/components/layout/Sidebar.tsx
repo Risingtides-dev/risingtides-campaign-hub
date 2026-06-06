@@ -19,7 +19,10 @@ const navItems = [
   },
   {
     section: "Internal",
-    links: [{ label: "Internal TikTok", path: "/internal" }],
+    links: [
+      { label: "Rising Tides Tracker", path: "/rt-tracker" },
+      { label: "Internal TikTok", path: "/internal" },
+    ],
   },
   {
     section: "Outreach",
