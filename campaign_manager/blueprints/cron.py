@@ -112,6 +112,18 @@ def cron_diag():
     result["tiktok_impersonate_env"] = os.environ.get("TIKTOK_IMPERSONATE", "0")
     result["tiktok_impersonate_target_env"] = os.environ.get("TIKTOK_IMPERSONATE_TARGET", "")
 
+    # CAMP-96 hardening: the EXPENSIVE live tests below (a yt-dlp scrape + a
+    # proxy HTML fetch) now run only when explicitly requested with ?run=1.
+    # A plain GET used to fire them on every hit — anyone (this endpoint is
+    # unauthenticated) could loop it to burn scraper/proxy budget, and the
+    # scrape_test_stderr_tail can leak proxy hostnames / auth-failure details.
+    # The cheap config/version diagnostics above stay always-on for ops; pass
+    # ?run=1 for the full live test (and only then is the stderr tail included).
+    run_live = request.args.get("run") in ("1", "true", "yes")
+    if not run_live:
+        result["live_tests"] = "skipped — append ?run=1 to run the yt-dlp scrape + enrich tests"
+        return jsonify(result)
+
     # Live scrape test against a known-public TikTok account
     try:
         from src.scrapers.yt_dlp_runner import build_tiktok_cmd, diagnose_failure
