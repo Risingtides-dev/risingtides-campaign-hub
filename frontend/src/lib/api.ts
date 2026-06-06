@@ -36,6 +36,7 @@ import type {
   LabelStats,
   BookerSummary,
   BookerStats,
+  CreatorRollup,
   SoundFitResponse,
 } from "./types"
 
@@ -184,6 +185,8 @@ export const api = {
     request<CobrandStats>(`/api/campaign/${slug}/cobrand`),
   getCampaignReport: (slug: string) =>
     request<CampaignReport>(`/api/campaign/${slug}/report`),
+  getCreatorRollup: (username: string, days = 90) =>
+    request<CreatorRollup>(`/api/creators/${encodeURIComponent(username)}/rollup?days=${days}`),
   // Attribution rollups (CAMP-34 / CAMP-38)
   getLabelStats: (days = 3650) =>
     request<{ labels: LabelStats[] }>(`/api/internal/labels?days=${days}`),
