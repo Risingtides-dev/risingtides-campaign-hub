@@ -1,5 +1,5 @@
 {
-  "updated": "2026-06-06T08:06:00.000Z",
+  "updated": "2026-06-06T08:15:00.000Z",
   "status": {
     "CAMP-58": "done",
     "CAMP-59": "done",
@@ -52,6 +52,7 @@
     "CAMP-96": "review",
     "CAMP-97": "todo",
     "CAMP-94": "done",
-    "cron-diag-hardening": "done"
+    "cron-diag-hardening": "done",
+    "migrate-overwrite-guard": "done"
   }
 }
