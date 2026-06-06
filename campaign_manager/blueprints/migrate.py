@@ -31,6 +31,19 @@ def migrate_campaign_full():
     if not slug:
         return jsonify({"error": "slug is required"}), 400
 
+    # CAMP-96 hardening: this is a one-time import endpoint (docstring: "Remove
+    # after migration is complete") that does an unauthenticated save_campaign
+    # UPSERT — i.e. it silently OVERWRITES any existing campaign's full metadata
+    # (budget, creators, matched_videos) by slug. Guard it: refuse to clobber an
+    # existing campaign unless ?overwrite=1 is explicit (mirrors create_campaign,
+    # which 409s on an existing slug). Re-imports pass the flag deliberately.
+    overwrite = request.args.get("overwrite") in ("1", "true", "yes")
+    if not overwrite and _db.is_active() and _db.campaign_exists(slug):
+        return jsonify({
+            "error": f"Campaign '{slug}' already exists. Pass ?overwrite=1 to replace it.",
+            "slug": slug,
+        }), 409
+
     campaign_meta = data.get("campaign", {})
     creators = data.get("creators", [])
     matched_videos = data.get("matched_videos", [])
