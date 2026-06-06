@@ -673,3 +673,39 @@ export interface SoundFitResponse {
   campaign_slug: string
   creators: SoundFitCreator[]
 }
+
+// ---- Campaign Report (client-facing, CAMP-84) ----
+export interface ReportTopPost {
+  url: string
+  account: string
+  views: number
+  likes: number
+  upload_date: string
+}
+
+export interface ReportCreatorRow {
+  username: string
+  posts: number
+  views: number
+  likes: number
+  shares: number
+  comments: number
+}
+
+export interface CampaignReport {
+  slug: string
+  title: string
+  artist: string
+  song: string
+  start_date: string
+  headline: {
+    total_views: number
+    total_likes: number
+    post_count: number
+    creator_count: number
+  }
+  top_posts: ReportTopPost[]
+  creators: ReportCreatorRow[]
+  source: string
+  stale_since: string
+}

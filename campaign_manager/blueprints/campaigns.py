@@ -1262,6 +1262,18 @@ def api_search():
 # Cobrand Integration
 # -------------------------------------------------------------------
 
+@campaigns_bp.get("/api/campaign/<slug>/report")
+def get_campaign_report(slug: str):
+    """Client-facing performance report (CAMP-84): headline reach, top posts,
+    per-creator delivery with Cobrand sound-spread. Excludes budget/financials."""
+    from campaign_manager.services.campaign_report import build_report
+
+    report = build_report(slug)
+    if report is None:
+        return jsonify({"error": "Campaign not found"}), 404
+    return jsonify(report)
+
+
 @campaigns_bp.get("/api/campaign/<slug>/cobrand")
 def get_cobrand_stats(slug: str):
     """Fetch live stats from Cobrand for this campaign."""
