@@ -63,8 +63,12 @@ def _scrape_creator_accounts(usernames, start_date=None, max_workers=DEFAULT_MAX
     return all_videos, accounts_scraped, errors
 
 
-def _scrape_creator_accounts_v2(usernames, start_date=None, max_workers=DEFAULT_MAX_WORKERS):
+def _scrape_creator_accounts_v2(usernames, start_date=None, max_workers=DEFAULT_MAX_WORKERS, on_progress=None):
     """Scrape creator accounts and report per-creator outcomes.
+
+    on_progress: optional callable(done, total, last_username) invoked after
+    each account finishes — used by the on-demand trigger (CAMP-21) to report
+    live progress. Best-effort; a raising callback never breaks the scrape.
 
     Returns (all_videos, accounts_scraped, errors, outcomes) where outcomes is
     a dict {username: {"status": str, "video_count": int, "error": str|None}}.
@@ -120,6 +124,8 @@ def _scrape_creator_accounts_v2(usernames, start_date=None, max_workers=DEFAULT_
                 return username, [], last_err
         return username, [], last_err or "max_retries"
 
+    total = len(usernames)
+    done = 0
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(_scrape_one, u): u for u in usernames}
         for future in as_completed(futures):
@@ -139,6 +145,12 @@ def _scrape_creator_accounts_v2(usernames, start_date=None, max_workers=DEFAULT_
                     "video_count": len(videos),
                     "error": None,
                 }
+            done += 1
+            if on_progress is not None:
+                try:
+                    on_progress(done, total, username)
+                except Exception:
+                    log.debug("on_progress callback raised (ignored)", exc_info=True)
 
     return all_videos, accounts_scraped, errors, outcomes
 
@@ -340,13 +352,16 @@ def trigger_job(job_type: str):
 
 # ── Job 1: Campaign Refresh ──────────────────────────────────────────
 
-def run_campaign_refresh(only_slugs=None):
+def run_campaign_refresh(only_slugs=None, on_progress=None):
     """Refresh active campaigns: scrape creators via yt-dlp, run matching, update stats.
 
     only_slugs: optional iterable of campaign slugs to limit the refresh to
     (CAMP-24 single/selected-campaign trigger). None = all active campaigns.
     The smart-scraper rule (active + not-completed only) still applies — a
     completed campaign passed in only_slugs is filtered out below.
+
+    on_progress: optional callable(done, total, last_username) reported as each
+    account finishes scraping (CAMP-21 live progress). Best-effort.
     """
     log.info("CRON: starting campaign_refresh%s",
              f" (scoped to {list(only_slugs)})" if only_slugs else "")
@@ -411,6 +426,7 @@ def run_campaign_refresh(only_slugs=None):
                 list(all_usernames),
                 start_date=earliest_start,
                 max_workers=DEFAULT_MAX_WORKERS,
+                on_progress=on_progress,
             )
             # Index by account
             for v in all_scraped:

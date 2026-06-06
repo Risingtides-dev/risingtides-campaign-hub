@@ -532,7 +532,14 @@ export const api = {
       { method: "POST", body: JSON.stringify(body) }
     ),
   scrapeTriggerStatus: (job_id?: string) =>
-    request<{ job_id?: string; state: string; scope?: string; result?: unknown; error?: string }>(
+    request<{
+      job_id?: string
+      state: string
+      scope?: string
+      result?: unknown
+      error?: string
+      progress?: { done: number; total: number; last_account: string; pct: number }
+    }>(
       `/api/scrape-tasks/trigger/status${job_id ? `?job_id=${encodeURIComponent(job_id)}` : ""}`
     ),
 }

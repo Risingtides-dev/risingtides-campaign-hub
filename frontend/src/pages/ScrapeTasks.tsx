@@ -8,7 +8,9 @@ import {
   useMarkCampaignTracked,
   useDismissVideos,
   useTriggerScrape,
+  useScrapeJobStatus,
 } from "@/lib/queries"
+import { useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
@@ -36,14 +38,32 @@ export default function ScrapeTasks() {
   const unmarkMut = useUnmarkVideosTracked()
   const markCampaignMut = useMarkCampaignTracked()
   const dismissMut = useDismissVideos()
+  const queryClient = useQueryClient()
   // CAMP-22: job-tracked scrape trigger (all-active + per-campaign Run Now)
   const scrapeMut = useTriggerScrape()
   const [runningSlug, setRunningSlug] = useState<string | null>(null)
+  // CAMP-21: live progress — poll the trigger job while it runs.
+  const [activeJobId, setActiveJobId] = useState<string | null>(null)
+  const jobQ = useScrapeJobStatus(activeJobId)
+
+  // When the polled job finishes, toast the outcome + refresh the queue.
+  useEffect(() => {
+    const s = jobQ.data?.state
+    if (s === "done") {
+      toast.success("Scrape finished — queue refreshed.")
+      queryClient.invalidateQueries({ queryKey: ["scrape-tasks"] })
+      setActiveJobId(null)
+    } else if (s === "error") {
+      toast.error(`Scrape failed: ${jobQ.data?.error ?? "unknown error"}`)
+      setActiveJobId(null)
+    }
+  }, [jobQ.data?.state])
 
   function runScrape(body: { all_active?: boolean; campaign_id?: string }) {
     setRunningSlug(body.campaign_id ?? "__all__")
     scrapeMut.mutate(body, {
       onSuccess: (res) => {
+        if (res.job_id) setActiveJobId(res.job_id)
         toast.success(
           res.already_running
             ? "A scrape is already running — watching that one."
@@ -143,6 +163,28 @@ export default function ScrapeTasks() {
             The last cron run produced no useful data — TikTok likely
             rate-limited the scraper. Today's queue may be incomplete. Re-run
             cron or wait for tomorrow's scheduled run.
+          </div>
+        )}
+        {/* CAMP-21: live scrape progress */}
+        {activeJobId && jobQ.data?.state === "running" && (
+          <div className="mt-3">
+            <div className="flex items-center justify-between text-[13px] mb-1.5">
+              <span className="flex items-center gap-2 text-rt-fg">
+                <RefreshCw size={13} className="animate-spin text-rt-magenta" />
+                Scraping{jobQ.data.progress?.last_account ? ` — @${jobQ.data.progress.last_account}` : "…"}
+              </span>
+              <span className="text-rt-fg-tertiary">
+                {jobQ.data.progress
+                  ? `${jobQ.data.progress.done}/${jobQ.data.progress.total} accounts`
+                  : "starting…"}
+              </span>
+            </div>
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/5">
+              <div
+                className="h-full rt-heat transition-all duration-500"
+                style={{ width: `${jobQ.data.progress?.pct ?? 4}%` }}
+              />
+            </div>
           </div>
         )}
       </Card>
