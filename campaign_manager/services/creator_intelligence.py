@@ -292,22 +292,29 @@ def _aggregate_outcomes(session: Session, account: str) -> Optional[Dict[str, An
     """
     from campaign_manager.services.cobrand_outcomes import creator_outcomes
 
-    share_campaigns = (
-        session.query(Campaign.slug, Campaign.cobrand_share_url)
+    share_urls = [
+        url for (url,) in
+        session.query(Campaign.cobrand_share_url)
         .filter(Campaign.cobrand_share_url != "")
+        .distinct()
         .all()
-    )
+    ]
 
+    # CAMP-66: resolve outcomes across all share-url campaigns in parallel.
+    # Each creator_outcomes() call hits fetch_submissions() which is now cached
+    # per share_url, so warm dossiers are instant; the cold case fans out the
+    # ~10 fetches concurrently instead of running them one at a time.
+    from concurrent.futures import ThreadPoolExecutor
     totals: Dict[str, Any] = {"views": 0, "likes": 0, "comments": 0, "shares": 0, "posts": 0, "campaigns": 0}
     found = False
-    for _slug, url in share_campaigns:
-        oc = creator_outcomes(url, account)
-        if not oc:
-            continue
-        found = True
-        totals["campaigns"] += 1
-        for k in ("views", "likes", "comments", "shares", "posts"):
-            totals[k] += oc.get(k, 0)
+    with ThreadPoolExecutor(max_workers=min(8, len(share_urls) or 1)) as ex:
+        for oc in ex.map(lambda u: creator_outcomes(u, account), share_urls):
+            if not oc:
+                continue
+            found = True
+            totals["campaigns"] += 1
+            for k in ("views", "likes", "comments", "shares", "posts"):
+                totals[k] += oc.get(k, 0)
 
     if not found:
         return None

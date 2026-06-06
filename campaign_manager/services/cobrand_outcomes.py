@@ -17,7 +17,9 @@ we surface those rather than fabricate a saves figure.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+import threading
+import time
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
 import requests
@@ -26,6 +28,16 @@ logger = logging.getLogger(__name__)
 
 SUBMISSIONS_URL = "https://api.cobrand.com/brand/v2/shareable/list_promotion_submissions"
 _TIMEOUT = 20
+
+# CAMP-66: per-promotion submission cache. fetch_submissions() does a paginated
+# Cobrand API fetch keyed only by share_url — but the creator-intelligence
+# outcome layer calls it once per (share-url campaign × creator dossier). Two
+# dossiers each re-fetch all ~10 campaigns' full submission lists. Caching the
+# fetch per share_url collapses that to one fetch per campaign per TTL window,
+# regardless of how many creators are inspected.
+_SUBMISSIONS_CACHE: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
+_CACHE_LOCK = threading.Lock()
+_CACHE_TTL_SECS = 600  # 10 min — outcome data doesn't move fast
 
 
 def parse_share_link(share_url: str) -> Optional[Dict[str, str]]:
@@ -53,6 +65,29 @@ def parse_share_link(share_url: str) -> Optional[Dict[str, str]]:
 
 
 def fetch_submissions(share_url: str, max_pages: int = 20) -> List[Dict[str, Any]]:
+    """Cached wrapper around the paginated Cobrand fetch (CAMP-66).
+
+    Returns the same submission list as before, but serves a cached copy
+    when one was fetched within the TTL window — so opening many creator
+    dossiers doesn't re-fetch the same campaign's submissions each time.
+    """
+    if not share_url:
+        return []
+    now = time.monotonic()
+    with _CACHE_LOCK:
+        hit = _SUBMISSIONS_CACHE.get(share_url)
+        if hit and (now - hit[0]) < _CACHE_TTL_SECS:
+            return hit[1]
+    subs = _fetch_submissions_uncached(share_url, max_pages)
+    # Only cache non-empty results so a transient failure doesn't poison the
+    # cache for the whole TTL window.
+    if subs:
+        with _CACHE_LOCK:
+            _SUBMISSIONS_CACHE[share_url] = (now, subs)
+    return subs
+
+
+def _fetch_submissions_uncached(share_url: str, max_pages: int = 20) -> List[Dict[str, Any]]:
     """Fetch all per-creator submissions for a campaign's Cobrand promotion.
 
     Returns a list of dicts: username, views, likes, comments, shares,
