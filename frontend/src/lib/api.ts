@@ -525,6 +525,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ job_type }),
     }),
+  // CAMP-24/22: on-demand scrape trigger (job-tracked, non-blocking)
+  triggerScrape: (body: { all_active?: boolean; campaign_id?: string }) =>
+    request<{ job_id?: string; state: string; scope?: string; already_running?: boolean }>(
+      "/api/scrape-tasks/trigger",
+      { method: "POST", body: JSON.stringify(body) }
+    ),
+  scrapeTriggerStatus: (job_id?: string) =>
+    request<{ job_id?: string; state: string; scope?: string; result?: unknown; error?: string }>(
+      `/api/scrape-tasks/trigger/status${job_id ? `?job_id=${encodeURIComponent(job_id)}` : ""}`
+    ),
 }
 
 export { ApiError }
