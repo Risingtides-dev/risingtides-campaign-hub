@@ -7,6 +7,7 @@ import { Layout } from "./components/layout/Layout"
 // when navigated to. Layout/shell stays eager.
 const CampaignsList = lazy(() => import("./pages/CampaignsList"))
 const CampaignDetail = lazy(() => import("./pages/CampaignDetail"))
+const CampaignReport = lazy(() => import("./pages/CampaignReport"))
 const CampaignLinks = lazy(() => import("./pages/CampaignLinks"))
 const CreatorDatabase = lazy(() => import("./pages/CreatorDatabase"))
 const CreatorIntelligence = lazy(() => import("./pages/CreatorIntelligence"))
@@ -44,6 +45,7 @@ function App() {
                 <Routes>
                   <Route path="/" element={<CampaignsList />} />
                   <Route path="/campaign/:slug" element={<CampaignDetail />} />
+                  <Route path="/campaign/:slug/report" element={<CampaignReport />} />
                   <Route path="/campaign/:slug/links" element={<CampaignLinks />} />
                   <Route path="/campaign/:slug/outreach" element={<CampaignOutreach />} />
                   <Route path="/creators" element={<CreatorDatabase />} />

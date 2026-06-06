@@ -2,7 +2,7 @@ import { useState } from "react"
 import { Link } from "react-router-dom"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Pencil, ExternalLink, BarChart3, RefreshCw, X, Plus, Loader2, Activity } from "lucide-react"
+import { Pencil, ExternalLink, BarChart3, RefreshCw, X, Plus, Loader2, Activity, FileText } from "lucide-react"
 import type { CampaignDetail } from "@/lib/types"
 
 interface CampaignHeaderProps {
@@ -260,6 +260,13 @@ export function CampaignHeader({
             <Link to={`/campaign/${campaign.slug}/links`}>
               <ExternalLink className="size-3.5" />
               View Links
+            </Link>
+          </Button>
+
+          <Button asChild className="bg-white/15 hover:bg-white/25 text-white border border-white/30">
+            <Link to={`/campaign/${campaign.slug}/report`} target="_blank">
+              <FileText className="size-3.5" />
+              Client Report
             </Link>
           </Button>
 

@@ -3,6 +3,7 @@ import type {
   CampaignDetail,
   MatchedVideo,
   CobrandStats,
+  CampaignReport,
   CreatorSummary,
   CreatorProfile,
   InternalCreator,
@@ -175,6 +176,8 @@ export const api = {
   // Cobrand
   getCobrandStats: (slug: string) =>
     request<CobrandStats>(`/api/campaign/${slug}/cobrand`),
+  getCampaignReport: (slug: string) =>
+    request<CampaignReport>(`/api/campaign/${slug}/report`),
 
   setCobrandLinks: (
     slug: string,

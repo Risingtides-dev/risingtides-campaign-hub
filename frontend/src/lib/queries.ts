@@ -787,3 +787,13 @@ export function useSoundFit(soundId: string | null) {
     staleTime: 5 * 60 * 1000,
   })
 }
+
+// Client-facing campaign report (CAMP-84)
+export function useCampaignReport(slug: string) {
+  return useQuery({
+    queryKey: ["campaign", slug, "report"],
+    queryFn: () => api.getCampaignReport(slug),
+    enabled: !!slug,
+    staleTime: 5 * 60 * 1000,
+  })
+}
