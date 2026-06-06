@@ -56,7 +56,7 @@ function CompletionCell({
       <button
         type="button"
         onClick={onClick}
-        className="size-5 rounded border border-[#d0d0d8] bg-white hover:border-[#999] transition-colors"
+        className="size-5 rounded border border-white/10 bg-rt-bg-card hover:border-white/20 transition-colors"
         title="Mark booking complete"
       />
     )
@@ -66,10 +66,10 @@ function CompletionCell({
       <button
         type="button"
         onClick={onClick}
-        className="size-5 rounded border border-[#999] bg-[#f0f0f5] flex items-center justify-center hover:border-[#666] transition-colors"
+        className="size-5 rounded border border-white/15 bg-white/5 flex items-center justify-center hover:border-white/25 transition-colors"
         title="Booking complete — click to mark campaign wrapped"
       >
-        <Check className="size-3.5 text-[#888]" />
+        <Check className="size-3.5 text-rt-fg-tertiary" />
       </button>
     )
   }
@@ -77,10 +77,10 @@ function CompletionCell({
     <button
       type="button"
       onClick={onClick}
-      className="size-5 rounded border border-[#16a34a] bg-[#f0fdf4] flex items-center justify-center hover:border-[#15803d] transition-colors"
+      className="size-5 rounded border border-rt-green/40 bg-rt-green/10 flex items-center justify-center hover:border-rt-green transition-colors"
       title="Campaign wrapped — click to reset"
     >
-      <Check className="size-3.5 text-[#16a34a]" />
+      <Check className="size-3.5 text-rt-green" />
     </button>
   )
 }
@@ -115,7 +115,7 @@ function buildColumns(
     cell: ({ row }) => (
       <div>
         <div className="font-semibold text-[14px]">{row.original.title}</div>
-        <div className="text-[#888] text-[13px]">{row.original.song || ""}</div>
+        <div className="text-rt-fg-tertiary text-[13px]">{row.original.song || ""}</div>
       </div>
     ),
   },
@@ -135,7 +135,7 @@ function buildColumns(
     ),
     cell: ({ row }) => {
       const raw = row.original.start_date
-      if (!raw) return <span className="text-[#888] text-[14px]">-</span>
+      if (!raw) return <span className="text-rt-fg-tertiary text-[14px]">-</span>
       const d = new Date(raw + "T00:00:00")
       const formatted = d.toLocaleDateString("en-US", {
         month: "short",
@@ -157,8 +157,8 @@ function buildColumns(
         <span
           className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-semibold ${
             isActive
-              ? "bg-[#eef2ff] text-[#0b62d6]"
-              : "bg-[#f0fdf4] text-[#16a34a]"
+              ? "bg-rt-magenta/10 text-rt-magenta"
+              : "bg-rt-green/10 text-rt-green"
           }`}
         >
           {status.charAt(0).toUpperCase() + status.slice(1)}
@@ -180,13 +180,13 @@ function buildColumns(
           <div className="font-semibold text-[14px]">
             USD {formatCurrency(budget.total)}
           </div>
-          <div className="w-full bg-[#e8e8ef] rounded-full h-2 mt-1.5 overflow-hidden">
+          <div className="w-full bg-white/10 rounded-full h-2 mt-1.5 overflow-hidden">
             <div
-              className="h-2 rounded-full bg-[#0b62d6] transition-[width] duration-300"
+              className="h-2 rounded-full bg-rt-magenta transition-[width] duration-300"
               style={{ width: `${pct}%` }}
             />
           </div>
-          <div className="text-[#888] text-[13px] mt-1.5">
+          <div className="text-rt-fg-tertiary text-[13px] mt-1.5">
             Booked: {formatCurrency(budget.booked)} ({budget.pct}%) &middot;{" "}
             Paid: {formatCurrency(budget.paid)} &middot; Left:{" "}
             {formatCurrency(budget.left)}
@@ -249,7 +249,7 @@ function SortableHeader({
   return (
     <button
       type="button"
-      className="flex items-center gap-1 hover:text-[#555] transition-colors"
+      className="flex items-center gap-1 hover:text-rt-fg transition-colors"
       onClick={() => column.toggleSorting(sorted === "asc")}
     >
       {label}
@@ -331,9 +331,9 @@ export function CampaignsTable({ data }: CampaignsTableProps) {
   })
 
   return (
-    <div className="bg-white border border-[#e8e8ef] rounded-[10px] overflow-hidden">
-      <div className="flex items-center gap-2 px-4 py-2.5 border-b border-[#e8e8ef]">
-        <span className="text-[#888] text-xs font-semibold uppercase tracking-[0.3px]">Sort by</span>
+    <div className="bg-rt-bg-card border border-white/8 rounded-[10px] overflow-hidden">
+      <div className="flex items-center gap-2 px-4 py-2.5 border-b border-white/8">
+        <span className="text-rt-fg-tertiary text-xs font-semibold uppercase tracking-[0.3px]">Sort by</span>
         {sortOptions.map((opt) => (
           <button
             key={opt.value}
@@ -341,8 +341,8 @@ export function CampaignsTable({ data }: CampaignsTableProps) {
             onClick={() => { setSortBy(opt.value); setSorting([]) }}
             className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
               sortBy === opt.value
-                ? "bg-[#0b62d6] text-white"
-                : "bg-[#f4f4f8] text-[#555] hover:bg-[#e8e8ef]"
+                ? "bg-rt-magenta text-white"
+                : "bg-white/[0.03] text-[#555] hover:bg-white/10"
             }`}
           >
             {opt.label}
@@ -355,12 +355,12 @@ export function CampaignsTable({ data }: CampaignsTableProps) {
           {table.getHeaderGroups().map((headerGroup) => (
             <TableRow
               key={headerGroup.id}
-              className="border-b-2 border-[#e8e8ef] hover:bg-transparent"
+              className="border-b-2 border-white/8 hover:bg-transparent"
             >
               {headerGroup.headers.map((header) => (
                 <TableHead
                   key={header.id}
-                  className="text-[#888] text-xs font-semibold uppercase tracking-[0.3px] px-4 py-3 border-b-2 border-[#e8e8ef]"
+                  className="text-rt-fg-tertiary text-xs font-semibold uppercase tracking-[0.3px] px-4 py-3 border-b-2 border-white/8"
                   style={header.column.id === "completion" ? { width: 40, minWidth: 40, maxWidth: 40 } : undefined}
                 >
                   {header.isPlaceholder
@@ -379,7 +379,7 @@ export function CampaignsTable({ data }: CampaignsTableProps) {
             <TableRow>
               <TableCell
                 colSpan={columns.length}
-                className="text-center text-[#888] py-10 text-sm"
+                className="text-center text-rt-fg-tertiary py-10 text-sm"
               >
                 No campaigns found. Create one above.
               </TableCell>
@@ -388,13 +388,13 @@ export function CampaignsTable({ data }: CampaignsTableProps) {
             table.getRowModel().rows.map((row) => (
               <TableRow
                 key={row.id}
-                className="cursor-pointer hover:bg-[#fafaff] border-b border-[#f0f0f5]"
+                className="cursor-pointer hover:bg-white/[0.03] border-b border-white/5"
                 onClick={() => navigate(`/campaign/${row.original.slug}`)}
               >
                 {row.getVisibleCells().map((cell) => (
                   <TableCell
                     key={cell.id}
-                    className="px-4 py-1.5 text-[14px] border-b border-[#f0f0f5] align-middle"
+                    className="px-4 py-1.5 text-[14px] border-b border-white/5 align-middle"
                   >
                     {flexRender(cell.column.columnDef.cell, cell.getContext())}
                   </TableCell>

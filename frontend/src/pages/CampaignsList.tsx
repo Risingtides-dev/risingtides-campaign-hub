@@ -43,7 +43,7 @@ export default function CampaignsList() {
         <h1 className="text-[22px] font-semibold">Promotions</h1>
         <Button
           onClick={() => setShowCreate((prev) => !prev)}
-          className="bg-[#0b62d6] hover:bg-[#0951b5] text-white"
+          className="bg-rt-magenta hover:bg-rt-purple text-white"
         >
           <Plus className="size-4" />
           New Campaign
@@ -54,7 +54,7 @@ export default function CampaignsList() {
       <CreateCampaignForm open={showCreate} />
 
       {/* Tabs + Search bar */}
-      <div className="bg-white border border-[#e8e8ef] rounded-[10px] px-5 py-3.5 mb-4">
+      <div className="bg-rt-bg-card border border-white/8 rounded-[10px] px-5 py-3.5 mb-4">
         <div className="flex items-center gap-3">
           {/* Tabs */}
           <div className="flex items-center gap-1 mr-3">
@@ -63,8 +63,8 @@ export default function CampaignsList() {
               onClick={() => setTab("active")}
               className={`px-3 py-1.5 rounded-md text-[13px] font-medium transition-colors ${
                 tab === "active"
-                  ? "bg-[#0b62d6] text-white"
-                  : "bg-[#f4f4f8] text-[#555] hover:bg-[#e8e8ef]"
+                  ? "bg-rt-magenta text-white"
+                  : "bg-white/[0.03] text-[#555] hover:bg-white/10"
               }`}
             >
               Active{active.length > 0 && ` (${active.length})`}
@@ -74,8 +74,8 @@ export default function CampaignsList() {
               onClick={() => setTab("finished")}
               className={`px-3 py-1.5 rounded-md text-[13px] font-medium transition-colors ${
                 tab === "finished"
-                  ? "bg-[#0b62d6] text-white"
-                  : "bg-[#f4f4f8] text-[#555] hover:bg-[#e8e8ef]"
+                  ? "bg-rt-magenta text-white"
+                  : "bg-white/[0.03] text-[#555] hover:bg-white/10"
               }`}
             >
               Finished{finished.length > 0 && ` (${finished.length})`}
@@ -84,7 +84,7 @@ export default function CampaignsList() {
 
           {/* Search */}
           <div className="relative flex-1 max-w-[300px]">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-[#888]" />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-rt-fg-tertiary" />
             <Input
               type="text"
               value={search}
@@ -103,7 +103,7 @@ export default function CampaignsList() {
               Clear
             </Button>
           )}
-          <span className="ml-auto text-[#888] text-[13px]">
+          <span className="ml-auto text-rt-fg-tertiary text-[13px]">
             {filtered.length} campaign{filtered.length !== 1 ? "s" : ""}
           </span>
         </div>
@@ -111,13 +111,13 @@ export default function CampaignsList() {
 
       {/* Loading / error states */}
       {isLoading && (
-        <div className="bg-white border border-[#e8e8ef] rounded-[10px] p-10 text-center">
-          <p className="text-[#888] text-sm">Loading campaigns...</p>
+        <div className="bg-rt-bg-card border border-white/8 rounded-[10px] p-10 text-center">
+          <p className="text-rt-fg-tertiary text-sm">Loading campaigns...</p>
         </div>
       )}
 
       {isError && (
-        <div className="bg-white border border-[#e8e8ef] rounded-[10px] p-10 text-center">
+        <div className="bg-rt-bg-card border border-white/8 rounded-[10px] p-10 text-center">
           <p className="text-red-600 text-sm">
             {error?.message || "Failed to load campaigns"}
           </p>
