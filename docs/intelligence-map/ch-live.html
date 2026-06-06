@@ -111,7 +111,8 @@ const DOMAINS=[
 const ASM=[
   {key:'brand',label:'Brand',sub:'RT tokens',domain:0},{key:'backend',label:'Backend',sub:'breaker + sound-fit',domain:1},
   {key:'dashboard',label:'Dashboard',sub:'/intelligence',domain:2},{key:'outcomes',label:'Outcomes',sub:'Cobrand',domain:3},
-  {key:'quality',label:'Quality',sub:'audits/perf',domain:4},{key:'ship',label:'Ship',sub:'PR + deploy',domain:5},
+  {key:'perf',label:'Perf',sub:'speed + load',domain:4},{key:'quality',label:'Quality',sub:'audits',domain:4},
+  {key:'ship',label:'Ship',sub:'PR + deploy',domain:5},
 ];
 const LINEAR_BASE='https://linear.app/rising-tides-agents/issue/';
 // Real CAMP tickets under epic CAMP-57. status comes from ch-map-status.json (CAMP-NN keys).
@@ -125,10 +126,18 @@ const TICKETS=[
   {t:'CAMP-64',p:'P2',a:'backend',d:1,title:'Saturated-sound edge case',detail:'Velocity-weighted fit, not flat presence.'},
   {t:'CAMP-65',p:'P2',a:'quality',d:4,title:'Timing-bucket audit',detail:'Verify scout/early vs real launch dates.'},
   {t:'CAMP-66',p:'P2',a:'outcomes',d:3,title:'Outcome-loop perf',detail:'Cache Cobrand pulls; stop N sequential fetches per dossier.'},
-  {t:'CAMP-67',p:'P3',a:'quality',d:4,title:'Code-split the 1MB bundle',detail:'manualChunks / lazy-load chart routes.'},
   {t:'CAMP-68',p:'P1',a:'ship',d:5,title:'Ship: merge + deploy',detail:'Reconcile Cobrand overlap, clean branch, PR, deploy from main.'},
   {t:'CAMP-13',p:'P2',a:'dashboard',d:2,title:'CreatorProfile All-Activity',detail:'Folded from CAMP-34. Assess vs existing drilldown.'},
   {t:'CAMP-18',p:'P2',a:'backend',d:1,title:'/api/creators/<u>/rollup',detail:'Folded from CAMP-34. Assess vs creator_drilldown.'},
+  // ── Perf epic (CAMP-69) ──
+  {t:'CAMP-70',p:'P2',a:'perf',d:4,title:'Code-split + lazy routes',detail:'1MB bundle → split; recharts deferred. Done.'},
+  {t:'CAMP-71',p:'P2',a:'perf',d:4,title:'Index matched_videos hot cols',detail:'account + extracted_sound_id. Bitmap scan on sound-fit.'},
+  {t:'CAMP-72',p:'P2',a:'perf',d:4,title:'/api/creators 8.9s→0.84s',detail:'Bulk + skip completed campaigns. 10x.'},
+  {t:'CAMP-73',p:'P2',a:'perf',d:4,title:'Creator profile 14.9s→0.98s',detail:'Filter-first + bulk + skip completed. 15x.'},
+  {t:'CAMP-74',p:'P3',a:'perf',d:4,title:'Cron warms request cache',detail:'Stopgap done; durable Postgres cache pending.'},
+  {t:'CAMP-75',p:'P3',a:'perf',d:4,title:'Table virtualization',detail:'Reassessed low — only 30/255 rows. Defer.'},
+  // ── Brand (CAMP-77) ──
+  {t:'CAMP-77',p:'P3',a:'brand',d:0,title:'Brand-token sweep — all pages',detail:'Every page + component on RT tokens. Done.'},
 ];
 const PCOLOR={P0:'#E100C3',P1:'#8500D7',P2:'#5d6d9e',P3:'#6f7178'};
 const LANES=['todo','wip','review','done'];
