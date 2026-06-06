@@ -1021,29 +1021,43 @@ def merge_internal_cache(username: str, new_videos: List[Dict]) -> List[Dict]:
             InternalVideoCache.cached_at < cutoff,
         ).delete(synchronize_session=False)
 
-        # Get existing URLs
-        existing_urls = {v.url for v in
-                         s.query(InternalVideoCache).filter_by(username=uname).all()}
+        # Existing rows by URL — keep the objects so we can REFRESH their stats
+        # (sweep #5 fix: previously only new URLs were inserted and existing
+        # rows were never updated, so an internal video's views/likes were
+        # frozen at first-scrape value forever — internal song-discovery /
+        # reporting off this cache showed stale numbers). Refresh with max()
+        # since views/likes are monotonic, same rule as merge_matched_videos.
+        existing_by_url = {v.url: v for v in
+                           s.query(InternalVideoCache).filter_by(username=uname).all()}
 
         new_rows: List[InternalVideoCache] = []
         for vd in new_videos:
             url = vd.get("url", "")
-            if url and url not in existing_urls:
+            if not url:
+                continue
+            fresh_views = int(vd.get("views", 0) or 0)
+            fresh_likes = int(vd.get("likes", 0) or 0)
+            if url in existing_by_url:
+                row = existing_by_url[url]
+                row.views = max(int(row.views or 0), fresh_views)
+                row.likes = max(int(row.likes or 0), fresh_likes)
+                row.cached_at = datetime.now()
+            else:
                 row = InternalVideoCache(
                     username=uname,
                     url=url,
                     song=vd.get("song", ""),
                     artist=vd.get("artist", ""),
                     account=vd.get("account", ""),
-                    views=int(vd.get("views", 0) or 0),
-                    likes=int(vd.get("likes", 0) or 0),
+                    views=fresh_views,
+                    likes=fresh_likes,
                     upload_date=vd.get("upload_date", ""),
                     timestamp=str(vd.get("timestamp", "")),
                     cached_at=datetime.now(),
                 )
                 s.add(row)
                 new_rows.append(row)
-                existing_urls.add(url)
+                existing_by_url[url] = row
 
         # Flush so new_rows get their PK ids before we write attribution.
         if new_rows:
