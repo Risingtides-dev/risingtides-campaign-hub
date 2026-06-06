@@ -67,12 +67,26 @@ function esc(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':
 function rel(iso){if(!iso)return'';const d=new Date(iso),s=(Date.now()-d)/1000;
   if(s<60)return Math.floor(s)+'s';if(s<3600)return Math.floor(s/60)+'m';if(s<86400)return Math.floor(s/3600)+'h';return Math.floor(s/86400)+'d';}
 function whoClass(u){return /\[bot\]|claude|codex|github-actions/i.test(u)?'bot':'';}
+function setStamp(d){
+  // Flag a stale feed: if the JSON's `updated` is >10 min old, the background
+  // poller (pr-feed.sh) isn't running — the data is dead, so say so loudly
+  // instead of silently showing hours-old PRs as if they were live.
+  const el=document.getElementById('stamp');
+  const ageSec=(Date.now()-new Date(d.updated).getTime())/1000;
+  if(ageSec>600){
+    el.textContent='⚠ feed stale ('+rel(d.updated)+' old) — run pr-feed.sh';
+    el.style.color='#FFB020';
+  }else{
+    el.textContent=ageSec<15?'synced just now':'synced '+rel(d.updated)+' ago';
+    el.style.color='';
+  }
+}
 async function poll(){
   try{
     const r=await fetch('pr-feed.json?ts='+Date.now(),{cache:'no-store'}); if(!r.ok)return; const d=await r.json();
-    if(d.updated===lastStamp){document.getElementById('stamp').textContent='synced '+rel(d.updated)+' ago';return;}
+    if(d.updated===lastStamp){setStamp(d);return;}
     lastStamp=d.updated; renderPRs(d.prs||[]); renderEvents(d.events||[]);
-    document.getElementById('stamp').textContent='synced just now';
+    setStamp(d);
   }catch(e){document.getElementById('stamp').textContent='waiting for feed…';}
 }
 function renderPRs(prs){
