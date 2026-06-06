@@ -57,6 +57,30 @@ def tracker_url_for(tracker_id: str) -> str:
     return f"{TIDESTRACKER_PUBLIC_URL.rstrip('/')}/{tracker_id}"
 
 
+# Stale tracker_url values stored on campaigns point at the raw Vercel
+# subdomain, which pins to old deployments and breaks "View Tracker" links.
+_STALE_TRACKER_HOSTS = (
+    "frontend-tidestracker.vercel.app",
+    "tidestracker.vercel.app",
+)
+
+
+def canonicalize_tracker_url(url: str) -> str:
+    """Force a stored tracker_url onto the canonical domain, preserving the
+    UUID path. Stored values historically baked in the stale Vercel host;
+    "View Tracker" must always resolve to the live dashboard. No-op for
+    already-canonical or empty URLs.
+    """
+    if not url:
+        return ""
+    for stale in _STALE_TRACKER_HOSTS:
+        if stale in url:
+            # keep the path (the UUID) after the host, swap the host
+            tail = url.split(stale, 1)[1].lstrip("/")
+            return f"{TIDESTRACKER_PUBLIC_URL.rstrip('/')}/{tail}"
+    return url
+
+
 def create_tracker_campaign(
     name: str,
     slug: str,

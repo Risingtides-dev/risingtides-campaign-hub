@@ -37,6 +37,19 @@ from campaign_manager.services.campaign_stats import (
 
 campaigns_bp = Blueprint("campaigns", __name__)
 
+
+def _canon_tracker_url(url: str) -> str:
+    """Normalize a stored tracker_url to the canonical domain before serving.
+    Stored values historically baked in the stale Vercel host, breaking
+    'View Tracker' links. Import-local + fail-open so a service hiccup never
+    blocks a campaign payload."""
+    try:
+        from campaign_manager.services.tidestracker import canonicalize_tracker_url
+        return canonicalize_tracker_url(url)
+    except Exception:
+        return url or ""
+
+
 # ---------------------------------------------------------------------------
 # Stats helpers (RTA-43)
 # ---------------------------------------------------------------------------
@@ -590,7 +603,7 @@ def campaign_detail(slug: str):
         "cobrand_share_url": meta.get("cobrand_share_url", ""),
         "cobrand_upload_url": meta.get("cobrand_upload_url", ""),
         "tracker_campaign_id": meta.get("tracker_campaign_id", ""),
-        "tracker_url": meta.get("tracker_url", ""),
+        "tracker_url": _canon_tracker_url(meta.get("tracker_url", "")),
         "platform": meta.get("platform", "tiktok"),
         "status": meta.get("status", "active"),
         "source": meta.get("source", "manual"),
@@ -1835,7 +1848,7 @@ def create_tracker(slug: str):
             "ok": True,
             "message": "Tracker already exists",
             "tracker_campaign_id": tracker_id,
-            "tracker_url": meta.get("tracker_url", ""),
+            "tracker_url": _canon_tracker_url(meta.get("tracker_url", "")),
         })
 
     # Build tracker campaign name from campaign metadata
