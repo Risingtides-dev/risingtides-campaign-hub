@@ -420,6 +420,18 @@ def pull_all_trackers(triggered_by: str = "cron") -> PullResult:
                 "error_kind": "ok",
                 "detail": f"{fetch.count} submissions",
             })
+            # CAMP-74: warm the REQUEST-PATH stats cache the cron used to skip.
+            # Before this, the cron only fetched submissions for the audit log;
+            # the in-process cache get_campaign_stats() reads stayed cold after
+            # every redeploy, so the first user request paid a full round-trip.
+            # Writing through here means the cron's 30-min tick keeps the read
+            # cache warm. (Still per-worker — the durable cross-worker Postgres
+            # cache is the larger follow-up half of CAMP-74.)
+            try:
+                from campaign_manager.services import campaign_stats as _cs
+                _cs.warm_cache(tid, fetch.submissions, fetch.fetched_at)
+            except Exception:
+                logger.debug("tides_tracker pull: cache warm skipped for %s", tid, exc_info=True)
         else:
             result.trackers_failed += 1
             result.errors.append({

@@ -358,6 +358,51 @@ def init(database_url: Optional[str] = None):
     except Exception:
         pass
 
+    # Index the hot matched_videos columns the creator-aggregation and
+    # sound-matcher paths group by (account, extracted_sound_id). The model
+    # marks them index=True so fresh DBs get them via create_all; this adds
+    # them to the existing prod table. Not CONCURRENTLY here — runs inside the
+    # app's init transaction; for a huge table apply CONCURRENTLY out-of-band.
+    try:
+        import sqlalchemy as sa
+        with _SessionLocal() as s:
+            s.execute(sa.text(
+                "CREATE INDEX IF NOT EXISTS ix_matched_videos_account "
+                "ON matched_videos (account)"
+            ))
+            s.execute(sa.text(
+                "CREATE INDEX IF NOT EXISTS ix_matched_videos_extracted_sound_id "
+                "ON matched_videos (extracted_sound_id)"
+            ))
+            s.commit()
+    except Exception:
+        pass
+
+    # Backfill stale tracker_url hosts (CAMP-41 / View-Tracker bug). Some
+    # campaigns stored tracker_url with the old frontend-tidestracker.vercel.app
+    # host, which pins to stale deploys — "View Tracker" sent users to a dead
+    # page. Rewrite to the canonical risingtides-tracker.com, preserving the
+    # UUID path. Idempotent: the WHERE clause matches nothing once fixed.
+    try:
+        import sqlalchemy as sa
+        with _SessionLocal() as s:
+            # Cover both stale hosts the serve-time canonicalizer treats as
+            # stale, keeping stored data consistent with the served link.
+            # Order matters: 'frontend-tidestracker.vercel.app' CONTAINS
+            # 'tidestracker.vercel.app', so replace the longer host first (inner
+            # REPLACE) before the bare one (outer) — otherwise the bare swap
+            # would leave a broken 'frontend-risingtides-tracker.com' prefix.
+            s.execute(sa.text(
+                "UPDATE campaigns "
+                "SET tracker_url = REPLACE(REPLACE(tracker_url, "
+                "  'frontend-tidestracker.vercel.app', 'risingtides-tracker.com'), "
+                "  'tidestracker.vercel.app', 'risingtides-tracker.com') "
+                "WHERE tracker_url LIKE '%tidestracker.vercel.app%'"
+            ))
+            s.commit()
+    except Exception:
+        pass
+
     return True
 
 

@@ -53,14 +53,14 @@ export function StatCards({ budget, stats }: StatCardsProps) {
       {cards.map((card) => (
         <div
           key={card.label}
-          className="bg-white border border-[#e8e8ef] rounded-[10px] p-4"
+          className="bg-rt-bg-card border border-white/8 rounded-[10px] p-4"
         >
-          <div className="text-[#888] text-xs font-semibold uppercase tracking-wide mb-1">
+          <div className="text-rt-fg-tertiary text-xs font-semibold uppercase tracking-wide mb-1">
             {card.label}
           </div>
-          <div className="text-[22px] font-bold text-[#1a1a2e]">{card.value}</div>
+          <div className="text-[22px] font-bold text-rt-fg">{card.value}</div>
           {card.sub && (
-            <div className="text-[#888] text-[13px] mt-0.5">{card.sub}</div>
+            <div className="text-rt-fg-tertiary text-[13px] mt-0.5">{card.sub}</div>
           )}
         </div>
       ))}

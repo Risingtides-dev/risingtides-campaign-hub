@@ -43,8 +43,8 @@ export default function CampaignDetail() {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-20">
-        <Loader2 className="size-6 animate-spin text-[#888]" />
-        <span className="ml-2 text-[#888] text-sm">Loading campaign...</span>
+        <Loader2 className="size-6 animate-spin text-rt-fg-tertiary" />
+        <span className="ml-2 text-rt-fg-tertiary text-sm">Loading campaign...</span>
       </div>
     )
   }
@@ -52,11 +52,11 @@ export default function CampaignDetail() {
   // Error state
   if (isError || !campaign) {
     return (
-      <div className="bg-white border border-[#e8e8ef] rounded-[10px] p-10 text-center">
+      <div className="bg-rt-bg-card border border-white/8 rounded-[10px] p-10 text-center">
         <p className="text-red-600 text-sm">
           {error?.message || "Failed to load campaign"}
         </p>
-        <Link to="/" className="text-[#0b62d6] text-sm mt-2 inline-block hover:underline">
+        <Link to="/" className="text-rt-magenta text-sm mt-2 inline-block hover:underline">
           Back to campaigns
         </Link>
       </div>
@@ -66,12 +66,12 @@ export default function CampaignDetail() {
   return (
     <div className="space-y-4">
       {/* Breadcrumb */}
-      <div className="flex items-center gap-1.5 text-[13px] text-[#888]">
-        <Link to="/" className="hover:text-[#555] transition-colors">
+      <div className="flex items-center gap-1.5 text-[13px] text-rt-fg-tertiary">
+        <Link to="/" className="hover:text-rt-fg transition-colors">
           Promotions
         </Link>
         <ChevronRight className="size-3.5" />
-        <span className="text-[#333] font-medium">{campaign.title}</span>
+        <span className="text-rt-fg font-medium">{campaign.title}</span>
       </div>
 
       {/* Campaign Header */}

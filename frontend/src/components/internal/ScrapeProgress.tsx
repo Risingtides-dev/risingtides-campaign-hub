@@ -60,13 +60,13 @@ export function ScrapeProgress({ enabled, onComplete }: ScrapeProgressProps) {
       <div
         className={`mb-4 transition-opacity duration-500 ${fadingOut ? "opacity-0" : "opacity-100"}`}
       >
-        <div className="bg-white border border-[#e8e8ef] rounded-[10px] px-4 py-3 border-l-[3px] border-l-[#22c55e]">
+        <div className="bg-rt-bg-card border border-white/8 rounded-[10px] px-4 py-3 border-l-[3px] border-l-rt-green">
           <div className="flex items-center gap-2.5">
-            <CheckCircle className="size-4 text-[#22c55e] flex-shrink-0" />
-            <span className="text-[13px] text-[#333]">
+            <CheckCircle className="size-4 text-rt-green flex-shrink-0" />
+            <span className="text-[13px] text-rt-fg">
               Done: {ok}/{status.accounts_total} accounts, {status.videos_so_far} videos
               {status.accounts_failed > 0 && (
-                <span className="text-[#ef4444]">, {status.accounts_failed} failed</span>
+                <span className="text-rt-red">, {status.accounts_failed} failed</span>
               )}
             </span>
           </div>
@@ -87,16 +87,16 @@ export function ScrapeProgress({ enabled, onComplete }: ScrapeProgressProps) {
 
   return (
     <div className="mb-4">
-      <div className="bg-white border border-[#e8e8ef] rounded-[10px] px-4 py-4 border-l-[3px] border-l-[#0b62d6]">
+      <div className="bg-rt-bg-card border border-white/8 rounded-[10px] px-4 py-4 border-l-[3px] border-l-rt-magenta">
         {/* Progress bar */}
         <div className="mb-3">
           <div className="flex items-center justify-between mb-1.5">
-            <span className="text-[13px] font-medium text-[#1a1a2e]">Scraping accounts</span>
-            <span className="text-[11px] text-[#888]">{pct}%</span>
+            <span className="text-[13px] font-medium text-rt-fg">Scraping accounts</span>
+            <span className="text-[11px] text-rt-fg-tertiary">{pct}%</span>
           </div>
-          <div className="w-full h-2 bg-[#f0f0f5] rounded-full overflow-hidden">
+          <div className="w-full h-2 bg-white/5 rounded-full overflow-hidden">
             <div
-              className="h-full bg-[#0b62d6] rounded-full transition-all duration-500 ease-out"
+              className="h-full bg-rt-magenta rounded-full transition-all duration-500 ease-out"
               style={{ width: `${pct}%` }}
             />
           </div>
@@ -104,14 +104,14 @@ export function ScrapeProgress({ enabled, onComplete }: ScrapeProgressProps) {
 
         {/* Stats row */}
         <div className="flex flex-wrap gap-x-4 gap-y-1 mb-3">
-          <span className="text-[11px] text-[#888]">
+          <span className="text-[11px] text-rt-fg-tertiary">
             {status.accounts_completed}/{status.accounts_total} accounts
           </span>
-          <span className="text-[11px] text-[#888]">
+          <span className="text-[11px] text-rt-fg-tertiary">
             {status.videos_so_far} videos found
           </span>
           {status.accounts_failed > 0 && (
-            <span className="text-[11px] text-[#ef4444]">
+            <span className="text-[11px] text-rt-red">
               {status.accounts_failed} failed
             </span>
           )}
@@ -120,14 +120,14 @@ export function ScrapeProgress({ enabled, onComplete }: ScrapeProgressProps) {
         {/* Currently scraping */}
         {status.current_accounts.length > 0 && (
           <div className="mb-3">
-            <div className="text-[11px] text-[#888] uppercase tracking-wide mb-1.5">
+            <div className="text-[11px] text-rt-fg-tertiary uppercase tracking-wide mb-1.5">
               Currently scraping
             </div>
             <div className="flex flex-wrap gap-1.5">
               {status.current_accounts.map((username) => (
                 <div
                   key={username}
-                  className="inline-flex items-center gap-1.5 bg-[#f0f4ff] text-[#0b62d6] text-[11px] px-2 py-0.5 rounded-full"
+                  className="inline-flex items-center gap-1.5 bg-white/[0.03] text-rt-magenta text-[11px] px-2 py-0.5 rounded-full"
                 >
                   <Loader2 className="size-3 animate-spin" />
                   @{username}
@@ -140,7 +140,7 @@ export function ScrapeProgress({ enabled, onComplete }: ScrapeProgressProps) {
         {/* Completed log */}
         {reversedLog.length > 0 && (
           <div>
-            <div className="text-[11px] text-[#888] uppercase tracking-wide mb-1.5">
+            <div className="text-[11px] text-rt-fg-tertiary uppercase tracking-wide mb-1.5">
               Completed
             </div>
             <div className="max-h-[200px] overflow-y-auto space-y-0.5">
@@ -151,18 +151,18 @@ export function ScrapeProgress({ enabled, onComplete }: ScrapeProgressProps) {
                 >
                   {entry.status === "ok" ? (
                     <>
-                      <CheckCircle className="size-3.5 text-[#22c55e] flex-shrink-0" />
-                      <span className="text-[#333]">
+                      <CheckCircle className="size-3.5 text-rt-green flex-shrink-0" />
+                      <span className="text-rt-fg">
                         @{entry.username}
-                        <span className="text-[#888]"> — {entry.video_count} videos</span>
+                        <span className="text-rt-fg-tertiary"> — {entry.video_count} videos</span>
                       </span>
                     </>
                   ) : (
                     <>
-                      <XCircle className="size-3.5 text-[#ef4444] flex-shrink-0" />
-                      <span className="text-[#ef4444]">
+                      <XCircle className="size-3.5 text-rt-red flex-shrink-0" />
+                      <span className="text-rt-red">
                         @{entry.username}
-                        <span className="text-[#888]"> — {entry.error || "failed"}</span>
+                        <span className="text-rt-fg-tertiary"> — {entry.error || "failed"}</span>
                       </span>
                     </>
                   )}

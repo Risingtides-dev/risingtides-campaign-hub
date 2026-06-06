@@ -27,6 +27,11 @@ import type {
   ShareToken,
   ScrapeTaskQueue,
   ScrapeTaskHealth,
+  BreakerLens,
+  BreakerResponse,
+  CreatorDrilldown,
+  TargetSound,
+  SoundFitResponse,
 } from "./types"
 
 const API_BASE = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? "http://localhost:5055" : "")
@@ -138,6 +143,22 @@ export const api = {
   getCreators: () => request<CreatorSummary[]>("/api/creators"),
   getCreatorProfile: (username: string) =>
     request<CreatorProfile>(`/api/creators/${username}`),
+
+  // Creator Intelligence (sound-breaking analytics)
+  getBreakers: (lens: BreakerLens = "balanced", limit = 100, minPosts = 5) =>
+    request<BreakerResponse>(
+      `/api/intelligence/breakers?lens=${lens}&limit=${limit}&min_posts=${minPosts}`
+    ),
+  getCreatorIntel: (account: string, withOutcomes = false) =>
+    request<CreatorDrilldown>(
+      `/api/intelligence/creator/${encodeURIComponent(account)}${withOutcomes ? "?outcomes=1" : ""}`
+    ),
+  getSounds: () =>
+    request<{ sounds: TargetSound[] }>("/api/intelligence/sounds"),
+  getSoundFit: (soundId: string) =>
+    request<SoundFitResponse>(
+      `/api/intelligence/sound-fit/${encodeURIComponent(soundId)}`
+    ),
   updateCreatorNiches: (username: string, niches: string[]) =>
     request<ApiOk & { updated: number; niches: string[] }>(
       `/api/creators/${username}/niches`,

@@ -72,7 +72,7 @@ function SortableHeader({
   return (
     <button
       type="button"
-      className="flex items-center gap-1 hover:text-[#555] transition-colors"
+      className="flex items-center gap-1 hover:text-rt-fg transition-colors"
       onClick={() => column.toggleSorting(sorted === "asc")}
     >
       {label}
@@ -158,7 +158,7 @@ export default function CreatorDatabase() {
                   e.stopPropagation()
                   navigate(`/creators/${c.username}`)
                 }}
-                className="font-semibold text-[#0b62d6] hover:underline"
+                className="font-semibold text-rt-magenta hover:underline"
               >
                 @{c.username}
               </button>
@@ -166,7 +166,7 @@ export default function CreatorDatabase() {
                 href={`https://www.tiktok.com/@${c.username}`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-[#999] hover:text-[#333] transition-colors"
+                className="text-rt-fg-tertiary hover:text-rt-fg transition-colors"
                 onClick={(e) => e.stopPropagation()}
                 title="View on TikTok"
               >
@@ -181,7 +181,7 @@ export default function CreatorDatabase() {
         header: "Niches",
         cell: ({ row }) => {
           const niches = row.original.niches || []
-          if (niches.length === 0) return <span className="text-[#ccc] text-xs">{"\u2014"}</span>
+          if (niches.length === 0) return <span className="text-rt-fg-tertiary text-xs">{"\u2014"}</span>
           return (
             <div className="flex flex-wrap gap-1">
               {niches.map((n) => (
@@ -239,8 +239,7 @@ export default function CreatorDatabase() {
           const fullyPaid = c.total_payout >= c.total_spend && c.total_spend > 0
           return (
             <span
-              className="text-[14px]"
-              style={{ color: fullyPaid ? "#22c55e" : undefined }}
+              className={`text-[14px] ${fullyPaid ? "text-rt-green" : ""}`}
             >
               {formatCurrency(c.total_payout)}
             </span>
@@ -267,7 +266,7 @@ export default function CreatorDatabase() {
           <span className="text-[14px]">
             {row.original.avg_recent_views != null
               ? row.original.avg_recent_views.toLocaleString("en-US")
-              : <span className="text-[#ccc]">{"—"}</span>}
+              : <span className="text-rt-fg-tertiary">{"—"}</span>}
           </span>
         ),
         sortingFn: (rowA, rowB) =>
@@ -307,10 +306,10 @@ export default function CreatorDatabase() {
       </div>
 
       {/* Search bar */}
-      <div className="bg-white border border-[#e8e8ef] rounded-[10px] px-5 py-3.5 mb-4">
+      <div className="bg-rt-bg-card border border-white/8 rounded-[10px] px-5 py-3.5 mb-4">
         <div className="flex items-center gap-3">
           <div className="relative flex-1 max-w-[300px]">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-[#888]" />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-rt-fg-tertiary" />
             <Input
               type="text"
               value={search}
@@ -332,7 +331,7 @@ export default function CreatorDatabase() {
           {/* Niche filter chips */}
           {allNiches.length > 0 && (
             <div className="flex items-center gap-1.5 flex-wrap">
-              <span className="text-[11px] text-[#999] uppercase tracking-wide">Niche:</span>
+              <span className="text-[11px] text-rt-fg-tertiary uppercase tracking-wide">Niche:</span>
               {allNiches.map((niche) => (
                 <button
                   key={niche}
@@ -341,7 +340,7 @@ export default function CreatorDatabase() {
                   className={`inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-medium transition-all ${
                     selectedNiche === niche
                       ? getNicheColor(niche) + " ring-2 ring-offset-1 ring-current"
-                      : "bg-[#f0f0f5] text-[#666] hover:bg-[#e4e4ed]"
+                      : "bg-white/5 text-rt-fg-tertiary hover:bg-white/10"
                   }`}
                 >
                   {niche}
@@ -351,14 +350,14 @@ export default function CreatorDatabase() {
                 <button
                   type="button"
                   onClick={() => setSelectedNiche(null)}
-                  className="text-[11px] text-[#999] hover:text-[#555] underline"
+                  className="text-[11px] text-rt-fg-tertiary hover:text-rt-fg underline"
                 >
                   clear
                 </button>
               )}
             </div>
           )}
-          <span className="ml-auto text-[#888] text-[13px]">
+          <span className="ml-auto text-rt-fg-tertiary text-[13px]">
             {filtered.length} creator{filtered.length !== 1 ? "s" : ""}
           </span>
         </div>
@@ -366,14 +365,14 @@ export default function CreatorDatabase() {
 
       {/* Loading state */}
       {isLoading && (
-        <div className="bg-white border border-[#e8e8ef] rounded-[10px] p-10 text-center">
-          <p className="text-[#888] text-sm">Loading creators...</p>
+        <div className="bg-rt-bg-card border border-white/8 rounded-[10px] p-10 text-center">
+          <p className="text-rt-fg-tertiary text-sm">Loading creators...</p>
         </div>
       )}
 
       {/* Error state */}
       {isError && (
-        <div className="bg-white border border-[#e8e8ef] rounded-[10px] p-10 text-center">
+        <div className="bg-rt-bg-card border border-white/8 rounded-[10px] p-10 text-center">
           <p className="text-red-600 text-sm">
             {error?.message || "Failed to load creators"}
           </p>
@@ -382,19 +381,19 @@ export default function CreatorDatabase() {
 
       {/* Creator table */}
       {!isLoading && !isError && (
-        <div className="bg-white border border-[#e8e8ef] rounded-[10px] overflow-hidden">
+        <div className="bg-rt-bg-card border border-white/8 rounded-[10px] overflow-hidden">
           <div className="overflow-x-auto">
             <Table>
               <TableHeader>
                 {table.getHeaderGroups().map((headerGroup) => (
                   <TableRow
                     key={headerGroup.id}
-                    className="border-b-2 border-[#e8e8ef] hover:bg-transparent"
+                    className="border-b-2 border-white/8 hover:bg-transparent"
                   >
                     {headerGroup.headers.map((header) => (
                       <TableHead
                         key={header.id}
-                        className="text-[#888] text-xs font-semibold uppercase tracking-[0.3px] px-4 py-3 border-b-2 border-[#e8e8ef]"
+                        className="text-rt-fg-tertiary text-xs font-semibold uppercase tracking-[0.3px] px-4 py-3 border-b-2 border-white/8"
                       >
                         {header.isPlaceholder
                           ? null
@@ -412,7 +411,7 @@ export default function CreatorDatabase() {
                   <TableRow>
                     <TableCell
                       colSpan={columns.length}
-                      className="text-center text-[#888] py-10 text-sm"
+                      className="text-center text-rt-fg-tertiary py-10 text-sm"
                     >
                       No creators found.
                     </TableCell>
@@ -421,7 +420,7 @@ export default function CreatorDatabase() {
                   table.getRowModel().rows.map((row) => (
                     <TableRow
                       key={row.id}
-                      className="cursor-pointer hover:bg-[#fafaff] border-b border-[#f0f0f5]"
+                      className="cursor-pointer hover:bg-white/[0.03] border-b border-white/5"
                       onClick={() =>
                         navigate(`/creators/${row.original.username}`)
                       }
@@ -429,7 +428,7 @@ export default function CreatorDatabase() {
                       {row.getVisibleCells().map((cell) => (
                         <TableCell
                           key={cell.id}
-                          className="px-4 py-2 text-[14px] border-b border-[#f0f0f5] align-middle"
+                          className="px-4 py-2 text-[14px] border-b border-white/5 align-middle"
                         >
                           {flexRender(
                             cell.column.columnDef.cell,

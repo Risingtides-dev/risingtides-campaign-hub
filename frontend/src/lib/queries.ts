@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { api } from "./api"
-import type { ScrapeStatus, JobScrapeStatus } from "./types"
+import type { ScrapeStatus, JobScrapeStatus, BreakerLens } from "./types"
 
 // Query keys
 export const keys = {
@@ -738,5 +738,52 @@ export function useTriggerCron() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["scrape-tasks"] })
     },
+  })
+}
+
+// ---- Creator Intelligence ----
+export function useBreakers(lens: BreakerLens = "balanced", minPosts = 5) {
+  return useQuery({
+    queryKey: ["intelligence", "breakers", lens, minPosts],
+    queryFn: () => api.getBreakers(lens, 100, minPosts),
+    staleTime: 5 * 60 * 1000,
+  })
+}
+
+export function useCreatorIntel(account: string | null) {
+  return useQuery({
+    queryKey: ["intelligence", "creator", account],
+    queryFn: () => api.getCreatorIntel(account as string),
+    enabled: !!account,
+    staleTime: 5 * 60 * 1000,
+  })
+}
+
+// Cobrand outcome enrichment — slower (network calls to Cobrand), loaded
+// on demand when the user opens a creator dossier.
+export function useCreatorOutcomes(account: string | null, enabled: boolean) {
+  return useQuery({
+    queryKey: ["intelligence", "creator", account, "outcomes"],
+    queryFn: () => api.getCreatorIntel(account as string, true),
+    enabled: !!account && enabled,
+    staleTime: 10 * 60 * 1000,
+  })
+}
+
+// Sound-fit — the sound-first entry point.
+export function useSounds() {
+  return useQuery({
+    queryKey: ["intelligence", "sounds"],
+    queryFn: () => api.getSounds(),
+    staleTime: 10 * 60 * 1000,
+  })
+}
+
+export function useSoundFit(soundId: string | null) {
+  return useQuery({
+    queryKey: ["intelligence", "sound-fit", soundId],
+    queryFn: () => api.getSoundFit(soundId as string),
+    enabled: !!soundId,
+    staleTime: 5 * 60 * 1000,
   })
 }

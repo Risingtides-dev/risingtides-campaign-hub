@@ -95,6 +95,25 @@ def _cache_set(tracker_id: str, entry: _CacheEntry) -> None:
         _cache[tracker_id] = entry
 
 
+def warm_cache(tracker_id: str, submissions, api_fetched_at: str = "") -> None:
+    """Public write-through so the Tides Tracker cron can warm the request-path
+    cache (CAMP-74). The cron already fetches each tracker's submissions for
+    its audit log; calling this keeps the in-process read cache that
+    get_campaign_stats() consults warm across the 30-min tick, instead of going
+    cold after every redeploy. No-op on falsy tracker_id.
+    """
+    if not tracker_id:
+        return
+    _cache_set(
+        tracker_id,
+        _CacheEntry(
+            submissions=submissions,
+            fetched_at=datetime.now(timezone.utc),
+            api_fetched_at=api_fetched_at,
+        ),
+    )
+
+
 def _is_fresh(entry: _CacheEntry, ttl_seconds: int) -> bool:
     if ttl_seconds <= 0:
         return False

@@ -194,16 +194,16 @@ export default function InternalScrapeView() {
         <div>
           <Link
             to="/internal"
-            className="text-[#0b62d6] text-sm hover:underline flex items-center gap-1 mb-1"
+            className="text-rt-magenta text-sm hover:underline flex items-center gap-1 mb-1"
           >
             <ArrowLeft className="size-3.5" /> Internal TikTok
           </Link>
           <h1 className="text-[22px] font-semibold">{config.title}</h1>
-          <p className="text-[#888] text-sm">{accountCount} accounts</p>
+          <p className="text-rt-fg-tertiary text-sm">{accountCount} accounts</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <label className="flex items-center gap-1.5 text-sm text-[#555]">
-            <span className="text-[#888]">Hours</span>
+          <label className="flex items-center gap-1.5 text-sm text-rt-fg">
+            <span className="text-rt-fg-tertiary">Hours</span>
             <Input
               type="number"
               min={1}
@@ -222,7 +222,7 @@ export default function InternalScrapeView() {
           <span title={disabledReason}>
             <Button
               onClick={handleStart}
-              className="bg-[#0b62d6] hover:bg-[#0951b5] text-white"
+              className="bg-rt-magenta hover:bg-rt-purple text-white"
               disabled={buttonDisabled}
               aria-label={
                 disabledReason
@@ -255,8 +255,8 @@ export default function InternalScrapeView() {
 
       {/* Accounts list */}
       {creators && (
-        <div className="bg-white border border-[#e8e8ef] rounded-[10px] overflow-hidden mb-5">
-          <div className="px-4 py-3 border-b border-[#e8e8ef]">
+        <div className="bg-rt-bg-card border border-white/8 rounded-[10px] overflow-hidden mb-5">
+          <div className="px-4 py-3 border-b border-white/8">
             <h3 className="text-[15px] font-semibold">
               Accounts ({accountCount})
             </h3>
@@ -283,7 +283,7 @@ export default function InternalScrapeView() {
                 <Link
                   key={c.username}
                   to={`/internal/${c.username}`}
-                  className="text-[#0b62d6] text-[13px] hover:underline"
+                  className="text-rt-magenta text-[13px] hover:underline"
                 >
                   @{c.username}
                 </Link>
@@ -294,10 +294,10 @@ export default function InternalScrapeView() {
 
       {/* Results header with refresh button */}
       <div className="flex items-center justify-between mb-3">
-        <h2 className="text-[18px] font-semibold text-[#1a1a2e]">
+        <h2 className="text-[18px] font-semibold text-rt-fg">
           Scrape Results
           {results?.scraped_at && (
-            <span className="text-[13px] text-[#888] font-normal ml-2">
+            <span className="text-[13px] text-rt-fg-tertiary font-normal ml-2">
               Last scraped:{" "}
               {new Date(results.scraped_at).toLocaleString("en-US", {
                 month: "short",
@@ -344,23 +344,23 @@ function ScrapeJobProgressStrip({ status, starting }: ProgressStripProps) {
 
   return (
     <div className="mb-4">
-      <div className="bg-white border border-[#e8e8ef] rounded-[10px] px-4 py-3 border-l-[3px] border-l-[#0b62d6]">
+      <div className="bg-rt-bg-card border border-white/8 rounded-[10px] px-4 py-3 border-l-[3px] border-l-rt-magenta">
         <div className="flex items-center justify-between mb-1.5 gap-3">
-          <span className="text-[13px] font-medium text-[#1a1a2e]">
+          <span className="text-[13px] font-medium text-rt-fg">
             {starting ? "Starting scrape..." : `${n} of ${m} done`}
           </span>
           {!starting && (
-            <span className="text-[11px] text-[#888]">{pct}%</span>
+            <span className="text-[11px] text-rt-fg-tertiary">{pct}%</span>
           )}
         </div>
-        <div className="w-full h-2 bg-[#f0f0f5] rounded-full overflow-hidden">
+        <div className="w-full h-2 bg-white/5 rounded-full overflow-hidden">
           <div
-            className="h-full bg-[#0b62d6] rounded-full transition-all duration-500 ease-out"
+            className="h-full bg-rt-magenta rounded-full transition-all duration-500 ease-out"
             style={{ width: starting ? "5%" : `${pct}%` }}
           />
         </div>
         {!starting && lastLog && (
-          <div className="text-[11px] text-[#888] mt-2 truncate">
+          <div className="text-[11px] text-rt-fg-tertiary mt-2 truncate">
             {lastLog}
           </div>
         )}

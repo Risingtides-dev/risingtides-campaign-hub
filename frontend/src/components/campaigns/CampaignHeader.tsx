@@ -186,7 +186,7 @@ export function CampaignHeader({
             <Button
               type="submit"
               disabled={editPending}
-              className="bg-[#0b62d6] hover:bg-[#0951b5] text-white"
+              className="bg-rt-magenta hover:bg-rt-purple text-white"
             >
               {editPending ? "Saving..." : "Save"}
             </Button>
@@ -234,11 +234,8 @@ export function CampaignHeader({
             </div>
             <div className="w-40 bg-white/20 rounded-full h-2 mt-1">
               <div
-                className="h-2 rounded-full transition-all duration-300"
-                style={{
-                  width: `${Math.min(budgetPct, 100)}%`,
-                  background: "#4f8ff7",
-                }}
+                className="h-2 rounded-full transition-all duration-300 rt-gradient-bg"
+                style={{ width: `${Math.min(budgetPct, 100)}%` }}
               />
             </div>
             <div className="text-[12px] opacity-60 mt-1">

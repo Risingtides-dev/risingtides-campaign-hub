@@ -132,16 +132,16 @@ function parseTelegramHtml(html: string): PreviewNode[] {
 function TelegramPreview({ html }: { html: string }) {
   const nodes = useMemo(() => parseTelegramHtml(html), [html])
   return (
-    <div className="text-sm text-[#333] whitespace-pre-wrap font-sans leading-relaxed">
+    <div className="text-sm text-rt-fg whitespace-pre-wrap font-sans leading-relaxed">
       {nodes.map((n, i) => {
-        if (n.kind === "bold") return <strong key={i} className="font-semibold text-[#1a1a2e]">{n.text}</strong>
+        if (n.kind === "bold") return <strong key={i} className="font-semibold text-rt-fg">{n.text}</strong>
         if (n.kind === "link") return (
           <a
             key={i}
             href={n.href}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-[#0b62d6] hover:underline"
+            className="text-rt-magenta hover:underline"
           >
             {n.text}
           </a>
@@ -467,7 +467,7 @@ export default function SoundAssignments() {
   if (loading) {
     return (
       <div className="p-8">
-        <Loader2 className="w-6 h-6 animate-spin text-[#0b62d6]" />
+        <Loader2 className="w-6 h-6 animate-spin text-rt-magenta" />
       </div>
     )
   }
@@ -477,18 +477,18 @@ export default function SoundAssignments() {
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-[#1a1a2e]">Sound Assignments</h1>
-          <p className="text-sm text-[#666] mt-1">
+          <h1 className="text-2xl font-bold text-rt-fg">Sound Assignments</h1>
+          <p className="text-sm text-rt-fg-tertiary mt-1">
             Pick a sound, then check the pages that should run it. Posters get a daily message with their assignments.
           </p>
           {status && (
             <div className="mt-2">
               {status.sounds_bot_running ? (
-                <Badge className="bg-green-100 text-green-800 border-green-200">
+                <Badge className="bg-rt-green/10 text-rt-green border-green-200">
                   <CheckCircle2 className="w-3 h-3 mr-1" /> Sounds bot online
                 </Badge>
               ) : (
-                <Badge className="bg-red-100 text-red-800 border-red-200">
+                <Badge className="bg-rt-red/10 text-rt-red border-red-200">
                   <AlertTriangle className="w-3 h-3 mr-1" />
                   {status.sounds_bot_configured ? "Sounds bot offline" : "Sounds bot not configured"}
                 </Badge>
@@ -529,12 +529,12 @@ export default function SoundAssignments() {
 
       {/* Error banner */}
       {error && (
-        <div className="bg-red-50 border border-red-200 text-red-800 rounded-md p-3 flex items-start justify-between">
+        <div className="bg-rt-red/10 border border-red-200 text-rt-red rounded-md p-3 flex items-start justify-between">
           <div className="flex gap-2 items-start">
             <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
             <span className="text-sm">{error}</span>
           </div>
-          <button onClick={() => setError(null)} className="text-red-600 hover:text-red-800">
+          <button onClick={() => setError(null)} className="text-rt-red hover:text-rt-red">
             <X className="w-4 h-4" />
           </button>
         </div>
@@ -542,19 +542,19 @@ export default function SoundAssignments() {
 
       {/* Sync stats + unmatched warning */}
       {lastSync && (
-        <Card className={lastSync.unmatched.length > 0 ? "border-amber-300 bg-amber-50" : ""}>
+        <Card className={lastSync.unmatched.length > 0 ? "border-amber-300 bg-rt-amber/10" : ""}>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm flex items-center gap-2">
               {lastSync.unmatched.length > 0 ? (
-                <AlertTriangle className="w-4 h-4 text-amber-600" />
+                <AlertTriangle className="w-4 h-4 text-rt-amber" />
               ) : (
-                <CheckCircle2 className="w-4 h-4 text-green-600" />
+                <CheckCircle2 className="w-4 h-4 text-rt-green" />
               )}
               Last Sync
             </CardTitle>
           </CardHeader>
           <CardContent className="text-sm space-y-2">
-            <div className="flex flex-wrap gap-4 text-[#555]">
+            <div className="flex flex-wrap gap-4 text-rt-fg">
               <span>{lastSync.active_campaigns} active campaigns</span>
               <span>+{lastSync.sounds_added} added</span>
               <span>{lastSync.matched_deterministic} matched directly</span>
@@ -573,7 +573,7 @@ export default function SoundAssignments() {
                     <li key={u}>{u}</li>
                   ))}
                 </ul>
-                <div className="text-xs text-amber-700 mt-2">
+                <div className="text-xs text-rt-amber mt-2">
                   Fix these in Notion (add the TikTok Sound Link), then click Sync Sounds again.
                 </div>
               </div>
@@ -594,7 +594,7 @@ export default function SoundAssignments() {
           </CardHeader>
           <CardContent className="space-y-2">
             <div className="relative">
-              <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[#888]" />
+              <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-rt-fg-tertiary" />
               <Input
                 placeholder="Filter sounds..."
                 value={soundFilter}
@@ -612,8 +612,8 @@ export default function SoundAssignments() {
                     onClick={() => setSelectedSound(sound.id)}
                     className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors flex items-center gap-2 ${
                       isSelected
-                        ? "bg-[#eef2ff] text-[#0b62d6] font-semibold border border-[#c8d4ff]"
-                        : "hover:bg-[#f0f0f5] text-[#333] border border-transparent"
+                        ? "bg-rt-magenta/10 text-rt-magenta font-semibold border border-rt-magenta"
+                        : "hover:bg-white/5 text-rt-fg border border-transparent"
                     }`}
                   >
                     <span className="truncate flex-1">{sound.label}</span>
@@ -626,7 +626,7 @@ export default function SoundAssignments() {
                 )
               })}
               {visibleSounds.length === 0 && (
-                <div className="text-sm text-[#888] italic px-3 py-3 text-center">
+                <div className="text-sm text-rt-fg-tertiary italic px-3 py-3 text-center">
                   {soundFilter ? "No sounds match filter" : "No active sounds — click Sync Sounds"}
                 </div>
               )}
@@ -641,7 +641,7 @@ export default function SoundAssignments() {
               <span className="truncate">
                 {selectedSoundObj ? (
                   <>
-                    Assign &ldquo;<span className="text-[#0b62d6]">{selectedSoundObj.label}</span>&rdquo; to pages
+                    Assign &ldquo;<span className="text-rt-magenta">{selectedSoundObj.label}</span>&rdquo; to pages
                   </>
                 ) : (
                   "Pages"
@@ -656,7 +656,7 @@ export default function SoundAssignments() {
           </CardHeader>
           <CardContent className="space-y-3">
             {!selectedSound && (
-              <div className="text-sm text-[#888] italic px-3 py-12 text-center">
+              <div className="text-sm text-rt-fg-tertiary italic px-3 py-12 text-center">
                 Select a sound on the left to start assigning pages.
               </div>
             )}
@@ -664,7 +664,7 @@ export default function SoundAssignments() {
             {selectedSound && (
               <>
                 <div className="relative">
-                  <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[#888]" />
+                  <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-rt-fg-tertiary" />
                   <Input
                     placeholder="Filter pages..."
                     value={pageFilter}
@@ -682,10 +682,10 @@ export default function SoundAssignments() {
                     const isPartial = assignedCount > 0 && assignedCount < totalPages
                     const isSaving = savingPosterId === poster.poster_id
                     return (
-                      <div key={poster.poster_id} className="rounded-md border border-[#e8e8ef]">
+                      <div key={poster.poster_id} className="rounded-md border border-white/8">
                         {/* Poster row — single checkbox controls the whole roster */}
                         <label
-                          className={`flex items-center justify-between gap-3 px-3 py-2.5 cursor-pointer hover:bg-[#f7f7fa] rounded-t-md ${isSaving ? "opacity-60" : ""}`}
+                          className={`flex items-center justify-between gap-3 px-3 py-2.5 cursor-pointer bg-rt-bg-card rounded-t-md ${isSaving ? "opacity-60" : ""}`}
                         >
                           <span className="flex items-center gap-3 flex-1 min-w-0">
                             <input
@@ -694,28 +694,28 @@ export default function SoundAssignments() {
                               ref={(el) => { if (el) el.indeterminate = isPartial }}
                               disabled={isSaving}
                               onChange={() => togglePosterForSound(poster.poster_id)}
-                              className="w-4 h-4 rounded border-[#ccc] text-[#0b62d6] focus:ring-[#0b62d6]"
+                              className="w-4 h-4 rounded border-white/10 text-rt-magenta focus:ring-rt-magenta"
                             />
-                            <span className="text-sm font-semibold text-[#1a1a2e] truncate">{poster.name}</span>
+                            <span className="text-sm font-semibold text-rt-fg truncate">{poster.name}</span>
                             {!poster.sounds_topic_id && (
                               <span title="No Sounds topic yet — will auto-create on first send">
                                 <AlertTriangle className="w-3 h-3 text-amber-500 shrink-0" />
                               </span>
                             )}
-                            {isSaving && <Loader2 className="w-3 h-3 animate-spin text-[#888] shrink-0" />}
+                            {isSaving && <Loader2 className="w-3 h-3 animate-spin text-rt-fg-tertiary shrink-0" />}
                           </span>
                           <Badge
                             variant={assignedCount > 0 ? "default" : "secondary"}
-                            className={`text-xs shrink-0 ${assignedCount > 0 ? "bg-green-100 text-green-800 border-green-200 hover:bg-green-100" : ""}`}
+                            className={`text-xs shrink-0 ${assignedCount > 0 ? "bg-rt-green/10 text-rt-green border-green-200 hover:bg-rt-green/10" : ""}`}
                           >
                             {assignedCount}/{totalPages}
                           </Badge>
                         </label>
 
                         {/* Read-only page list for admin visibility */}
-                        <div className="border-t border-[#e8e8ef] bg-[#fafafd]">
+                        <div className="border-t border-white/8 bg-white/[0.03]">
                           {groupPages.length === 0 && (
-                            <div className="px-3 py-2 text-xs text-[#888] italic">
+                            <div className="px-3 py-2 text-xs text-rt-fg-tertiary italic">
                               No pages match the filter.
                             </div>
                           )}
@@ -724,10 +724,10 @@ export default function SoundAssignments() {
                             return (
                               <div
                                 key={page.integration_id}
-                                className="flex items-center gap-2 px-3 py-1.5 text-xs text-[#666]"
+                                className="flex items-center gap-2 px-3 py-1.5 text-xs text-rt-fg-tertiary"
                               >
                                 <span
-                                  className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${pageHasSound ? "bg-green-500" : "bg-[#d8d8e0]"}`}
+                                  className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${pageHasSound ? "bg-rt-green/100" : "bg-white/10"}`}
                                 />
                                 <span className="truncate">{page.name}</span>
                               </div>
@@ -736,7 +736,7 @@ export default function SoundAssignments() {
                         </div>
 
                         {/* Per-poster preview/send actions */}
-                        <div className="border-t border-[#e8e8ef] flex gap-2 px-3 py-2">
+                        <div className="border-t border-white/8 flex gap-2 px-3 py-2">
                           <Button
                             variant="outline"
                             size="sm"
@@ -785,9 +785,9 @@ export default function SoundAssignments() {
         }>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm flex items-center gap-2">
-              <CheckCircle2 className="w-4 h-4 text-green-600" />
+              <CheckCircle2 className="w-4 h-4 text-rt-green" />
               Send Result
-              <button onClick={() => setSendResult(null)} className="ml-auto text-[#888] hover:text-[#333]">
+              <button onClick={() => setSendResult(null)} className="ml-auto text-rt-fg-tertiary hover:text-rt-fg">
                 <X className="w-4 h-4" />
               </button>
             </CardTitle>
@@ -796,36 +796,36 @@ export default function SoundAssignments() {
             {"single" in sendResult && sendResult.single ? (
               <div>
                 {sendResult.sent ? (
-                  <div className="flex items-center gap-2 text-green-700">
+                  <div className="flex items-center gap-2 text-rt-green">
                     <CheckCircle2 className="w-4 h-4" /> Sent to {sendResult.poster_id}
                   </div>
                 ) : (
-                  <div className="flex items-center gap-2 text-amber-700">
+                  <div className="flex items-center gap-2 text-rt-amber">
                     <AlertTriangle className="w-4 h-4" /> Skipped {sendResult.poster_id}: {sendResult.reason}
                   </div>
                 )}
               </div>
             ) : (
               <>
-                <div className="flex flex-wrap gap-3 text-[#555]">
-                  <span className="text-green-700">
+                <div className="flex flex-wrap gap-3 text-rt-fg">
+                  <span className="text-rt-green">
                     {(sendResult as SendResult).sent.length} sent
                   </span>
                   {(sendResult as SendResult).skipped.length > 0 && (
-                    <span className="text-amber-700">
+                    <span className="text-rt-amber">
                       {(sendResult as SendResult).skipped.length} skipped
                     </span>
                   )}
                   {(sendResult as SendResult).errors.length > 0 && (
-                    <span className="text-red-700">
+                    <span className="text-rt-red">
                       {(sendResult as SendResult).errors.length} errors
                     </span>
                   )}
                 </div>
                 {(sendResult as SendResult).sent.length > 0 && (
                   <div>
-                    <div className="font-medium text-[#333] mt-2">Sent:</div>
-                    <ul className="text-xs text-[#666] space-y-0.5">
+                    <div className="font-medium text-rt-fg mt-2">Sent:</div>
+                    <ul className="text-xs text-rt-fg-tertiary space-y-0.5">
                       {(sendResult as SendResult).sent.map((r) => (
                         <li key={r.poster_id}>
                           {r.poster_id} — {r.song_count} songs across {r.page_count} pages
@@ -836,8 +836,8 @@ export default function SoundAssignments() {
                 )}
                 {(sendResult as SendResult).skipped.length > 0 && (
                   <div>
-                    <div className="font-medium text-[#333] mt-2">Skipped:</div>
-                    <ul className="text-xs text-[#666] space-y-0.5">
+                    <div className="font-medium text-rt-fg mt-2">Skipped:</div>
+                    <ul className="text-xs text-rt-fg-tertiary space-y-0.5">
                       {(sendResult as SendResult).skipped.map((r) => (
                         <li key={r.poster_id}>
                           {r.poster_id} — {r.reason}
@@ -848,8 +848,8 @@ export default function SoundAssignments() {
                 )}
                 {(sendResult as SendResult).errors.length > 0 && (
                   <div>
-                    <div className="font-medium text-red-700 mt-2">Errors:</div>
-                    <ul className="text-xs text-red-600 space-y-0.5">
+                    <div className="font-medium text-rt-red mt-2">Errors:</div>
+                    <ul className="text-xs text-rt-red space-y-0.5">
                       {(sendResult as SendResult).errors.map((r) => (
                         <li key={r.poster_id}>
                           {r.poster_id} — {r.error}
@@ -882,21 +882,21 @@ export default function SoundAssignments() {
                   {previewPoster.page_count} pages with songs
                 </Badge>
                 {previewPoster.skipped_pages.length > 0 && (
-                  <Badge variant="outline" className="border-amber-300 text-amber-700">
+                  <Badge variant="outline" className="border-amber-300 text-rt-amber">
                     {previewPoster.skipped_pages.length} pages have no songs
                   </Badge>
                 )}
               </div>
 
-              <div className="bg-[#f7f7fa] rounded-md p-4 border border-[#e8e8ef]">
-                <div className="text-xs uppercase text-[#888] tracking-wide mb-2">
+              <div className="bg-rt-bg-card rounded-md p-4 border border-white/8">
+                <div className="text-xs uppercase text-rt-fg-tertiary tracking-wide mb-2">
                   Telegram message preview
                 </div>
                 <TelegramPreview html={previewPoster.text} />
               </div>
 
               {previewPoster.skipped_pages.length > 0 && (
-                <div className="bg-amber-50 border border-amber-200 rounded-md p-3 text-sm text-amber-900">
+                <div className="bg-rt-amber/10 border border-amber-200 rounded-md p-3 text-sm text-amber-900">
                   <div className="font-semibold mb-1">Pages with no active songs (won't appear in message):</div>
                   <ul className="list-disc list-inside space-y-0.5">
                     {previewPoster.skipped_pages.map((p) => (

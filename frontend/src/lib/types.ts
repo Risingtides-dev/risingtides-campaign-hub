@@ -566,3 +566,108 @@ export interface ScrapeTaskHealth {
   } | null
   history: ScrapeTaskHealthRun[]
 }
+
+// ---- Creator Intelligence (sound-breaking analytics) ----
+export type BreakerLens = "ceiling" | "volume" | "balanced"
+
+export interface BreakerRow {
+  account: string
+  posts: number
+  avg_views: number
+  median_views: number
+  peak_views: number
+  viral_rate: number
+  millionaires: number
+  distinct_sounds: number
+  total_views: number
+  score_ceiling: number
+  score_volume: number
+  score_balanced: number
+}
+
+export interface BreakerResponse {
+  lens: BreakerLens
+  count: number
+  min_posts: number
+  breakers: BreakerRow[]
+}
+
+export type SoundTiming = "scout" | "early" | "mid" | "late" | "unknown"
+
+export interface CreatorSound {
+  sound_id: string
+  sound_title: string
+  artist: string
+  campaign_slug: string
+  posts: number
+  total_views: number
+  peak_views: number
+  days_after_start: number | null
+  timing: SoundTiming
+}
+
+export interface ViewBand {
+  band: string
+  count: number
+}
+
+export interface CreatorOutcomes {
+  views: number
+  likes: number
+  comments: number
+  shares: number
+  posts: number
+  campaigns: number
+  engagement_rate: number
+  outcome_score: number
+}
+
+export interface CreatorDrilldown {
+  account: string
+  posts: number
+  avg_views: number
+  median_views: number
+  peak_views: number
+  viral_rate: number
+  millionaires: number
+  distinct_sounds: number
+  early_adopter_rate: number
+  sounds: CreatorSound[]
+  view_distribution: ViewBand[]
+  score_balanced: number
+  outcomes: CreatorOutcomes | null
+}
+
+// ---- Sound-fit (rank creators for a specific sound) ----
+export type SoundFreshness = "fresh" | "warm" | "saturated"
+
+export interface TargetSound {
+  sound_id: string
+  artist: string
+  song: string
+  campaign_slug: string
+  post_count: number
+  freshness: SoundFreshness
+}
+
+export interface SoundFitCreator {
+  account: string
+  fit_score: number
+  breaker_score: number
+  viral_rate: number
+  avg_views: number
+  millionaires: number
+  distinct_sounds: number
+  on_sound_avg: number | null
+  posted_this_sound: boolean
+  posted_this_artist: boolean
+  reasons: string[]
+}
+
+export interface SoundFitResponse {
+  sound_id: string
+  artist: string
+  song: string
+  campaign_slug: string
+  creators: SoundFitCreator[]
+}

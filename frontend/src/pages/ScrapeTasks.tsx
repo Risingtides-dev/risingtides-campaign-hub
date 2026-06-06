@@ -60,8 +60,8 @@ export default function ScrapeTasks() {
     <div className="px-6 py-6 max-w-[1400px] mx-auto">
       <div className="flex items-baseline justify-between mb-4">
         <div>
-          <h1 className="text-2xl font-bold text-[#1a1a2e]">Scrape Tasks</h1>
-          <p className="text-sm text-[#666] mt-1">
+          <h1 className="text-2xl font-bold text-rt-fg">Scrape Tasks</h1>
+          <p className="text-sm text-rt-fg-tertiary mt-1">
             New matched links to copy into Cobrand. Organized by campaign.
           </p>
         </div>
@@ -87,24 +87,24 @@ export default function ScrapeTasks() {
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div className="flex items-center gap-3">
             {lastRunDegraded ? (
-              <Badge className="bg-[#fff1c8] text-[#a16100] border-[#f4d169] gap-1">
+              <Badge className="bg-rt-amber/10 text-rt-amber border-rt-amber gap-1">
                 <AlertTriangle size={14} />
                 DEGRADED
               </Badge>
             ) : (
-              <Badge className="bg-[#dcf6dc] text-[#226e22] border-[#9ad59a]">
+              <Badge className="bg-rt-bg-card text-rt-green border-rt-green">
                 Healthy
               </Badge>
             )}
-            <span className="text-sm text-[#444]">
+            <span className="text-sm text-rt-fg">
               Last run: {lastRunStarted ? new Date(lastRunStarted).toLocaleString() : "—"}
             </span>
-            <span className="text-sm text-[#666]">
+            <span className="text-sm text-rt-fg-tertiary">
               {lastRunMatches} new matches • {Math.round(lastRunEmptyRate * 100)}% empty rate
             </span>
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-sm text-[#444] font-medium">
+            <span className="text-sm text-rt-fg font-medium">
               {totalUntracked} untracked
             </span>
             <Button
@@ -120,7 +120,7 @@ export default function ScrapeTasks() {
           </div>
         </div>
         {lastRunDegraded && (
-          <div className="mt-3 px-3 py-2 bg-[#fff8e8] border border-[#f4d169] rounded text-sm text-[#7a4a00]">
+          <div className="mt-3 px-3 py-2 bg-rt-bg-card border border-rt-amber rounded text-sm text-rt-red">
             The last cron run produced no useful data — TikTok likely
             rate-limited the scraper. Today's queue may be incomplete. Re-run
             cron or wait for tomorrow's scheduled run.
@@ -130,20 +130,20 @@ export default function ScrapeTasks() {
 
       {/* Queue */}
       {queueQ.isLoading && (
-        <div className="text-sm text-[#666] py-12 text-center">Loading…</div>
+        <div className="text-sm text-rt-fg-tertiary py-12 text-center">Loading…</div>
       )}
       {queueQ.isError && (
-        <div className="text-sm text-red-600 py-12 text-center">
+        <div className="text-sm text-rt-red py-12 text-center">
           Failed to load queue. Try refreshing.
         </div>
       )}
       {!queueQ.isLoading && filtered.length === 0 && (
-        <Card className="p-12 text-center text-[#666]">
+        <Card className="p-12 text-center text-rt-fg-tertiary">
           {search ? (
             <>No campaigns match "{search}".</>
           ) : (
             <>
-              <div className="text-base font-medium text-[#444] mb-1">
+              <div className="text-base font-medium text-rt-fg mb-1">
                 Queue is clear.
               </div>
               <div className="text-sm">
@@ -278,24 +278,24 @@ function CampaignBlock({
     <Card className="overflow-hidden">
       {/* Campaign header */}
       <div
-        className="px-4 py-3 flex items-center justify-between cursor-pointer hover:bg-[#fafafd]"
+        className="px-4 py-3 flex items-center justify-between cursor-pointer hover:bg-white/[0.03]"
         onClick={() => setOpen(!open)}
       >
         <div className="flex items-center gap-3 min-w-0">
-          <span className="text-base font-semibold text-[#1a1a2e] truncate">
+          <span className="text-base font-semibold text-rt-fg truncate">
             {camp.title}
           </span>
           <Badge variant="outline" className="text-xs">
             {camp.untracked_count} untracked
           </Badge>
           {camp.match_strategy === "strict" && (
-            <Badge className="bg-[#dee9ff] text-[#0b62d6] border-[#a5c0f0] text-xs">
+            <Badge className="bg-rt-magenta/10 text-rt-magenta border-rt-magenta text-xs">
               strict
             </Badge>
           )}
           {fuzzyCount > 0 && camp.match_strategy !== "strict" && (
             <Badge
-              className="bg-[#fff1c8] text-[#a16100] border-[#f4d169] text-xs"
+              className="bg-rt-amber/10 text-rt-amber border-rt-amber text-xs"
               title="These matches came from fuzzy fallback — verify each one"
             >
               {fuzzyCount} fuzzy
@@ -308,13 +308,13 @@ function CampaignBlock({
           )}
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
-          <span className="text-sm text-[#666]">
+          <span className="text-sm text-rt-fg-tertiary">
             {totalViews.toLocaleString()} views
           </span>
           <Link
             to={`/campaign/${camp.slug}`}
             onClick={(e) => e.stopPropagation()}
-            className="text-xs text-[#0b62d6] hover:underline"
+            className="text-xs text-rt-magenta hover:underline"
           >
             open campaign
           </Link>
@@ -322,11 +322,11 @@ function CampaignBlock({
       </div>
 
       {open && (
-        <div className="border-t border-[#e8e8ef]">
+        <div className="border-t border-white/8">
           {/* Bulk action bar */}
-          <div className="px-4 py-2 bg-[#fafafd] border-b border-[#e8e8ef] flex items-center justify-between">
+          <div className="px-4 py-2 bg-white/[0.03] border-b border-white/8 flex items-center justify-between">
             <div className="flex items-center gap-3 text-sm">
-              <span className="text-[#666]">
+              <span className="text-rt-fg-tertiary">
                 {selected.size > 0
                   ? `${selected.size} selected`
                   : `${camp.videos.length} link(s)`}
@@ -347,7 +347,7 @@ function CampaignBlock({
                   <Button
                     size="sm"
                     variant="outline"
-                    className="border-[#f1c8c8] text-[#a13434] hover:bg-[#fceaea]"
+                    className="border-rt-amber text-rt-red bg-rt-bg-card"
                     onClick={() => {
                       const reason = window.prompt(
                         `Dismiss ${selected.size} match(es) as bad? Optional reason:`,
@@ -408,7 +408,7 @@ function CampaignBlock({
 
           {/* Video rows */}
           <table className="w-full text-sm">
-            <thead className="bg-[#fafafd] border-b border-[#e8e8ef] text-[11px] uppercase tracking-wide text-[#888]">
+            <thead className="bg-white/[0.03] border-b border-white/8 text-[11px] uppercase tracking-wide text-rt-fg-tertiary">
               <tr>
                 <th className="w-8 px-2 py-2"></th>
                 <th className="text-left px-2 py-2">Creator</th>
@@ -473,7 +473,7 @@ function VideoRow({
   return (
     <tr
       className={
-        "border-b border-[#f0f0f5] hover:bg-[#fafafd]" +
+        "border-b border-white/5 hover:bg-white/[0.03]" +
         (isLocallyTicked ? " opacity-50 line-through" : "")
       }
     >
@@ -486,13 +486,13 @@ function VideoRow({
           className="cursor-pointer disabled:cursor-not-allowed"
         />
       </td>
-      <td className="px-2 py-2 font-medium text-[#1a1a2e]">{video.account || "—"}</td>
+      <td className="px-2 py-2 font-medium text-rt-fg">{video.account || "—"}</td>
       <td className="px-2 py-2 max-w-0">
         <a
           href={video.url}
           target="_blank"
           rel="noreferrer"
-          className="text-[#0b62d6] hover:underline truncate inline-block max-w-full align-middle"
+          className="text-rt-magenta hover:underline truncate inline-block max-w-full align-middle"
           title={video.url}
         >
           {video.url}
@@ -508,32 +508,32 @@ function VideoRow({
           </Badge>
         )}
         {video.match_strategy === "internal_creator" && (
-          <Badge className="bg-[#e7f0ff] text-[#0b62d6] border-[#bcd1f5] text-xs">
+          <Badge className="bg-rt-bg-card text-rt-magenta border-rt-magenta text-xs">
             internal
           </Badge>
         )}
         {video.match_strategy === "fuzzy_word_overlap" && (
           <Badge
-            className="bg-[#fff1c8] text-[#a16100] border-[#f4d169] text-xs"
+            className="bg-rt-amber/10 text-rt-amber border-rt-amber text-xs"
             title="Matched on fuzzy word overlap — verify before tracking"
           >
             fuzzy
           </Badge>
         )}
         {video.match_strategy === "discovered_original_sound" && (
-          <Badge className="bg-[#f1e8ff] text-[#5a32b8] border-[#cdb5f4] text-xs">
+          <Badge className="bg-rt-bg-card text-rt-magenta border-rt-magenta text-xs">
             discovered
           </Badge>
         )}
         {!video.match_strategy && (
-          <span className="text-xs text-[#888]">—</span>
+          <span className="text-xs text-rt-fg-tertiary">—</span>
         )}
       </td>
       <td className="px-2 py-2">
         <div className="flex items-center justify-end gap-1">
           <button
             onClick={copyLink}
-            className="p-1 rounded hover:bg-[#eef2ff] text-[#666] hover:text-[#0b62d6]"
+            className="p-1 rounded hover:bg-rt-magenta/10 text-rt-fg-tertiary hover:text-rt-magenta"
             title="Copy link"
           >
             {copied ? <Check size={14} /> : <Copy size={14} />}
@@ -542,7 +542,7 @@ function VideoRow({
             href={video.url}
             target="_blank"
             rel="noreferrer"
-            className="p-1 rounded hover:bg-[#eef2ff] text-[#666] hover:text-[#0b62d6]"
+            className="p-1 rounded hover:bg-rt-magenta/10 text-rt-fg-tertiary hover:text-rt-magenta"
             title="Open in TikTok"
           >
             <ExternalLink size={14} />
@@ -551,7 +551,7 @@ function VideoRow({
             <button
               onClick={onUndoOne}
               disabled={isMarking}
-              className="p-1 rounded hover:bg-[#fff5e6] text-[#a16100] hover:text-[#7a4a00] disabled:opacity-50"
+              className="p-1 rounded bg-rt-bg-card text-rt-amber hover:text-rt-red disabled:opacity-50"
               title="Undo — restore to the queue"
             >
               <Undo2 size={14} />
@@ -561,7 +561,7 @@ function VideoRow({
               <button
                 onClick={onMarkOne}
                 disabled={isMarking}
-                className="p-1 rounded hover:bg-[#dcf6dc] text-[#666] hover:text-[#226e22] disabled:opacity-50"
+                className="p-1 rounded bg-rt-bg-card text-rt-fg-tertiary hover:text-rt-green disabled:opacity-50"
                 title="Mark this link as tracked"
               >
                 <Check size={14} />
@@ -576,7 +576,7 @@ function VideoRow({
                   onDismissOne(reason.trim() || undefined)
                 }}
                 disabled={isDismissing}
-                className="p-1 rounded hover:bg-[#fceaea] text-[#666] hover:text-[#a13434] disabled:opacity-50"
+                className="p-1 rounded bg-rt-bg-card text-rt-fg-tertiary hover:text-rt-red disabled:opacity-50"
                 title="Dismiss as false-positive — excluded from totals"
               >
                 <X size={14} />
