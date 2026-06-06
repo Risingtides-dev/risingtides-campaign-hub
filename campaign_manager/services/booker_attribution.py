@@ -23,6 +23,15 @@ logger = logging.getLogger(__name__)
 
 # First-name / known-alias collapse. Keys are already lowercased + whitespace
 # collapsed; values are the canonical full name.
+#
+# KNOWN-ROSTER ASSUMPTION (review note): these collapse a bare first name to a
+# specific person. That's safe for the current ~8-booker roster where "Eric"
+# unambiguously means Eric Cromartie and "Jake" means Jake Balik. If a SECOND
+# Eric/Jake ever joins, a bare-first-name page for them would merge into the
+# wrong roster — so add the new person's full name to Notion (never a bare
+# first name) and add a disambiguating alias here. Deliberately NOT fuzzy: an
+# 8-name list doesn't justify an identity table, and silent fuzzy merges would
+# be worse than this explicit, auditable map.
 _BOOKER_ALIASES = {
     "eric": "eric cromartie",
     "jake": "jake balik",

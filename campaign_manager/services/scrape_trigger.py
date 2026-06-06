@@ -43,13 +43,18 @@ def _prune_locked() -> None:
         _jobs.pop(jid, None)
 
 
+def _active_job_locked() -> Optional[Dict[str, Any]]:
+    """The currently-running job (or None). MUST be called holding _jobs_lock."""
+    for jid, j in _jobs.items():
+        if j.get("state") == "running":
+            return {"job_id": jid, **{k: v for k, v in j.items() if not k.startswith("_")}}
+    return None
+
+
 def active_job() -> Optional[Dict[str, Any]]:
     """Return the currently-running trigger job, if any (for debounce)."""
     with _jobs_lock:
-        for jid, j in _jobs.items():
-            if j.get("state") == "running":
-                return {"job_id": jid, **{k: v for k, v in j.items() if not k.startswith("_")}}
-    return None
+        return _active_job_locked()
 
 
 def start_scrape(only_slugs: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -59,19 +64,23 @@ def start_scrape(only_slugs: Optional[List[str]] = None) -> Dict[str, Any]:
     Debounced: if a trigger job is already running, returns it instead of
     starting a second (overlapping scrapes would double the scraper load).
     """
-    existing = active_job()
-    if existing:
-        return {**existing, "already_running": True}
-
     job_id = uuid.uuid4().hex[:12]
     scope = "all_active" if not only_slugs else f"{len(only_slugs)} campaign(s)"
+    started_at = _now_iso()
+    # CAMP-24 (review fix): the debounce check and the slot claim MUST be one
+    # atomic critical section. Two simultaneous triggers each calling a separate
+    # active_job() then inserting would BOTH pass the check and start
+    # overlapping scrapes (TOCTOU). Do both under a single lock.
     with _jobs_lock:
+        existing = _active_job_locked()
+        if existing:
+            return {**existing, "already_running": True}
         _prune_locked()
         _jobs[job_id] = {
             "state": "running",
             "scope": scope,
             "only_slugs": list(only_slugs) if only_slugs else None,
-            "started_at": _now_iso(),
+            "started_at": started_at,
             "result": None,
             "error": None,
             "_started_mono": time.monotonic(),
@@ -79,7 +88,7 @@ def start_scrape(only_slugs: Optional[List[str]] = None) -> Dict[str, Any]:
 
     t = threading.Thread(target=_run, args=(job_id, only_slugs), daemon=True)
     t.start()
-    return {"job_id": job_id, "state": "running", "scope": scope, "started_at": _jobs[job_id]["started_at"]}
+    return {"job_id": job_id, "state": "running", "scope": scope, "started_at": started_at}
 
 
 def _run(job_id: str, only_slugs: Optional[List[str]]) -> None:

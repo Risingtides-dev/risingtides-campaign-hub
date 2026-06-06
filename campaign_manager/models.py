@@ -1,7 +1,7 @@
 """SQLAlchemy models for the Warner Campaign Manager."""
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone as _timezone
 
 from sqlalchemy import (
     BigInteger, Boolean, Column, Date, DateTime, Float, ForeignKey, Index,
@@ -823,4 +823,10 @@ class TidesTrackerStatsCache(Base):
     tracker_id = Column(String(100), primary_key=True)
     submissions_json = Column(JSONB, nullable=False)        # list[asdict(Submission)]
     api_fetched_at = Column(Text, default="")              # API's reported fetched_at
-    fetched_at = Column(DateTime(timezone=True), nullable=False, default=datetime.now)
+    # timezone-aware default — _is_fresh() subtracts against datetime.now(utc),
+    # and a naive default would make any default-omitting insert poison that
+    # subtraction with a TypeError (naive vs aware).
+    fetched_at = Column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(_timezone.utc),
+    )

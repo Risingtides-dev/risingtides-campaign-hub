@@ -41,7 +41,7 @@ def creator_rollup(session, username: str, days: int = 90) -> Dict[str, Any]:
             InternalVideoCache.song,
             InternalVideoCache.artist,
         )
-        .filter(func_lower(InternalVideoCache.username) == norm)
+        .filter(func_lower_strip(InternalVideoCache.username) == norm)
         .all()
     ) if _exists(session) else []
 
@@ -57,7 +57,7 @@ def creator_rollup(session, username: str, days: int = 90) -> Dict[str, Any]:
     label = None
     page = (
         session.query(NotionMasterPage.notion_group)
-        .filter(func_lower(NotionMasterPage.account_username) == norm)
+        .filter(func_lower_strip(NotionMasterPage.account_username) == norm)
         .first()
     )
     if page:
