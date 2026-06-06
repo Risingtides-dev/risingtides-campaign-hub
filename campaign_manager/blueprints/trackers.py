@@ -376,7 +376,12 @@ def create_tracker_group():
     data = request.get_json(silent=True) or {}
     title = (data.get("title") or "").strip()
     slug = (data.get("slug") or _slugify(title)).strip().lower()
-    sort_order = int(data.get("sort_order") or 0)
+    # Guard the cast — a non-numeric sort_order should be a clean 400, not an
+    # unhandled 500 (mirrors update_tracker's guarded parse).
+    try:
+        sort_order = int(data.get("sort_order") or 0)
+    except (TypeError, ValueError):
+        return jsonify({"error": "sort_order must be an integer"}), 400
     if not title:
         return jsonify({"error": "title is required"}), 400
 
