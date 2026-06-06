@@ -398,6 +398,7 @@ def _aggregate_outcomes(session: Session, account: str) -> Optional[Dict[str, An
 
     totals: Dict[str, Any] = {"views": 0, "likes": 0, "comments": 0, "shares": 0, "posts": 0, "campaigns": 0}
     follower_count = 0
+    avatar_url = ""
     found = False
     with ThreadPoolExecutor(max_workers=min(8, len(share_urls) or 1)) as ex:
         for oc in ex.map(_safe_outcomes, share_urls):
@@ -410,11 +411,15 @@ def _aggregate_outcomes(session: Session, account: str) -> Optional[Dict[str, An
             # follower_count is a per-creator attribute, not additive — take the
             # max across campaigns (their peak/most-recent follower count).
             follower_count = max(follower_count, oc.get("follower_count", 0))
+            # CAMP-76: first non-empty avatar (PFP) across campaigns.
+            if not avatar_url and oc.get("avatar_url"):
+                avatar_url = oc["avatar_url"]
 
     if not found:
         return None
 
     totals["follower_count"] = follower_count
+    totals["avatar_url"] = avatar_url
     # CAMP-86: reach efficiency — shares per 1k followers. The cheap signal
     # the follower number unlocks (how much spread per unit of audience).
     totals["shares_per_1k_followers"] = round(

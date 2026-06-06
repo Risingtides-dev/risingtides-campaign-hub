@@ -523,11 +523,27 @@ function CreatorDrawer({ account, onClose }: { account: string; onClose: () => v
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
       <aside className="rt-rise relative h-full w-full max-w-xl overflow-y-auto border-l border-white/10 bg-rt-bg-elevated shadow-2xl">
         <div className="sticky top-0 z-10 flex items-center justify-between border-b border-white/8 bg-rt-bg-elevated/95 px-6 py-4 backdrop-blur">
-          <div>
-            <div className="text-[11px] uppercase tracking-[0.2em] text-rt-fg-tertiary">
-              Sound-breaking dossier
+          <div className="flex items-center gap-3 min-w-0">
+            {/* CAMP-76: PFP, served live from Cobrand. Falls back to a gradient
+                monogram when the creator has no Cobrand-sourced avatar. */}
+            {outcomes?.avatar_url ? (
+              <img
+                src={outcomes.avatar_url}
+                alt={account}
+                className="h-11 w-11 shrink-0 rounded-full border border-white/10 object-cover"
+                onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none" }}
+              />
+            ) : (
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full rt-gradient-bg text-sm font-bold text-white">
+                {account.replace(/^@/, "").slice(0, 2).toUpperCase()}
+              </div>
+            )}
+            <div className="min-w-0">
+              <div className="text-[11px] uppercase tracking-[0.2em] text-rt-fg-tertiary">
+                Sound-breaking dossier
+              </div>
+              <h2 className="truncate font-display text-2xl font-bold text-rt-fg">{account}</h2>
             </div>
-            <h2 className="font-display text-2xl font-bold text-rt-fg">{account}</h2>
           </div>
           <button
             onClick={onClose}
