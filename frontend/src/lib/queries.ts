@@ -797,3 +797,12 @@ export function useCampaignReport(slug: string) {
     staleTime: 5 * 60 * 1000,
   })
 }
+
+// Re-book suggestions (CAMP-87)
+export function useRebookSuggestions() {
+  return useQuery({
+    queryKey: ["intelligence", "rebook"],
+    queryFn: () => api.getRebookSuggestions(),
+    staleTime: 5 * 60 * 1000,
+  })
+}

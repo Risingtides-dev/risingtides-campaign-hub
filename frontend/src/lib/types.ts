@@ -709,3 +709,18 @@ export interface CampaignReport {
   source: string
   stale_since: string
 }
+
+// Re-book suggestions (CAMP-87)
+export interface RebookSuggestion {
+  account: string
+  breaker_score: number
+  viral_rate: number
+  avg_views: number
+  millionaires: number
+  campaigns_booked: number
+  posts_owed: number
+  posts_done: number
+  repeat_rate: number
+  days_since_booked: number | null
+  opportunity_score: number
+}

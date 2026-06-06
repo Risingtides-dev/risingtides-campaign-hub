@@ -7,13 +7,14 @@ import {
   XAxis,
   Tooltip as RTooltip,
 } from "recharts"
-import { Search, Zap, TrendingUp, Layers, Radio, X, Music, Users } from "lucide-react"
+import { Search, Zap, TrendingUp, Layers, Radio, X, Music, Users, Repeat, Clock } from "lucide-react"
 import {
   useBreakers,
   useCreatorIntel,
   useCreatorOutcomes,
   useSounds,
   useSoundFit,
+  useRebookSuggestions,
 } from "@/lib/queries"
 import type {
   BreakerLens,
@@ -52,7 +53,7 @@ function scoreFor(row: BreakerRow, lens: BreakerLens): number {
   return lens === "ceiling" ? row.score_ceiling : lens === "volume" ? row.score_volume : row.score_balanced
 }
 
-type Mode = "creators" | "sound"
+type Mode = "creators" | "sound" | "rebook"
 
 export default function CreatorIntelligence() {
   const [mode, setMode] = useState<Mode>("creators")
@@ -94,10 +95,12 @@ export default function CreatorIntelligence() {
           <p className="mt-2 max-w-xl text-sm text-rt-fg-secondary">
             {mode === "creators"
               ? `Ranked by velocity per post, not follower vanity. The lens decides what "best" means — breakout odds, proven scale, or a confidence-weighted blend.`
-              : `Pick a sound and see the creators most likely to break it — ranked by proven breaker ability, boosted for those who've broken this sound or this artist before.`}
+              : mode === "sound"
+              ? `Pick a sound and see the creators most likely to break it — ranked by proven breaker ability, boosted for those who've broken this sound or this artist before.`
+              : `Proven breakers you're under-booking — high velocity, reliable delivery, but few recent bookings. The ones worth re-booking before someone else does.`}
           </p>
 
-          {/* Mode toggle: creator-first vs sound-first */}
+          {/* Mode toggle: creator-first vs sound-first vs re-book */}
           <div className="mt-5 inline-flex rounded-xl border border-white/8 bg-rt-bg-raised p-1">
             <ModeBtn active={mode === "creators"} onClick={() => setMode("creators")} icon={Users}>
               By Creator
@@ -105,10 +108,15 @@ export default function CreatorIntelligence() {
             <ModeBtn active={mode === "sound"} onClick={() => setMode("sound")} icon={Music}>
               By Sound
             </ModeBtn>
+            <ModeBtn active={mode === "rebook"} onClick={() => setMode("rebook")} icon={Repeat}>
+              Re-book
+            </ModeBtn>
           </div>
         </header>
 
-        {mode === "sound" ? (
+        {mode === "rebook" ? (
+          <RebookView onPickCreator={setSelected} />
+        ) : mode === "sound" ? (
           <SoundFitView onPickCreator={setSelected} />
         ) : (
         <>
@@ -239,6 +247,70 @@ export default function CreatorIntelligence() {
 /* ============================================================
    SOUND-FIT VIEW — sound-first entry point
    ============================================================ */
+function RebookView({ onPickCreator }: { onPickCreator: (a: string) => void }) {
+  const { data, isLoading } = useRebookSuggestions()
+  const rows = data?.suggestions ?? []
+  const maxOpp = rows.length ? Math.max(...rows.map((r) => r.opportunity_score)) : 1
+
+  function lastBooked(days: number | null): string {
+    if (days === null) return "never booked"
+    if (days === 0) return "today"
+    if (days < 30) return `${days}d ago`
+    return `${Math.round(days / 30)}mo ago`
+  }
+
+  return (
+    <div className="overflow-hidden rounded-2xl border border-white/8 bg-rt-bg-raised/60 backdrop-blur">
+      <div className="grid grid-cols-[2.5rem_1fr_5rem_4.5rem_4rem_5rem_6rem] gap-3 border-b border-white/8 px-5 py-3 text-[10px] uppercase tracking-[0.16em] text-rt-fg-tertiary">
+        <span>#</span>
+        <span>Creator</span>
+        <span className="text-right">Opportunity</span>
+        <span className="text-right">Breaker</span>
+        <span className="text-right">Booked</span>
+        <span className="text-right">Reliability</span>
+        <span className="text-right">Last booked</span>
+      </div>
+      {isLoading && (
+        <div className="px-5 py-16 text-center text-sm text-rt-fg-tertiary">Finding under-booked breakers…</div>
+      )}
+      {!isLoading && rows.length === 0 && (
+        <div className="px-5 py-16 text-center text-sm text-rt-fg-tertiary">No suggestions right now.</div>
+      )}
+      {!isLoading &&
+        rows.map((r, i) => {
+          const heat = Math.max(6, (r.opportunity_score / maxOpp) * 100)
+          const cold = r.days_since_booked === null || r.days_since_booked >= 60
+          return (
+            <button
+              key={r.account}
+              onClick={() => onPickCreator(r.account)}
+              style={{ animationDelay: `${Math.min(i * 22, 500)}ms` }}
+              className="rt-rise grid w-full grid-cols-[2.5rem_1fr_5rem_4.5rem_4rem_5rem_6rem] items-center gap-3 border-b border-white/5 px-5 py-3 text-left transition-colors duration-150 hover:bg-white/[0.03]"
+            >
+              <span className="rt-num text-sm text-rt-fg-tertiary">{i + 1}</span>
+              <div className="min-w-0">
+                <div className="truncate text-sm font-medium text-rt-fg">{r.account}</div>
+                <div className="mt-1 h-1 w-full max-w-[180px] overflow-hidden rounded-full bg-white/5">
+                  <div className="h-full rt-heat" style={{ width: `${heat}%` }} />
+                </div>
+              </div>
+              <span className="rt-num text-right text-sm font-bold rt-gradient-text">{r.opportunity_score}</span>
+              <span className="rt-num text-right text-sm text-rt-fg-secondary">{r.breaker_score}</span>
+              <span className="rt-num text-right text-sm text-rt-fg-secondary">{r.campaigns_booked}×</span>
+              <span className={`rt-num text-right text-sm ${r.repeat_rate >= 0.9 ? "text-rt-green" : r.repeat_rate > 0 ? "text-rt-fg-secondary" : "text-rt-fg-tertiary"}`}>
+                {r.repeat_rate > 0 ? `${Math.round(r.repeat_rate * 100)}%` : "—"}
+              </span>
+              <span className={`flex items-center justify-end gap-1 text-right text-[12px] ${cold ? "text-rt-amber" : "text-rt-fg-tertiary"}`}>
+                <Clock className="h-3 w-3" />
+                {lastBooked(r.days_since_booked)}
+              </span>
+            </button>
+          )
+        })}
+    </div>
+  )
+}
+
 function SoundFitView({ onPickCreator }: { onPickCreator: (a: string) => void }) {
   const { data: soundsData, isLoading: soundsLoading } = useSounds()
   const [soundQuery, setSoundQuery] = useState("")
