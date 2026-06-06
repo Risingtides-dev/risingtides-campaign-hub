@@ -1185,6 +1185,49 @@ def create_group():
 
 
 # -------------------------------------------------------------------
+# 10b. GET /api/internal/labels/<slug>/stats  -- LABEL-axis rollup (CAMP-38)
+# -------------------------------------------------------------------
+# Eric's P0 acceptance: warner views vs atlantic views, by Notion label tag,
+# with no cross-contamination. The clusters above bucket by subgroup; this
+# rolls strictly by the WARNER/ATLANTIC/INTERNAL label.
+@internal_bp.get("/api/internal/labels/<slug>/stats")
+def get_label_stats(slug: str):
+    err = _require_db()
+    if err:
+        return err
+    from campaign_manager.services.label_attribution import label_stats
+    try:
+        days = max(1, min(int(request.args.get("days", 30)), 3650))
+    except (TypeError, ValueError):
+        days = 30
+    session = _db.get_session()
+    try:
+        stats = label_stats(session, slug, days)
+        if stats is None:
+            return jsonify({"error": f"Unknown label '{slug}' (use warner|atlantic|internal)"}), 404
+        return jsonify(stats)
+    finally:
+        session.close()
+
+
+@internal_bp.get("/api/internal/labels")
+def get_all_label_stats():
+    """Cross-label comparison — every label rolled up side by side."""
+    err = _require_db()
+    if err:
+        return err
+    from campaign_manager.services.label_attribution import all_label_stats
+    try:
+        days = max(1, min(int(request.args.get("days", 30)), 3650))
+    except (TypeError, ValueError):
+        days = 30
+    session = _db.get_session()
+    try:
+        return jsonify({"labels": all_label_stats(session, days)})
+    finally:
+        session.close()
+
+
 # 11. GET /api/internal/groups/<identifier>  -- group detail + members
 # -------------------------------------------------------------------
 @internal_bp.get("/api/internal/groups/<identifier>")
