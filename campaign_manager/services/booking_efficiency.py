@@ -184,29 +184,39 @@ def rank_creators_by_efficiency(
     # Sort by ROI (views per dollar)
     sorted_metrics = sorted(metrics_list, key=lambda m: m.roi_ratio, reverse=True)
 
-    # Assign tiers based on percentile
+    # Assign tiers by rank percentile. Each cutoff is the END index (exclusive)
+    # of that tier's band, so the loop reads "idx < cutoff[T] => tier T".
+    #
+    # Review fix (CAMP-85): the old boundaries used ELITE=0 + int(n*0.1).
+    # ELITE=0 meant `idx < 0` was NEVER true, so NOBODY was ever labeled ELITE;
+    # and int(n*0.1)=0 for n<10 collapsed HIGH_VALUE too, dropping the top
+    # performer straight to OVERPRICED. On a page that drives budget decisions,
+    # the best creator could be flagged "overpriced." Now: cumulative cutoffs
+    # via round(), each at least 1 past ELITE, so with >=1 creator the top one
+    # is ELITE and tiers never invert.
     n = len(sorted_metrics)
-    tier_boundaries = {
-        CreatorTier.ELITE: 0,              # Top 10%
-        CreatorTier.HIGH_VALUE: int(n * 0.1),
-        CreatorTier.SOLID: int(n * 0.25),
-        CreatorTier.STANDARD: int(n * 0.5),
-        CreatorTier.UNDERVALUED: int(n * 0.75),
-        CreatorTier.OVERPRICED: int(n * 0.9),
-    }
 
-    # Assign tier to each creator
+    def _cut(pct: float) -> int:
+        return min(n, max(1, round(n * pct)))
+
+    elite_end = _cut(0.10)
+    high_end = _cut(0.25)
+    solid_end = _cut(0.50)
+    standard_end = _cut(0.75)
+    undervalued_end = _cut(0.90)
+
+    # Assign tier to each creator (sorted best-first).
     result = []
     for idx, metrics in enumerate(sorted_metrics):
-        if idx < tier_boundaries[CreatorTier.ELITE]:
+        if idx < elite_end:
             metrics.tier = CreatorTier.ELITE
-        elif idx < tier_boundaries[CreatorTier.HIGH_VALUE]:
+        elif idx < high_end:
             metrics.tier = CreatorTier.HIGH_VALUE
-        elif idx < tier_boundaries[CreatorTier.SOLID]:
+        elif idx < solid_end:
             metrics.tier = CreatorTier.SOLID
-        elif idx < tier_boundaries[CreatorTier.STANDARD]:
+        elif idx < standard_end:
             metrics.tier = CreatorTier.STANDARD
-        elif idx < tier_boundaries[CreatorTier.UNDERVALUED]:
+        elif idx < undervalued_end:
             metrics.tier = CreatorTier.UNDERVALUED
         else:
             metrics.tier = CreatorTier.OVERPRICED
