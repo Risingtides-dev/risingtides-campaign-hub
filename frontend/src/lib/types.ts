@@ -618,6 +618,8 @@ export interface CreatorOutcomes {
   shares: number
   posts: number
   campaigns: number
+  follower_count: number
+  shares_per_1k_followers: number
   engagement_rate: number
   outcome_score: number
 }

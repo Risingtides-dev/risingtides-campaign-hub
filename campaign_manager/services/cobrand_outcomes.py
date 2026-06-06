@@ -180,12 +180,17 @@ def creator_outcomes(share_url: str, account: str) -> Optional[Dict[str, Any]]:
     total_likes = sum(s["likes"] for s in mine)
     total_comments = sum(s["comments"] for s in mine)
     total_shares = sum(s["shares"] for s in mine)
+    # CAMP-86: follower_count is the only real per-creator follower number in
+    # the system (the Creator table has none). Take the max across this
+    # creator's submissions — their current/peak follower count.
+    follower_count = max((s.get("follower_count", 0) for s in mine), default=0)
     return {
         "posts": len(mine),
         "views": total_views,
         "likes": total_likes,
         "comments": total_comments,
         "shares": total_shares,
+        "follower_count": follower_count,
         "engagement_rate": round(
             (total_likes + total_comments + total_shares) / total_views * 100, 2
         ) if total_views else 0.0,

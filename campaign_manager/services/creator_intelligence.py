@@ -319,6 +319,7 @@ def _aggregate_outcomes(session: Session, account: str) -> Optional[Dict[str, An
             return None
 
     totals: Dict[str, Any] = {"views": 0, "likes": 0, "comments": 0, "shares": 0, "posts": 0, "campaigns": 0}
+    follower_count = 0
     found = False
     with ThreadPoolExecutor(max_workers=min(8, len(share_urls) or 1)) as ex:
         for oc in ex.map(_safe_outcomes, share_urls):
@@ -328,9 +329,19 @@ def _aggregate_outcomes(session: Session, account: str) -> Optional[Dict[str, An
             totals["campaigns"] += 1
             for k in ("views", "likes", "comments", "shares", "posts"):
                 totals[k] += oc.get(k, 0)
+            # follower_count is a per-creator attribute, not additive — take the
+            # max across campaigns (their peak/most-recent follower count).
+            follower_count = max(follower_count, oc.get("follower_count", 0))
 
     if not found:
         return None
+
+    totals["follower_count"] = follower_count
+    # CAMP-86: reach efficiency — shares per 1k followers. The cheap signal
+    # the follower number unlocks (how much spread per unit of audience).
+    totals["shares_per_1k_followers"] = round(
+        totals["shares"] / follower_count * 1000, 1
+    ) if follower_count else 0.0
 
     tv = totals["views"]
     totals["engagement_rate"] = round(

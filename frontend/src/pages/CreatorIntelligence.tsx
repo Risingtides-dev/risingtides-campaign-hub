@@ -515,9 +515,19 @@ function CreatorDrawer({ account, onClose }: { account: string; onClose: () => v
                     <OutcomeStat label="Comments" value={fmtViews(outcomes.comments)} />
                     <OutcomeStat label="Engagement" value={`${outcomes.engagement_rate}%`} />
                   </div>
+                  {outcomes.follower_count > 0 && (
+                    <div className="grid grid-cols-2 divide-x divide-white/6 border-t border-white/6">
+                      <OutcomeStat label="Followers" value={fmtViews(outcomes.follower_count)} />
+                      <OutcomeStat
+                        label="Shares / 1K followers"
+                        value={fmtViews(outcomes.shares_per_1k_followers)}
+                        hero={outcomes.shares_per_1k_followers >= 5000}
+                      />
+                    </div>
+                  )}
                   <div className="border-t border-white/6 px-4 py-2.5 text-[11px] text-rt-fg-tertiary">
                     across {outcomes.campaigns} campaign{outcomes.campaigns !== 1 ? "s" : ""} ·{" "}
-                    {fmtViews(outcomes.views)} tracked views · shares drive sound spread
+                    {fmtViews(outcomes.views)} tracked views · reach efficiency = sound spread per follower
                   </div>
                 </div>
               )}
