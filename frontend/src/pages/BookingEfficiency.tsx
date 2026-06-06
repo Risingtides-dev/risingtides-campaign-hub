@@ -109,7 +109,7 @@ export default function BookingEfficiency() {
   const [days, setDays] = useState(90);
 
   // Fetch efficiency report
-  const { data: report, isLoading: reportLoading } = useQuery<EfficiencyReport>({
+  const { data: report, isLoading: reportLoading, isError: reportError, error: reportErrObj } = useQuery<EfficiencyReport>({
     queryKey: ["efficiency-report", days],
     queryFn: async () => {
       const res = await fetch(`${API_BASE}/api/efficiency/report?days=${days}`);
@@ -153,7 +153,25 @@ export default function BookingEfficiency() {
   if (reportLoading) {
     return (
       <div className="flex items-center justify-center h-96">
-        <p className="text-gray-500">Loading efficiency analysis...</p>
+        <p className="text-rt-fg-tertiary">Loading efficiency analysis...</p>
+      </div>
+    );
+  }
+
+  // CAMP-88: distinguish a fetch ERROR from genuinely-empty data — the old
+  // code showed "No data available" for both, hiding real failures.
+  if (reportError) {
+    return (
+      <div className="flex items-center justify-center h-96">
+        <div className="mx-auto max-w-md rounded-xl border border-rt-red/30 bg-rt-red/10 px-4 py-4 text-center">
+          <div className="flex items-center justify-center gap-2 text-rt-red">
+            <AlertCircle size={18} />
+            <span className="text-[14px] font-medium">Couldn't load efficiency report</span>
+          </div>
+          <div className="mt-1 text-[12px] text-rt-fg-tertiary">
+            {reportErrObj instanceof Error ? reportErrObj.message : "The request failed — try again."}
+          </div>
+        </div>
       </div>
     );
   }
@@ -161,7 +179,7 @@ export default function BookingEfficiency() {
   if (!report) {
     return (
       <div className="flex items-center justify-center h-96">
-        <div className="flex gap-2 text-red-600">
+        <div className="flex gap-2 text-rt-fg-tertiary">
           <AlertCircle size={20} />
           <p>No data available</p>
         </div>
