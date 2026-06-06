@@ -32,6 +32,7 @@ import type {
   BreakerResponse,
   CreatorDrilldown,
   TargetSound,
+  RebookSuggestion,
   SoundFitResponse,
 } from "./types"
 
@@ -156,6 +157,8 @@ export const api = {
     ),
   getSounds: () =>
     request<{ sounds: TargetSound[] }>("/api/intelligence/sounds"),
+  getRebookSuggestions: () =>
+    request<{ suggestions: RebookSuggestion[] }>("/api/intelligence/rebook-suggestions"),
   getSoundFit: (soundId: string) =>
     request<SoundFitResponse>(
       `/api/intelligence/sound-fit/${encodeURIComponent(soundId)}`

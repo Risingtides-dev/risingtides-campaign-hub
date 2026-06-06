@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
-from campaign_manager.models import Campaign, MatchedVideo
+from campaign_manager.models import Campaign, Creator, MatchedVideo
 
 logger = logging.getLogger(__name__)
 
@@ -183,6 +183,84 @@ def _account_medians(session: Session, min_posts: int) -> Dict[str, int]:
         for acct, vals in buckets.items()
         if len(vals) >= min_posts
     }
+
+
+def rebook_suggestions(
+    session: Session,
+    limit: int = 25,
+    min_posts: int = MIN_POSTS,
+) -> List[Dict[str, Any]]:
+    """Surface proven breakers who are UNDER-BOOKED — high sound-breaking
+    score but few recent bookings and/or open capacity. The "who should we
+    re-book?" list (CAMP-87).
+
+    Pure DB aggregation over matched_videos (performance) + creators
+    (booking history). No follower history, no new scrape.
+    """
+    from datetime import datetime
+
+    # 1. Proven breakers, ranked by balanced score.
+    breakers = breaker_leaderboard(session, lens="balanced", limit=200, min_posts=min_posts)
+    if not breakers:
+        return []
+
+    # 2. Booking history per creator: how many campaigns, posts owed vs done,
+    #    and when they were last booked (Campaign.created_at).
+    booking_rows = (
+        session.query(
+            Creator.username.label("username"),
+            func.count(func.distinct(Creator.campaign_id)).label("campaigns_booked"),
+            func.coalesce(func.sum(Creator.posts_owed), 0).label("posts_owed"),
+            func.coalesce(func.sum(Creator.posts_done), 0).label("posts_done"),
+            func.max(Campaign.created_at).label("last_booked"),
+        )
+        .join(Campaign, Campaign.id == Creator.campaign_id)
+        .filter(Creator.status != "removed")
+        .group_by(Creator.username)
+        .all()
+    )
+    booking_by_user: Dict[str, Any] = {
+        (b.username or "").lstrip("@").lower(): b for b in booking_rows
+    }
+
+    now = datetime.now()
+    suggestions: List[Dict[str, Any]] = []
+    for b in breakers:
+        key = (b["account"] or "").lstrip("@").lower()
+        bk = booking_by_user.get(key)
+        campaigns_booked = int(bk.campaigns_booked) if bk else 0
+        posts_owed = int(bk.posts_owed) if bk else 0
+        posts_done = int(bk.posts_done) if bk else 0
+        last_booked = bk.last_booked if bk else None
+        days_since = (now - last_booked).days if last_booked else None
+        # Reliability: did they deliver what they owed? (caps at 1.0)
+        repeat_rate = round(min(posts_done / posts_owed, 1.0), 2) if posts_owed else 0.0
+
+        # Under-booked = proven (good breaker score) but light booking footprint
+        # or gone cold. Score the OPPORTUNITY: high breaker score, low bookings,
+        # long since last booked, reliable when booked.
+        breaker_score = b["score_balanced"]
+        recency_boost = min((days_since or 365) / 90.0, 2.0)   # colder = higher
+        scarcity_boost = 2.0 if campaigns_booked <= 2 else (1.0 if campaigns_booked <= 5 else 0.4)
+        opportunity = round(breaker_score * (0.5 + 0.25 * recency_boost + 0.25 * scarcity_boost) * (0.6 + 0.4 * repeat_rate), 1)
+
+        suggestions.append({
+            "account": b["account"],
+            "breaker_score": breaker_score,
+            "viral_rate": b["viral_rate"],
+            "avg_views": b["avg_views"],
+            "millionaires": b["millionaires"],
+            "campaigns_booked": campaigns_booked,
+            "posts_owed": posts_owed,
+            "posts_done": posts_done,
+            "repeat_rate": repeat_rate,
+            "days_since_booked": days_since,
+            "opportunity_score": opportunity,
+        })
+
+    # Rank by opportunity; the best re-book targets float up.
+    suggestions.sort(key=lambda s: s["opportunity_score"], reverse=True)
+    return suggestions[:limit]
 
 
 def creator_drilldown(

@@ -11,6 +11,7 @@ from campaign_manager.services.creator_intelligence import (
     breaker_leaderboard,
     creator_drilldown,
     list_sounds,
+    rebook_suggestions,
     sound_fit,
 )
 
@@ -53,6 +54,20 @@ def get_sounds():
     session = _db.get_session()
     try:
         return jsonify({"sounds": list_sounds(session)})
+    finally:
+        session.close()
+
+
+@creator_intelligence_bp.get("/api/intelligence/rebook-suggestions")
+def get_rebook_suggestions():
+    """Proven breakers who are under-booked — the 're-book' list (CAMP-87)."""
+    try:
+        limit = min(int(request.args.get("limit", 25)), 100)
+    except (TypeError, ValueError):
+        limit = 25
+    session = _db.get_session()
+    try:
+        return jsonify({"suggestions": rebook_suggestions(session, limit=limit)})
     finally:
         session.close()
 
