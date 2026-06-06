@@ -330,18 +330,34 @@ def _days_after_start(upload_date: str, start_date: str) -> Optional[int]:
 
 
 def _parse_date(s: str) -> Optional[datetime]:
+    """Parse the date formats that actually appear in our data.
+
+    Verified against prod (CAMP-65 audit): matched_videos.upload_date is
+    YYYYMMDD with no separators (e.g. '20260412' — the dominant format),
+    while campaigns.start_date is ISO 'YYYY-MM-DD'. Both must parse correctly
+    for the scout/early/mid/late lifecycle buckets to mean anything.
+    """
     if not s:
         return None
-    for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%m/%d/%Y", "%Y/%m/%d"):
+    s = s.strip()
+    # 8-digit YYYYMMDD (the dominant upload_date format) — handle explicitly
+    # rather than relying on fromisoformat's basic-format support (3.11+ only).
+    if len(s) == 8 and s.isdigit():
         try:
-            return datetime.strptime(s[: len(fmt) + 4], fmt)
-        except (ValueError, TypeError):
-            continue
-    # last resort: leading ISO date
+            return datetime.strptime(s, "%Y%m%d")
+        except ValueError:
+            return None
+    # ISO date, optionally with a time component (take the date prefix).
     try:
         return datetime.fromisoformat(s[:10])
     except (ValueError, TypeError):
-        return None
+        pass
+    for fmt in ("%m/%d/%Y", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(s[:10], fmt)
+        except (ValueError, TypeError):
+            continue
+    return None
 
 
 def _distribution(views: List[int]) -> List[Dict[str, Any]]:
