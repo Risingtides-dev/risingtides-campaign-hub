@@ -147,6 +147,11 @@ def _fetch_submissions_uncached(share_url: str, max_pages: int = 20) -> List[Dic
                 "shares": shares,
                 "engagement_rate": eng,
                 "follower_count": author.get("follower_count", 0) or 0,
+                # CAMP-76: PFP + post thumbnail, served live (these are durable
+                # storage.googleapis.com/cobrand-public URLs, refetched each
+                # load — no signed-URL expiry, no storage build needed for v1).
+                "avatar_url": author.get("avatar_url", "") or "",
+                "cover_url": content.get("cover_url", "") or "",
             })
 
         links = data.get("links", {})
@@ -184,6 +189,8 @@ def creator_outcomes(share_url: str, account: str) -> Optional[Dict[str, Any]]:
     # the system (the Creator table has none). Take the max across this
     # creator's submissions — their current/peak follower count.
     follower_count = max((s.get("follower_count", 0) for s in mine), default=0)
+    # CAMP-76: PFP — first non-empty avatar_url across this creator's posts.
+    avatar_url = next((s.get("avatar_url", "") for s in mine if s.get("avatar_url")), "")
     return {
         "posts": len(mine),
         "views": total_views,
@@ -191,6 +198,7 @@ def creator_outcomes(share_url: str, account: str) -> Optional[Dict[str, Any]]:
         "comments": total_comments,
         "shares": total_shares,
         "follower_count": follower_count,
+        "avatar_url": avatar_url,
         "engagement_rate": round(
             (total_likes + total_comments + total_shares) / total_views * 100, 2
         ) if total_views else 0.0,
