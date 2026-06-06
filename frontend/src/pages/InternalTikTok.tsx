@@ -40,50 +40,50 @@ function GroupStatsCard({ group, days }: { group: InternalGroup; days: number })
   const { data: stats, isLoading } = useInternalGroupStats(group.slug, days)
 
   return (
-    <div className="bg-white border border-[#e8e8ef] rounded-[10px] p-5 hover:border-[#0b62d6]/40 hover:shadow-sm transition-all">
+    <div className="bg-rt-bg-card border border-white/8 rounded-[10px] p-5 hover:border-rt-magenta/40 hover:shadow-sm transition-all">
       <div className="flex items-start justify-between mb-3">
         <div>
           <Link
             to={`/internal/group/${group.slug}`}
-            className="text-[16px] font-semibold text-[#1a1a2e] hover:text-[#0b62d6]"
+            className="text-[16px] font-semibold text-rt-fg hover:text-rt-magenta"
           >
             {group.title}
           </Link>
-          <p className="text-[12px] text-[#888]">{group.member_count} accounts</p>
+          <p className="text-[12px] text-rt-fg-tertiary">{group.member_count} accounts</p>
         </div>
         {group.tracker_id ? (
           <a
             href={`https://risingtides-tracker.com/${group.tracker_id}`}
             target="_blank"
             rel="noopener noreferrer"
-            className="flex items-center gap-1 text-[12px] text-[#0b62d6] font-medium hover:underline"
+            className="flex items-center gap-1 text-[12px] text-rt-magenta font-medium hover:underline"
             title="Open Tides Tracker"
           >
             Tracker <ExternalLink className="size-3" />
           </a>
         ) : (
           <Link to={`/internal/group/${group.slug}`}>
-            <ChevronRight className="size-4 text-[#888]" />
+            <ChevronRight className="size-4 text-rt-fg-tertiary" />
           </Link>
         )}
       </div>
       {isLoading ? (
-        <div className="flex items-center gap-2 text-[#888] text-xs">
+        <div className="flex items-center gap-2 text-rt-fg-tertiary text-xs">
           <Loader2 className="size-3 animate-spin" /> Loading...
         </div>
       ) : stats ? (
         <div className="grid grid-cols-3 gap-3">
           <div>
-            <div className="text-[11px] text-[#888] uppercase tracking-wide">Views</div>
-            <div className="text-[18px] font-bold text-[#1a1a2e]">{formatNum(stats.total_views)}</div>
+            <div className="text-[11px] text-rt-fg-tertiary uppercase tracking-wide">Views</div>
+            <div className="text-[18px] font-bold text-rt-fg">{formatNum(stats.total_views)}</div>
           </div>
           <div>
-            <div className="text-[11px] text-[#888] uppercase tracking-wide">Posts</div>
-            <div className="text-[18px] font-bold text-[#1a1a2e]">{stats.total_posts}</div>
+            <div className="text-[11px] text-rt-fg-tertiary uppercase tracking-wide">Posts</div>
+            <div className="text-[18px] font-bold text-rt-fg">{stats.total_posts}</div>
           </div>
           <div>
-            <div className="text-[11px] text-[#888] uppercase tracking-wide">Likes</div>
-            <div className="text-[18px] font-bold text-[#1a1a2e]">{formatNum(stats.total_likes)}</div>
+            <div className="text-[11px] text-rt-fg-tertiary uppercase tracking-wide">Likes</div>
+            <div className="text-[18px] font-bold text-rt-fg">{formatNum(stats.total_likes)}</div>
           </div>
         </div>
       ) : null}
@@ -169,12 +169,12 @@ export default function InternalTikTok() {
       <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
         <div>
           <h1 className="text-[22px] font-semibold">Internal TikTok</h1>
-          <p className="text-[#888] text-sm">{creators?.length ?? 0} total accounts</p>
+          <p className="text-rt-fg-tertiary text-sm">{creators?.length ?? 0} total accounts</p>
         </div>
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-1 mb-5 border-b border-[#e8e8ef]">
+      <div className="flex gap-1 mb-5 border-b border-white/8">
         {[
           { key: "stats" as const, label: "Stats" },
           { key: "accounts" as const, label: `All Accounts (${creators?.length ?? 0})` },
@@ -186,8 +186,8 @@ export default function InternalTikTok() {
             onClick={() => setTab(t.key)}
             className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
               tab === t.key
-                ? "border-[#0b62d6] text-[#0b62d6]"
-                : "border-transparent text-[#888] hover:text-[#1a1a2e]"
+                ? "border-rt-magenta text-rt-magenta"
+                : "border-transparent text-rt-fg-tertiary hover:text-rt-fg"
             }`}
           >
             {t.label}
@@ -199,32 +199,32 @@ export default function InternalTikTok() {
       {tab === "stats" && (
         <div>
           {/* Stats date range picker */}
-          <div className="flex flex-wrap items-center gap-2 mb-4 p-3 bg-[#f8f8fc] rounded-[10px] border border-[#e8e8ef]">
-            <span className="text-[13px] text-[#666] font-medium">Stats period:</span>
+          <div className="flex flex-wrap items-center gap-2 mb-4 p-3 bg-white/[0.03] rounded-[10px] border border-white/8">
+            <span className="text-[13px] text-rt-fg-tertiary font-medium">Stats period:</span>
             <Input
               type="date"
               value={statsStartDate}
               onChange={(e) => setStatsStartDate(e.target.value)}
               className="w-[145px] h-8 text-sm"
             />
-            <span className="text-[#888] text-sm">to</span>
+            <span className="text-rt-fg-tertiary text-sm">to</span>
             <Input
               type="date"
               value={statsEndDate}
               onChange={(e) => setStatsEndDate(e.target.value)}
               className="w-[145px] h-8 text-sm"
             />
-            <span className="text-[12px] text-[#888]">({statsDays} days)</span>
+            <span className="text-[12px] text-rt-fg-tertiary">({statsDays} days)</span>
           </div>
 
           {groupsLoading ? (
             <div className="flex items-center justify-center py-12">
-              <Loader2 className="size-5 animate-spin text-[#888]" />
+              <Loader2 className="size-5 animate-spin text-rt-fg-tertiary" />
             </div>
           ) : clusterGroups.length > 0 ? (
             <>
               {/* Clusters — one card per Notion `Group`, each 1:1 with a tracker */}
-              <h2 className="text-[15px] font-semibold text-[#1a1a2e] mb-3">Clusters</h2>
+              <h2 className="text-[15px] font-semibold text-rt-fg mb-3">Clusters</h2>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {clusterGroups.map((g) => (
                   <GroupStatsCard key={g.slug} group={g} days={statsDays} />
@@ -232,7 +232,7 @@ export default function InternalTikTok() {
               </div>
             </>
           ) : (
-            <div className="text-center py-12 text-[#888] text-sm">
+            <div className="text-center py-12 text-rt-fg-tertiary text-sm">
               No clusters yet. Clusters populate from the Notion <code>Group</code> field
               on the next sync — add a <code>Group</code> value to pages in Master Pages.
             </div>
@@ -255,46 +255,46 @@ export default function InternalTikTok() {
             <Button
               type="submit"
               size="sm"
-              className="bg-[#0b62d6] hover:bg-[#0951b5] text-white h-9 px-4"
+              className="bg-rt-magenta hover:bg-rt-purple text-white h-9 px-4"
               disabled={addCreators.isPending || !addInput.trim()}
             >
               {addCreators.isPending ? <Loader2 className="size-3 animate-spin" /> : <><Plus className="size-3.5" /> Add</>}
             </Button>
           </form>
           {addCreators.isError && (
-            <p className="text-red-600 text-xs mb-2">{addCreators.error?.message || "Failed to add"}</p>
+            <p className="text-rt-red text-xs mb-2">{addCreators.error?.message || "Failed to add"}</p>
           )}
 
-          <div className="bg-white border border-[#e8e8ef] rounded-[10px] overflow-hidden">
+          <div className="bg-rt-bg-card border border-white/8 rounded-[10px] overflow-hidden">
             {creatorsLoading ? (
               <div className="flex items-center justify-center py-12">
-                <Loader2 className="size-5 animate-spin text-[#888]" />
+                <Loader2 className="size-5 animate-spin text-rt-fg-tertiary" />
               </div>
             ) : (
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="border-b border-[#e8e8ef] bg-[#f8f8fc]">
-                    <th className="text-left px-4 py-2.5 text-[12px] text-[#888] font-semibold uppercase tracking-wide">Creator</th>
-                    <th className="text-right px-4 py-2.5 text-[12px] text-[#888] font-semibold uppercase tracking-wide">Videos</th>
-                    <th className="text-right px-4 py-2.5 text-[12px] text-[#888] font-semibold uppercase tracking-wide">Views</th>
+                  <tr className="border-b border-white/8 bg-white/[0.03]">
+                    <th className="text-left px-4 py-2.5 text-[12px] text-rt-fg-tertiary font-semibold uppercase tracking-wide">Creator</th>
+                    <th className="text-right px-4 py-2.5 text-[12px] text-rt-fg-tertiary font-semibold uppercase tracking-wide">Videos</th>
+                    <th className="text-right px-4 py-2.5 text-[12px] text-rt-fg-tertiary font-semibold uppercase tracking-wide">Views</th>
                     <th className="w-10"></th>
                   </tr>
                 </thead>
                 <tbody>
                   {sortedCreators.map((c) => (
-                    <tr key={c.username} className="border-b border-[#f0f0f5] last:border-b-0 hover:bg-[#f8f8fc]">
+                    <tr key={c.username} className="border-b border-white/5 last:border-b-0 hover:bg-white/[0.03]">
                       <td className="px-4 py-2">
-                        <Link to={`/internal/${c.username}`} className="text-[#0b62d6] hover:underline">
+                        <Link to={`/internal/${c.username}`} className="text-rt-magenta hover:underline">
                           @{c.username}
                         </Link>
                       </td>
-                      <td className="px-4 py-2 text-right text-[#666]">{c.total_videos}</td>
-                      <td className="px-4 py-2 text-right text-[#666]">{c.total_views.toLocaleString()}</td>
+                      <td className="px-4 py-2 text-right text-rt-fg-tertiary">{c.total_videos}</td>
+                      <td className="px-4 py-2 text-right text-rt-fg-tertiary">{c.total_views.toLocaleString()}</td>
                       <td className="px-2 py-2">
                         <button
                           type="button"
                           onClick={() => handleRemoveCreator(c.username)}
-                          className="text-red-400 hover:text-red-600 p-1"
+                          className="text-rt-red hover:text-rt-red p-1"
                           title="Remove"
                           disabled={removeCreator.isPending}
                         >
@@ -332,48 +332,48 @@ export default function InternalTikTok() {
             <select
               value={newGroupKind}
               onChange={(e) => setNewGroupKind(e.target.value)}
-              className="h-9 px-2 text-sm border border-[#e8e8ef] rounded-md bg-white text-[#1a1a2e]"
+              className="h-9 px-2 text-sm border border-white/8 rounded-md bg-rt-bg-card text-rt-fg"
             >
               <option value="cluster">cluster</option>
               <option value="custom">custom</option>
             </select>
-            <Button type="submit" size="sm" className="bg-[#0b62d6] hover:bg-[#0951b5] text-white h-9 px-4">
+            <Button type="submit" size="sm" className="bg-rt-magenta hover:bg-rt-purple text-white h-9 px-4">
               <Plus className="size-3.5" /> Create Group
             </Button>
           </form>
 
-          <div className="bg-white border border-[#e8e8ef] rounded-[10px] overflow-hidden">
+          <div className="bg-rt-bg-card border border-white/8 rounded-[10px] overflow-hidden">
             {groupsLoading ? (
               <div className="flex items-center justify-center py-12">
-                <Loader2 className="size-5 animate-spin text-[#888]" />
+                <Loader2 className="size-5 animate-spin text-rt-fg-tertiary" />
               </div>
             ) : (
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="border-b border-[#e8e8ef] bg-[#f8f8fc]">
-                    <th className="text-left px-4 py-2.5 text-[12px] text-[#888] font-semibold uppercase tracking-wide">Title</th>
-                    <th className="text-left px-4 py-2.5 text-[12px] text-[#888] font-semibold uppercase tracking-wide">Slug</th>
-                    <th className="text-left px-4 py-2.5 text-[12px] text-[#888] font-semibold uppercase tracking-wide">Kind</th>
-                    <th className="text-right px-4 py-2.5 text-[12px] text-[#888] font-semibold uppercase tracking-wide">Members</th>
+                  <tr className="border-b border-white/8 bg-white/[0.03]">
+                    <th className="text-left px-4 py-2.5 text-[12px] text-rt-fg-tertiary font-semibold uppercase tracking-wide">Title</th>
+                    <th className="text-left px-4 py-2.5 text-[12px] text-rt-fg-tertiary font-semibold uppercase tracking-wide">Slug</th>
+                    <th className="text-left px-4 py-2.5 text-[12px] text-rt-fg-tertiary font-semibold uppercase tracking-wide">Kind</th>
+                    <th className="text-right px-4 py-2.5 text-[12px] text-rt-fg-tertiary font-semibold uppercase tracking-wide">Members</th>
                     <th className="w-10"></th>
                   </tr>
                 </thead>
                 <tbody>
                   {allGroups.map((g) => (
-                    <tr key={g.id} className="border-b border-[#f0f0f5] last:border-b-0 hover:bg-[#f8f8fc]">
+                    <tr key={g.id} className="border-b border-white/5 last:border-b-0 hover:bg-white/[0.03]">
                       <td className="px-4 py-2.5">
-                        <Link to={`/internal/group/${g.slug}`} className="text-[#0b62d6] hover:underline font-medium">
+                        <Link to={`/internal/group/${g.slug}`} className="text-rt-magenta hover:underline font-medium">
                           {g.title}
                         </Link>
                       </td>
-                      <td className="px-4 py-2.5 text-[#888] text-xs font-mono">{g.slug}</td>
-                      <td className="px-4 py-2.5 text-[#888]">{g.kind}</td>
-                      <td className="px-4 py-2.5 text-right text-[#666]">{g.member_count}</td>
+                      <td className="px-4 py-2.5 text-rt-fg-tertiary text-xs font-mono">{g.slug}</td>
+                      <td className="px-4 py-2.5 text-rt-fg-tertiary">{g.kind}</td>
+                      <td className="px-4 py-2.5 text-right text-rt-fg-tertiary">{g.member_count}</td>
                       <td className="px-2 py-2.5">
                         <button
                           type="button"
                           onClick={() => handleDeleteGroup(g.id, g.title)}
-                          className="text-red-400 hover:text-red-600 p-1"
+                          className="text-rt-red hover:text-rt-red p-1"
                           title="Delete group"
                         >
                           <Trash2 className="size-3.5" />
