@@ -41,11 +41,11 @@ export default function SlackInbox() {
         <div className="bg-rt-bg-card border border-white/8 rounded-[10px] py-[60px] px-5 text-center">
           <div className="text-[48px] opacity-30 mb-3">&#x1f4ec;</div>
           <div className="text-[15px] text-rt-fg-tertiary">No inbox items yet.</div>
-          <div className="text-[13px] text-[#aaa] mt-2">
+          <div className="text-[13px] text-rt-fg-tertiary mt-2">
             When Open CLAW parses a booking from Slack, it'll appear here for your
             approval.
           </div>
-          <div className="mt-5 text-[12px] text-[#bbb] bg-[#f7f7f9] p-4 rounded-lg text-left max-w-[500px] mx-auto">
+          <div className="mt-5 text-[12px] text-rt-fg-tertiary bg-white/5 p-4 rounded-lg text-left max-w-[500px] mx-auto">
             <div className="font-semibold mb-2 text-rt-fg-tertiary">API Endpoint</div>
             <code>POST /api/inbox</code>
             <pre className="mt-2 text-[11px] whitespace-pre-wrap">

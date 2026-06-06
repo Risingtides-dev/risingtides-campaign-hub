@@ -71,7 +71,7 @@ export default function CampaignDetail() {
           Promotions
         </Link>
         <ChevronRight className="size-3.5" />
-        <span className="text-[#333] font-medium">{campaign.title}</span>
+        <span className="text-rt-fg font-medium">{campaign.title}</span>
       </div>
 
       {/* Campaign Header */}

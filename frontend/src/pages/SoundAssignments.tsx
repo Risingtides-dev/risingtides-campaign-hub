@@ -612,7 +612,7 @@ export default function SoundAssignments() {
                     onClick={() => setSelectedSound(sound.id)}
                     className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors flex items-center gap-2 ${
                       isSelected
-                        ? "bg-rt-magenta/10 text-rt-magenta font-semibold border border-[#c8d4ff]"
+                        ? "bg-rt-magenta/10 text-rt-magenta font-semibold border border-rt-magenta"
                         : "hover:bg-white/5 text-rt-fg border border-transparent"
                     }`}
                   >
@@ -685,7 +685,7 @@ export default function SoundAssignments() {
                       <div key={poster.poster_id} className="rounded-md border border-white/8">
                         {/* Poster row — single checkbox controls the whole roster */}
                         <label
-                          className={`flex items-center justify-between gap-3 px-3 py-2.5 cursor-pointer hover:bg-[#f7f7fa] rounded-t-md ${isSaving ? "opacity-60" : ""}`}
+                          className={`flex items-center justify-between gap-3 px-3 py-2.5 cursor-pointer bg-rt-bg-card rounded-t-md ${isSaving ? "opacity-60" : ""}`}
                         >
                           <span className="flex items-center gap-3 flex-1 min-w-0">
                             <input
@@ -694,7 +694,7 @@ export default function SoundAssignments() {
                               ref={(el) => { if (el) el.indeterminate = isPartial }}
                               disabled={isSaving}
                               onChange={() => togglePosterForSound(poster.poster_id)}
-                              className="w-4 h-4 rounded border-[#ccc] text-rt-magenta focus:ring-rt-magenta"
+                              className="w-4 h-4 rounded border-white/10 text-rt-magenta focus:ring-rt-magenta"
                             />
                             <span className="text-sm font-semibold text-rt-fg truncate">{poster.name}</span>
                             {!poster.sounds_topic_id && (
@@ -727,7 +727,7 @@ export default function SoundAssignments() {
                                 className="flex items-center gap-2 px-3 py-1.5 text-xs text-rt-fg-tertiary"
                               >
                                 <span
-                                  className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${pageHasSound ? "bg-rt-green/100" : "bg-[#d8d8e0]"}`}
+                                  className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${pageHasSound ? "bg-rt-green/100" : "bg-white/10"}`}
                                 />
                                 <span className="truncate">{page.name}</span>
                               </div>
@@ -888,7 +888,7 @@ export default function SoundAssignments() {
                 )}
               </div>
 
-              <div className="bg-[#f7f7fa] rounded-md p-4 border border-white/8">
+              <div className="bg-rt-bg-card rounded-md p-4 border border-white/8">
                 <div className="text-xs uppercase text-rt-fg-tertiary tracking-wide mb-2">
                   Telegram message preview
                 </div>

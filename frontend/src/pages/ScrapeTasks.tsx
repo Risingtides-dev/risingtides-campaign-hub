@@ -92,7 +92,7 @@ export default function ScrapeTasks() {
                 DEGRADED
               </Badge>
             ) : (
-              <Badge className="bg-[#dcf6dc] text-[#226e22] border-[#9ad59a]">
+              <Badge className="bg-rt-bg-card text-rt-green border-rt-green">
                 Healthy
               </Badge>
             )}
@@ -120,7 +120,7 @@ export default function ScrapeTasks() {
           </div>
         </div>
         {lastRunDegraded && (
-          <div className="mt-3 px-3 py-2 bg-[#fff8e8] border border-rt-amber rounded text-sm text-[#7a4a00]">
+          <div className="mt-3 px-3 py-2 bg-rt-bg-card border border-rt-amber rounded text-sm text-rt-red">
             The last cron run produced no useful data — TikTok likely
             rate-limited the scraper. Today's queue may be incomplete. Re-run
             cron or wait for tomorrow's scheduled run.
@@ -289,7 +289,7 @@ function CampaignBlock({
             {camp.untracked_count} untracked
           </Badge>
           {camp.match_strategy === "strict" && (
-            <Badge className="bg-[#dee9ff] text-rt-magenta border-[#a5c0f0] text-xs">
+            <Badge className="bg-rt-magenta/10 text-rt-magenta border-rt-magenta text-xs">
               strict
             </Badge>
           )}
@@ -347,7 +347,7 @@ function CampaignBlock({
                   <Button
                     size="sm"
                     variant="outline"
-                    className="border-[#f1c8c8] text-[#a13434] hover:bg-[#fceaea]"
+                    className="border-rt-amber text-rt-red bg-rt-bg-card"
                     onClick={() => {
                       const reason = window.prompt(
                         `Dismiss ${selected.size} match(es) as bad? Optional reason:`,
@@ -508,7 +508,7 @@ function VideoRow({
           </Badge>
         )}
         {video.match_strategy === "internal_creator" && (
-          <Badge className="bg-[#e7f0ff] text-rt-magenta border-[#bcd1f5] text-xs">
+          <Badge className="bg-rt-bg-card text-rt-magenta border-rt-magenta text-xs">
             internal
           </Badge>
         )}
@@ -521,7 +521,7 @@ function VideoRow({
           </Badge>
         )}
         {video.match_strategy === "discovered_original_sound" && (
-          <Badge className="bg-[#f1e8ff] text-[#5a32b8] border-[#cdb5f4] text-xs">
+          <Badge className="bg-rt-bg-card text-rt-magenta border-rt-magenta text-xs">
             discovered
           </Badge>
         )}
@@ -551,7 +551,7 @@ function VideoRow({
             <button
               onClick={onUndoOne}
               disabled={isMarking}
-              className="p-1 rounded hover:bg-[#fff5e6] text-rt-amber hover:text-[#7a4a00] disabled:opacity-50"
+              className="p-1 rounded bg-rt-bg-card text-rt-amber hover:text-rt-red disabled:opacity-50"
               title="Undo — restore to the queue"
             >
               <Undo2 size={14} />
@@ -561,7 +561,7 @@ function VideoRow({
               <button
                 onClick={onMarkOne}
                 disabled={isMarking}
-                className="p-1 rounded hover:bg-[#dcf6dc] text-rt-fg-tertiary hover:text-[#226e22] disabled:opacity-50"
+                className="p-1 rounded bg-rt-bg-card text-rt-fg-tertiary hover:text-rt-green disabled:opacity-50"
                 title="Mark this link as tracked"
               >
                 <Check size={14} />
@@ -576,7 +576,7 @@ function VideoRow({
                   onDismissOne(reason.trim() || undefined)
                 }}
                 disabled={isDismissing}
-                className="p-1 rounded hover:bg-[#fceaea] text-rt-fg-tertiary hover:text-[#a13434] disabled:opacity-50"
+                className="p-1 rounded bg-rt-bg-card text-rt-fg-tertiary hover:text-rt-red disabled:opacity-50"
                 title="Dismiss as false-positive — excluded from totals"
               >
                 <X size={14} />

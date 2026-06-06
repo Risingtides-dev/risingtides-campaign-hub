@@ -540,7 +540,7 @@ export default function TidesTrackers() {
                           onClick={() => handleRestore(t)}
                           disabled={restoreTracker.isPending}
                           title="Restore tracker"
-                          className="p-1.5 rounded text-rt-fg-tertiary hover:text-purple-600 hover:bg-[#f5f3ff] transition-colors disabled:opacity-50"
+                          className="p-1.5 rounded text-rt-fg-tertiary hover:text-purple-600 bg-rt-bg-card transition-colors disabled:opacity-50"
                         >
                           <Undo2 className="size-3.5" />
                         </button>
@@ -550,7 +550,7 @@ export default function TidesTrackers() {
                             type="button"
                             onClick={() => startEdit(t)}
                             title="Rename tracker"
-                            className="p-1.5 rounded text-rt-fg-tertiary hover:text-purple-600 hover:bg-[#f5f3ff] transition-colors"
+                            className="p-1.5 rounded text-rt-fg-tertiary hover:text-purple-600 bg-rt-bg-card transition-colors"
                           >
                             <Pencil className="size-3.5" />
                           </button>

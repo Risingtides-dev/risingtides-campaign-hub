@@ -218,11 +218,11 @@ export function CobrandUploadSection({
             <iframe
               ref={iframeRef}
               src={cobrandLink}
-              className="w-full h-[500px] border border-[#ddd] rounded-lg bg-[#f9f9fb]"
+              className="w-full h-[500px] border border-white/10 rounded-lg bg-rt-bg-card"
               title="Cobrand Upload"
             />
           ) : (
-            <div className="flex flex-col items-center justify-center h-[500px] border border-dashed border-[#ddd] rounded-lg bg-[#f9f9fb] px-10 text-center">
+            <div className="flex flex-col items-center justify-center h-[500px] border border-dashed border-white/10 rounded-lg bg-rt-bg-card px-10 text-center">
               <p className="text-rt-fg-tertiary mb-3">
                 Cobrand cannot be embedded in an iframe.
               </p>
@@ -246,7 +246,7 @@ export function CobrandUploadSection({
           <textarea
             readOnly
             value={videoLinks}
-            className="w-full h-[460px] font-mono text-[12px] border border-[#ddd] rounded-lg p-2.5 bg-[#f9f9fb] resize-y leading-[1.8]"
+            className="w-full h-[460px] font-mono text-[12px] border border-white/10 rounded-lg p-2.5 bg-rt-bg-card resize-y leading-[1.8]"
           />
         </div>
       </div>

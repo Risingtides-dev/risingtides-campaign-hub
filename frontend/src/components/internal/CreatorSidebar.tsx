@@ -52,7 +52,7 @@ export function CreatorSidebar() {
   }
 
   return (
-    <div className="bg-white border border-[#e8e8ef] rounded-[10px] p-4 lg:sticky lg:top-6">
+    <div className="bg-rt-bg-card border border-white/8 rounded-[10px] p-4 lg:sticky lg:top-6">
       <h3 className="text-[15px] font-semibold mb-3">
         Internal Creators ({creators?.length ?? 0})
       </h3>
@@ -70,7 +70,7 @@ export function CreatorSidebar() {
           <Button
             type="submit"
             size="sm"
-            className="bg-[#0b62d6] hover:bg-[#0951b5] text-white text-xs"
+            className="bg-rt-magenta hover:bg-rt-purple text-white text-xs"
             disabled={addCreators.isPending || !input.trim()}
           >
             {addCreators.isPending ? (
@@ -80,13 +80,13 @@ export function CreatorSidebar() {
             )}
           </Button>
         </div>
-        <p className="text-[11px] text-[#999] mt-1">
+        <p className="text-[11px] text-rt-fg-tertiary mt-1">
           Comma or newline separated for bulk add
         </p>
       </form>
 
       {addCreators.isError && (
-        <p className="text-red-600 text-xs mb-2">
+        <p className="text-rt-red text-xs mb-2">
           {addCreators.error?.message || "Failed to add creators"}
         </p>
       )}
@@ -95,12 +95,12 @@ export function CreatorSidebar() {
       <div className="max-h-[600px] overflow-y-auto">
         {isLoading && (
           <div className="flex items-center justify-center py-6">
-            <Loader2 className="size-4 animate-spin text-[#888]" />
+            <Loader2 className="size-4 animate-spin text-rt-fg-tertiary" />
           </div>
         )}
 
         {!isLoading && sortedGroups.length === 0 && (
-          <p className="text-[#888] text-xs text-center py-4">
+          <p className="text-rt-fg-tertiary text-xs text-center py-4">
             No groups found.
           </p>
         )}
@@ -149,17 +149,17 @@ function GroupSection({
       <button
         type="button"
         onClick={onToggle}
-        className="flex items-center gap-1.5 w-full text-left py-1.5 hover:bg-[#f8f8fc] rounded px-1 -mx-1"
+        className="flex items-center gap-1.5 w-full text-left py-1.5 hover:bg-white/[0.03] rounded px-1 -mx-1"
       >
         {isCollapsed ? (
-          <ChevronRight className="size-3.5 text-[#888] flex-shrink-0" />
+          <ChevronRight className="size-3.5 text-rt-fg-tertiary flex-shrink-0" />
         ) : (
-          <ChevronDown className="size-3.5 text-[#888] flex-shrink-0" />
+          <ChevronDown className="size-3.5 text-rt-fg-tertiary flex-shrink-0" />
         )}
-        <span className="text-[13px] font-semibold text-[#1a1a2e]">
+        <span className="text-[13px] font-semibold text-rt-fg">
           {group.title}
         </span>
-        <span className="text-[11px] text-[#888] ml-auto">
+        <span className="text-[11px] text-rt-fg-tertiary ml-auto">
           {group.member_count}
         </span>
       </button>
@@ -167,7 +167,7 @@ function GroupSection({
       {!isCollapsed && (
         <div className="ml-5">
           {members.length === 0 && (
-            <p className="text-[#aaa] text-[11px] py-1">Loading...</p>
+            <p className="text-white/15 text-[11px] py-1">Loading...</p>
           )}
           {members
             .sort((a, b) => {
@@ -180,15 +180,15 @@ function GroupSection({
               return (
                 <div
                   key={username}
-                  className="flex items-center justify-between py-1 border-b border-[#f0f0f5] last:border-b-0"
+                  className="flex items-center justify-between py-1 border-b border-white/5 last:border-b-0"
                 >
                   <Link
                     to={`/internal/${username}`}
-                    className="text-[#0b62d6] text-[13px] hover:underline flex-1 min-w-0"
+                    className="text-rt-magenta text-[13px] hover:underline flex-1 min-w-0"
                   >
                     @{username}
                     {creator && creator.total_videos > 0 && (
-                      <span className="text-[#888] text-[11px] ml-1">
+                      <span className="text-rt-fg-tertiary text-[11px] ml-1">
                         {creator.total_videos} posts &middot;{" "}
                         {creator.total_views.toLocaleString()}v
                       </span>
@@ -197,7 +197,7 @@ function GroupSection({
                   <button
                     type="button"
                     onClick={() => onRemove(username)}
-                    className="text-red-500 hover:text-red-700 text-[16px] px-1.5 py-0.5 leading-none flex-shrink-0"
+                    className="text-rt-red hover:text-rt-red text-[16px] px-1.5 py-0.5 leading-none flex-shrink-0"
                     title="Remove"
                     disabled={removeDisabled}
                   >

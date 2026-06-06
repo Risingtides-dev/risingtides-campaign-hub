@@ -64,7 +64,7 @@ export default function CampaignsList() {
               className={`px-3 py-1.5 rounded-md text-[13px] font-medium transition-colors ${
                 tab === "active"
                   ? "bg-rt-magenta text-white"
-                  : "bg-white/[0.03] text-[#555] hover:bg-white/10"
+                  : "bg-white/[0.03] text-rt-fg hover:bg-white/10"
               }`}
             >
               Active{active.length > 0 && ` (${active.length})`}
@@ -75,7 +75,7 @@ export default function CampaignsList() {
               className={`px-3 py-1.5 rounded-md text-[13px] font-medium transition-colors ${
                 tab === "finished"
                   ? "bg-rt-magenta text-white"
-                  : "bg-white/[0.03] text-[#555] hover:bg-white/10"
+                  : "bg-white/[0.03] text-rt-fg hover:bg-white/10"
               }`}
             >
               Finished{finished.length > 0 && ` (${finished.length})`}

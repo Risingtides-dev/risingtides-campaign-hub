@@ -242,7 +242,7 @@ export function CreatorsTable({
                 href={`https://www.tiktok.com/@${c.username}`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-rt-fg-tertiary hover:text-[#333] transition-colors"
+                className="text-rt-fg-tertiary hover:text-rt-fg transition-colors"
                 title="View on TikTok"
               >
                 <svg
@@ -284,7 +284,7 @@ export function CreatorsTable({
                       className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium border transition-all ${
                         active
                           ? getNicheColor(n) + " border-transparent"
-                          : "bg-rt-bg-card text-rt-fg-tertiary border-[#ddd] hover:border-[#aaa]"
+                          : "bg-rt-bg-card text-rt-fg-tertiary border-white/10 hover:border-rt-fg-tertiary"
                       }`}
                     >
                       {n}
@@ -295,7 +295,7 @@ export function CreatorsTable({
             )
           }
           const niches = c.niches || []
-          if (niches.length === 0) return <span className="text-[#ccc] text-xs">{"\u2014"}</span>
+          if (niches.length === 0) return <span className="text-rt-fg-tertiary text-xs">{"\u2014"}</span>
           return (
             <div className="flex flex-wrap gap-1">
               {niches.map((n) => (

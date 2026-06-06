@@ -349,7 +349,7 @@ export default function CampaignOutreach() {
                       key={nc.username}
                       className={`transition-colors ${
                         isInOutreach
-                          ? "bg-[#fafafa] opacity-70"
+                          ? "bg-rt-bg-card opacity-70"
                           : isSelected
                             ? "bg-rt-magenta/10"
                             : "hover:bg-white/[0.03] cursor-pointer"
@@ -379,7 +379,7 @@ export default function CampaignOutreach() {
                             ))}
                           </div>
                         ) : (
-                          <span className="text-[#ccc] text-xs">—</span>
+                          <span className="text-rt-fg-tertiary text-xs">—</span>
                         )}
                       </TableCell>
                       <TableCell>
@@ -442,7 +442,7 @@ export default function CampaignOutreach() {
                             )}
                           </div>
                         ) : (
-                          <span className="text-[11px] text-[#ccc]">—</span>
+                          <span className="text-[11px] text-rt-fg-tertiary">—</span>
                         )}
                       </TableCell>
                     </TableRow>
@@ -463,7 +463,7 @@ export default function CampaignOutreach() {
               <button
                 key={tag}
                 type="button"
-                className="px-2 py-0.5 text-[11px] bg-white/5 hover:bg-[#e0e0e8] rounded text-rt-fg transition-colors"
+                className="px-2 py-0.5 text-[11px] bg-white/5 hover:bg-white/10 rounded text-rt-fg transition-colors"
                 onClick={() => {
                   const textarea = document.getElementById("msg-template") as HTMLTextAreaElement
                   if (textarea) {
@@ -531,7 +531,7 @@ export default function CampaignOutreach() {
                 <strong>{selectedCreators.size}</strong> selected · <strong>{formatCurrency(selectedBudget)}</strong> total
               </span>
             )}
-            {selectedCreators.size > 0 && draftCount > 0 && <span className="mx-2 text-[#ccc]">+</span>}
+            {selectedCreators.size > 0 && draftCount > 0 && <span className="mx-2 text-rt-fg-tertiary">+</span>}
             {draftCount > 0 && (
               <span><strong>{draftCount}</strong> draft{draftCount !== 1 ? "s" : ""} queued</span>
             )}
@@ -539,7 +539,7 @@ export default function CampaignOutreach() {
           <Button
             onClick={handleAddAndSend}
             disabled={sendOutreach.isPending || addToOutreach.isPending}
-            className="bg-rt-magenta hover:bg-[#0950b0]"
+            className="bg-rt-magenta hover:bg-rt-magenta"
           >
             <Send className="size-4 mr-2" />
             Send Offers ({totalToSend})
@@ -630,7 +630,7 @@ export default function CampaignOutreach() {
                           "{msg.reply_text}"
                         </div>
                       ) : (
-                        <span className="text-[12px] text-[#ccc]">
+                        <span className="text-[12px] text-rt-fg-tertiary">
                           {msg.sent_at ? "Awaiting reply..." : "—"}
                         </span>
                       )}
@@ -701,7 +701,7 @@ export default function CampaignOutreach() {
             </p>
             <div className="flex gap-2 justify-end">
               <Button variant="outline" onClick={() => setShowSendConfirm(false)}>Cancel</Button>
-              <Button onClick={handleSend} disabled={sendOutreach.isPending} className="bg-rt-magenta hover:bg-[#0950b0]">
+              <Button onClick={handleSend} disabled={sendOutreach.isPending} className="bg-rt-magenta hover:bg-rt-magenta">
                 <Send className="size-4 mr-1" /> Send DMs
               </Button>
             </div>

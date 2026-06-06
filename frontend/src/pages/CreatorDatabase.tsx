@@ -72,7 +72,7 @@ function SortableHeader({
   return (
     <button
       type="button"
-      className="flex items-center gap-1 hover:text-[#555] transition-colors"
+      className="flex items-center gap-1 hover:text-rt-fg transition-colors"
       onClick={() => column.toggleSorting(sorted === "asc")}
     >
       {label}
@@ -166,7 +166,7 @@ export default function CreatorDatabase() {
                 href={`https://www.tiktok.com/@${c.username}`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-rt-fg-tertiary hover:text-[#333] transition-colors"
+                className="text-rt-fg-tertiary hover:text-rt-fg transition-colors"
                 onClick={(e) => e.stopPropagation()}
                 title="View on TikTok"
               >
@@ -181,7 +181,7 @@ export default function CreatorDatabase() {
         header: "Niches",
         cell: ({ row }) => {
           const niches = row.original.niches || []
-          if (niches.length === 0) return <span className="text-[#ccc] text-xs">{"\u2014"}</span>
+          if (niches.length === 0) return <span className="text-rt-fg-tertiary text-xs">{"\u2014"}</span>
           return (
             <div className="flex flex-wrap gap-1">
               {niches.map((n) => (
@@ -266,7 +266,7 @@ export default function CreatorDatabase() {
           <span className="text-[14px]">
             {row.original.avg_recent_views != null
               ? row.original.avg_recent_views.toLocaleString("en-US")
-              : <span className="text-[#ccc]">{"—"}</span>}
+              : <span className="text-rt-fg-tertiary">{"—"}</span>}
           </span>
         ),
         sortingFn: (rowA, rowB) =>
@@ -350,7 +350,7 @@ export default function CreatorDatabase() {
                 <button
                   type="button"
                   onClick={() => setSelectedNiche(null)}
-                  className="text-[11px] text-rt-fg-tertiary hover:text-[#555] underline"
+                  className="text-[11px] text-rt-fg-tertiary hover:text-rt-fg underline"
                 >
                   clear
                 </button>

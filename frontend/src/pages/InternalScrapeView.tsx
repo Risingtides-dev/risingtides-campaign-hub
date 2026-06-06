@@ -344,7 +344,7 @@ function ScrapeJobProgressStrip({ status, starting }: ProgressStripProps) {
 
   return (
     <div className="mb-4">
-      <div className="bg-rt-bg-card border border-white/8 rounded-[10px] px-4 py-3 border-l-[3px] border-l-[#0b62d6]">
+      <div className="bg-rt-bg-card border border-white/8 rounded-[10px] px-4 py-3 border-l-[3px] border-l-rt-magenta">
         <div className="flex items-center justify-between mb-1.5 gap-3">
           <span className="text-[13px] font-medium text-rt-fg">
             {starting ? "Starting scrape..." : `${n} of ${m} done`}

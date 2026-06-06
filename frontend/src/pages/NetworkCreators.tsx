@@ -241,7 +241,7 @@ export default function NetworkCreators() {
         header: "Niches",
         cell: ({ row }) => {
           const niches = row.original.niches || []
-          if (niches.length === 0) return <span className="text-[#ccc] text-xs">—</span>
+          if (niches.length === 0) return <span className="text-rt-fg-tertiary text-xs">—</span>
           return (
             <div className="flex flex-wrap gap-1">
               {niches.map((n) => (
@@ -272,7 +272,7 @@ export default function NetworkCreators() {
               Linked
             </Badge>
           ) : (
-            <span className="text-[#ccc] text-xs">Not linked</span>
+            <span className="text-rt-fg-tertiary text-xs">Not linked</span>
           ),
       },
       {
@@ -282,7 +282,7 @@ export default function NetworkCreators() {
           row.original.paypal_email ? (
             <span className="text-[13px] text-rt-fg">{row.original.paypal_email}</span>
           ) : (
-            <span className="text-[#ccc] text-xs">—</span>
+            <span className="text-rt-fg-tertiary text-xs">—</span>
           ),
       },
       {
@@ -339,7 +339,7 @@ export default function NetworkCreators() {
             {activeCampaigns.map((campaign) => (
               <div
                 key={campaign.slug}
-                className="bg-rt-bg-card border border-white/8 rounded-[10px] p-4 hover:border-[#c8c8d8] transition-colors"
+                className="bg-rt-bg-card border border-white/8 rounded-[10px] p-4 hover:border-white/10 transition-colors"
               >
                 <div className="flex items-start justify-between mb-2">
                   <div className="min-w-0 flex-1">
@@ -352,7 +352,7 @@ export default function NetworkCreators() {
                 </div>
                 <div className="flex items-center gap-3 text-[12px] text-rt-fg-tertiary mb-3">
                   <span>Budget: {formatCurrency(campaign.budget.left)} left</span>
-                  <span className="text-[#ccc]">·</span>
+                  <span className="text-rt-fg-tertiary">·</span>
                   <span>{campaign.creator_count} creator{campaign.creator_count !== 1 ? "s" : ""}</span>
                 </div>
                 <Link to={`/campaign/${campaign.slug}/outreach`}>

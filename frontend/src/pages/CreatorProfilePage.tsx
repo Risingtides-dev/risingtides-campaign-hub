@@ -101,7 +101,7 @@ function SortableHeader({
   return (
     <button
       type="button"
-      className="flex items-center gap-1 hover:text-[#555] transition-colors"
+      className="flex items-center gap-1 hover:text-rt-fg transition-colors"
       onClick={() => column.toggleSorting(sorted === "asc")}
     >
       {label}
@@ -219,7 +219,7 @@ export default function CreatorProfilePage() {
         accessorKey: "notes",
         header: "Notes",
         cell: ({ row }) => (
-          <span className="text-[12px] text-[#666]">
+          <span className="text-[12px] text-rt-fg-tertiary">
             {row.original.notes || ""}
           </span>
         ),
@@ -288,7 +288,7 @@ export default function CreatorProfilePage() {
           <SortableHeader column={column} label="Date" />
         ),
         cell: ({ row }) => (
-          <span className="text-[13px] text-[#666]">
+          <span className="text-[13px] text-rt-fg-tertiary">
             {row.original.upload_date || "-"}
           </span>
         ),
@@ -381,12 +381,12 @@ export default function CreatorProfilePage() {
       <div className="flex items-center gap-1.5 text-[13px] text-rt-fg-tertiary">
         <Link
           to="/creators"
-          className="hover:text-[#555] transition-colors"
+          className="hover:text-rt-fg transition-colors"
         >
           Creator Database
         </Link>
         <ChevronRight className="size-3.5" />
-        <span className="text-[#333] font-medium">@{profile.username}</span>
+        <span className="text-rt-fg font-medium">@{profile.username}</span>
       </div>
 
       {/* Header */}
@@ -457,7 +457,7 @@ export default function CreatorProfilePage() {
               ) : (
                 <div className="flex items-center gap-2 flex-wrap">
                   {(profile.niches || []).length === 0 ? (
-                    <span className="text-[12px] text-[#bbb]">No niches tagged</span>
+                    <span className="text-[12px] text-rt-fg-tertiary">No niches tagged</span>
                   ) : (
                     (profile.niches || []).map((n) => (
                       <span

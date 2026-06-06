@@ -46,7 +46,7 @@ function TokenRow({
       className={`flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg border ${
         isActive
           ? "bg-rt-bg-card border-white/8"
-          : "bg-[#f9f9fb] border-white/8 opacity-60"
+          : "bg-rt-bg-card border-white/8 opacity-60"
       }`}
     >
       <div className="flex items-center gap-2 min-w-0 flex-1">
@@ -64,8 +64,8 @@ function TokenRow({
               </span>
             )}
           </div>
-          <div className="text-[11px] text-[#aaa] truncate">{shareUrl}</div>
-          <div className="flex items-center gap-3 text-[11px] text-[#aaa] mt-0.5">
+          <div className="text-[11px] text-rt-fg-tertiary truncate">{shareUrl}</div>
+          <div className="flex items-center gap-3 text-[11px] text-rt-fg-tertiary mt-0.5">
             <span>Created {formatDate(token.created_at)}</span>
             {token.expires_at && (
               <span className="flex items-center gap-1">
@@ -86,14 +86,14 @@ function TokenRow({
               href={shareUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="p-1.5 text-rt-fg-tertiary hover:text-[#6B21A8] hover:bg-[#6B21A8]/5 rounded-md transition-colors"
+              className="p-1.5 text-rt-fg-tertiary hover:text-rt-magenta hover:bg-rt-magenta/5 rounded-md transition-colors"
               title="Open dashboard"
             >
               <ExternalLink className="size-3.5" />
             </a>
             <button
               onClick={handleCopy}
-              className="p-1.5 text-rt-fg-tertiary hover:text-[#6B21A8] hover:bg-[#6B21A8]/5 rounded-md transition-colors"
+              className="p-1.5 text-rt-fg-tertiary hover:text-rt-magenta hover:bg-rt-magenta/5 rounded-md transition-colors"
               title="Copy link"
             >
               {copied ? (
@@ -166,12 +166,12 @@ export function ShareTokenSection({ slug }: ShareTokenSectionProps) {
     <div className="bg-rt-bg-card border border-white/8 rounded-[10px] p-5">
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
-          <Share2 className="size-4 text-[#6B21A8]" />
+          <Share2 className="size-4 text-rt-magenta" />
           <h3 className="text-sm font-semibold text-rt-fg">
             Share with Client
           </h3>
           {activeTokens.length > 0 && (
-            <span className="text-[11px] text-rt-fg-tertiary bg-[#f0f0f3] px-2 py-0.5 rounded-full">
+            <span className="text-[11px] text-rt-fg-tertiary bg-rt-bg-card px-2 py-0.5 rounded-full">
               {activeTokens.length} active
             </span>
           )}
@@ -179,7 +179,7 @@ export function ShareTokenSection({ slug }: ShareTokenSectionProps) {
         {!isCreating && (
           <button
             onClick={() => setIsCreating(true)}
-            className="px-3 py-1.5 text-[12px] font-medium text-[#6B21A8] bg-[#6B21A8]/5 border border-[#6B21A8]/20 rounded-lg hover:bg-[#6B21A8]/10 transition-colors"
+            className="px-3 py-1.5 text-[12px] font-medium text-rt-magenta bg-rt-magenta/5 border border-rt-magenta/20 rounded-lg hover:bg-rt-magenta/10 transition-colors"
           >
             Generate Share Link
           </button>
@@ -220,7 +220,7 @@ export function ShareTokenSection({ slug }: ShareTokenSectionProps) {
               value={label}
               onChange={(e) => setLabel(e.target.value)}
               placeholder="e.g. Q1 Report for Warner"
-              className="w-full px-3 py-1.5 text-sm border border-white/8 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#6B21A8]/30 focus:border-[#6B21A8]/30"
+              className="w-full px-3 py-1.5 text-sm border border-white/8 rounded-lg focus:outline-none focus:ring-1 focus:ring-rt-magenta/30 focus:border-rt-magenta/30"
             />
           </div>
           <div>
@@ -233,14 +233,14 @@ export function ShareTokenSection({ slug }: ShareTokenSectionProps) {
               onChange={(e) => setExpiresDays(e.target.value)}
               placeholder="e.g. 30 (leave blank for no expiry)"
               min={1}
-              className="w-full px-3 py-1.5 text-sm border border-white/8 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#6B21A8]/30 focus:border-[#6B21A8]/30"
+              className="w-full px-3 py-1.5 text-sm border border-white/8 rounded-lg focus:outline-none focus:ring-1 focus:ring-rt-magenta/30 focus:border-rt-magenta/30"
             />
           </div>
           <div className="flex items-center gap-2">
             <button
               onClick={handleCreate}
               disabled={createToken.isPending}
-              className="px-4 py-1.5 text-sm font-medium text-white bg-[#6B21A8] rounded-lg hover:bg-[#581c87] transition-colors disabled:opacity-50 flex items-center gap-2"
+              className="px-4 py-1.5 text-sm font-medium text-white bg-rt-magenta rounded-lg hover:bg-rt-magenta transition-colors disabled:opacity-50 flex items-center gap-2"
             >
               {createToken.isPending && <Loader2 className="size-3.5 animate-spin" />}
               Create Link
@@ -279,7 +279,7 @@ export function ShareTokenSection({ slug }: ShareTokenSectionProps) {
       )}
 
       {campaignTokens.length === 0 && !isCreating && (
-        <p className="text-[#aaa] text-[13px]">
+        <p className="text-rt-fg-tertiary text-[13px]">
           No share links yet. Generate one to share analytics with your client.
         </p>
       )}
