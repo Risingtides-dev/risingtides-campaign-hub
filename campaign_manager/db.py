@@ -378,6 +378,24 @@ def init(database_url: Optional[str] = None):
     except Exception:
         pass
 
+    # Backfill stale tracker_url hosts (CAMP-41 / View-Tracker bug). Some
+    # campaigns stored tracker_url with the old frontend-tidestracker.vercel.app
+    # host, which pins to stale deploys — "View Tracker" sent users to a dead
+    # page. Rewrite to the canonical risingtides-tracker.com, preserving the
+    # UUID path. Idempotent: the WHERE clause matches nothing once fixed.
+    try:
+        import sqlalchemy as sa
+        with _SessionLocal() as s:
+            s.execute(sa.text(
+                "UPDATE campaigns "
+                "SET tracker_url = REPLACE(tracker_url, "
+                "  'frontend-tidestracker.vercel.app', 'risingtides-tracker.com') "
+                "WHERE tracker_url LIKE '%frontend-tidestracker.vercel.app%'"
+            ))
+            s.commit()
+    except Exception:
+        pass
+
     return True
 
 
