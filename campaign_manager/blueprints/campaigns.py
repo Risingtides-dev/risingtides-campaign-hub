@@ -732,8 +732,16 @@ def _refresh_stats_inner(slug: str):
         if extra_id and re.match(r"^\d{10,}$", extra_id):
             sound_ids.add(extra_id)
 
-    # Add exact song+artist key
-    if song and artist:
+    # CAMP-90: apply the generic-title guard the shared build_sound_sets uses.
+    # Without it, a fuzzy-mode campaign whose song is an "original sound"/empty
+    # title builds a key like "original sound - <artist>" that matches every
+    # original-sound video on TikTok, scooping unrelated creators' videos into
+    # matched_videos on manual refresh. The cron path (build_sound_sets) skips
+    # song-key + word-overlap matching for generic titles; this mirrors it.
+    from campaign_manager.services.matching import _is_generic_song_title
+
+    # Add exact song+artist key (skip on generic titles)
+    if song and artist and not _is_generic_song_title(song):
         sound_keys.add(f"{song.lower().strip()} - {artist.lower().strip()}")
 
     # Add fuzzy song keys
@@ -745,11 +753,11 @@ def _refresh_stats_inner(slug: str):
         s = re.sub(r"\s+remix\s*$", "", s, flags=re.IGNORECASE)
         return s.strip().lower()
 
-    if song:
+    if song and not _is_generic_song_title(song):
         core_song = _core_song_name(song)
         if artist:
             sound_keys.add(f"{core_song} - {artist.lower().strip()}")
-    if ref_song_title and artist:
+    if ref_song_title and artist and not _is_generic_song_title(ref_song_title):
         core_ref = _core_song_name(ref_song_title)
         sound_keys.add(f"{core_ref} - {artist.lower().strip()}")
 
@@ -808,10 +816,13 @@ def _refresh_stats_inner(slug: str):
         update_creator_post_counts,
     )
 
+    # CAMP-90: word-overlap matching is unsafe on generic titles too — skip it
+    # for them (mirrors build_sound_sets), so "original sound" doesn't word-match
+    # arbitrary videos.
     core_song_words: set = set()
-    if song:
+    if song and not _is_generic_song_title(song):
         core_song_words = {w for w in _csn(song).split() if len(w) > 2}
-    if ref_song_title:
+    if ref_song_title and not _is_generic_song_title(ref_song_title):
         core_song_words |= {w for w in _csn(ref_song_title).split() if len(w) > 2}
 
     # Honor the campaign's match strategy (strict mode skips fuzzy fallback)
