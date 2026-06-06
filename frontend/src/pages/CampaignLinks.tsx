@@ -29,7 +29,7 @@ export default function CampaignLinks() {
       <div className="flex items-center gap-3 mb-6">
         <Link
           to={`/campaign/${slug}`}
-          className="text-[#888] hover:text-[#555] transition-colors"
+          className="text-rt-fg-tertiary hover:text-rt-fg transition-colors"
         >
           <ArrowLeft className="size-5" />
         </Link>
@@ -37,14 +37,14 @@ export default function CampaignLinks() {
           <h1 className="text-[22px] font-semibold">
             {campaign?.title ?? slug} — Links
           </h1>
-          <p className="text-[#888] text-sm">
+          <p className="text-rt-fg-tertiary text-sm">
             {videos.length} matched video{videos.length !== 1 ? "s" : ""}
           </p>
         </div>
         {videos.length > 0 && (
           <Button
             onClick={copyAllLinks}
-            className="ml-auto bg-[#0b62d6] hover:bg-[#0951b5] text-white"
+            className="ml-auto bg-rt-magenta hover:bg-rt-purple text-white"
           >
             <Copy className="size-3.5" />
             {copied ? "Copied!" : "Copy All Links"}
@@ -53,49 +53,49 @@ export default function CampaignLinks() {
       </div>
 
       {isLoading && (
-        <div className="bg-white border border-[#e8e8ef] rounded-[10px] p-10 text-center">
-          <p className="text-[#888] text-sm">Loading links...</p>
+        <div className="bg-rt-bg-card border border-white/8 rounded-[10px] p-10 text-center">
+          <p className="text-rt-fg-tertiary text-sm">Loading links...</p>
         </div>
       )}
 
       {isError && (
-        <div className="bg-white border border-[#e8e8ef] rounded-[10px] p-10 text-center">
-          <p className="text-red-600 text-sm">
+        <div className="bg-rt-bg-card border border-white/8 rounded-[10px] p-10 text-center">
+          <p className="text-rt-red text-sm">
             {error?.message || "Failed to load links"}
           </p>
         </div>
       )}
 
       {!isLoading && !isError && videos.length === 0 && (
-        <div className="bg-white border border-[#e8e8ef] rounded-[10px] p-10 text-center">
-          <p className="text-[#888] text-sm">
+        <div className="bg-rt-bg-card border border-white/8 rounded-[10px] p-10 text-center">
+          <p className="text-rt-fg-tertiary text-sm">
             No matched videos yet. Run a scrape from the campaign page.
           </p>
         </div>
       )}
 
       {!isLoading && !isError && videos.length > 0 && (
-        <div className="bg-white border border-[#e8e8ef] rounded-[10px] overflow-hidden">
+        <div className="bg-rt-bg-card border border-white/8 rounded-[10px] overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead>
-                <tr className="border-b-2 border-[#e8e8ef]">
-                  <th className="text-left text-[#888] text-xs font-semibold uppercase tracking-[0.3px] px-4 py-3">
+                <tr className="border-b-2 border-white/8">
+                  <th className="text-left text-rt-fg-tertiary text-xs font-semibold uppercase tracking-[0.3px] px-4 py-3">
                     Creator
                   </th>
-                  <th className="text-left text-[#888] text-xs font-semibold uppercase tracking-[0.3px] px-4 py-3">
+                  <th className="text-left text-rt-fg-tertiary text-xs font-semibold uppercase tracking-[0.3px] px-4 py-3">
                     Song
                   </th>
-                  <th className="text-left text-[#888] text-xs font-semibold uppercase tracking-[0.3px] px-4 py-3">
+                  <th className="text-left text-rt-fg-tertiary text-xs font-semibold uppercase tracking-[0.3px] px-4 py-3">
                     Views
                   </th>
-                  <th className="text-left text-[#888] text-xs font-semibold uppercase tracking-[0.3px] px-4 py-3">
+                  <th className="text-left text-rt-fg-tertiary text-xs font-semibold uppercase tracking-[0.3px] px-4 py-3">
                     Likes
                   </th>
-                  <th className="text-left text-[#888] text-xs font-semibold uppercase tracking-[0.3px] px-4 py-3">
+                  <th className="text-left text-rt-fg-tertiary text-xs font-semibold uppercase tracking-[0.3px] px-4 py-3">
                     Date
                   </th>
-                  <th className="text-left text-[#888] text-xs font-semibold uppercase tracking-[0.3px] px-4 py-3">
+                  <th className="text-left text-rt-fg-tertiary text-xs font-semibold uppercase tracking-[0.3px] px-4 py-3">
                     Link
                   </th>
                 </tr>
@@ -104,7 +104,7 @@ export default function CampaignLinks() {
                 {videos.map((v, i) => (
                   <tr
                     key={v.url || i}
-                    className="border-b border-[#f0f0f5] hover:bg-[#fafaff]"
+                    className="border-b border-white/5 hover:bg-white/[0.03]"
                   >
                     <td className="px-4 py-2 text-[14px] font-medium">
                       {v.account ? `@${v.account.replace(/^@/, "")}` : "-"}
@@ -112,7 +112,7 @@ export default function CampaignLinks() {
                     <td className="px-4 py-2 text-[14px]">
                       <div>{v.song || "-"}</div>
                       {v.artist && (
-                        <div className="text-[#888] text-[13px]">
+                        <div className="text-rt-fg-tertiary text-[13px]">
                           {v.artist}
                         </div>
                       )}
@@ -123,7 +123,7 @@ export default function CampaignLinks() {
                     <td className="px-4 py-2 text-[14px]">
                       {formatViews(v.likes)}
                     </td>
-                    <td className="px-4 py-2 text-[14px] text-[#888]">
+                    <td className="px-4 py-2 text-[14px] text-rt-fg-tertiary">
                       {v.upload_date || "-"}
                     </td>
                     <td className="px-4 py-2">
@@ -131,7 +131,7 @@ export default function CampaignLinks() {
                         href={v.url}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="text-[#0b62d6] hover:underline inline-flex items-center gap-1 text-[13px]"
+                        className="text-rt-magenta hover:underline inline-flex items-center gap-1 text-[13px]"
                         onClick={(e) => e.stopPropagation()}
                       >
                         <ExternalLink className="size-3" />

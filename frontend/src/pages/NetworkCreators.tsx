@@ -47,7 +47,7 @@ function SortableHeader({
   return (
     <button
       type="button"
-      className="flex items-center gap-1 hover:text-[#555] transition-colors"
+      className="flex items-center gap-1 hover:text-rt-fg transition-colors"
       onClick={() => column.toggleSorting(sorted === "asc")}
     >
       {label}
@@ -73,10 +73,10 @@ function TikTokIcon({ className }: { className?: string }) {
 // Niche color palette for consistent tag colors
 const NICHE_COLORS: Record<string, string> = {}
 const COLOR_PALETTE = [
-  "bg-blue-100 text-blue-700",
+  "bg-rt-magenta/10 text-rt-magenta",
   "bg-purple-100 text-purple-700",
-  "bg-green-100 text-green-700",
-  "bg-amber-100 text-amber-700",
+  "bg-rt-green/10 text-rt-green",
+  "bg-rt-amber/10 text-rt-amber",
   "bg-rose-100 text-rose-700",
   "bg-cyan-100 text-cyan-700",
   "bg-indigo-100 text-indigo-700",
@@ -223,12 +223,12 @@ export default function NetworkCreators() {
         header: ({ column }) => <SortableHeader column={column} label="Creator" />,
         cell: ({ row }) => (
           <div className="flex items-center gap-2">
-            <span className="font-semibold text-[#1a1a2e]">@{row.original.username}</span>
+            <span className="font-semibold text-rt-fg">@{row.original.username}</span>
             <a
               href={`https://www.tiktok.com/@${row.original.username}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-[#999] hover:text-[#333] transition-colors"
+              className="text-rt-fg-tertiary hover:text-rt-fg transition-colors"
               onClick={(e) => e.stopPropagation()}
             >
               <TikTokIcon className="size-3.5" />
@@ -268,7 +268,7 @@ export default function NetworkCreators() {
         header: "ManyChat",
         cell: ({ row }) =>
           row.original.manychat_subscriber_id ? (
-            <Badge variant="outline" className="text-xs font-mono bg-green-50 text-green-700 border-green-200">
+            <Badge variant="outline" className="text-xs font-mono bg-rt-green/10 text-rt-green border-green-200">
               Linked
             </Badge>
           ) : (
@@ -280,7 +280,7 @@ export default function NetworkCreators() {
         header: "PayPal",
         cell: ({ row }) =>
           row.original.paypal_email ? (
-            <span className="text-[13px] text-[#555]">{row.original.paypal_email}</span>
+            <span className="text-[13px] text-rt-fg">{row.original.paypal_email}</span>
           ) : (
             <span className="text-[#ccc] text-xs">—</span>
           ),
@@ -296,7 +296,7 @@ export default function NetworkCreators() {
             <Button
               variant="ghost"
               size="sm"
-              className="text-red-500 hover:text-red-700"
+              className="text-rt-red hover:text-rt-red"
               onClick={() => handleRemove(row.original.username)}
             >
               <Trash2 className="size-3.5" />
@@ -329,9 +329,9 @@ export default function NetworkCreators() {
 
       {/* Active Campaigns Section */}
       <div className="mb-6">
-        <h2 className="text-[15px] font-semibold text-[#555] mb-3">Active Campaigns</h2>
+        <h2 className="text-[15px] font-semibold text-rt-fg mb-3">Active Campaigns</h2>
         {!activeCampaigns.length ? (
-          <div className="bg-white border border-[#e8e8ef] rounded-[10px] p-6 text-center text-[#888] text-sm">
+          <div className="bg-rt-bg-card border border-white/8 rounded-[10px] p-6 text-center text-rt-fg-tertiary text-sm">
             No active campaigns
           </div>
         ) : (
@@ -339,18 +339,18 @@ export default function NetworkCreators() {
             {activeCampaigns.map((campaign) => (
               <div
                 key={campaign.slug}
-                className="bg-white border border-[#e8e8ef] rounded-[10px] p-4 hover:border-[#c8c8d8] transition-colors"
+                className="bg-rt-bg-card border border-white/8 rounded-[10px] p-4 hover:border-[#c8c8d8] transition-colors"
               >
                 <div className="flex items-start justify-between mb-2">
                   <div className="min-w-0 flex-1">
-                    <h3 className="text-[14px] font-semibold text-[#1a1a2e] truncate">{campaign.title}</h3>
+                    <h3 className="text-[14px] font-semibold text-rt-fg truncate">{campaign.title}</h3>
                     <div className="flex items-center gap-1.5 mt-0.5">
-                      <Music className="size-3 text-[#888]" />
-                      <span className="text-[12px] text-[#888]">{campaign.artist} — {campaign.song}</span>
+                      <Music className="size-3 text-rt-fg-tertiary" />
+                      <span className="text-[12px] text-rt-fg-tertiary">{campaign.artist} — {campaign.song}</span>
                     </div>
                   </div>
                 </div>
-                <div className="flex items-center gap-3 text-[12px] text-[#666] mb-3">
+                <div className="flex items-center gap-3 text-[12px] text-rt-fg-tertiary mb-3">
                   <span>Budget: {formatCurrency(campaign.budget.left)} left</span>
                   <span className="text-[#ccc]">·</span>
                   <span>{campaign.creator_count} creator{campaign.creator_count !== 1 ? "s" : ""}</span>
@@ -368,13 +368,13 @@ export default function NetworkCreators() {
       </div>
 
       {/* Creator Network Section */}
-      <h2 className="text-[15px] font-semibold text-[#555] mb-3">Creator Network</h2>
+      <h2 className="text-[15px] font-semibold text-rt-fg mb-3">Creator Network</h2>
 
       {/* Search + Niche filter */}
-      <div className="bg-white border border-[#e8e8ef] rounded-[10px] px-5 py-3.5 mb-4">
+      <div className="bg-rt-bg-card border border-white/8 rounded-[10px] px-5 py-3.5 mb-4">
         <div className="flex items-center gap-3 flex-wrap">
           <div className="relative flex-1 min-w-[200px] max-w-[300px]">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-[#888]" />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-rt-fg-tertiary" />
             <Input
               type="text"
               value={search}
@@ -391,7 +391,7 @@ export default function NetworkCreators() {
           {/* Niche filter chips */}
           {allNiches.length > 0 && (
             <div className="flex items-center gap-1.5 flex-wrap">
-              <span className="text-[11px] text-[#999] uppercase tracking-wide">Niche:</span>
+              <span className="text-[11px] text-rt-fg-tertiary uppercase tracking-wide">Niche:</span>
               {allNiches.map((niche) => (
                 <button
                   key={niche}
@@ -400,7 +400,7 @@ export default function NetworkCreators() {
                   className={`inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-medium transition-all ${
                     selectedNiche === niche
                       ? getNicheColor(niche) + " ring-2 ring-offset-1 ring-current"
-                      : "bg-[#f0f0f5] text-[#666] hover:bg-[#e4e4ed]"
+                      : "bg-white/5 text-rt-fg-tertiary hover:bg-white/8"
                   }`}
                 >
                   {niche}
@@ -410,42 +410,42 @@ export default function NetworkCreators() {
                 <button
                   type="button"
                   onClick={() => setSelectedNiche(null)}
-                  className="text-[11px] text-[#999] hover:text-[#555] underline"
+                  className="text-[11px] text-rt-fg-tertiary hover:text-rt-fg underline"
                 >
                   clear
                 </button>
               )}
             </div>
           )}
-          <span className="ml-auto text-[#888] text-[13px]">
+          <span className="ml-auto text-rt-fg-tertiary text-[13px]">
             {filtered.length} creator{filtered.length !== 1 ? "s" : ""}
           </span>
         </div>
       </div>
 
       {isLoading && (
-        <div className="bg-white border border-[#e8e8ef] rounded-[10px] p-10 text-center">
-          <p className="text-[#888] text-sm">Loading network...</p>
+        <div className="bg-rt-bg-card border border-white/8 rounded-[10px] p-10 text-center">
+          <p className="text-rt-fg-tertiary text-sm">Loading network...</p>
         </div>
       )}
 
       {isError && (
-        <div className="bg-white border border-[#e8e8ef] rounded-[10px] p-10 text-center">
-          <p className="text-red-600 text-sm">{error?.message || "Failed to load network"}</p>
+        <div className="bg-rt-bg-card border border-white/8 rounded-[10px] p-10 text-center">
+          <p className="text-rt-red text-sm">{error?.message || "Failed to load network"}</p>
         </div>
       )}
 
       {!isLoading && !isError && (
-        <div className="bg-white border border-[#e8e8ef] rounded-[10px] overflow-hidden">
+        <div className="bg-rt-bg-card border border-white/8 rounded-[10px] overflow-hidden">
           <div className="overflow-x-auto">
             <Table>
               <TableHeader>
                 {table.getHeaderGroups().map((headerGroup) => (
-                  <TableRow key={headerGroup.id} className="border-b-2 border-[#e8e8ef] hover:bg-transparent">
+                  <TableRow key={headerGroup.id} className="border-b-2 border-white/8 hover:bg-transparent">
                     {headerGroup.headers.map((header) => (
                       <TableHead
                         key={header.id}
-                        className="text-[#888] text-xs font-semibold uppercase tracking-[0.3px] px-4 py-3 border-b-2 border-[#e8e8ef]"
+                        className="text-rt-fg-tertiary text-xs font-semibold uppercase tracking-[0.3px] px-4 py-3 border-b-2 border-white/8"
                       >
                         {header.isPlaceholder ? null : flexRender(header.column.columnDef.header, header.getContext())}
                       </TableHead>
@@ -456,15 +456,15 @@ export default function NetworkCreators() {
               <TableBody>
                 {table.getRowModel().rows.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={columns.length} className="text-center text-[#888] py-10 text-sm">
+                    <TableCell colSpan={columns.length} className="text-center text-rt-fg-tertiary py-10 text-sm">
                       {creators?.length ? "No creators match your filters." : 'No creators in network. Click "Add Creator" to get started.'}
                     </TableCell>
                   </TableRow>
                 ) : (
                   table.getRowModel().rows.map((row) => (
-                    <TableRow key={row.id} className="hover:bg-[#fafaff] border-b border-[#f0f0f5]">
+                    <TableRow key={row.id} className="hover:bg-white/[0.03] border-b border-white/5">
                       {row.getVisibleCells().map((cell) => (
-                        <TableCell key={cell.id} className="px-4 py-2 text-[14px] border-b border-[#f0f0f5] align-middle">
+                        <TableCell key={cell.id} className="px-4 py-2 text-[14px] border-b border-white/5 align-middle">
                           {flexRender(cell.column.columnDef.cell, cell.getContext())}
                         </TableCell>
                       ))}
@@ -486,7 +486,7 @@ export default function NetworkCreators() {
           <div className="grid gap-4 py-2">
             {!editingCreator && (
               <div>
-                <label className="text-sm font-medium text-[#555] mb-1 block">Username</label>
+                <label className="text-sm font-medium text-rt-fg mb-1 block">Username</label>
                 <Input
                   value={form.username}
                   onChange={(e) => setForm({ ...form, username: e.target.value })}
@@ -496,7 +496,7 @@ export default function NetworkCreators() {
             )}
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="text-sm font-medium text-[#555] mb-1 block">Default Rate ($)</label>
+                <label className="text-sm font-medium text-rt-fg mb-1 block">Default Rate ($)</label>
                 <Input
                   type="number"
                   value={form.default_rate}
@@ -505,7 +505,7 @@ export default function NetworkCreators() {
                 />
               </div>
               <div>
-                <label className="text-sm font-medium text-[#555] mb-1 block">Default Posts</label>
+                <label className="text-sm font-medium text-rt-fg mb-1 block">Default Posts</label>
                 <Input
                   type="number"
                   value={form.default_posts}
@@ -516,7 +516,7 @@ export default function NetworkCreators() {
             </div>
             {/* Niche tags input */}
             <div>
-              <label className="text-sm font-medium text-[#555] mb-1 block">Niches</label>
+              <label className="text-sm font-medium text-rt-fg mb-1 block">Niches</label>
               <div className="flex flex-wrap gap-1.5 mb-2">
                 {form.niches.map((niche) => (
                   <span
@@ -548,7 +548,7 @@ export default function NetworkCreators() {
                       key={niche}
                       type="button"
                       onClick={() => handleAddNiche(niche)}
-                      className="text-[10px] px-1.5 py-0.5 rounded bg-[#f0f0f5] text-[#666] hover:bg-[#e4e4ed] transition-colors"
+                      className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-rt-fg-tertiary hover:bg-white/8 transition-colors"
                     >
                       + {niche}
                     </button>
@@ -557,16 +557,16 @@ export default function NetworkCreators() {
               )}
             </div>
             <div>
-              <label className="text-sm font-medium text-[#555] mb-1 block">ManyChat Subscriber ID</label>
+              <label className="text-sm font-medium text-rt-fg mb-1 block">ManyChat Subscriber ID</label>
               <Input
                 value={form.manychat_subscriber_id}
                 onChange={(e) => setForm({ ...form, manychat_subscriber_id: e.target.value })}
                 placeholder="Find in ManyChat > Audience > Contact"
               />
-              <p className="text-xs text-[#999] mt-1">Required for automated DM outreach</p>
+              <p className="text-xs text-rt-fg-tertiary mt-1">Required for automated DM outreach</p>
             </div>
             <div>
-              <label className="text-sm font-medium text-[#555] mb-1 block">PayPal Email</label>
+              <label className="text-sm font-medium text-rt-fg mb-1 block">PayPal Email</label>
               <Input
                 type="email"
                 value={form.paypal_email}
@@ -575,7 +575,7 @@ export default function NetworkCreators() {
               />
             </div>
             <div>
-              <label className="text-sm font-medium text-[#555] mb-1 block">Notes</label>
+              <label className="text-sm font-medium text-rt-fg mb-1 block">Notes</label>
               <Input
                 value={form.notes}
                 onChange={(e) => setForm({ ...form, notes: e.target.value })}

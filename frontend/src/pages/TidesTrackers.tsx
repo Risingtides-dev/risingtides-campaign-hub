@@ -214,14 +214,14 @@ export default function TidesTrackers() {
           <Activity className="size-5 text-purple-600" />
           TidesTrackers
         </h1>
-        <p className="text-[13px] text-[#888] mt-1">
+        <p className="text-[13px] text-rt-fg-tertiary mt-1">
           Manage all your Cobrand trackers in one place. Group them by label or however you like.
         </p>
       </div>
 
       {/* Create form */}
-      <div className="bg-white border border-[#e8e8ef] rounded-[10px] p-5 mb-4">
-        <div className="text-[12px] font-semibold uppercase tracking-wide text-[#888] mb-3">
+      <div className="bg-rt-bg-card border border-white/8 rounded-[10px] p-5 mb-4">
+        <div className="text-[12px] font-semibold uppercase tracking-wide text-rt-fg-tertiary mb-3">
           New tracker
         </div>
         <div className="flex flex-col sm:flex-row gap-2">
@@ -266,14 +266,14 @@ export default function TidesTrackers() {
           </Button>
         </div>
         {createTracker.isError && (
-          <div className="text-[12px] text-red-600 mt-2">
+          <div className="text-[12px] text-rt-red mt-2">
             {(createTracker.error as Error)?.message || "Failed to create tracker"}
           </div>
         )}
       </div>
 
       {/* Group pills */}
-      <div className="bg-white border border-[#e8e8ef] rounded-[10px] px-4 py-3 mb-4">
+      <div className="bg-rt-bg-card border border-white/8 rounded-[10px] px-4 py-3 mb-4">
         <div className="flex items-center gap-2 flex-wrap">
           <GroupPill
             active={activeGroup === ALL_GROUP}
@@ -357,7 +357,7 @@ export default function TidesTrackers() {
       </div>
 
       {/* Table */}
-      <div className="bg-white border border-[#e8e8ef] rounded-[10px] overflow-hidden">
+      <div className="bg-rt-bg-card border border-white/8 rounded-[10px] overflow-hidden">
         <Table>
           <TableHeader>
             <TableRow>
@@ -373,13 +373,13 @@ export default function TidesTrackers() {
           <TableBody>
             {isLoading ? (
               <TableRow>
-                <TableCell colSpan={7} className="text-center py-10 text-[#999] text-[13px]">
+                <TableCell colSpan={7} className="text-center py-10 text-rt-fg-tertiary text-[13px]">
                   Loading…
                 </TableCell>
               </TableRow>
             ) : filteredTrackers.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={7} className="text-center py-10 text-[#999] text-[13px]">
+                <TableCell colSpan={7} className="text-center py-10 text-rt-fg-tertiary text-[13px]">
                   {viewingArchived
                     ? "No archived trackers."
                     : "No trackers in this group yet. Paste a Cobrand link above to create one."}
@@ -415,10 +415,10 @@ export default function TidesTrackers() {
                         className="text-left hover:text-purple-600 transition-colors"
                       >
                         {t.name || (
-                          <span className="text-[#999]">Untitled</span>
+                          <span className="text-rt-fg-tertiary">Untitled</span>
                         )}
                         {t.client?.name && (
-                          <span className="ml-2 inline-block px-1.5 py-0.5 rounded bg-[#eef2ff] text-[#0b62d6] text-[10px] uppercase tracking-wide">
+                          <span className="ml-2 inline-block px-1.5 py-0.5 rounded bg-rt-magenta/10 text-rt-magenta text-[10px] uppercase tracking-wide">
                             {t.client.name}
                           </span>
                         )}
@@ -431,13 +431,13 @@ export default function TidesTrackers() {
                         href={t.cobrand_share_url}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="text-[13px] text-[#0b62d6] hover:underline inline-flex items-center gap-1"
+                        className="text-[13px] text-rt-magenta hover:underline inline-flex items-center gap-1"
                       >
                         {shortenUrl(t.cobrand_share_url)}
                         <ExternalLink className="size-3" />
                       </a>
                     ) : (
-                      <span className="text-[#999] text-[13px]">-</span>
+                      <span className="text-rt-fg-tertiary text-[13px]">-</span>
                     )}
                   </TableCell>
                   <TableCell>
@@ -456,17 +456,17 @@ export default function TidesTrackers() {
                           type="button"
                           onClick={() => handleCopy(t)}
                           title={copiedId === t.id ? "Copied!" : "Copy tracker link"}
-                          className="text-[#888] hover:text-purple-600 transition-colors"
+                          className="text-rt-fg-tertiary hover:text-purple-600 transition-colors"
                         >
                           {copiedId === t.id ? (
-                            <Check className="size-3.5 text-green-600" />
+                            <Check className="size-3.5 text-rt-green" />
                           ) : (
                             <Copy className="size-3.5" />
                           )}
                         </button>
                       </div>
                     ) : (
-                      <span className="text-[#999] text-[13px]">-</span>
+                      <span className="text-rt-fg-tertiary text-[13px]">-</span>
                     )}
                   </TableCell>
                   <TableCell>
@@ -529,7 +529,7 @@ export default function TidesTrackers() {
                       </SelectContent>
                     </Select>
                   </TableCell>
-                  <TableCell className="text-[13px] text-[#666]">
+                  <TableCell className="text-[13px] text-rt-fg-tertiary">
                     {formatDate(t.created_at)}
                   </TableCell>
                   <TableCell>
@@ -540,7 +540,7 @@ export default function TidesTrackers() {
                           onClick={() => handleRestore(t)}
                           disabled={restoreTracker.isPending}
                           title="Restore tracker"
-                          className="p-1.5 rounded text-[#666] hover:text-purple-600 hover:bg-[#f5f3ff] transition-colors disabled:opacity-50"
+                          className="p-1.5 rounded text-rt-fg-tertiary hover:text-purple-600 hover:bg-[#f5f3ff] transition-colors disabled:opacity-50"
                         >
                           <Undo2 className="size-3.5" />
                         </button>
@@ -550,7 +550,7 @@ export default function TidesTrackers() {
                             type="button"
                             onClick={() => startEdit(t)}
                             title="Rename tracker"
-                            className="p-1.5 rounded text-[#666] hover:text-purple-600 hover:bg-[#f5f3ff] transition-colors"
+                            className="p-1.5 rounded text-rt-fg-tertiary hover:text-purple-600 hover:bg-[#f5f3ff] transition-colors"
                           >
                             <Pencil className="size-3.5" />
                           </button>
@@ -559,7 +559,7 @@ export default function TidesTrackers() {
                             onClick={() => handleArchive(t)}
                             disabled={archiveTracker.isPending}
                             title="Archive tracker"
-                            className="p-1.5 rounded text-[#666] hover:text-red-600 hover:bg-red-50 transition-colors disabled:opacity-50"
+                            className="p-1.5 rounded text-rt-fg-tertiary hover:text-rt-red hover:bg-rt-red/10 transition-colors disabled:opacity-50"
                           >
                             <Trash2 className="size-3.5" />
                           </button>
@@ -595,13 +595,13 @@ function GroupPill({
       className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[12px] font-medium transition-colors ${
         active
           ? "bg-purple-600 text-white"
-          : "bg-[#f0f0f5] text-[#555] hover:bg-[#e4e4ed]"
+          : "bg-white/5 text-rt-fg hover:bg-white/8"
       }`}
     >
       {label}
       <span
         className={`inline-block min-w-[18px] text-center px-1 rounded-full text-[10px] ${
-          active ? "bg-white/20" : "bg-white text-[#888]"
+          active ? "bg-white/20" : "bg-rt-bg-card text-rt-fg-tertiary"
         }`}
       >
         {count}
