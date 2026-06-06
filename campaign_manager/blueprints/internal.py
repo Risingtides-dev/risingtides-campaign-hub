@@ -1228,6 +1228,48 @@ def get_all_label_stats():
         session.close()
 
 
+# 10c. Booker-axis rollups (CAMP-34) — "what did booker X's roster do?"
+# The poster field is free-text; the service canonicalizes name variants
+# (Eric Cromartie / eric / Eric -> eric_cromartie) before aggregating.
+# -------------------------------------------------------------------
+@internal_bp.get("/api/internal/bookers/<slug>/stats")
+def get_booker_stats(slug: str):
+    err = _require_db()
+    if err:
+        return err
+    from campaign_manager.services.booker_attribution import booker_stats
+    try:
+        days = max(1, min(int(request.args.get("days", 30)), 3650))
+    except (TypeError, ValueError):
+        days = 30
+    session = _db.get_session()
+    try:
+        stats = booker_stats(session, slug, days)
+        if stats is None:
+            return jsonify({"error": f"No pages found for booker '{slug}'"}), 404
+        return jsonify(stats)
+    finally:
+        session.close()
+
+
+@internal_bp.get("/api/internal/bookers")
+def get_all_bookers():
+    """Every booker ranked by roster views — the unified RT-tracker rollup."""
+    err = _require_db()
+    if err:
+        return err
+    from campaign_manager.services.booker_attribution import list_bookers
+    try:
+        days = max(1, min(int(request.args.get("days", 30)), 3650))
+    except (TypeError, ValueError):
+        days = 30
+    session = _db.get_session()
+    try:
+        return jsonify({"bookers": list_bookers(session, days)})
+    finally:
+        session.close()
+
+
 # 11. GET /api/internal/groups/<identifier>  -- group detail + members
 # -------------------------------------------------------------------
 @internal_bp.get("/api/internal/groups/<identifier>")
