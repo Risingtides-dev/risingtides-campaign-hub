@@ -83,9 +83,22 @@ def start_scrape(only_slugs: Optional[List[str]] = None) -> Dict[str, Any]:
 
 
 def _run(job_id: str, only_slugs: Optional[List[str]]) -> None:
+    def _progress(done: int, total: int, last: str) -> None:
+        # Record live scrape progress into the job entry (CAMP-21). Polled via
+        # /api/scrape-tasks/trigger/status. Cheap dict write under the lock.
+        with _jobs_lock:
+            j = _jobs.get(job_id)
+            if j is not None:
+                j["progress"] = {
+                    "done": done,
+                    "total": total,
+                    "last_account": last,
+                    "pct": round(100.0 * done / total) if total else 0,
+                }
+
     try:
         from campaign_manager.services.scheduler import run_campaign_refresh
-        result = run_campaign_refresh(only_slugs=only_slugs)
+        result = run_campaign_refresh(only_slugs=only_slugs, on_progress=_progress)
         with _jobs_lock:
             j = _jobs.get(job_id)
             if j is not None:

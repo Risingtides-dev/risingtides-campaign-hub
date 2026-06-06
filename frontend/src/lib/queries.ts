@@ -840,3 +840,17 @@ export function useTriggerScrape() {
     },
   })
 }
+
+// Poll a scrape trigger job's live progress (CAMP-21). Polls every 1.5s
+// while a job_id is set and the job is still running.
+export function useScrapeJobStatus(jobId: string | null) {
+  return useQuery({
+    queryKey: ["scrape-tasks", "trigger-status", jobId],
+    queryFn: () => api.scrapeTriggerStatus(jobId as string),
+    enabled: !!jobId,
+    refetchInterval: (q) => {
+      const s = q.state.data?.state
+      return s === "running" ? 1500 : false
+    },
+  })
+}
