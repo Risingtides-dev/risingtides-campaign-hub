@@ -98,7 +98,7 @@ function StatusIcon({ status }: { status: string }) {
 export default function CampaignOutreach() {
   const { slug = "" } = useParams()
   const { data: campaign } = useCampaign(slug)
-  const { data: outreach, isLoading } = useOutreach(slug)
+  const { data: outreach, isLoading, isError, error } = useOutreach(slug)
   const addToOutreach = useAddToOutreach(slug)
   const removeFromOutreach = useRemoveFromOutreach(slug)
   const sendOutreach = useSendOutreach(slug)
@@ -221,6 +221,22 @@ export default function CampaignOutreach() {
     return (
       <div className="p-10 text-center">
         <p className="text-rt-fg-tertiary text-sm">Loading outreach...</p>
+      </div>
+    )
+  }
+
+  // CAMP-81: a failed fetch must NOT fall through to "No creators in network.
+  // Add creators first" — that told the user to act when the network isn't
+  // empty, the request just errored. Surface the real failure instead.
+  if (isError) {
+    return (
+      <div className="p-10">
+        <div className="mx-auto max-w-md rounded-xl border border-rt-red/30 bg-rt-red/10 px-4 py-4 text-center">
+          <div className="text-[14px] font-medium text-rt-red">Couldn't load outreach</div>
+          <div className="mt-1 text-[12px] text-rt-fg-tertiary">
+            {error?.message || "The outreach request failed — your network isn't empty, the request errored. Check the backend is running and try again."}
+          </div>
+        </div>
       </div>
     )
   }

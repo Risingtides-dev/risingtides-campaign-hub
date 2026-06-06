@@ -442,7 +442,7 @@ function ModeBtn({
    DRILLDOWN DRAWER
    ============================================================ */
 function CreatorDrawer({ account, onClose }: { account: string; onClose: () => void }) {
-  const { data, isLoading } = useCreatorIntel(account)
+  const { data, isLoading, isError, error } = useCreatorIntel(account)
   const { data: outcomeData, isLoading: outcomesLoading } = useCreatorOutcomes(account, true)
   const outcomes = outcomeData?.outcomes ?? null
 
@@ -467,6 +467,18 @@ function CreatorDrawer({ account, onClose }: { account: string; onClose: () => v
 
         {isLoading && (
           <div className="px-6 py-20 text-center text-sm text-rt-fg-tertiary">Loading dossier…</div>
+        )}
+
+        {/* CAMP-88: a failed drilldown fetch showed a blank panel — surface it. */}
+        {isError && (
+          <div className="px-6 py-16">
+            <div className="rounded-xl border border-rt-red/30 bg-rt-red/10 px-4 py-4 text-center">
+              <div className="text-[13px] font-medium text-rt-red">Couldn't load this creator's dossier</div>
+              <div className="mt-1 text-[12px] text-rt-fg-tertiary">
+                {error instanceof Error ? error.message : "The request failed — close and try again."}
+              </div>
+            </div>
+          </div>
         )}
 
         {data && (
