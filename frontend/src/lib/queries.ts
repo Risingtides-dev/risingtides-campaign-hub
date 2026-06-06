@@ -827,3 +827,16 @@ export function useCreatorRollup(username: string | null, days = 90) {
     staleTime: 5 * 60 * 1000,
   })
 }
+
+// On-demand scrape trigger (CAMP-24/22) — fires + polls the job
+export function useTriggerScrape() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: { all_active?: boolean; campaign_id?: string }) =>
+      api.triggerScrape(body),
+    onSuccess: () => {
+      // refresh the queue + health after a scrape kicks off
+      qc.invalidateQueries({ queryKey: ["scrape-tasks"] })
+    },
+  })
+}

@@ -7,8 +7,9 @@ import {
   useUnmarkVideosTracked,
   useMarkCampaignTracked,
   useDismissVideos,
-  useTriggerCron,
+  useTriggerScrape,
 } from "@/lib/queries"
+import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -35,7 +36,25 @@ export default function ScrapeTasks() {
   const unmarkMut = useUnmarkVideosTracked()
   const markCampaignMut = useMarkCampaignTracked()
   const dismissMut = useDismissVideos()
-  const triggerMut = useTriggerCron()
+  // CAMP-22: job-tracked scrape trigger (all-active + per-campaign Run Now)
+  const scrapeMut = useTriggerScrape()
+  const [runningSlug, setRunningSlug] = useState<string | null>(null)
+
+  function runScrape(body: { all_active?: boolean; campaign_id?: string }) {
+    setRunningSlug(body.campaign_id ?? "__all__")
+    scrapeMut.mutate(body, {
+      onSuccess: (res) => {
+        toast.success(
+          res.already_running
+            ? "A scrape is already running — watching that one."
+            : `Scrape started${body.campaign_id ? ` for ${body.campaign_id}` : " (all active)"}.`
+        )
+      },
+      onError: (e) =>
+        toast.error(e instanceof Error ? e.message : "Couldn't start the scrape."),
+      onSettled: () => setRunningSlug(null),
+    })
+  }
 
   const filtered = useMemo(() => {
     if (!queueQ.data) return [] as ScrapeTaskCampaign[]
@@ -110,12 +129,12 @@ export default function ScrapeTasks() {
             <Button
               variant="outline"
               size="sm"
-              disabled={triggerMut.isPending}
-              onClick={() => triggerMut.mutate("campaign_refresh")}
-              title="Trigger a campaign refresh now (yt-dlp profile scrape)"
+              disabled={scrapeMut.isPending}
+              onClick={() => runScrape({ all_active: true })}
+              title="Scrape every active campaign now (job-tracked, non-blocking)"
             >
-              <RefreshCw size={14} className={triggerMut.isPending ? "animate-spin" : ""} />
-              {triggerMut.isPending ? "Running…" : "Run cron now"}
+              <RefreshCw size={14} className={runningSlug === "__all__" ? "animate-spin" : ""} />
+              {runningSlug === "__all__" ? "Starting…" : "Run all active"}
             </Button>
           </div>
         </div>
@@ -179,6 +198,8 @@ export default function ScrapeTasks() {
             }
             isMarking={markMut.isPending || markCampaignMut.isPending}
             isDismissing={dismissMut.isPending}
+            onRunNow={() => runScrape({ campaign_id: camp.slug })}
+            isRunning={runningSlug === camp.slug}
           />
         ))}
       </div>
@@ -194,6 +215,8 @@ function CampaignBlock({
   onDismiss,
   isMarking,
   isDismissing,
+  onRunNow,
+  isRunning,
 }: {
   camp: ScrapeTaskCampaign
   trackedBy: string
@@ -203,6 +226,8 @@ function CampaignBlock({
   onDismiss: (ids: number[], reason?: string) => void
   isMarking: boolean
   isDismissing: boolean
+  onRunNow: () => void
+  isRunning: boolean
 }) {
   const [open, setOpen] = useState(true)
   const [selected, setSelected] = useState<Set<number>>(new Set())
@@ -311,6 +336,19 @@ function CampaignBlock({
           <span className="text-sm text-rt-fg-tertiary">
             {totalViews.toLocaleString()} views
           </span>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={isRunning}
+            onClick={(e) => {
+              e.stopPropagation()
+              onRunNow()
+            }}
+            title={`Scrape "${camp.title}" now (yt-dlp profile scrape of its booked creators)`}
+          >
+            <RefreshCw size={13} className={isRunning ? "animate-spin" : ""} />
+            {isRunning ? "Starting…" : "Run now"}
+          </Button>
           <Link
             to={`/campaign/${camp.slug}`}
             onClick={(e) => e.stopPropagation()}
