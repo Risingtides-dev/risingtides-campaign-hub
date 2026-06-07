@@ -59,7 +59,7 @@ from uuid import UUID
 import requests
 
 from campaign_manager import db as _db
-from campaign_manager.models import TidesTrackerSyncLog, TrackerName
+from campaign_manager.models import TidesTrackerSyncLog
 
 logger = logging.getLogger(__name__)
 
@@ -347,15 +347,45 @@ class PullResult:
 
 
 def _list_tracker_ids() -> List[str]:
-    """All tracker UUIDs we know about, sourced from `tracker_names`.
+    """Tracker UUIDs to pull, sourced from `tracker_names`, EXCLUDING any whose
+    linked campaign is completed.
 
-    RTA-41 made this table the single source of truth post-link
-    creation (every link writes a name row atomically). Reading from
-    here avoids a join against `tracker_campaign_links` and naturally
-    skips trackers that haven't been adopted by Campaign Hub yet.
+    RTA-41 made this table the single source of truth post-link creation
+    (every link writes a name row atomically), so it naturally skips trackers
+    not yet adopted by Campaign Hub.
+
+    CAMP-1 (Gap 1): the pull cron used to fetch EVERY tracker every tick — and
+    ~68% of prod trackers (71/104) link to a `completed` campaign whose numbers
+    are final and won't change. Those were wasted Tides Tracker API calls each
+    tick. We now exclude a tracker ONLY when its linked campaign is explicitly
+    `completion_status = 'completed'`. Trackers that are unlinked, or linked to
+    a 'booked'/'none' campaign, still pull (a tracker with no completion signal
+    must NOT be silently dropped). A tracker linked to BOTH a completed and a
+    live campaign still pulls (the live one wins via the NOT-completed match).
     """
+    import sqlalchemy as sa
     with _db.get_session() as s:
-        rows = s.query(TrackerName.tracker_id).all()
+        rows = s.execute(sa.text("""
+            SELECT tn.tracker_id
+            FROM tracker_names tn
+            WHERE tn.tracker_id IS NOT NULL
+              AND NOT EXISTS (
+                    SELECT 1
+                    FROM tracker_campaign_links tcl
+                    JOIN campaigns c ON c.slug = tcl.campaign_slug
+                    WHERE tcl.tracker_id = tn.tracker_id
+                      AND c.completion_status = 'completed'
+              )
+              -- but DO keep a tracker that also links a non-completed campaign
+              OR EXISTS (
+                    SELECT 1
+                    FROM tracker_campaign_links tcl2
+                    JOIN campaigns c2 ON c2.slug = tcl2.campaign_slug
+                    WHERE tcl2.tracker_id = tn.tracker_id
+                      AND (c2.completion_status IS NULL
+                           OR c2.completion_status <> 'completed')
+              )
+        """)).fetchall()
         return [r[0] for r in rows if r[0]]
 
 
