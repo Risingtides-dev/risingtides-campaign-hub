@@ -44,6 +44,10 @@ output/
 cache/
 *.pkl
 
+# Local Slack CLI generated project/cache data
+tools/scrape-reporter/.slack/
+tools/scrape-reporter/node_modules/
+
 # Virtual environment
 venv/
 .venv/
