@@ -193,7 +193,7 @@ export default function BookingEfficiency() {
       <div className="flex items-start justify-between">
         <div>
           <h1 className="text-3xl font-bold">Booking Efficiency</h1>
-          <p className="text-gray-600">ROI analysis & creator valuation</p>
+          <p className="text-rt-fg-secondary">ROI analysis & creator valuation</p>
         </div>
         <Select value={days.toString()} onValueChange={(v) => setDays(parseInt(v))}>
           <SelectTrigger className="w-40">
@@ -211,41 +211,41 @@ export default function BookingEfficiency() {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-gray-600">Efficiency Index</CardTitle>
+            <CardTitle className="text-sm font-medium text-rt-fg-secondary">Efficiency Index</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{report.efficiency_index.toFixed(1)}</div>
-            <p className="text-xs text-gray-500">Higher = better pricing alignment</p>
+            <p className="text-xs text-rt-fg-tertiary">Higher = better pricing alignment</p>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-gray-600">Avg ROI</CardTitle>
+            <CardTitle className="text-sm font-medium text-rt-fg-secondary">Avg ROI</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{(report.avg_roi / 1000).toFixed(0)}K</div>
-            <p className="text-xs text-gray-500">views per dollar</p>
+            <p className="text-xs text-rt-fg-tertiary">views per dollar</p>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-gray-600">Cost per View</CardTitle>
+            <CardTitle className="text-sm font-medium text-rt-fg-secondary">Cost per View</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">${report.avg_cost_per_view.toFixed(4)}</div>
-            <p className="text-xs text-gray-500">average across all creators</p>
+            <p className="text-xs text-rt-fg-tertiary">average across all creators</p>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-gray-600">Total Analyzed</CardTitle>
+            <CardTitle className="text-sm font-medium text-rt-fg-secondary">Total Analyzed</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{report.total_creators_analyzed}</div>
-            <p className="text-xs text-gray-500">creators in {report.total_campaigns} campaigns</p>
+            <p className="text-xs text-rt-fg-tertiary">creators in {report.total_campaigns} campaigns</p>
           </CardContent>
         </Card>
       </div>
@@ -314,9 +314,9 @@ export default function BookingEfficiency() {
               <div key={creator.creator_username} className="flex items-start justify-between py-2 border-b">
                 <div>
                   <p className="font-medium text-sm">{creator.creator_username}</p>
-                  <p className="text-xs text-gray-500">${creator.avg_post_rate.toFixed(0)}/post</p>
+                  <p className="text-xs text-rt-fg-tertiary">${creator.avg_post_rate.toFixed(0)}/post</p>
                 </div>
-                <Badge className="bg-green-100 text-green-800">
+                <Badge className="bg-rt-green/15 text-rt-green">
                   {(creator.roi_ratio / 1000).toFixed(0)}K ROI
                 </Badge>
               </div>
@@ -335,7 +335,7 @@ export default function BookingEfficiency() {
               <div key={creator.creator_username} className="flex items-start justify-between py-2 border-b">
                 <div>
                   <p className="font-medium text-sm">{creator.creator_username}</p>
-                  <p className="text-xs text-gray-500">${creator.avg_post_rate.toFixed(0)}/post</p>
+                  <p className="text-xs text-rt-fg-tertiary">${creator.avg_post_rate.toFixed(0)}/post</p>
                 </div>
                 <Badge className="bg-cyan-100 text-cyan-800">
                   {(creator.pricing_gap_pct * -1).toFixed(0)}% under
@@ -356,9 +356,9 @@ export default function BookingEfficiency() {
               <div key={creator.creator_username} className="flex items-start justify-between py-2 border-b">
                 <div>
                   <p className="font-medium text-sm">{creator.creator_username}</p>
-                  <p className="text-xs text-gray-500">${creator.avg_post_rate.toFixed(0)}/post</p>
+                  <p className="text-xs text-rt-fg-tertiary">${creator.avg_post_rate.toFixed(0)}/post</p>
                 </div>
-                <Badge className="bg-red-100 text-red-800">
+                <Badge className="bg-rt-red/15 text-rt-red">
                   {creator.pricing_gap_pct.toFixed(0)}% over
                 </Badge>
               </div>
@@ -379,7 +379,7 @@ export default function BookingEfficiency() {
             {insights.key_findings.length === 0 ? (
               <Card>
                 <CardContent className="pt-6">
-                  <p className="text-gray-500">No significant findings at this time.</p>
+                  <p className="text-rt-fg-tertiary">No significant findings at this time.</p>
                 </CardContent>
               </Card>
             ) : (
@@ -388,10 +388,10 @@ export default function BookingEfficiency() {
                   key={idx}
                   className={
                     finding.severity === "high"
-                      ? "border-red-200 bg-red-50"
+                      ? "border-rt-red/30 bg-rt-red/10"
                       : finding.severity === "medium"
                         ? "border-yellow-200 bg-yellow-50"
-                        : "border-blue-200 bg-blue-50"
+                        : "border-rt-purple/30 bg-rt-purple/10"
                   }
                 >
                   <CardHeader>
@@ -425,7 +425,7 @@ export default function BookingEfficiency() {
                     </div>
                     <div>
                       <p className="text-sm font-medium">Recommendation:</p>
-                      <p className="text-sm text-gray-700 mt-1">{finding.recommendation}</p>
+                      <p className="text-sm text-rt-fg-secondary mt-1">{finding.recommendation}</p>
                     </div>
                   </CardContent>
                 </Card>
@@ -437,19 +437,19 @@ export default function BookingEfficiency() {
             {insights.recommendations.length === 0 ? (
               <Card>
                 <CardContent className="pt-6">
-                  <p className="text-gray-500">No optimization recommendations at this time.</p>
+                  <p className="text-rt-fg-tertiary">No optimization recommendations at this time.</p>
                 </CardContent>
               </Card>
             ) : (
               insights.recommendations.map((rec, idx) => (
-                <Card key={idx} className="border-green-200 bg-green-50">
+                <Card key={idx} className="border-rt-green/30 bg-rt-green/10">
                   <CardHeader>
                     <CardTitle className="text-base">{rec.action}</CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-3">
                     <div className="grid grid-cols-2 gap-4">
                       <div>
-                        <p className="text-sm font-medium text-gray-700">Reallocate from:</p>
+                        <p className="text-sm font-medium text-rt-fg-secondary">Reallocate from:</p>
                         <div className="flex flex-wrap gap-2 mt-2">
                           {rec.from.map((creator) => (
                             <Badge key={creator} variant="secondary">
@@ -459,7 +459,7 @@ export default function BookingEfficiency() {
                         </div>
                       </div>
                       <div>
-                        <p className="text-sm font-medium text-gray-700">Reallocate to:</p>
+                        <p className="text-sm font-medium text-rt-fg-secondary">Reallocate to:</p>
                         <div className="flex flex-wrap gap-2 mt-2">
                           {rec.to.map((creator) => (
                             <Badge key={creator} className="bg-green-600">
@@ -469,18 +469,18 @@ export default function BookingEfficiency() {
                         </div>
                       </div>
                     </div>
-                    <div className="bg-white rounded p-3 space-y-2">
+                    <div className="bg-rt-bg-card rounded p-3 space-y-2">
                       <div className="flex items-center justify-between">
-                        <p className="text-sm text-gray-600">Potential uplift:</p>
+                        <p className="text-sm text-rt-fg-secondary">Potential uplift:</p>
                         <p className="font-medium flex items-center gap-1">
-                          <TrendingUp size={16} className="text-green-600" />
+                          <TrendingUp size={16} className="text-rt-green" />
                           {(rec.potential_uplift_views / 1000000).toFixed(1)}M views
                         </p>
                       </div>
                       <div className="flex items-center justify-between">
-                        <p className="text-sm text-gray-600">Projected savings:</p>
+                        <p className="text-sm text-rt-fg-secondary">Projected savings:</p>
                         <p className="font-medium flex items-center gap-1">
-                          <TrendingDown size={16} className="text-green-600" />
+                          <TrendingDown size={16} className="text-rt-green" />
                           ${rec.projected_savings.toFixed(0)}
                         </p>
                       </div>
