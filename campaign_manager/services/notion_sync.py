@@ -248,6 +248,29 @@ def _map_page_to_row(page: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Op
 # Diff + persist
 # ---------------------------------------------------------------------------
 
+def _row_differs(existing_row: "NotionMasterPage", row: Dict[str, Any]) -> bool:
+    """True when any mapped field in ``row`` differs from the mirror row.
+
+    Content comparison, NOT timestamp comparison. Notion does not bump a
+    page's ``last_edited_time`` for every change that alters property
+    values — renaming a select option rewrites the value on every page
+    using it with no timestamp change. A pure timestamp diff therefore
+    froze stale values in the mirror forever (seen live 2026-06-09:
+    backroaddriver's cluster said 'Warner Test UGC' while Notion said
+    'Gannon Fremin', both stamped 2026-05-15T19:47Z).
+    """
+    for field_name, new_value in row.items():
+        if field_name == "notion_page_id":
+            continue
+        old_value = getattr(existing_row, field_name)
+        if field_name == "notion_last_edited_at":
+            old_value = _normalize_to_utc(old_value)
+            new_value = _normalize_to_utc(new_value)
+        if old_value != new_value:
+            return True
+    return False
+
+
 def _apply_diff(
     session,
     incoming_rows: List[Dict[str, Any]],
@@ -272,16 +295,12 @@ def _apply_diff(
         session.add(NotionMasterPage(**row))
         added += 1
 
-    # UPDATE (both sides, Notion edit is newer or timestamps don't match)
+    # UPDATE (both sides, any mapped field differs). Content diff, not
+    # timestamp diff — see _row_differs for why timestamps can't be trusted.
     for shared_id in incoming_ids & existing_ids:
         row = incoming_by_id[shared_id]
         existing_row = existing_by_id[shared_id]
-        new_ts = _normalize_to_utc(row.get("notion_last_edited_at"))
-        old_ts = _normalize_to_utc(existing_row.notion_last_edited_at)
-        # Update if Notion's edit timestamp is strictly newer, OR if either side
-        # is missing a timestamp (defensive — old mirror rows may pre-date the
-        # column). Equal timestamps are no-ops.
-        if new_ts is None or old_ts is None or new_ts > old_ts:
+        if _row_differs(existing_row, row):
             for field_name, value in row.items():
                 setattr(existing_row, field_name, value)
             existing_row.synced_at = datetime.now(timezone.utc)

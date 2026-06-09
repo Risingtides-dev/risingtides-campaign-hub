@@ -184,6 +184,24 @@ class TestSyncMasterPages:
             row = s.query(NotionMasterPage).one()
             assert row.account_username == "alice_renamed"
 
+    def test_value_change_with_same_timestamp_triggers_update(self, db, patch_fetch):
+        """Notion select-option renames rewrite page values WITHOUT bumping
+        last_edited_time. The sync must catch the content change anyway —
+        the old timestamp-only diff froze stale values forever."""
+        page = _page(_PAGE_ID_A, account="alice", last_edited="2026-05-15T19:47:00Z")
+        page["properties"]["Group "] = {"select": {"name": "Warner Test UGC"}}
+        patch_fetch.return_value = [page]
+        notion_sync.sync_master_pages()
+
+        page2 = _page(_PAGE_ID_A, account="alice", last_edited="2026-05-15T19:47:00Z")
+        page2["properties"]["Group "] = {"select": {"name": "Gannon Fremin"}}
+        patch_fetch.return_value = [page2]
+        result = notion_sync.sync_master_pages()
+        assert result.pages_updated == 1
+        with db.get_session() as s:
+            row = s.query(NotionMasterPage).one()
+            assert row.notion_subgroup == "Gannon Fremin"
+
     def test_mirror_only_row_gets_deleted(self, db, patch_fetch):
         patch_fetch.return_value = [
             _page(_PAGE_ID_A, account="alice"),
