@@ -28,7 +28,7 @@ from campaign_manager.utils.helpers import (
     save_json,
     video_posted_before_start,
 )
-from campaign_manager.utils.budget import calc_budget, calc_stats
+from campaign_manager.utils.budget import calc_budget, calc_cpm, calc_stats
 from campaign_manager.services.campaign_stats import (
     CampaignStatsResult,
     get_campaign_stats,
@@ -73,7 +73,7 @@ def _stats_from_result(
 
     total_views = result.total_views
     booked = sum(float(c.get("total_rate", 0) or 0) for c in active)
-    cpm = (booked / total_views) * 1_000 if total_views > 0 and booked > 0 else None
+    cpm = calc_cpm(booked, total_views)
 
     return {
         "live_posts": live_posts,
@@ -1631,10 +1631,9 @@ def list_creators():
         if platforms:
             entry["platform"] = max(set(platforms), key=platforms.count)
 
-        if entry["total_views"] > 0:
-            entry["avg_cpm"] = round(
-                (entry["total_spend"] / entry["total_views"]) * 1_000, 2
-            )
+        cpm = calc_cpm(entry["total_spend"], entry["total_views"])
+        if cpm is not None:
+            entry["avg_cpm"] = round(cpm, 2)
         else:
             entry["avg_cpm"] = None
 
@@ -1791,8 +1790,9 @@ def creator_profile(username: str):
         platform = max(set(platforms), key=platforms.count)
 
     avg_cpm = None
-    if total_views > 0:
-        avg_cpm = round((total_spend / total_views) * 1_000, 2)
+    cpm = calc_cpm(total_spend, total_views)
+    if cpm is not None:
+        avg_cpm = round(cpm, 2)
 
     # Merge niches from all creator rows for this username
     niches: List[str] = []
