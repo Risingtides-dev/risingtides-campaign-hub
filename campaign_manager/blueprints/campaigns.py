@@ -321,10 +321,14 @@ def _campaign_summary(c: Dict) -> Dict:
         "artist": c["meta"].get("artist", ""),
         "song": c["meta"].get("song", ""),
         "start_date": c["meta"].get("start_date", ""),
-        "status": c["meta"].get("status", "active"),
         "budget": c["budget"],
         "stats": c["stats"],
         "completion_status": c["meta"].get("completion_status", "none"),
+        # `active` is the single source of truth for "is this campaign live?"
+        # A campaign is active until it's checked off completed. Agents/scrapers
+        # should source from active campaigns only — filter via ?active=true.
+        # (Replaces the old dead `status` field that was always "active".)
+        "active": c["meta"].get("completion_status", "none") != "completed",
         "creator_count": len([
             cr for cr in c["creators"]
             if cr.get("status", "active") != "removed"
@@ -341,9 +345,23 @@ def _campaign_summary(c: Dict) -> Dict:
 # -------------------------------------------------------------------
 @campaigns_bp.get("/api/campaigns")
 def list_campaigns():
-    """List all campaigns with budget and stats."""
+    """List all campaigns with budget and stats.
+
+    Query params:
+      ?active=true   -> only live campaigns (completion_status != "completed")
+      ?active=false  -> only finished campaigns
+      (omit)         -> all campaigns; UI needs both for its Active/Finished tabs
+    """
     search = (request.args.get("search") or "").strip().lower()
+    active_param = (request.args.get("active") or "").strip().lower()
     campaigns = get_campaigns()
+
+    if active_param in ("true", "1", "yes"):
+        campaigns = [c for c in campaigns
+                     if c["meta"].get("completion_status", "none") != "completed"]
+    elif active_param in ("false", "0", "no"):
+        campaigns = [c for c in campaigns
+                     if c["meta"].get("completion_status", "none") == "completed"]
 
     if search:
         tokens = [t for t in re.split(r"\s+", search) if t]
