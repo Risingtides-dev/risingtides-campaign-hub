@@ -74,12 +74,12 @@ class TestCalcStats:
         result = calc_stats({"budget": 1000}, [{"total_rate": 500}])
         assert result["cpm"] is None
 
-    def test_cpm_calculated_from_spend_and_views(self):
+    def test_cpm_calculated_from_gross_client_spend_and_views(self):
         meta = {"budget": 1000, "stats": {"total_views": 100_000}}
         creators = [{"total_rate": 500}]
         result = calc_stats(meta, creators)
-        # cpm = 500 / 100,000 * 1000 = 5.0
-        assert result["cpm"] == 5.0
+        # Client spend is grossed up from the 50% market deployment value.
+        assert result["cpm"] == 10.0
 
     def test_cpm_is_none_when_no_spend(self):
         meta = {"budget": 1000, "stats": {"total_views": 10000}}
