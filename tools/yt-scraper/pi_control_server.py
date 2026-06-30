@@ -14,6 +14,11 @@ ROOT = Path(__file__).resolve().parents[2]
 OUTPUT_ROOT = ROOT / "output" / "local-scraper"
 EXPORT_ROOT = OUTPUT_ROOT / "hub_queue_export"
 
+# Webhook actions this node will run. Whitelist only — the request body never
+# supplies a command/prompt, just picks one of these named handlers. This is
+# what keeps an internet-reachable endpoint from being a remote shell.
+SCRAPER_LAUNCHD_LABEL = "com.risingtides.pi-scrape-hourly"
+
 
 def latest_export_dir() -> Path | None:
     dirs = [
@@ -114,8 +119,57 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._send(404, "application/json", b'{"error":"not found"}')
 
+    def _run_local_scrape(self) -> dict:
+        """Whitelisted action: kick the local scrape launchd job. No request input
+        is passed to the shell — this only restarts a fixed, pre-installed job."""
+        import subprocess
+        domain = f"gui/{os.getuid()}/{SCRAPER_LAUNCHD_LABEL}"
+        try:
+            listed = subprocess.run(
+                ["launchctl", "list", SCRAPER_LAUNCHD_LABEL],
+                capture_output=True, text=True, timeout=10,
+            )
+            if '"PID"' in (listed.stdout or ""):
+                return {"ok": True, "action": "scrape", "started": False,
+                        "note": "scrape already running"}
+            proc = subprocess.run(
+                ["launchctl", "kickstart", domain],
+                capture_output=True, text=True, timeout=15,
+            )
+            ok = proc.returncode == 0
+            return {"ok": ok, "action": "scrape", "started": ok,
+                    "detail": (proc.stderr or proc.stdout or "").strip()[:300]}
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "action": "scrape", "error": str(exc)}
+
+    def _dispatch_action(self, body: dict):
+        action = (body.get("action") or "").strip()
+        if action == "scrape":
+            return 200, self._run_local_scrape()
+        return 400, {"ok": False, "error": f"unknown action: {action!r}",
+                     "allowed": ["scrape"]}
+
+    def _read_json_body(self) -> dict:
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return {}
+        if length <= 0:
+            return {}
+        try:
+            return json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+        except Exception:  # noqa: BLE001
+            return {}
+
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if parsed.path == "/api/run-now":
+            if not self._authorized():
+                self._send(403, "application/json", b'{"error":"bad token"}')
+                return
+            code, result = self._dispatch_action(self._read_json_body())
+            self._send(code, "application/json", json.dumps(result, indent=2).encode("utf-8"))
+            return
         if parsed.path != "/api/export":
             self._send(404, "application/json", b'{"error":"not found"}')
             return
