@@ -149,7 +149,7 @@ def list_trackers():
     names = _db.get_tracker_names()
     campaign_links = _db.get_tracker_campaign_links()
     archives = _db.get_tracker_archives()
-    all_campaigns = _db.list_campaigns(status="")  # all statuses
+    all_campaigns = _db.list_campaigns()
     campaigns_by_slug = {
         c.get("slug"): {
             "slug": c.get("slug"),

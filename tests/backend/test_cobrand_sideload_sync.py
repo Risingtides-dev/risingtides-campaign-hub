@@ -43,7 +43,7 @@ def db_env():
 def _seed(slug="camp", promo="promo-1", artist="Artist", title="Song", urls=(U1, U2)):
     with _db.get_session() as s:
         c = Campaign(
-            slug=slug, title=title, name=title, artist=artist, status="active",
+            slug=slug, title=title, name=title, artist=artist,
             cobrand_promotion_id=promo, start_date="2020-01-01",
         )
         s.add(c)

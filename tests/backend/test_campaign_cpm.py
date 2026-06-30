@@ -15,7 +15,6 @@ def _seed_campaign(db):
             "artist": "Gross Artist",
             "song": "Gross Song",
             "budget": 1500,
-            "status": "active",
             "completion_status": "completed",
             "stats": {"total_views": 100_000, "total_likes": 0},
         },

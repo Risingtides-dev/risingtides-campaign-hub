@@ -31,7 +31,6 @@ export interface CampaignSummary {
   artist: string
   song: string
   start_date: string
-  status: string
   completion_status: "none" | "booked" | "completed"
   budget: CampaignBudget
   stats: CampaignStats
