@@ -51,6 +51,15 @@ def cron_trigger():
     if job_type not in ("campaign_refresh", "internal_scrape"):
         return jsonify({"error": "Invalid job_type. Use 'campaign_refresh' or 'internal_scrape'"}), 400
 
+    # Delegate campaign scrapes to the local node when configured (Railway's IP
+    # is TikTok-blocked). This also stops stray POSTs here from launching a
+    # doomed Railway-side scrape.
+    if job_type == "campaign_refresh":
+        from campaign_manager.services.local_agent import is_configured, dispatch_scrape
+        if is_configured():
+            result = dispatch_scrape(None)
+            return jsonify({"status": "delegated_to_local", **result}), (202 if result.get("ok") else 502)
+
     # Run in background thread so we return immediately
     thread = threading.Thread(target=trigger_job, args=(job_type,), daemon=True)
     thread.start()
