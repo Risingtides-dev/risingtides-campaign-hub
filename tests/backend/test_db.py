@@ -15,7 +15,6 @@ def _make_campaign(db, slug="my_campaign", title="My Campaign", **extra):
         "sound_id": "1234567890",
         "start_date": "2026-04-01",
         "budget": 1000.0,
-        "status": "active",
         "platform": "tiktok",
         **extra,
     }
@@ -62,12 +61,6 @@ class TestCampaignCrud:
         assert meta["stats"]["total_views"] == 999
         assert meta["stats"]["total_likes"] == 10
         assert meta["stats"]["last_scrape"]
-
-    def test_list_campaigns_filters_by_status(self, db):
-        _make_campaign(db, slug="active1")
-        _make_campaign(db, slug="paused1", status="paused")
-        assert {c["slug"] for c in db.list_campaigns(status="active")} == {"active1"}
-        assert {c["slug"] for c in db.list_campaigns(status="paused")} == {"paused1"}
 
     def test_list_campaigns_can_exclude_completed(self, db):
         _make_campaign(db, slug="a", completion_status="none")

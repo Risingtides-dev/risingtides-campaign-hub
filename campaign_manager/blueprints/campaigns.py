@@ -241,7 +241,7 @@ def get_campaigns() -> List[Dict]:
     """
     if _db.is_active():
         rows = _db.list_campaigns_with_creators(
-            status="active", with_matched_videos=True
+            with_matched_videos=True
         )
         tracker_map = _db.get_campaign_to_tracker_map()
 
@@ -415,7 +415,7 @@ def create_campaign():
         "official_sound": official_sound,
         "sound_id": extract_sound_id(official_sound) if official_sound else "",
         "start_date": start_date, "budget": budget,
-        "status": "active", "platform": "tiktok",
+        "platform": "tiktok",
         "created_at": datetime.now().isoformat(),
         "stats": {"total_views": 0, "total_likes": 0},
     }
@@ -589,7 +589,6 @@ def campaign_detail(slug: str):
         "budget": budget,
         "stats": stats,
         "platform": meta.get("platform", "tiktok"),
-        "status": meta.get("status", "active"),
         "source": meta.get("source", "manual"),
         "label": meta.get("label", ""),
         "round": meta.get("round", ""),
@@ -623,7 +622,6 @@ def campaign_detail(slug: str):
         "tracker_campaign_id": meta.get("tracker_campaign_id", ""),
         "tracker_url": _canon_tracker_url(meta.get("tracker_url", "")),
         "platform": meta.get("platform", "tiktok"),
-        "status": meta.get("status", "active"),
         "source": meta.get("source", "manual"),
         "label": meta.get("label", ""),
         "round": meta.get("round", ""),
@@ -1456,7 +1454,7 @@ def _get_all_campaigns_data():
 
     if _db.is_active():
         rows = _db.list_campaigns_with_creators(
-            status=None, with_matched_videos=True
+            with_matched_videos=True
         )
         tracker_map = _db.get_campaign_to_tracker_map()
         for meta, creators, matched_videos in rows:

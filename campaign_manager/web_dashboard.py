@@ -294,7 +294,7 @@ def extract_sound_id(input_str: str) -> str:
 
 def get_campaigns() -> List[Dict]:
     if USE_DB:
-        metas = _db.list_campaigns(status="active")
+        metas = _db.list_campaigns()
         items = []
         for meta in metas:
             slug = meta["slug"]

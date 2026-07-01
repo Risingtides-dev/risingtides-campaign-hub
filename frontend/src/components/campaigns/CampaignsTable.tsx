@@ -146,27 +146,6 @@ function buildColumns(
     },
   },
   {
-    accessorKey: "status",
-    header: ({ column }) => (
-      <SortableHeader column={column} label="Status" />
-    ),
-    cell: ({ row }) => {
-      const status = row.original.status || "active"
-      const isActive = status.toLowerCase() === "active"
-      return (
-        <span
-          className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-semibold ${
-            isActive
-              ? "bg-rt-magenta/10 text-rt-magenta"
-              : "bg-rt-green/10 text-rt-green"
-          }`}
-        >
-          {status.charAt(0).toUpperCase() + status.slice(1)}
-        </span>
-      )
-    },
-  },
-  {
     accessorKey: "budget.total",
     id: "budget",
     header: ({ column }) => (

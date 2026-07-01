@@ -32,7 +32,7 @@ def _clear_cache():
 
 def _seed_campaign_with_tracker(slug: str, tracker_id: str = "tracker-uuid-1") -> int:
     with _db.get_session() as s:
-        camp = Campaign(slug=slug, title=slug, artist="A", song="S", status="active",
+        camp = Campaign(slug=slug, title=slug, artist="A", song="S",
                         tracker_campaign_id=tracker_id)
         s.add(camp)
         s.commit()
@@ -46,7 +46,7 @@ def _seed_campaign_with_tracker(slug: str, tracker_id: str = "tracker-uuid-1") -
 
 def _seed_campaign_no_tracker(slug: str) -> int:
     with _db.get_session() as s:
-        camp = Campaign(slug=slug, title=slug, artist="A", song="S", status="active")
+        camp = Campaign(slug=slug, title=slug, artist="A", song="S")
         s.add(camp)
         s.commit()
         return camp.id
@@ -232,7 +232,7 @@ class TestGetCampaignStats:
     def test_resolves_tracker_via_overlay_table(self, db):
         # No tracker_campaign_id on the row — but a link in the overlay.
         with _db.get_session() as s:
-            s.add(Campaign(slug="omega", title="omega", status="active"))
+            s.add(Campaign(slug="omega", title="omega"))
             s.add(TrackerCampaignLink(tracker_id="tk-omega", campaign_slug="omega"))
             s.commit()
         with patch.object(

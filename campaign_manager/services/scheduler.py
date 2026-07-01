@@ -377,7 +377,7 @@ def run_campaign_refresh(only_slugs=None, on_progress=None):
     per_campaign = {}
 
     try:
-        campaigns = _db.list_campaigns(status="active", exclude_completed=True)
+        campaigns = _db.list_campaigns(exclude_completed=True)
         if only_slugs:
             wanted = {s for s in only_slugs}
             campaigns = [c for c in campaigns if c.get("slug", "") in wanted]
@@ -1052,7 +1052,7 @@ def _attach_internal_to_campaigns(internal_videos: list) -> dict:
         }
 
     # Build sound_id -> winning campaign lookup
-    campaigns = _db.list_campaigns(status="active", exclude_completed=True)
+    campaigns = _db.list_campaigns(exclude_completed=True)
     sound_to_campaign: dict = {}  # sound_id -> meta
 
     for meta in campaigns:

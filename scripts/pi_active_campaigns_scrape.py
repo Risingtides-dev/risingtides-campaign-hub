@@ -195,7 +195,7 @@ def main() -> int:
         from campaign_manager.services.scheduler import run_campaign_refresh
 
         _db.init()
-        active_campaigns = _db.list_campaigns(status="active", exclude_completed=True)
+        active_campaigns = _db.list_campaigns(exclude_completed=True)
         report["active_campaigns_excluding_completed"] = len(active_campaigns)
 
         if args.run:
