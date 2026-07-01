@@ -62,7 +62,11 @@ class TestListCampaigns:
         finished = client.get("/api/campaigns?active=false").get_json()
         assert [i["slug"] for i in finished] == ["done_artist_done_song"]
 
-        assert len(client.get("/api/campaigns").get_json()) == 2  # no param = both
+        # DEFAULT is active-only, so an agent can't accidentally scrape finished
+        # campaigns. Both sets require an explicit ?include_finished=true.
+        default = client.get("/api/campaigns").get_json()
+        assert [i["slug"] for i in default] == ["live_artist_live_song"]
+        assert len(client.get("/api/campaigns?include_finished=true").get_json()) == 2
 
 
 class TestCreateCampaign:

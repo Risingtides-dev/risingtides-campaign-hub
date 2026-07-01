@@ -345,23 +345,38 @@ def _campaign_summary(c: Dict) -> Dict:
 # -------------------------------------------------------------------
 @campaigns_bp.get("/api/campaigns")
 def list_campaigns():
-    """List all campaigns with budget and stats.
+    """List campaigns with budget and stats.
+
+    DEFAULT IS ACTIVE-ONLY. A campaign is active until it's checked off
+    completed (completion_status != "completed"). We default to active so an
+    agent/script that naively calls GET /api/campaigns gets the ~47 live
+    campaigns, never the ~246 total — grabbing all and treating them as active
+    is a 5x scrape/API-bill blowup. Ask for finished/all explicitly:
 
     Query params:
-      ?active=true   -> only live campaigns (completion_status != "completed")
-      ?active=false  -> only finished campaigns
-      (omit)         -> all campaigns; UI needs both for its Active/Finished tabs
+      (omit)                  -> active campaigns only  (the safe default)
+      ?active=false           -> only finished campaigns
+      ?include_finished=true  -> ALL campaigns (the UI uses this for its tabs)
+                                 (alias: ?all=true)
     """
     search = (request.args.get("search") or "").strip().lower()
     active_param = (request.args.get("active") or "").strip().lower()
+    include_finished = (
+        (request.args.get("include_finished") or request.args.get("all") or "")
+        .strip().lower() in ("true", "1", "yes")
+    )
     campaigns = get_campaigns()
 
-    if active_param in ("true", "1", "yes"):
-        campaigns = [c for c in campaigns
-                     if c["meta"].get("completion_status", "none") != "completed"]
-    elif active_param in ("false", "0", "no"):
-        campaigns = [c for c in campaigns
-                     if c["meta"].get("completion_status", "none") == "completed"]
+    def _is_active(c):
+        return c["meta"].get("completion_status", "none") != "completed"
+
+    if active_param in ("false", "0", "no"):
+        campaigns = [c for c in campaigns if not _is_active(c)]
+    elif include_finished:
+        pass  # return everything (active + finished)
+    else:
+        # Default + ?active=true: active only.
+        campaigns = [c for c in campaigns if _is_active(c)]
 
     if search:
         tokens = [t for t in re.split(r"\s+", search) if t]

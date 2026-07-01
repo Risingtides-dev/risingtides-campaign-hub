@@ -65,7 +65,10 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
 export const api = {
   // Campaigns
-  getCampaigns: () => request<CampaignSummary[]>("/api/campaigns"),
+  // Fetches ALL campaigns (active + finished) — the list page splits them into
+  // its Active/Finished tabs. Note: /api/campaigns now defaults to active-only,
+  // so the finished set must be requested explicitly.
+  getCampaigns: () => request<CampaignSummary[]>("/api/campaigns?include_finished=true"),
 
   getCampaign: (slug: string) =>
     request<CampaignDetail>(`/api/campaign/${slug}`),
