@@ -64,12 +64,20 @@ def _stats_from_result(
     Keeps the existing keys (`live_posts`, `total_views`, `cpm`) so the
     frontend doesn't need to learn a new shape, and tacks on
     API-sourced fields plus a `source`/`stale_since` provenance block.
-    `live_posts` continues to come from creator post counts — that's an
-    operational signal ("Jake checked off these as live"), not a stats
-    number, so it stays scraper-side until RTA-44.
+
+    `live_posts` (the delivery count) comes from the Tides Tracker when the
+    tracker answered (`api`/`api_cached`) — it's the source of truth for
+    what's actually live in Cobrand, including internal-page posts that the
+    scraper never lands in matched_videos. Campaigns without a tracker fall
+    back to scraper-side creator post counts. Also keeps the number accurate
+    through scraper outages.
     """
     active = [c for c in creators if c.get("status", "active") != "removed"]
-    live_posts = sum(int(c.get("posts_done", 0) or 0) for c in active)
+    scraper_live_posts = sum(int(c.get("posts_done", 0) or 0) for c in active)
+    if result.source in ("api", "api_cached"):
+        live_posts = result.post_count
+    else:
+        live_posts = scraper_live_posts
 
     total_views = result.total_views
     booked = sum(float(c.get("total_rate", 0) or 0) for c in active)

@@ -459,3 +459,37 @@ class TestOverlayVideoStats:
         subs = [Submission(video_url="https://tt.com/v/1", views=999)]
         _ = overlay_video_stats(rows, subs)
         assert rows[0]["views"] == 10  # input untouched
+
+
+class TestLivePostsSource:
+    """live_posts (delivery count) sources from the tracker when it attests,
+    scraper-side posts_done otherwise. (Jake's Claude request, 2026-07-01)"""
+
+    def _creators(self):
+        return [
+            {"username": "a", "status": "active", "posts_done": 2},
+            {"username": "b", "status": "active", "posts_done": 3},
+            {"username": "c", "status": "removed", "posts_done": 9},
+        ]
+
+    def _result(self, source, n_subs):
+        from campaign_manager.services.campaign_stats import (
+            CampaignStatsResult, Submission,
+        )
+        subs = [Submission(video_url=f"https://t/{i}") for i in range(n_subs)]
+        return CampaignStatsResult(slug="s", source=source, submissions=subs)
+
+    def test_tracker_api_wins(self):
+        from campaign_manager.blueprints.campaigns import _stats_from_result
+        stats = _stats_from_result({}, self._creators(), self._result("api", 8))
+        assert stats["live_posts"] == 8  # tracker count, not 5
+
+    def test_cached_tracker_wins(self):
+        from campaign_manager.blueprints.campaigns import _stats_from_result
+        stats = _stats_from_result({}, self._creators(), self._result("api_cached", 7))
+        assert stats["live_posts"] == 7
+
+    def test_no_tracker_falls_back_to_posts_done(self):
+        from campaign_manager.blueprints.campaigns import _stats_from_result
+        stats = _stats_from_result({}, self._creators(), self._result("scraper_fallback", 4))
+        assert stats["live_posts"] == 5  # 2+3, removed creator excluded
