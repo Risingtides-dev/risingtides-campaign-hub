@@ -54,7 +54,20 @@ _DEFAULT_UA = (
 
 
 def _yt_dlp_base() -> List[str]:
-    """Base command — prefers the binary on PATH, falls back to module form."""
+    """Base command — prefer THIS interpreter's yt_dlp module, PATH binary last.
+
+    The venv's yt-dlp is the one whose deps we control (curl_cffi for
+    --impersonate). Preferring the PATH binary bit us on 2026-06-28: a brew
+    upgrade replaced /opt/homebrew/bin/yt-dlp with a build lacking curl_cffi,
+    and every local scrape silently returned 0 videos ("Impersonate target
+    not available") until caught on 2026-07-01. A random PATH binary must
+    never outrank the pinned venv install.
+    """
+    try:
+        import yt_dlp  # noqa: F401
+        return [sys.executable, "-m", "yt_dlp"]
+    except ImportError:
+        pass
     if shutil.which("yt-dlp"):
         return ["yt-dlp"]
     return [sys.executable, "-m", "yt_dlp"]
