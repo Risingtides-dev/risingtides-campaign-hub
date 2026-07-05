@@ -106,6 +106,10 @@ def init(database_url: Optional[str] = None):
     # /api/campaigns down when `campaigns.status` went missing). Auto-add any
     # model column the table is missing so the schema self-heals on boot,
     # instead of relying on the hand-maintained ALTER blocks below.
+    # NOTE: the dead `status` column is dropped as a DELIBERATE one-time
+    # migration AFTER this code deploys (so no running code references it),
+    # NOT here. Auto-running schema DROPs on every db.init() broke prod once
+    # already — see scripts/migrations/drop_campaigns_status.sql.
     _sync_columns()
 
     # Add completion_status column if missing (create_all won't add columns to existing tables)
@@ -539,7 +543,6 @@ def save_campaign(slug: str, meta: Dict):
         c.cobrand_link = meta.get("cobrand_link", "")
         c.start_date = meta.get("start_date", "")
         c.budget = float(meta.get("budget", 0))
-        c.status = meta.get("status", "active")
         c.platform = meta.get("platform", "tiktok")
 
         c.cobrand_share_url = meta.get("cobrand_share_url", c.cobrand_share_url or "")
@@ -609,19 +612,17 @@ def update_campaign_stats(slug: str, total_views: int, total_likes: int):
             s.commit()
 
 
-def list_campaigns(status: str = "active", exclude_completed: bool = False) -> List[Dict]:
-    """List all campaigns with the given status, returning meta dicts.
+def list_campaigns(exclude_completed: bool = False) -> List[Dict]:
+    """List all campaigns, returning meta dicts.
 
-    `exclude_completed=True` additionally filters out campaigns whose
-    completion_status is "completed". The cron, internal-creator attach,
-    and slack-sounds poster pass this so they stop touching finished
-    campaigns. Frontend list endpoints leave it False — the UI's
-    Active/Finished tabs filter client-side and need both sets.
+    `exclude_completed=True` filters out campaigns whose completion_status
+    is "completed". The cron, internal-creator attach, and slack-sounds
+    poster pass this so they stop touching finished campaigns. Frontend
+    list endpoints leave it False — the UI's Active/Finished tabs filter
+    client-side and need both sets.
     """
     with get_session() as s:
         query = s.query(Campaign)
-        if status:
-            query = query.filter_by(status=status)
         if exclude_completed:
             query = query.filter(Campaign.completion_status != "completed")
         campaigns = query.all()
@@ -629,7 +630,6 @@ def list_campaigns(status: str = "active", exclude_completed: bool = False) -> L
 
 
 def list_campaigns_with_creators(
-    status: str = "active",
     *,
     with_matched_videos: bool = False,
 ) -> List[Tuple[Dict, List[Dict], List[Dict]]]:
@@ -650,8 +650,6 @@ def list_campaigns_with_creators(
         options.append(selectinload(Campaign.matched_videos))
     with get_session() as s:
         query = s.query(Campaign).options(*options)
-        if status:
-            query = query.filter_by(status=status)
         campaigns = query.all()
         return [
             (

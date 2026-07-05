@@ -28,7 +28,7 @@ from campaign_manager.utils.helpers import (
     save_json,
     video_posted_before_start,
 )
-from campaign_manager.utils.budget import calc_budget, calc_stats
+from campaign_manager.utils.budget import calc_budget, calc_cpm, calc_stats
 from campaign_manager.services.campaign_stats import (
     CampaignStatsResult,
     get_campaign_stats,
@@ -64,16 +64,24 @@ def _stats_from_result(
     Keeps the existing keys (`live_posts`, `total_views`, `cpm`) so the
     frontend doesn't need to learn a new shape, and tacks on
     API-sourced fields plus a `source`/`stale_since` provenance block.
-    `live_posts` continues to come from creator post counts — that's an
-    operational signal ("Jake checked off these as live"), not a stats
-    number, so it stays scraper-side until RTA-44.
+
+    `live_posts` (the delivery count) comes from the Tides Tracker when the
+    tracker answered (`api`/`api_cached`) — it's the source of truth for
+    what's actually live in Cobrand, including internal-page posts that the
+    scraper never lands in matched_videos. Campaigns without a tracker fall
+    back to scraper-side creator post counts. Also keeps the number accurate
+    through scraper outages.
     """
     active = [c for c in creators if c.get("status", "active") != "removed"]
-    live_posts = sum(int(c.get("posts_done", 0) or 0) for c in active)
+    scraper_live_posts = sum(int(c.get("posts_done", 0) or 0) for c in active)
+    if result.source in ("api", "api_cached"):
+        live_posts = result.post_count
+    else:
+        live_posts = scraper_live_posts
 
     total_views = result.total_views
     booked = sum(float(c.get("total_rate", 0) or 0) for c in active)
-    cpm = (booked / total_views) * 1_000 if total_views > 0 and booked > 0 else None
+    cpm = calc_cpm(booked, total_views)
 
     return {
         "live_posts": live_posts,
@@ -241,7 +249,7 @@ def get_campaigns() -> List[Dict]:
     """
     if _db.is_active():
         rows = _db.list_campaigns_with_creators(
-            status="active", with_matched_videos=True
+            with_matched_videos=True
         )
         tracker_map = _db.get_campaign_to_tracker_map()
 
@@ -321,10 +329,14 @@ def _campaign_summary(c: Dict) -> Dict:
         "artist": c["meta"].get("artist", ""),
         "song": c["meta"].get("song", ""),
         "start_date": c["meta"].get("start_date", ""),
-        "status": c["meta"].get("status", "active"),
         "budget": c["budget"],
         "stats": c["stats"],
         "completion_status": c["meta"].get("completion_status", "none"),
+        # `active` is the single source of truth for "is this campaign live?"
+        # A campaign is active until it's checked off completed. Agents/scrapers
+        # should source from active campaigns only — filter via ?active=true.
+        # (Replaces the old dead `status` field that was always "active".)
+        "active": c["meta"].get("completion_status", "none") != "completed",
         "creator_count": len([
             cr for cr in c["creators"]
             if cr.get("status", "active") != "removed"
@@ -341,9 +353,38 @@ def _campaign_summary(c: Dict) -> Dict:
 # -------------------------------------------------------------------
 @campaigns_bp.get("/api/campaigns")
 def list_campaigns():
-    """List all campaigns with budget and stats."""
+    """List campaigns with budget and stats.
+
+    DEFAULT IS ACTIVE-ONLY. A campaign is active until it's checked off
+    completed (completion_status != "completed"). We default to active so an
+    agent/script that naively calls GET /api/campaigns gets the ~47 live
+    campaigns, never the ~246 total — grabbing all and treating them as active
+    is a 5x scrape/API-bill blowup. Ask for finished/all explicitly:
+
+    Query params:
+      (omit)                  -> active campaigns only  (the safe default)
+      ?active=false           -> only finished campaigns
+      ?include_finished=true  -> ALL campaigns (the UI uses this for its tabs)
+                                 (alias: ?all=true)
+    """
     search = (request.args.get("search") or "").strip().lower()
+    active_param = (request.args.get("active") or "").strip().lower()
+    include_finished = (
+        (request.args.get("include_finished") or request.args.get("all") or "")
+        .strip().lower() in ("true", "1", "yes")
+    )
     campaigns = get_campaigns()
+
+    def _is_active(c):
+        return c["meta"].get("completion_status", "none") != "completed"
+
+    if active_param in ("false", "0", "no"):
+        campaigns = [c for c in campaigns if not _is_active(c)]
+    elif include_finished:
+        pass  # return everything (active + finished)
+    else:
+        # Default + ?active=true: active only.
+        campaigns = [c for c in campaigns if _is_active(c)]
 
     if search:
         tokens = [t for t in re.split(r"\s+", search) if t]
@@ -397,7 +438,7 @@ def create_campaign():
         "official_sound": official_sound,
         "sound_id": extract_sound_id(official_sound) if official_sound else "",
         "start_date": start_date, "budget": budget,
-        "status": "active", "platform": "tiktok",
+        "platform": "tiktok",
         "created_at": datetime.now().isoformat(),
         "stats": {"total_views": 0, "total_likes": 0},
     }
@@ -571,7 +612,6 @@ def campaign_detail(slug: str):
         "budget": budget,
         "stats": stats,
         "platform": meta.get("platform", "tiktok"),
-        "status": meta.get("status", "active"),
         "source": meta.get("source", "manual"),
         "label": meta.get("label", ""),
         "round": meta.get("round", ""),
@@ -605,7 +645,6 @@ def campaign_detail(slug: str):
         "tracker_campaign_id": meta.get("tracker_campaign_id", ""),
         "tracker_url": _canon_tracker_url(meta.get("tracker_url", "")),
         "platform": meta.get("platform", "tiktok"),
-        "status": meta.get("status", "active"),
         "source": meta.get("source", "manual"),
         "label": meta.get("label", ""),
         "round": meta.get("round", ""),
@@ -1438,7 +1477,7 @@ def _get_all_campaigns_data():
 
     if _db.is_active():
         rows = _db.list_campaigns_with_creators(
-            status=None, with_matched_videos=True
+            with_matched_videos=True
         )
         tracker_map = _db.get_campaign_to_tracker_map()
         for meta, creators, matched_videos in rows:
@@ -1613,10 +1652,9 @@ def list_creators():
         if platforms:
             entry["platform"] = max(set(platforms), key=platforms.count)
 
-        if entry["total_views"] > 0:
-            entry["avg_cpm"] = round(
-                (entry["total_spend"] / entry["total_views"]) * 1_000, 2
-            )
+        cpm = calc_cpm(entry["total_spend"], entry["total_views"])
+        if cpm is not None:
+            entry["avg_cpm"] = round(cpm, 2)
         else:
             entry["avg_cpm"] = None
 
@@ -1773,8 +1811,9 @@ def creator_profile(username: str):
         platform = max(set(platforms), key=platforms.count)
 
     avg_cpm = None
-    if total_views > 0:
-        avg_cpm = round((total_spend / total_views) * 1_000, 2)
+    cpm = calc_cpm(total_spend, total_views)
+    if cpm is not None:
+        avg_cpm = round(cpm, 2)
 
     # Merge niches from all creator rows for this username
     niches: List[str] = []

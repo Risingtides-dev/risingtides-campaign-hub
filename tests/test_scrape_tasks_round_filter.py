@@ -29,7 +29,6 @@ def round2_campaign(app):
             title="Going Gone R2",
             artist="Josiah and the Bonnevilles",
             song="Going Gone",
-            status="active",
             start_date="2026-05-01",
             round="2",
         )
@@ -117,7 +116,6 @@ def test_queue_no_start_date_passes_everything(client):
         camp = Campaign(
             slug="legacy-no-start",
             title="Legacy",
-            status="active",
             start_date="",
         )
         s.add(camp)

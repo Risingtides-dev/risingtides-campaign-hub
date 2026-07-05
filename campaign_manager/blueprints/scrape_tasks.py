@@ -43,8 +43,6 @@ def trigger_scrape_task():
     Returns {job_id, state, scope}. Debounced: a second trigger while one is
     running returns the in-flight job (avoids doubling the scraper load).
     """
-    from campaign_manager.services.scrape_trigger import start_scrape
-
     data = request.get_json(silent=True) or {}
     only_slugs = None
     if not data.get("all_active"):
@@ -57,6 +55,18 @@ def trigger_scrape_task():
                 "error": "Provide all_active:true, campaign_id:<slug>, or slugs:[...]"
             }), 400
 
+    # Delegate to the local scraper node when configured — Railway's IP gets
+    # TikTok-blocked, so the real scrape runs on the Mac (residential IP).
+    from campaign_manager.services.local_agent import is_configured, dispatch_scrape
+    if is_configured():
+        result = dispatch_scrape(only_slugs)
+        node = result.get("node") or {}
+        # Shape it like the legacy job response so the frontend stays happy.
+        result["state"] = "running" if result.get("ok") else "error"
+        result["already_running"] = "already running" in (node.get("note") or "")
+        return jsonify(result), (202 if result.get("ok") else 502)
+
+    from campaign_manager.services.scrape_trigger import start_scrape
     job = start_scrape(only_slugs)
     return jsonify(job), (200 if job.get("already_running") else 202)
 
@@ -137,7 +147,6 @@ def queue():
             .join(Campaign, MatchedVideo.campaign_id == Campaign.id)
             .filter(MatchedVideo.tracked_at.is_(None))
             .filter(MatchedVideo.dismissed_at.is_(None))
-            .filter(Campaign.status == "active")
             .filter(or_(Campaign.completion_status.is_(None), Campaign.completion_status != "completed"))
         )
         if campaign_filter:

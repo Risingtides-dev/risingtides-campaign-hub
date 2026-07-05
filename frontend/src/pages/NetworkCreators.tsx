@@ -153,7 +153,7 @@ export default function NetworkCreators() {
   // Active campaigns only
   const activeCampaigns = useMemo(() => {
     if (!campaigns) return []
-    return campaigns.filter((c) => c.status === "active")
+    return campaigns.filter((c) => c.completion_status !== "completed")
   }, [campaigns])
 
   const handleAddNiche = (value: string) => {

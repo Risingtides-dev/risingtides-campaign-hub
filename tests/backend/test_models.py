@@ -29,7 +29,6 @@ class TestCampaignToMetaDict:
         meta = c.to_meta_dict()
         assert meta["slug"] == "x"
         assert meta["title"] == "Title"
-        assert meta["status"] == "active"
         assert meta["platform"] == "tiktok"
         assert meta["match_strategy"] == "fuzzy"
         assert meta["completion_status"] == "none"

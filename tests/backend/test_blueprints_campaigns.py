@@ -44,6 +44,30 @@ class TestListCampaigns:
         items = client.get("/api/campaigns?search=zzzzz").get_json()
         assert items == []
 
+    def test_summary_exposes_active_boolean_not_dead_status(self, client):
+        _create(client)
+        item = client.get("/api/campaigns").get_json()[0]
+        assert item["active"] is True          # live until checked off completed
+        assert "status" not in item            # dead field removed
+
+    def test_active_filter_excludes_completed(self, client):
+        _create(client, title="Live Artist - Live Song")
+        _create(client, title="Done Artist - Done Song")
+        client.post("/api/campaign/done_artist_done_song/edit",
+                    json={"completion_status": "completed"})
+
+        active = client.get("/api/campaigns?active=true").get_json()
+        assert [i["slug"] for i in active] == ["live_artist_live_song"]
+
+        finished = client.get("/api/campaigns?active=false").get_json()
+        assert [i["slug"] for i in finished] == ["done_artist_done_song"]
+
+        # DEFAULT is active-only, so an agent can't accidentally scrape finished
+        # campaigns. Both sets require an explicit ?include_finished=true.
+        default = client.get("/api/campaigns").get_json()
+        assert [i["slug"] for i in default] == ["live_artist_live_song"]
+        assert len(client.get("/api/campaigns?include_finished=true").get_json()) == 2
+
 
 class TestCreateCampaign:
     def test_creates_campaign_and_parses_title(self, client):

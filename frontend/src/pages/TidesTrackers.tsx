@@ -89,7 +89,7 @@ export default function TidesTrackers() {
   const activeCampaigns = useMemo(
     () =>
       [...campaigns]
-        .filter((c) => c.status === "active")
+        .filter((c) => c.completion_status !== "completed")
         .sort((a, b) => a.title.localeCompare(b.title)),
     [campaigns]
   )
