@@ -352,6 +352,7 @@ def get_campaign_stats(
     tracker_id: Optional[str] = None,
     start_date: str = "",
     force_refresh: bool = False,
+    allow_live_fetch: bool = True,
 ) -> CampaignStatsResult:
     """Resolve performance stats for one campaign.
 
@@ -408,6 +409,26 @@ def get_campaign_stats(
             api_fetched_at=cached.api_fetched_at,
             matched_videos=matched_videos,
             source=SOURCE_API,
+        )
+
+    # The list endpoint has a fixed latency budget. When its bulk pre-warm
+    # did not fetch this tracker, return cached/scraper data rather than
+    # turning the request into an unbounded series of upstream calls.
+    if not allow_live_fetch:
+        if cached is not None:
+            return _result_from_api(
+                slug=s,
+                tracker_id=tracker_id,
+                submissions=cached.submissions,
+                api_fetched_at=cached.api_fetched_at,
+                matched_videos=matched_videos,
+                source=SOURCE_API_CACHED,
+                stale_since=cached.fetched_at.isoformat(),
+                error_kind="refresh_deferred",
+            )
+        return _fallback(
+            s, matched_videos, tracker_id=tracker_id,
+            error_kind="refresh_deferred", start_date=start_date,
         )
 
     # Cache miss or expired — go live.
@@ -615,14 +636,14 @@ def get_campaign_stats_bulk(
         if not (cached and _is_fresh(cached, ttl)):
             cold_tracker_ids.append(tid)
 
-    # Parallel pre-warm. Bounded worker count — past ~10 the gains
-    # tail off and a flood of concurrent connections can saturate the
-    # Tides Tracker upstream.
+    # One bounded batch keeps a slow Tracker upstream from occupying every
+    # sync Gunicorn worker. Later requests fill the remaining cold entries.
     if cold_tracker_ids:
-        max_workers = min(10, len(cold_tracker_ids))
+        cold_tracker_ids = cold_tracker_ids[:10]
+        max_workers = len(cold_tracker_ids)
         with ThreadPoolExecutor(max_workers=max_workers) as ex:
             futures = {
-                ex.submit(fetch_campaign_submissions, tid): tid
+                ex.submit(fetch_campaign_submissions, tid, timeout=5): tid
                 for tid in cold_tracker_ids
             }
             for fut in as_completed(futures):
@@ -652,5 +673,6 @@ def get_campaign_stats_bulk(
             matched_videos=mv.get(s),
             tracker_id=tracker_map.get(s, ""),
             start_date=sd.get(s, ""),
+            allow_live_fetch=False,
         )
     return out

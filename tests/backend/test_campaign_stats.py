@@ -372,6 +372,19 @@ class TestFallbackRoundFilter:
 
 
 class TestGetCampaignStatsBulk:
+    def test_limits_cold_refreshes_and_defers_the_rest(self, db):
+        slugs = [f"bulk-{i}" for i in range(11)]
+        tracker_map = {slug: f"tracker-{i}" for i, slug in enumerate(slugs)}
+        with patch.object(
+            campaign_stats, "fetch_campaign_submissions",
+            side_effect=lambda tracker_id, **_: _ok_fetch(tracker_id, []),
+        ) as fetch:
+            out = get_campaign_stats_bulk(slugs, tracker_id_by_slug=tracker_map)
+
+        assert fetch.call_count == 10
+        assert all(call.kwargs["timeout"] == 5 for call in fetch.call_args_list)
+        assert out["bulk-10"].error_kind == "refresh_deferred"
+
     def test_threads_start_date_per_slug_into_fallback(self, db):
         cid_a = _seed_campaign_no_tracker("bulk-a")
         cid_b = _seed_campaign_no_tracker("bulk-b")

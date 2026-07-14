@@ -230,7 +230,9 @@ def _parse_submission(v: Dict[str, Any]) -> Submission:
     )
 
 
-def fetch_campaign_submissions(tracker_id: str) -> TidesTrackerFetchResult:
+def fetch_campaign_submissions(
+    tracker_id: str, *, timeout: float = _HTTP_TIMEOUT_SECONDS,
+) -> TidesTrackerFetchResult:
     """Fetch every submission for one tracker from the public API.
 
     Never raises. Always returns a result — `ok=False` paths populate
@@ -273,7 +275,7 @@ def fetch_campaign_submissions(tracker_id: str) -> TidesTrackerFetchResult:
     try:
         resp = requests.get(
             url,
-            timeout=_HTTP_TIMEOUT_SECONDS,
+            timeout=timeout,
             headers={"Accept": "application/json"},
         )
     except requests.Timeout as exc:
