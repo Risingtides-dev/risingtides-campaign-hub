@@ -21,6 +21,7 @@ const SlackInbox = lazy(() => import("./pages/SlackInbox"))
 const NetworkCreators = lazy(() => import("./pages/NetworkCreators"))
 const CampaignOutreach = lazy(() => import("./pages/CampaignOutreach"))
 const TidesTrackers = lazy(() => import("./pages/TidesTrackers"))
+const TrackerOverview = lazy(() => import("./pages/TrackerOverview"))
 const InternalGroupDetail = lazy(() => import("./pages/InternalGroupDetail"))
 const InternalScrapeView = lazy(() => import("./pages/InternalScrapeView"))
 const SoundAssignments = lazy(() => import("./pages/SoundAssignments"))
@@ -63,6 +64,7 @@ function App() {
                   <Route path="/inbox" element={<SlackInbox />} />
                   <Route path="/network" element={<NetworkCreators />} />
                   <Route path="/trackers" element={<TidesTrackers />} />
+                  <Route path="/tracker-overview" element={<TrackerOverview />} />
                   <Route path="/sound-assignments" element={<SoundAssignments />} />
                   <Route path="/scrape-tasks" element={<ScrapeTasks />} />
                   <Route path="/efficiency" element={<BookingEfficiency />} />
