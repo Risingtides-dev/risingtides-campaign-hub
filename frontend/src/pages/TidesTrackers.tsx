@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react"
+import { Link } from "react-router-dom"
 import {
   ExternalLink,
   Plus,
@@ -9,6 +10,7 @@ import {
   Pencil,
   Trash2,
   Undo2,
+  Radar,
 } from "lucide-react"
 import {
   useTrackers,
@@ -209,14 +211,22 @@ export default function TidesTrackers() {
   return (
     <div>
       {/* Header */}
-      <div className="mb-6">
-        <h1 className="text-[22px] font-semibold flex items-center gap-2">
-          <Activity className="size-5 text-purple-600" />
-          TidesTrackers
-        </h1>
-        <p className="text-[13px] text-rt-fg-tertiary mt-1">
-          Manage all your Cobrand trackers in one place. Group them by label or however you like.
-        </p>
+      <div className="mb-6 flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-[22px] font-semibold flex items-center gap-2">
+            <Activity className="size-5 text-purple-600" />
+            TidesTrackers
+          </h1>
+          <p className="text-[13px] text-rt-fg-tertiary mt-1">
+            Manage all your Cobrand trackers in one place. Group them by label or however you like.
+          </p>
+        </div>
+        <Button asChild size="sm" variant="outline" className="shrink-0">
+          <Link to="/tracker-overview">
+            <Radar className="size-3.5" />
+            Overview
+          </Link>
+        </Button>
       </div>
 
       {/* Create form */}
