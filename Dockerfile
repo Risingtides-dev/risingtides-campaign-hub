@@ -4,6 +4,12 @@ WORKDIR /build
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 COPY frontend/ ./
+# Vite inlines VITE_* vars at build time; Railway only exposes service
+# variables to Dockerfile builds that declare them as ARGs.
+ARG VITE_TRACKER_EMBED_KEY
+ARG VITE_TRACKER_BASE_URL
+ENV VITE_TRACKER_EMBED_KEY=$VITE_TRACKER_EMBED_KEY \
+    VITE_TRACKER_BASE_URL=$VITE_TRACKER_BASE_URL
 # Run vite build directly (skip tsc -b to avoid OOM on Railway's build runner)
 # Type checking is done locally before pushing
 RUN npx vite build
