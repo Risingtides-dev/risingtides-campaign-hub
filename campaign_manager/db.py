@@ -2202,3 +2202,28 @@ def inbox_intent_counts(days: int = 30) -> Dict[str, int]:
             .all()
         )
         return {(intent or "unclassified"): int(n) for intent, n in rows}
+
+
+def get_internal_freshness() -> Dict:
+    """Freshness of the internal scrape corpus — powers the staleness banner.
+
+    Returns: { total_videos, newest_upload_date (YYYYMMDD or None),
+               newest_cached_at (ISO or None), days_since_newest_upload }
+    """
+    with get_session() as s:
+        total = s.query(func.count(InternalVideoCache.id)).scalar() or 0
+        newest_upload = s.query(func.max(InternalVideoCache.upload_date)).scalar()
+        newest_cached = s.query(func.max(InternalVideoCache.cached_at)).scalar()
+
+    days_stale = None
+    if newest_upload:
+        try:
+            days_stale = (datetime.now() - datetime.strptime(newest_upload, "%Y%m%d")).days
+        except ValueError:
+            pass
+    return {
+        "total_videos": int(total),
+        "newest_upload_date": newest_upload,
+        "newest_cached_at": newest_cached.isoformat() if newest_cached else None,
+        "days_since_newest_upload": days_stale,
+    }

@@ -253,6 +253,14 @@ export const api = {
   getInternalGroupStats: (slug: string, days = 30) =>
     request<InternalGroupStats>(`/api/internal/groups/${slug}/stats?days=${days}`),
 
+  getInternalFreshness: () =>
+    request<{
+      total_videos: number
+      newest_upload_date: string | null
+      newest_cached_at: string | null
+      days_since_newest_upload: number | null
+    }>("/api/internal/freshness"),
+
   triggerInternalScrapeAdvanced: (params: {
     hours?: number
     group?: string
