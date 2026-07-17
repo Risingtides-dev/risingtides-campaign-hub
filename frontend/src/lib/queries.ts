@@ -821,6 +821,9 @@ export function useRebookSuggestions() {
 export function useLabelStats(days = 3650) {
   return useQuery({ queryKey: ["internal", "labels", days], queryFn: () => api.getLabelStats(days), staleTime: 5 * 60 * 1000 })
 }
+export function usePosters(days = 3650) {
+  return useQuery({ queryKey: ["internal", "posters", days], queryFn: () => api.getPosters(days), staleTime: 5 * 60 * 1000 })
+}
 export function useBookers(days = 3650) {
   return useQuery({ queryKey: ["internal", "bookers", days], queryFn: () => api.getBookers(days), staleTime: 5 * 60 * 1000 })
 }

@@ -148,6 +148,9 @@ def list_bookers(session, days: int = 30) -> List[Dict[str, Any]]:
         if st:
             out.append({
                 "slug": st["slug"],
+                # Canonical term is "poster" (internal team member running
+                # pages); "booker" kept as a legacy alias for old clients.
+                "poster": st["booker"],
                 "booker": st["booker"],
                 "account_count": st["account_count"],
                 "total_views": st["total_views"],

@@ -1408,3 +1408,19 @@ def internal_freshness():
     if err:
         return err
     return jsonify(_db.get_internal_freshness())
+
+
+# -------------------------------------------------------------------
+# 19. Poster-axis aliases — the canonical name for what /bookers serves.
+# "Posters" are internal team members who run our pages (the Notion
+# `Poster` column); "creators" are external people we book. The
+# /bookers routes were a misnomer and are kept only for compatibility.
+# -------------------------------------------------------------------
+@internal_bp.get("/api/internal/posters")
+def get_all_posters():
+    return get_all_bookers()
+
+
+@internal_bp.get("/api/internal/posters/<slug>/stats")
+def get_poster_stats(slug: str):
+    return get_booker_stats(slug)

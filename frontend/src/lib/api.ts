@@ -35,6 +35,7 @@ import type {
   RebookSuggestion,
   LabelStats,
   BookerSummary,
+  PosterSummary,
   BookerStats,
   CreatorRollup,
   SoundFitResponse,
@@ -195,6 +196,8 @@ export const api = {
     request<{ labels: LabelStats[] }>(`/api/internal/labels?days=${days}`),
   getBookers: (days = 3650) =>
     request<{ bookers: BookerSummary[] }>(`/api/internal/bookers?days=${days}`),
+  getPosters: (days = 3650) =>
+    request<{ bookers: PosterSummary[] }>(`/api/internal/posters?days=${days}`),
   getBookerStats: (slug: string, days = 3650) =>
     request<BookerStats>(`/api/internal/bookers/${encodeURIComponent(slug)}/stats?days=${days}`),
 

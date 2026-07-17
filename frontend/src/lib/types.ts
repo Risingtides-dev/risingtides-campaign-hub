@@ -751,6 +751,15 @@ export interface BookerSummary {
   total_views: number
   post_count: number
 }
+// Canonical name for the person axis on internal pages: posters run our
+// pages (Notion `Poster` column); creators are external people we book.
+export interface PosterSummary {
+  slug: string
+  poster: string
+  account_count: number
+  total_views: number
+  post_count: number
+}
 export interface BookerLabelSplit {
   label: string
   views: number
