@@ -1395,3 +1395,16 @@ def creator_stats(username: str):
         return err
     days = int(request.args.get("days", 30))
     return jsonify(_db.get_creator_stats(username, days=days))
+
+
+# -------------------------------------------------------------------
+# 18. GET /api/internal/freshness  -- scrape-corpus staleness signal
+# Added after the June-3 silent-zero incident: the stats pages surface
+# this so an empty window reads as "data is stale" instead of zeros.
+# -------------------------------------------------------------------
+@internal_bp.get("/api/internal/freshness")
+def internal_freshness():
+    err = _require_db()
+    if err:
+        return err
+    return jsonify(_db.get_internal_freshness())

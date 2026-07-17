@@ -4,6 +4,7 @@ import {
   useInternalCreators,
   useInternalGroups,
   useInternalGroupStats,
+  useInternalFreshness,
   useAddInternalCreators,
   useRemoveInternalCreator,
 } from "@/lib/queries"
@@ -105,6 +106,17 @@ export default function InternalTikTok() {
 
   const { data: groups, isLoading: groupsLoading } = useInternalGroups()
   const { data: creators, isLoading: creatorsLoading } = useInternalCreators()
+  const { data: freshness } = useInternalFreshness()
+
+  // Staleness guard (post June-3 silent-zero incident): if the newest scraped
+  // video predates the selected window, the zeros below are a data-freshness
+  // problem, not a performance signal — say so loudly.
+  const staleForWindow = useMemo(() => {
+    if (!freshness?.newest_upload_date) return false
+    const newest = freshness.newest_upload_date // YYYYMMDD
+    const windowStart = statsStartDate.replaceAll("-", "")
+    return newest < windowStart
+  }, [freshness, statsStartDate])
   const addCreators = useAddInternalCreators()
   const removeCreator = useRemoveInternalCreator()
 
@@ -216,6 +228,20 @@ export default function InternalTikTok() {
             />
             <span className="text-[12px] text-rt-fg-tertiary">({statsDays} days)</span>
           </div>
+
+          {staleForWindow && freshness && (
+            <div className="mb-4 rounded-[10px] border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
+              <span className="font-semibold">Scrape data is stale.</span>{" "}
+              The newest scraped video is from{" "}
+              {freshness.newest_upload_date
+                ? `${freshness.newest_upload_date.slice(0, 4)}-${freshness.newest_upload_date.slice(4, 6)}-${freshness.newest_upload_date.slice(6, 8)}`
+                : "unknown"}
+              {typeof freshness.days_since_newest_upload === "number" &&
+                ` (${freshness.days_since_newest_upload}d ago)`}
+              {" "}— every stat in this window will read zero until a scrape runs. The daily
+              6 AM scheduler should cover this; if this banner persists, check the scrape logs.
+            </div>
+          )}
 
           {groupsLoading ? (
             <div className="flex items-center justify-center py-12">

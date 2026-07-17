@@ -21,6 +21,7 @@ export const keys = {
   internalGroups: ["internal", "groups"] as const,
   internalGroup: (slug: string) => ["internal", "groups", slug] as const,
   internalGroupStats: (slug: string) => ["internal", "groups", slug, "stats"] as const,
+  internalFreshness: ["internal", "freshness"] as const,
   inbox: (status?: string) => ["inbox", status ?? "all"] as const,
   paypal: (username: string) => ["paypal", username] as const,
   network: ["network"] as const,
@@ -408,6 +409,15 @@ export function useInternalGroupStats(slug: string, days = 30) {
     queryKey: keys.internalGroupStats(slug),
     queryFn: () => api.getInternalGroupStats(slug, days),
     enabled: !!slug,
+  })
+}
+
+
+export function useInternalFreshness() {
+  return useQuery({
+    queryKey: keys.internalFreshness,
+    queryFn: () => api.getInternalFreshness(),
+    staleTime: 60_000,
   })
 }
 
