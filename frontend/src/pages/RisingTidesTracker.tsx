@@ -1,12 +1,14 @@
 import { useNavigate } from "react-router-dom"
 import { Radio, Building2, Users } from "lucide-react"
-import { useLabelStats, useBookers } from "@/lib/queries"
+import { useLabelStats, usePosters } from "@/lib/queries"
 
 /* ============================================================
    RISING TIDES TRACKER (CAMP-34)
    Leadership landing — both attribution axes in one view:
-   label totals (Warner/Atlantic/Internal) + the booker leaderboard.
-   Consumes /api/internal/labels + /api/internal/bookers.
+   label totals (Warner/Atlantic/Internal) + the poster leaderboard
+   (posters = internal team members who run our pages; distinct from
+   creators, who are external people we book).
+   Consumes /api/internal/labels + /api/internal/posters.
    ============================================================ */
 
 function fmt(v: number): string {
@@ -24,11 +26,11 @@ const LABEL_ACCENT: Record<string, string> = {
 export default function RisingTidesTracker() {
   const navigate = useNavigate()
   const labels = useLabelStats()
-  const bookers = useBookers()
+  const posters = usePosters()
 
   const labelRows = labels.data?.labels ?? []
-  const bookerRows = bookers.data?.bookers ?? []
-  const maxBooker = bookerRows.length ? Math.max(...bookerRows.map((b) => b.total_views)) : 1
+  const posterRows = posters.data?.bookers ?? []
+  const maxPoster = posterRows.length ? Math.max(...posterRows.map((b) => b.total_views)) : 1
   const grandTotal = labelRows.reduce((s, l) => s + l.total_views, 0)
 
   return (
@@ -50,7 +52,7 @@ export default function RisingTidesTracker() {
             The <span className="rt-gradient-text">Whole Operation</span>
           </h1>
           <p className="mt-2 max-w-xl text-sm text-rt-fg-secondary">
-            Every internal page's reach, attributed two ways — by label and by booker.
+            Every internal page's reach, attributed two ways — by label and by poster.
             Sourced from Notion, no cross-contamination.
           </p>
         </header>
@@ -89,27 +91,27 @@ export default function RisingTidesTracker() {
           )}
         </section>
 
-        {/* Booker leaderboard */}
+        {/* Poster leaderboard — who runs each internal page */}
         <section>
           <div className="mb-3 flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-rt-fg-tertiary">
-            <Users className="h-3.5 w-3.5" /> By Booker
+            <Users className="h-3.5 w-3.5" /> By Poster
           </div>
-          {bookers.isLoading ? (
-            <div className="py-10 text-center text-sm text-rt-fg-tertiary">Loading bookers…</div>
-          ) : bookers.isError ? (
+          {posters.isLoading ? (
+            <div className="py-10 text-center text-sm text-rt-fg-tertiary">Loading posters…</div>
+          ) : posters.isError ? (
             <div className="rounded-xl border border-rt-red/30 bg-rt-red/10 px-4 py-4 text-center text-sm text-rt-red">
-              Couldn't load booker attribution.
+              Couldn't load poster attribution.
             </div>
           ) : (
             <div className="overflow-hidden rounded-2xl border border-white/8 bg-rt-bg-raised/60 backdrop-blur">
               <div className="grid grid-cols-[2.5rem_1fr_5rem_4.5rem] gap-3 border-b border-white/8 px-5 py-3 text-[10px] uppercase tracking-[0.16em] text-rt-fg-tertiary">
                 <span>#</span>
-                <span>Booker</span>
+                <span>Poster</span>
                 <span className="text-right">Views</span>
                 <span className="text-right">Accounts</span>
               </div>
-              {bookerRows.map((b, i) => {
-                const heat = Math.max(6, (b.total_views / maxBooker) * 100)
+              {posterRows.map((b, i) => {
+                const heat = Math.max(6, (b.total_views / maxPoster) * 100)
                 return (
                   <button
                     key={b.slug}
@@ -119,7 +121,7 @@ export default function RisingTidesTracker() {
                   >
                     <span className="rt-num text-sm text-rt-fg-tertiary">{i + 1}</span>
                     <div className="min-w-0">
-                      <div className="truncate text-sm font-medium text-rt-fg">{b.booker}</div>
+                      <div className="truncate text-sm font-medium text-rt-fg">{b.poster}</div>
                       <div className="mt-1 h-1 w-full max-w-[220px] overflow-hidden rounded-full bg-white/5">
                         <div className="h-full rt-heat" style={{ width: `${heat}%` }} />
                       </div>
