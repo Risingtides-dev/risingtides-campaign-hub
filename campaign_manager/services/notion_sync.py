@@ -602,8 +602,21 @@ def _apply_membership_diff(
     to_add = desired - existing
     to_remove = existing - desired
 
-    for group_id, username in to_add:
-        session.add(InternalCreatorGroupMember(group_id=group_id, username=username))
+    # ON CONFLICT DO NOTHING instead of blind session.add: the resolver
+    # cron can race a manual add_group_members call in another gunicorn
+    # worker for the same (group_id, username) pair, which used to abort
+    # the whole resolve transaction with IntegrityError. RETURNING keeps
+    # the added-count honest when the other writer wins.
+    added_count = 0
+    if to_add:
+        member_t = InternalCreatorGroupMember.__table__
+        stmt = _db.dialect_insert(member_t).values([
+            {"group_id": group_id, "username": username}
+            for group_id, username in sorted(to_add)
+        ]).on_conflict_do_nothing(
+            index_elements=["group_id", "username"],
+        ).returning(member_t.c.username)
+        added_count = len(session.execute(stmt).all())
 
     for group_id, username in to_remove:
         session.query(InternalCreatorGroupMember).filter(
@@ -611,7 +624,7 @@ def _apply_membership_diff(
             InternalCreatorGroupMember.username == username,
         ).delete(synchronize_session=False)
 
-    return len(to_add), len(to_remove)
+    return added_count, len(to_remove)
 
 
 def resolve_memberships(
