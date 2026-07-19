@@ -7,6 +7,8 @@ import {
   useInternalFreshness,
   useAddInternalCreators,
   useRemoveInternalCreator,
+  useCreateInternalGroup,
+  useDeleteInternalGroup,
 } from "@/lib/queries"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -119,6 +121,8 @@ export default function InternalTikTok() {
   }, [freshness, statsStartDate])
   const addCreators = useAddInternalCreators()
   const removeCreator = useRemoveInternalCreator()
+  const createGroup = useCreateInternalGroup()
+  const deleteGroup = useDeleteInternalGroup()
 
   // Clusters are the single grouping axis — one bucket of pages per Notion
   // `Group` value (kind="cluster"), each 1:1 with a Tides Tracker.
@@ -146,33 +150,28 @@ export default function InternalTikTok() {
     removeCreator.mutate(username)
   }
 
-  async function handleCreateGroup(e: React.FormEvent) {
+  function handleCreateGroup(e: React.FormEvent) {
     e.preventDefault()
     const slug = newGroupSlug.trim().toLowerCase().replace(/\s+/g, "_")
     const title = newGroupTitle.trim()
     if (!slug || !title) return
-    try {
-      await fetch("/api/internal/groups", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ slug, title, kind: newGroupKind }),
-      })
-      setNewGroupSlug("")
-      setNewGroupTitle("")
-      window.location.reload()
-    } catch {
-      // Silently handle — user can retry
-    }
+    createGroup.mutate(
+      { slug, title, kind: newGroupKind },
+      {
+        onSuccess: () => {
+          setNewGroupSlug("")
+          setNewGroupTitle("")
+        },
+        onError: (err) => alert(err instanceof Error ? err.message : "Failed to create group"),
+      }
+    )
   }
 
-  async function handleDeleteGroup(id: number, title: string) {
+  function handleDeleteGroup(id: number, title: string) {
     if (!confirm(`Delete group "${title}"? Members won't be deleted.`)) return
-    try {
-      await fetch(`/api/internal/groups/${id}`, { method: "DELETE" })
-      window.location.reload()
-    } catch {
-      // Silently handle — user can retry
-    }
+    deleteGroup.mutate(id, {
+      onError: (err) => alert(err instanceof Error ? err.message : "Failed to delete group"),
+    })
   }
 
   return (

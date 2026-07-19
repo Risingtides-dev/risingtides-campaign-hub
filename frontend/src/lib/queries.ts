@@ -20,7 +20,9 @@ export const keys = {
     ["internal", "creator", username] as const,
   internalGroups: ["internal", "groups"] as const,
   internalGroup: (slug: string) => ["internal", "groups", slug] as const,
-  internalGroupStats: (slug: string) => ["internal", "groups", slug, "stats"] as const,
+  // days is part of the key: omitting it made the stats period picker serve
+  // the first-fetched window forever (cache hit on every range change).
+  internalGroupStats: (slug: string, days: number) => ["internal", "groups", slug, "stats", days] as const,
   internalFreshness: ["internal", "freshness"] as const,
   inbox: (status?: string) => ["inbox", status ?? "all"] as const,
   paypal: (username: string) => ["paypal", username] as const,
@@ -406,9 +408,43 @@ export function useInternalGroup(slug: string) {
 
 export function useInternalGroupStats(slug: string, days = 30) {
   return useQuery({
-    queryKey: keys.internalGroupStats(slug),
+    queryKey: keys.internalGroupStats(slug, days),
     queryFn: () => api.getInternalGroupStats(slug, days),
     enabled: !!slug,
+  })
+}
+
+export function useCreateInternalGroup() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (data: { slug: string; title: string; kind: string }) => {
+      const res = await fetch("/api/internal/groups", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body.error || `Create failed (${res.status})`)
+      }
+      return res.json()
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.internalGroups }),
+  })
+}
+
+export function useDeleteInternalGroup() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (id: number) => {
+      const res = await fetch(`/api/internal/groups/${id}`, { method: "DELETE" })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body.error || `Delete failed (${res.status})`)
+      }
+      return res.json()
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.internalGroups }),
   })
 }
 

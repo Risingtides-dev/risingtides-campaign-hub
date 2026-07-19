@@ -43,6 +43,6 @@ describe('query key factory', () => {
   })
 
   it('internalGroup keys are distinct from internalGroupStats', () => {
-    expect(keys.internalGroup('g')).not.toEqual(keys.internalGroupStats('g'))
+    expect(keys.internalGroup('g')).not.toEqual(keys.internalGroupStats('g', 30))
   })
 })
