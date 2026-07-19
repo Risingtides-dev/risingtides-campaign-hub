@@ -377,6 +377,11 @@ class InternalScrapeResult(Base):
     total_videos_unfiltered = Column(Integer, default=0)
     unique_songs = Column(Integer, default=0)
     songs = Column(JSONB, default=list)
+    # 'full' = all internal creators; 'partial:<label>' = manual single-
+    # account / group scrape. NULL (legacy rows) is treated as 'full'.
+    # get_internal_results serves the latest FULL row so a small manual
+    # scrape can't shadow the daily cron's full results.
+    scope = Column(Text, nullable=True)
 
 
 class NetworkCreator(Base):

@@ -95,7 +95,7 @@ def multi_fake_worker(monkeypatch):
             return ev
 
     def fake(hours, creators, *, start_date_str="", end_date_str="",
-             job_id=None, group_slug=None):
+             job_id=None, group_slug=None, **_kwargs):
         if not job_id:
             # New contract: every worker invocation has a job_id.
             return

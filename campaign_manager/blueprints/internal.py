@@ -476,10 +476,31 @@ def merge_into_cache(username: str, new_videos: List[Dict]) -> List[Dict]:
 # Background scrape worker
 # ---------------------------------------------------------------------------
 
+# Manual-scrape concurrency defaults. Mirrors services/scheduler.py's
+# DEFAULT_MAX_WORKERS / DEFAULT_VIDEO_LIMIT rationale: 8 workers pulling
+# 500 videos each from one Railway IP is exactly the burst pattern TikTok
+# answers with silent empty-200s (IP block). Overridable per request via
+# the "max_workers" / "video_limit" payload keys.
+MANUAL_SCRAPE_MAX_WORKERS = 2
+MANUAL_SCRAPE_VIDEO_LIMIT = 50
+
+
+def _clamp_int(raw, default: int, lo: int, hi: int) -> int:
+    """Parse an optional int override from a request payload, clamped."""
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(hi, val))
+
+
 def _run_internal_scrape(hours: int, creators: List[str], *,
                          start_date_str: str = "", end_date_str: str = "",
                          job_id: Optional[str] = None,
-                         group_slug: Optional[str] = None):
+                         group_slug: Optional[str] = None,
+                         scope: str = "",
+                         max_workers: int = MANUAL_SCRAPE_MAX_WORKERS,
+                         video_limit: int = MANUAL_SCRAPE_VIDEO_LIMIT):
     """Background scrape worker -- runs in a thread.
 
     When start_date_str / end_date_str are provided (YYYY-MM-DD), they
@@ -609,7 +630,7 @@ def _run_internal_scrape(hours: int, creators: List[str], *,
         def _scrape_one(account):
             _add_inflight(account)
             try:
-                videos = scrape_account_videos(account, start_datetime=start_dt, end_datetime=end_dt, limit=500)
+                videos = scrape_account_videos(account, start_datetime=start_dt, end_datetime=end_dt, limit=video_limit)
                 return account, videos or [], None
             except ScrapeError as e:
                 return account, [], str(e)
@@ -617,7 +638,7 @@ def _run_internal_scrape(hours: int, creators: List[str], *,
                 return account, [], f"Unexpected error: {e}"
 
         completed_count = 0
-        with ThreadPoolExecutor(max_workers=8) as executor:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(_scrape_one, c): c for c in creators}
             for future in as_completed(futures):
                 account, videos, error = future.result()
@@ -715,6 +736,7 @@ def _run_internal_scrape(hours: int, creators: List[str], *,
             "total_videos_unfiltered": len(all_videos),
             "unique_songs": len(songs_list),
             "songs": songs_list,
+            "scope": scope,
         }
         save_internal_results(results)
 
@@ -853,6 +875,7 @@ def trigger_scrape():
     if single_username:
         creators = [single_username]
         scope_label = f"@{single_username}"
+        scope = f"partial:@{single_username}"
     elif group_slug:
         if _db.is_active():
             group = _db.get_internal_group(group_slug)
@@ -862,11 +885,13 @@ def trigger_scrape():
             if not creators:
                 return jsonify({"error": f"Group '{group_slug}' has no members."}), 400
             scope_label = f"group:{group_slug} ({len(creators)} accounts)"
+            scope = f"partial:group:{group_slug}"
         else:
             return jsonify({"error": "Groups require database. Use 'hours' for flat scrape."}), 503
     else:
         creators = load_internal_creators()
         scope_label = f"all ({len(creators)} accounts)"
+        scope = "full"
 
     if not creators:
         return jsonify({"error": "No creators to scrape."}), 400
@@ -874,6 +899,11 @@ def trigger_scrape():
     # Parse optional date range
     start_date_str = (data.get("start_date") or "").strip()
     end_date_str = (data.get("end_date") or "").strip()
+
+    # Optional aggressiveness overrides — default to the scheduler-safe
+    # 2 workers / 50 videos (see MANUAL_SCRAPE_* rationale above).
+    max_workers = _clamp_int(data.get("max_workers"), MANUAL_SCRAPE_MAX_WORKERS, 1, 8)
+    video_limit = _clamp_int(data.get("video_limit"), MANUAL_SCRAPE_VIDEO_LIMIT, 1, 500)
 
     # RTA-45: create a _jobs entry so the worker can write progress + the
     # legacy-shape status to its own slot, not a module-global. Tagged
@@ -921,6 +951,9 @@ def trigger_scrape():
             "start_date_str": start_date_str,
             "end_date_str": end_date_str,
             "job_id": job_id,
+            "scope": scope,
+            "max_workers": max_workers,
+            "video_limit": video_limit,
             # group_slug intentionally NOT passed: this is the legacy
             # entrypoint and doesn't participate in per-group debounce
             # (_current_job_by_group) regardless of whether a group filter
@@ -1014,6 +1047,11 @@ def scrape_start():
     start_date_str = (data.get("start_date") or "").strip()
     end_date_str = (data.get("end_date") or "").strip()
 
+    # Optional aggressiveness overrides — default to the scheduler-safe
+    # 2 workers / 50 videos (see MANUAL_SCRAPE_* rationale above).
+    max_workers = _clamp_int(data.get("max_workers"), MANUAL_SCRAPE_MAX_WORKERS, 1, 8)
+    video_limit = _clamp_int(data.get("video_limit"), MANUAL_SCRAPE_VIDEO_LIMIT, 1, 500)
+
     # Debounce: if a job for this group is still running, return it.
     with _jobs_lock:
         existing_id = _current_job_by_group.get(group_slug)
@@ -1072,6 +1110,9 @@ def scrape_start():
             "end_date_str": end_date_str,
             "job_id": job_id,
             "group_slug": group_slug,
+            "scope": f"partial:group:{group_slug}",
+            "max_workers": max_workers,
+            "video_limit": video_limit,
         },
         daemon=True,
     )

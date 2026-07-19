@@ -971,6 +971,7 @@ def run_internal_scrape():
             "total_videos_unfiltered": len(all_videos),
             "unique_songs": unique_songs,
             "songs": sanitized_songs,  # cap at 100 to avoid bloating DB
+            "scope": "full",
         })
 
         summary = {
