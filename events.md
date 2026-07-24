@@ -32,3 +32,12 @@ area:      [automations]
 
 Root-caused four hourly scraper worker SIGABRTs to curl-cffi 0.14.0 drift against the committed 0.11.4 pin. Hardened the local production rail: typed native subprocess crashes now bypass cache fallback and retries, cancel queued creator work, fail the exact cron run, and propagate a nonzero top-level result. Added an explicit immutable production-runtime provisioner, exact-pin and full-freeze drift gates, Python ABI/platform fingerprinting, production-only venv activation, tracked-launcher checksum enforcement, outer runner locking, and atomic status writes. Downgraded the shared development venv to curl-cffi 0.11.4 for manual safety. Validation before deployment: 39 focused tests green, shell/Python syntax and diff checks green; full suite 453 green with the pre-existing unrelated TT-label matching test still failing.
 _________________________________________________________________________________
+_________________________________________________________________________________
+time:      [17:07] [07-24-26]
+agent:     [pi] [thoth]
+worktree:  [main]
+type:      [workflow]
+area:      [testing]
+
+Deployed scraper hardening commit 4e367d8 to origin/main. Provisioned and atomically activated dedicated production runtime fingerprint 157062a67be46a3b with Python 3.14.6, yt-dlp 2026.3.17, and curl-cffi 0.11.4; installed the tracked launcher copy and verified its checksum, exact pins, pip consistency, freeze manifest, Chrome-136 support, and production health probe. Concurrent canaries for the four previously crashing creators all returned 3/3 items with zero new crash reports. Full supervised production run 420 completed cleanly in 487 seconds: 165 creators (160 ok, 5 empty, 0 error), 38/38 campaigns refreshed, 16 new matches, degraded=false, export 187 links, and no additional Python crash reports.
+_________________________________________________________________________________
