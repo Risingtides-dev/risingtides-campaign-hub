@@ -50,6 +50,30 @@ DEFAULT_MAX_WORKERS = 2
 DEFAULT_VIDEO_LIMIT = 50
 
 
+def _scrape_run_is_degraded(
+    outcome_counts: dict,
+    *,
+    total_creators: int,
+    campaigns_refreshed: int,
+    total_new_matches: int,
+    total_videos_checked: int,
+) -> bool:
+    """Return whether scrape results are unsafe to report as healthy."""
+    empty_rate = (
+        outcome_counts.get("empty", 0) / total_creators
+        if total_creators > 0
+        else 0.0
+    )
+    return bool(
+        (empty_rate > 0.7 and total_creators > 5)
+        or (
+            campaigns_refreshed > 5
+            and total_new_matches == 0
+            and total_videos_checked == 0
+        )
+    )
+
+
 def _scrape_creator_accounts(usernames, start_date=None, max_workers=DEFAULT_MAX_WORKERS):
     """Scrape multiple TikTok creator accounts in parallel using yt-dlp.
 
@@ -89,6 +113,7 @@ def _scrape_creator_accounts_v2(usernames, start_date=None, max_workers=DEFAULT_
     distribution so a run dominated by `empty` is visibly degraded.
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
+    from src.scrapers.yt_dlp_runner import NativeSubprocessCrash
 
     scrape_tiktok_account, _ = _import_scraper()
 
@@ -96,6 +121,7 @@ def _scrape_creator_accounts_v2(usernames, start_date=None, max_workers=DEFAULT_
     accounts_scraped = 0
     errors = []
     outcomes: dict = {}
+    fatal_event = threading.Event()
 
     def _scrape_one(username):
         # Per-creator jitter (0.5-2s) to spread the burst — 216 creators
@@ -103,6 +129,8 @@ def _scrape_creator_accounts_v2(usernames, start_date=None, max_workers=DEFAULT_
         # succession otherwise.
         import random
         import time
+        if fatal_event.is_set():
+            return username, [], "cancelled after native subprocess crash"
         time.sleep(random.uniform(0.5, 2.0))
 
         last_err: Optional[str] = None
@@ -115,6 +143,11 @@ def _scrape_creator_accounts_v2(usernames, start_date=None, max_workers=DEFAULT_
                     use_cache=True,
                 )
                 return username, videos, None
+            except NativeSubprocessCrash:
+                # Native allocator corruption is not a network retry. Stop
+                # queued creator work and propagate to fail the cron run.
+                fatal_event.set()
+                raise
             except Exception as e:
                 last_err = str(e)
                 if attempt == 0:
@@ -129,7 +162,13 @@ def _scrape_creator_accounts_v2(usernames, start_date=None, max_workers=DEFAULT_
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(_scrape_one, u): u for u in usernames}
         for future in as_completed(futures):
-            username, videos, error = future.result()
+            try:
+                username, videos, error = future.result()
+            except NativeSubprocessCrash:
+                fatal_event.set()
+                for pending in futures:
+                    pending.cancel()
+                raise
             if error:
                 errors.append(f"@{username}: {error}")
                 outcomes[username] = {
@@ -352,7 +391,7 @@ def trigger_job(job_type: str):
 
 # ── Job 1: Campaign Refresh ──────────────────────────────────────────
 
-def run_campaign_refresh(only_slugs=None, on_progress=None):
+def run_campaign_refresh(only_slugs=None, on_progress=None) -> dict:
     """Refresh active campaigns: scrape creators via yt-dlp, run matching, update stats.
 
     only_slugs: optional iterable of campaign slugs to limit the refresh to
@@ -422,12 +461,13 @@ def run_campaign_refresh(only_slugs=None, on_progress=None):
                 len(all_usernames), campaigns_total,
                 earliest_start.date().isoformat() if earliest_start else "none",
             )
-            all_scraped, _, _, scrape_outcomes = _scrape_creator_accounts_v2(
+            all_scraped, _, scrape_errors, scrape_outcomes = _scrape_creator_accounts_v2(
                 list(all_usernames),
                 start_date=earliest_start,
                 max_workers=DEFAULT_MAX_WORKERS,
                 on_progress=on_progress,
             )
+            errors.extend(scrape_errors)
             # Index by account
             for v in all_scraped:
                 acct = (v.get("account", "") or "").lstrip("@").lower()
@@ -513,13 +553,12 @@ def run_campaign_refresh(only_slugs=None, on_progress=None):
             if total_creators_scraped > 0
             else 0.0
         )
-        is_degraded = (
-            (empty_rate > 0.7 and total_creators_scraped > 5)
-            or (
-                campaigns_refreshed > 5
-                and total_new_matches == 0
-                and total_videos_checked == 0
-            )
+        is_degraded = _scrape_run_is_degraded(
+            outcome_counts,
+            total_creators=total_creators_scraped,
+            campaigns_refreshed=campaigns_refreshed,
+            total_new_matches=total_new_matches,
+            total_videos_checked=total_videos_checked,
         )
 
         summary = {
@@ -549,11 +588,22 @@ def run_campaign_refresh(only_slugs=None, on_progress=None):
             campaigns_refreshed, campaigns_total, total_new_matches,
             outcome_counts, is_degraded,
         )
+        return _db.get_cron_log_by_id(log_id) or {
+            "id": log_id,
+            "status": "completed",
+            "summary": summary,
+        }
 
     except Exception as e:
-        _db.finish_cron_log(log_id, "failed", {"error": str(e), "errors": errors[:10]})
+        failure_summary = {"error": str(e), "errors": errors[:10]}
+        _db.finish_cron_log(log_id, "failed", failure_summary)
         _post_failure_slack("campaign_refresh", str(e))
         log.error("CRON: campaign_refresh failed: %s", e)
+        return _db.get_cron_log_by_id(log_id) or {
+            "id": log_id,
+            "status": "failed",
+            "summary": failure_summary,
+        }
 
 
 def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None) -> dict:

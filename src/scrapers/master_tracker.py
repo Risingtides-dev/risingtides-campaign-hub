@@ -348,7 +348,12 @@ def scrape_tiktok_account(account: str, start_date: Optional[datetime] = None,
         scrape_from_date = start_date.date() if isinstance(start_date, datetime) else start_date
 
     # Hardened yt-dlp command (cookies / proxy / impersonation / retries)
-    from src.scrapers.yt_dlp_runner import build_tiktok_cmd, diagnose_failure
+    from src.scrapers.yt_dlp_runner import (
+        NativeSubprocessCrash,
+        build_tiktok_cmd,
+        diagnose_failure,
+        raise_for_native_crash,
+    )
     cmd = build_tiktok_cmd(
         profile_url,
         flat_playlist=True,
@@ -359,6 +364,7 @@ def scrape_tiktok_account(account: str, start_date: Optional[datetime] = None,
     try:
         log(f"Running yt-dlp for @{username}...")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=TIKTOK_SCRAPE_TIMEOUT)
+        raise_for_native_crash(result, context=f"yt-dlp for @{username}")
 
         if result.returncode != 0:
             reason = diagnose_failure(result.stderr)
@@ -518,6 +524,12 @@ def scrape_tiktok_account(account: str, start_date: Optional[datetime] = None,
 
         return all_videos
 
+    except NativeSubprocessCrash as e:
+        # Never turn allocator corruption/SIGABRT into a cache-backed success.
+        # The scheduler treats this as fatal, cancels queued creator work, and
+        # fails the cron run without retrying the corrupted native path.
+        log(f"Native crash scraping TikTok @{username}: {e}", "ERROR")
+        raise
     except subprocess.TimeoutExpired:
         log(f"Timeout scraping TikTok @{username} (exceeded {TIKTOK_SCRAPE_TIMEOUT}s)", "ERROR")
         return cached_videos if cached_videos else []

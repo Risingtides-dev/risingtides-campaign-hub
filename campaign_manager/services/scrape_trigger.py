@@ -111,8 +111,11 @@ def _run(job_id: str, only_slugs: Optional[List[str]]) -> None:
         with _jobs_lock:
             j = _jobs.get(job_id)
             if j is not None:
-                j["state"] = "done"
+                failed = result.get("status") == "failed"
+                j["state"] = "error" if failed else "done"
                 j["result"] = result
+                if failed:
+                    j["error"] = (result.get("summary") or {}).get("error") or "campaign refresh failed"
                 j["ended_at"] = _now_iso()
                 j["_ended_mono"] = time.monotonic()
     except Exception as e:  # noqa: BLE001 — surface any scrape failure as job error

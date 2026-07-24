@@ -266,9 +266,35 @@ def dependency_status() -> Dict[str, Any]:
         except importlib.metadata.PackageNotFoundError:
             packages[dist] = {"ok": False, "version": ""}
 
+    production_runtime: Dict[str, Any] = {
+        "ok": False,
+        "error": "production runtime is not provisioned",
+    }
+    prod_python = OUTPUT_ROOT / "prod-venv" / "bin" / "python"
+    guard = ROOT / "scripts" / "check_scraper_runtime.py"
+    if prod_python.exists() and guard.exists():
+        checked = run_cmd(
+            [
+                str(prod_python),
+                str(guard),
+                "--requirements",
+                str(ROOT / "requirements.txt"),
+            ],
+            timeout=30,
+        )
+        try:
+            production_runtime = json.loads(checked.get("stdout_tail") or "{}")
+        except json.JSONDecodeError:
+            production_runtime = {
+                "ok": False,
+                "error": checked.get("stderr_tail") or "runtime guard returned invalid JSON",
+            }
+
     return {
+        "ok": bool(production_runtime.get("ok")),
         "commands": commands,
         "python_packages": packages,
+        "production_runtime": production_runtime,
         "python": {
             "ok": True,
             "version": ".".join(map(str, sys.version_info[:3])),
@@ -315,7 +341,11 @@ def run_smoke(run_export: bool = False, quick: bool = True) -> Dict[str, Any]:
         smoke["export"] = run_export_fn = run_export_queue()
         if run_export_fn.get("ok"):
             smoke["local_server"] = local_server_status()
-    smoke["ok"] = bool(smoke["hub"].get("ok")) and bool((smoke.get("export") or {"ok": True}).get("ok"))
+    smoke["ok"] = (
+        bool(smoke["hub"].get("ok"))
+        and bool((smoke.get("export") or {"ok": True}).get("ok"))
+        and bool(smoke["dependencies"].get("ok"))
+    )
     if not quick:
         smoke["scheduler"] = scheduler_status()
         smoke["recent_runs"] = latest_runs()

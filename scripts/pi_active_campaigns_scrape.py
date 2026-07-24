@@ -108,15 +108,6 @@ def write_json(path: Path, payload: Dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
 
 
-def latest_campaign_refresh_log() -> Dict[str, Any]:
-    from campaign_manager import db as _db
-
-    for log in _db.get_cron_logs(limit=10) or []:
-        if log.get("job_type") == "campaign_refresh":
-            return log
-    return {}
-
-
 def export_queue() -> Dict[str, Any]:
     started = time.monotonic()
     proc = subprocess.run(
@@ -199,14 +190,13 @@ def main() -> int:
         report["active_campaigns_excluding_completed"] = len(active_campaigns)
 
         if args.run:
-            run_campaign_refresh()
-            latest = latest_campaign_refresh_log()
-            summary = latest.get("summary") or {}
+            refresh_result = run_campaign_refresh()
+            summary = refresh_result.get("summary") or {}
             report["cron_log"] = {
-                "id": latest.get("id"),
-                "status": latest.get("status"),
-                "started_at": latest.get("started_at"),
-                "finished_at": latest.get("finished_at"),
+                "id": refresh_result.get("id"),
+                "status": refresh_result.get("status"),
+                "started_at": refresh_result.get("started_at"),
+                "finished_at": refresh_result.get("finished_at"),
                 "campaigns_refreshed": summary.get("campaigns_refreshed"),
                 "campaigns_failed": summary.get("campaigns_failed"),
                 "total_new_matches": summary.get("total_new_matches"),
@@ -216,9 +206,15 @@ def main() -> int:
                 "empty_creator_rate": summary.get("empty_creator_rate"),
                 "degraded": summary.get("degraded"),
                 "auto_dedupe": summary.get("auto_dedupe"),
-                "errors": (summary.get("errors") or [])[:10],
+                "errors": (
+                    summary.get("errors")
+                    or ([summary.get("error")] if summary.get("error") else [])
+                )[:10],
             }
-            report["ok"] = latest.get("status") == "completed" and not bool(summary.get("degraded"))
+            report["ok"] = (
+                refresh_result.get("status") == "completed"
+                and not bool(summary.get("degraded"))
+            )
         else:
             report["ok"] = True
 

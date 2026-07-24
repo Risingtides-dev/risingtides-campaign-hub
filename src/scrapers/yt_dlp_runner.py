@@ -41,6 +41,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 from typing import Dict, List, Optional
@@ -51,6 +52,34 @@ _DEFAULT_UA = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/131.0.0.0 Safari/537.36"
 )
+
+
+class NativeSubprocessCrash(RuntimeError):
+    """A child process died from a native signal instead of a Python error."""
+
+    def __init__(self, context: str, returncode: int):
+        signum = -returncode
+        try:
+            signal_name = signal.Signals(signum).name
+        except ValueError:
+            signal_name = f"SIGNAL_{signum}"
+        self.context = context
+        self.returncode = returncode
+        self.signal_name = signal_name
+        super().__init__(
+            f"{context} terminated by native signal {signal_name} "
+            f"(returncode {returncode})"
+        )
+
+
+def raise_for_native_crash(
+    result: subprocess.CompletedProcess,
+    *,
+    context: str = "yt-dlp",
+) -> None:
+    """Raise when ``subprocess`` reports signal termination (negative rc)."""
+    if result.returncode < 0:
+        raise NativeSubprocessCrash(context, result.returncode)
 
 
 def _yt_dlp_base() -> List[str]:
