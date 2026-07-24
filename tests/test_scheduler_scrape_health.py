@@ -4,7 +4,7 @@ import random
 
 import pytest
 
-from campaign_manager.services import scheduler
+from campaign_manager.services import scheduler, scrape_trigger
 from campaign_manager.services.scheduler import (
     _scrape_creator_accounts_v2,
     _scrape_run_is_degraded,
@@ -57,3 +57,34 @@ def test_native_crash_is_not_retried_or_converted_to_creator_error(monkeypatch):
         _scrape_creator_accounts_v2(["creator"], max_workers=1)
 
     assert calls == ["called"]
+
+
+def test_on_demand_trigger_surfaces_failed_refresh(monkeypatch):
+    job_id = "native-crash-job"
+    with scrape_trigger._jobs_lock:
+        scrape_trigger._jobs.clear()
+        scrape_trigger._jobs[job_id] = {
+            "state": "running",
+            "scope": "all_active",
+            "started_at": "2026-07-24T17:00:00",
+        }
+
+    monkeypatch.setattr(
+        scheduler,
+        "run_campaign_refresh",
+        lambda **_kwargs: {
+            "id": 420,
+            "status": "failed",
+            "summary": {"error": "yt-dlp terminated by native signal SIGABRT"},
+        },
+    )
+
+    scrape_trigger._run(job_id, None)
+    status = scrape_trigger.job_status(job_id)
+
+    assert status["state"] == "error"
+    assert status["error"] == "yt-dlp terminated by native signal SIGABRT"
+    assert status["result"]["id"] == 420
+
+    with scrape_trigger._jobs_lock:
+        scrape_trigger._jobs.clear()
