@@ -55,6 +55,7 @@ from campaign_manager.models import (
 from campaign_manager.services.notion import (
     NOTION_API_BASE,
     NOTION_VERSION,
+    resolve_data_source_id,
     _get_api_key,
     _get_date,
     _get_email,
@@ -157,7 +158,15 @@ def _headers() -> Dict[str, str]:
 
 def _fetch_all_pages(database_id: str) -> List[Dict[str, Any]]:
     """Query every page in the master database, following pagination cursors."""
-    url = f"{NOTION_API_BASE}/databases/{database_id}/query"
+    ds_id = resolve_data_source_id(
+        database_id, env_override="NOTION_MASTER_PAGES_DATA_SOURCE_ID"
+    )
+    if not ds_id:
+        raise RuntimeError(
+            f"Could not resolve a Notion data source for database {database_id} "
+            "— aborting sync (see warning logs for the API error)."
+        )
+    url = f"{NOTION_API_BASE}/data_sources/{ds_id}/query"
     pages: List[Dict[str, Any]] = []
     cursor: Optional[str] = None
 

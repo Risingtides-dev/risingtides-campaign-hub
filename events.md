@@ -41,3 +41,12 @@ area:      [testing]
 
 Deployed scraper hardening commit 4e367d8 to origin/main. Provisioned and atomically activated dedicated production runtime fingerprint 157062a67be46a3b with Python 3.14.6, yt-dlp 2026.3.17, and curl-cffi 0.11.4; installed the tracked launcher copy and verified its checksum, exact pins, pip consistency, freeze manifest, Chrome-136 support, and production health probe. Concurrent canaries for the four previously crashing creators all returned 3/3 items with zero new crash reports. Full supervised production run 420 completed cleanly in 487 seconds: 165 creators (160 ok, 5 empty, 0 error), 38/38 campaigns refreshed, 16 new matches, degraded=false, export 187 links, and no additional Python crash reports.
 _________________________________________________________________________________
+_________________________________________________________________________________
+time:      [16:13] [07-31-26]
+agent:     [claude] [fable 5]
+worktree:  fix/notion-multi-source-api
+type:      [bug-report]
+area:      [backend]
+
+Root-caused both Notion syncs going dark on 07-28: Notion migrated the workspace databases to multi-source format (each gained an empty "New data source"), and the pinned API version 2022-06-28 gets HTTP 400 on every query of a multi-source database. Master Pages cron failed 286 consecutive runs since 07-28 20:37 UTC (visible in notion_sync_log); the CRM webhook sync swallowed the same 400 silently and has never created a campaign (0 rows with source='notion'). Fix: bumped NOTION_VERSION to 2025-09-03, added resolve_data_source_id() (first-listed source, env-overridable via NOTION_CRM_DATA_SOURCE_ID / NOTION_MASTER_PAGES_DATA_SOURCE_ID, cached per process), pointed both query paths at /data_sources/<id>/query, and made query_new_clients log failures instead of swallowing them. Live smoke: CRM resolves + returns 1 Client entry (sam_barber_run, already exists, will be skipped), Master Pages fetches 61 pages. Tests: 55 affected tests green, full suite 459 passed with only the pre-existing TT-label matching failure. Note: an unknown external process creates Hub campaigns from CRM Lead entries daily (118 since June, source='manual' + notion_page_id, empty CRM fields) — creator not found in any local repo; flagged to john.
+_________________________________________________________________________________
