@@ -7,6 +7,7 @@ that entry to Campaign Hub as a new campaign.
 CRM Database ID: 1961465b-b829-80c9-a1b5-c4cb3284149a
 Integration: "Rising Tides AI" bot (internal integration)
 """
+import logging
 import os
 from typing import Dict, List, Optional, Set
 
@@ -15,8 +16,16 @@ import requests
 from campaign_manager.utils.helpers import slugify, extract_sound_id
 
 
+logger = logging.getLogger(__name__)
+
 NOTION_API_BASE = "https://api.notion.com/v1"
-NOTION_VERSION = "2022-06-28"
+# 2025-09-03 is the first version that supports multi-source databases.
+# Both workspace databases (CRM + Master Pages) gained a second data source
+# on 2026-07-28, after which older versions get HTTP 400 on every query.
+NOTION_VERSION = "2025-09-03"
+
+# database_id -> data_source_id, resolved once per process.
+_data_source_cache: Dict[str, str] = {}
 
 
 def _get_api_key() -> str:
@@ -37,6 +46,56 @@ def _headers() -> Dict[str, str]:
         "Content-Type": "application/json",
         "Notion-Version": NOTION_VERSION,
     }
+
+
+def resolve_data_source_id(database_id: str, env_override: str = "") -> str:
+    """Resolve a database ID to the data source ID its queries should target.
+
+    Since Notion-Version 2025-09-03, queries go to /data_sources/<id>/query
+    rather than /databases/<id>/query, because a database is now a container
+    that can hold several data sources. Both Rising Tides databases hold their
+    original source first plus an empty accidental "New data source", so the
+    first-listed source is the right one; set the env_override variable to pin
+    a specific source if that ever changes.
+
+    Returns "" on failure (callers treat that as an empty/failed fetch).
+    """
+    if env_override:
+        pinned = os.environ.get(env_override, "").strip()
+        if pinned:
+            return pinned
+
+    cached = _data_source_cache.get(database_id)
+    if cached:
+        return cached
+
+    url = f"{NOTION_API_BASE}/databases/{database_id}"
+    try:
+        resp = requests.get(url, headers=_headers(), timeout=15)
+    except Exception as e:
+        logger.warning("Notion data-source lookup failed for %s: %s", database_id, e)
+        return ""
+    if resp.status_code != 200:
+        logger.warning(
+            "Notion data-source lookup for %s returned HTTP %s: %s",
+            database_id, resp.status_code, resp.text[:300],
+        )
+        return ""
+
+    sources = resp.json().get("data_sources") or []
+    if not sources:
+        logger.warning("Notion database %s reports no data sources", database_id)
+        return ""
+    if len(sources) > 1:
+        logger.info(
+            "Notion database %s has %d data sources; using first-listed %r (%s)",
+            database_id, len(sources), sources[0].get("name", ""), sources[0].get("id", ""),
+        )
+
+    ds_id = sources[0].get("id", "")
+    if ds_id:
+        _data_source_cache[database_id] = ds_id
+    return ds_id
 
 
 # -- Notion property extractors --
@@ -125,7 +184,11 @@ def query_new_clients(synced_page_ids: Set[str]) -> List[Dict]:
         return []
 
     database_id = _get_database_id()
-    url = f"{NOTION_API_BASE}/databases/{database_id}/query"
+    ds_id = resolve_data_source_id(database_id, env_override="NOTION_CRM_DATA_SOURCE_ID")
+    if not ds_id:
+        logger.warning("CRM sync skipped: could not resolve a data source for %s", database_id)
+        return []
+    url = f"{NOTION_API_BASE}/data_sources/{ds_id}/query"
 
     payload = {
         "filter": {
@@ -138,8 +201,12 @@ def query_new_clients(synced_page_ids: Set[str]) -> List[Dict]:
     try:
         resp = requests.post(url, headers=_headers(), json=payload, timeout=15)
         if resp.status_code != 200:
+            logger.warning(
+                "CRM sync query returned HTTP %s: %s", resp.status_code, resp.text[:300]
+            )
             return []
-    except Exception:
+    except Exception as e:
+        logger.warning("CRM sync query failed: %s", e)
         return []
 
     results = []
