@@ -59,6 +59,7 @@ from campaign_manager.services.notion import (
     _get_api_key,
     _get_date,
     _get_email,
+    _get_multi_select,
     _get_rich_text,
     _get_select,
     _get_title,
@@ -233,11 +234,19 @@ def _map_page_to_row(page: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Op
     row: Dict[str, Any] = {
         "notion_page_id": page_uuid,
         "account_username": account_username,
-        "notion_group": _get_select(props.get("Group", {})) or None,
-        # Trailing space is intentional — Notion has two distinct properties
-        # called "Group" (group) and "Group " (subgroup). Confirmed in spec.
-        "notion_subgroup": _get_select(props.get("Group ", {})) or None,
-        "poster": _get_rich_text(props.get("Poster", {})) or None,
+        # Notion renamed "Group" -> "Label" and "Group " (trailing space,
+        # the subgroup/cluster) -> "Account Group". The old names are kept as
+        # fallbacks so a re-rename can't silently zero the mirror again —
+        # which is exactly what happened: with both reads returning None,
+        # resolve_memberships attested nothing and wiped every cluster
+        # group's members on each 15-minute run.
+        "notion_group": _get_select(props.get("Label", {}))
+        or _get_select(props.get("Group", {})) or None,
+        "notion_subgroup": _get_select(props.get("Account Group", {}))
+        or _get_select(props.get("Group ", {})) or None,
+        # "Poster" is a multi_select now (was rich_text).
+        "poster": ", ".join(_get_multi_select(props.get("Poster", {})))
+        or _get_rich_text(props.get("Poster", {})) or None,
         "account_type": _get_select(props.get("Account Type", {})) or None,
         "page_type": _get_select(props.get("Page Type", {})) or None,
         "content_engine": _get_select(props.get("ContentEngine", {})) or None,
