@@ -23,6 +23,55 @@ interface AddCreatorFormProps {
   isPending: boolean
 }
 
+// Intelligence verdict for the handle being booked. The Booking Wizard already
+// ranks by fit — this closes the OTHER door, the manual add that historically
+// re-booked known-cold creators 40-50 times with nobody noticing.
+//   cold    → tracked history says they don't break sounds; booking needs an
+//             explicit "book anyway" tick (soft gate — diversity trials of
+//             UNKNOWN creators stay frictionless by design).
+//   breaker → proven sound-breaker, book with confidence.
+//   trial   → no tracked history; that's what trials are for.
+type IntelVerdict = {
+  kind: "cold" | "breaker" | "neutral" | "trial"
+  posts?: number
+  avgViews?: number
+  viralRate?: number
+  score?: number
+}
+
+const COLD_MIN_POSTS = 15
+const COLD_MAX_AVG_VIEWS = 15_000
+const BREAKER_VIRAL_RATE = 5
+const BREAKER_AVG_VIEWS = 50_000
+
+function verdictFor(intel: {
+  posts: number
+  avg_views: number
+  viral_rate: number
+  score_balanced: number
+}): IntelVerdict {
+  const base = {
+    posts: intel.posts,
+    avgViews: intel.avg_views,
+    viralRate: intel.viral_rate,
+    score: intel.score_balanced,
+  }
+  if (
+    intel.posts >= COLD_MIN_POSTS &&
+    intel.viral_rate === 0 &&
+    intel.avg_views < COLD_MAX_AVG_VIEWS
+  ) {
+    return { kind: "cold", ...base }
+  }
+  if (intel.viral_rate >= BREAKER_VIRAL_RATE || intel.avg_views >= BREAKER_AVG_VIEWS) {
+    return { kind: "breaker", ...base }
+  }
+  return { kind: "neutral", ...base }
+}
+
+const fmtViews = (n: number) =>
+  n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1_000 ? `${Math.round(n / 1_000)}K` : `${n}`
+
 export function AddCreatorForm({ onAdd, isPending }: AddCreatorFormProps) {
   const [username, setUsername] = useState("")
   const [postsOwed, setPostsOwed] = useState("5")
@@ -30,10 +79,27 @@ export function AddCreatorForm({ onAdd, isPending }: AddCreatorFormProps) {
   const [paypalEmail, setPaypalEmail] = useState("")
   const [platform, setPlatform] = useState("tiktok")
   const [lookingUpPaypal, setLookingUpPaypal] = useState(false)
+  const [verdict, setVerdict] = useState<IntelVerdict | null>(null)
+  const [bookAnyway, setBookAnyway] = useState(false)
+
+  const lookupIntel = useCallback(async (name: string) => {
+    setVerdict(null)
+    setBookAnyway(false)
+    try {
+      const intel = await api.getCreatorIntel(name)
+      setVerdict(verdictFor(intel))
+    } catch {
+      // 404 = no tracked posts = a genuinely new creator. Trials are the
+      // lifeblood of roster diversity - zero friction, say so positively.
+      setVerdict({ kind: "trial" })
+    }
+  }, [])
 
   const lookupPaypal = useCallback(async () => {
     const name = username.replace(/^@/, "").trim()
-    if (!name || paypalEmail.trim()) return
+    if (!name) return
+    void lookupIntel(name)
+    if (paypalEmail.trim()) return
 
     setLookingUpPaypal(true)
     try {
@@ -46,12 +112,14 @@ export function AddCreatorForm({ onAdd, isPending }: AddCreatorFormProps) {
     } finally {
       setLookingUpPaypal(false)
     }
-  }, [username, paypalEmail])
+  }, [username, paypalEmail, lookupIntel])
+
+  const coldBlocked = verdict?.kind === "cold" && !bookAnyway
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     const cleanUsername = username.replace(/^@/, "").trim()
-    if (!cleanUsername) return
+    if (!cleanUsername || coldBlocked) return
 
     onAdd({
       username: cleanUsername,
@@ -67,6 +135,8 @@ export function AddCreatorForm({ onAdd, isPending }: AddCreatorFormProps) {
     setTotalRate("100")
     setPaypalEmail("")
     setPlatform("tiktok")
+    setVerdict(null)
+    setBookAnyway(false)
   }
 
   return (
@@ -134,7 +204,7 @@ export function AddCreatorForm({ onAdd, isPending }: AddCreatorFormProps) {
         </div>
         <Button
           type="submit"
-          disabled={isPending}
+          disabled={isPending || coldBlocked}
           className="bg-rt-magenta hover:bg-rt-purple text-white"
         >
           {isPending ? (
@@ -144,6 +214,42 @@ export function AddCreatorForm({ onAdd, isPending }: AddCreatorFormProps) {
           )}
           {isPending ? "Adding..." : "Add"}
         </Button>
+        {verdict && (
+          <div className="w-full text-[12px] leading-5">
+            {verdict.kind === "cold" && (
+              <div className="rounded-[8px] border border-red-500/40 bg-red-500/10 px-3 py-2 text-red-300">
+                <span className="font-semibold">Cold history:</span>{" "}
+                {verdict.posts} tracked posts · avg {fmtViews(verdict.avgViews ?? 0)} views ·{" "}
+                {verdict.viralRate}% viral. This creator has never broken a sound.
+                <label className="mt-1 flex items-center gap-2 text-red-200">
+                  <input
+                    type="checkbox"
+                    checked={bookAnyway}
+                    onChange={(e) => setBookAnyway(e.target.checked)}
+                  />
+                  Book anyway (deliberate choice, not autopilot)
+                </label>
+              </div>
+            )}
+            {verdict.kind === "breaker" && (
+              <span className="text-emerald-300">
+                Proven breaker · avg {fmtViews(verdict.avgViews ?? 0)} views ·{" "}
+                {verdict.viralRate}% viral · score {verdict.score?.toFixed(0)}
+              </span>
+            )}
+            {verdict.kind === "neutral" && (
+              <span className="text-rt-fg-tertiary">
+                {verdict.posts} tracked posts · avg {fmtViews(verdict.avgViews ?? 0)} views ·{" "}
+                {verdict.viralRate}% viral
+              </span>
+            )}
+            {verdict.kind === "trial" && (
+              <span className="text-rt-fg-tertiary">
+                No tracked history — new-creator trial. That&apos;s the bench working.
+              </span>
+            )}
+          </div>
+        )}
       </form>
     </div>
   )
