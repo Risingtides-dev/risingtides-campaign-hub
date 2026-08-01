@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 EST = ZoneInfo("America/New_York")
 
-from sqlalchemy import create_engine, desc, func, or_
+from sqlalchemy import create_engine, desc, func
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
 from campaign_manager.models import (
@@ -30,6 +30,37 @@ from campaign_manager.models import (
 
 _engine = None
 _SessionLocal = None
+
+
+def _sync_columns():
+    """Add any model column missing from its live table (idempotent, additive).
+
+    Guards the class of failure where a model column has no ALTER migration, or
+    where a column is dropped out-of-band: the next boot re-adds it instead of
+    every SELECT 500ing. New columns are added nullable / with the model default;
+    existing columns and data are never touched. Postgres-only; per-column
+    failures are swallowed so one bad column can't abort startup.
+    """
+    from sqlalchemy import inspect, text
+    insp = inspect(_engine)
+    existing_tables = set(insp.get_table_names())
+    for table in Base.metadata.sorted_tables:
+        if table.name not in existing_tables:
+            continue  # create_all already made it with the full current schema
+        have = {col["name"] for col in insp.get_columns(table.name)}
+        for col in table.columns:
+            if col.name in have:
+                continue
+            ddl = col.type.compile(_engine.dialect)
+            try:
+                with _SessionLocal() as s:
+                    s.execute(text(
+                        f'ALTER TABLE {table.name} '
+                        f'ADD COLUMN IF NOT EXISTS "{col.name}" {ddl}'
+                    ))
+                    s.commit()
+            except Exception:
+                pass
 
 
 def init(database_url: Optional[str] = None):
@@ -68,10 +99,18 @@ def init(database_url: Optional[str] = None):
         else:
             raise
 
+    # Reconcile columns. create_all() creates missing *tables* but NEVER adds a
+    # new column to a table that already exists — and it can't restore a column
+    # that was dropped out-of-band. Any model column the live table lacks makes
+    # every SELECT of that model throw UndefinedColumn -> 500 (this is what took
+    # /api/campaigns down when `campaigns.status` went missing). Auto-add any
+    # model column the table is missing so the schema self-heals on boot,
+    # instead of relying on the hand-maintained ALTER blocks below.
     # NOTE: the dead `status` column is dropped as a DELIBERATE one-time
     # migration AFTER this code deploys (so no running code references it),
     # NOT here. Auto-running schema DROPs on every db.init() broke prod once
     # already — see scripts/migrations/drop_campaigns_status.sql.
+    _sync_columns()
 
     # Add completion_status column if missing (create_all won't add columns to existing tables)
     try:
@@ -266,21 +305,6 @@ def init(database_url: Optional[str] = None):
             # deploy. The original "fresh deploy starts with a clean
             # queue" goal was only relevant the day the feature shipped;
             # leaving it in turned every redeploy into a queue-wipe.
-            s.commit()
-    except Exception:
-        pass
-
-    # Scope tag for internal scrape results (NULL = legacy row, treated
-    # as 'full'). Lets get_internal_results prefer the latest FULL scrape
-    # instead of letting a small manual scrape shadow the daily cron run.
-    try:
-        with _SessionLocal() as s:
-            s.execute(
-                __import__("sqlalchemy").text(
-                    "ALTER TABLE internal_scrape_results "
-                    "ADD COLUMN IF NOT EXISTS scope TEXT NULL"
-                )
-            )
             s.commit()
     except Exception:
         pass
@@ -482,32 +506,6 @@ def get_session() -> Session:
     if not _SessionLocal:
         raise RuntimeError("Database not initialized. Call db.init() first.")
     return _SessionLocal()
-
-
-def dialect_insert(table):
-    """INSERT construct with ON CONFLICT support for the active dialect.
-
-    Production is Postgres; the test suite runs the same code against
-    in-memory sqlite, whose insert construct exposes the identical
-    on_conflict_do_update / on_conflict_do_nothing API.
-    """
-    if _engine is not None and _engine.dialect.name == "sqlite":
-        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-        return sqlite_insert(table)
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
-    return pg_insert(table)
-
-
-def _sql_greatest(col, other):
-    """GREATEST(col, other), spelled scalar MAX(col, other) on sqlite.
-
-    COALESCE guards the stored side: sqlite's scalar max() returns NULL
-    if ANY argument is NULL, which would let a NULL stored stat beat a
-    fresh value."""
-    col = func.coalesce(col, 0)
-    if _engine is not None and _engine.dialect.name == "sqlite":
-        return func.max(col, other)
-    return func.greatest(col, other)
 
 
 # ── Campaign CRUD ─────────────────────────────────────────────────────
@@ -1061,64 +1059,48 @@ def merge_internal_cache(username: str, new_videos: List[Dict]) -> List[Dict]:
             InternalVideoCache.cached_at < cutoff,
         ).delete(synchronize_session=False)
 
-        # URLs already cached BEFORE this merge — used only to decide which
-        # upserted rows are NEW (and so need group-attribution snapshots).
-        # The writes themselves are ON CONFLICT upserts, so two workers
-        # scraping the same account concurrently can no longer collide
-        # with IntegrityError (gunicorn runs 4 processes; in-memory
-        # single-flight guards are per-process and don't cover this).
-        existing_urls = {
-            u for (u,) in s.query(InternalVideoCache.url).filter_by(username=uname).all()
-        }
+        # Existing rows by URL — keep the objects so we can REFRESH their stats
+        # (sweep #5 fix: previously only new URLs were inserted and existing
+        # rows were never updated, so an internal video's views/likes were
+        # frozen at first-scrape value forever — internal song-discovery /
+        # reporting off this cache showed stale numbers). Refresh with max()
+        # since views/likes are monotonic, same rule as merge_matched_videos.
+        existing_by_url = {v.url: v for v in
+                           s.query(InternalVideoCache).filter_by(username=uname).all()}
 
-        # Dedupe the payload by URL first — a multi-row ON CONFLICT DO
-        # UPDATE cannot affect the same row twice. Keep max stats, since
-        # views/likes are monotonic (same rule as merge_matched_videos).
-        now = datetime.now()
-        by_url: Dict[str, Dict] = {}
+        new_rows: List[InternalVideoCache] = []
         for vd in new_videos:
             url = vd.get("url", "")
             if not url:
                 continue
             fresh_views = int(vd.get("views", 0) or 0)
             fresh_likes = int(vd.get("likes", 0) or 0)
-            existing_vals = by_url.get(url)
-            if existing_vals:
-                existing_vals["views"] = max(existing_vals["views"], fresh_views)
-                existing_vals["likes"] = max(existing_vals["likes"], fresh_likes)
+            if url in existing_by_url:
+                row = existing_by_url[url]
+                row.views = max(int(row.views or 0), fresh_views)
+                row.likes = max(int(row.likes or 0), fresh_likes)
+                row.cached_at = datetime.now()
             else:
-                by_url[url] = {
-                    "username": uname,
-                    "url": url,
-                    "song": vd.get("song", ""),
-                    "artist": vd.get("artist", ""),
-                    "account": vd.get("account", ""),
-                    "views": fresh_views,
-                    "likes": fresh_likes,
-                    "upload_date": vd.get("upload_date", ""),
-                    "timestamp": str(vd.get("timestamp", "")),
-                    "cached_at": now,
-                }
+                row = InternalVideoCache(
+                    username=uname,
+                    url=url,
+                    song=vd.get("song", ""),
+                    artist=vd.get("artist", ""),
+                    account=vd.get("account", ""),
+                    views=fresh_views,
+                    likes=fresh_likes,
+                    upload_date=vd.get("upload_date", ""),
+                    timestamp=str(vd.get("timestamp", "")),
+                    cached_at=datetime.now(),
+                )
+                s.add(row)
+                new_rows.append(row)
+                existing_by_url[url] = row
 
-        new_video_ids: List[int] = []
-        if by_url:
-            cache_t = InternalVideoCache.__table__
-            stmt = dialect_insert(cache_t).values(list(by_url.values()))
-            # Refresh stats with GREATEST so a concurrent worker's larger
-            # value can't be clobbered by a stale one (the previous ORM
-            # read-modify-write max() lost updates across sessions).
-            stmt = stmt.on_conflict_do_update(
-                index_elements=["username", "url"],
-                set_={
-                    "views": _sql_greatest(cache_t.c.views, stmt.excluded.views),
-                    "likes": _sql_greatest(cache_t.c.likes, stmt.excluded.likes),
-                    "cached_at": stmt.excluded.cached_at,
-                },
-            ).returning(cache_t.c.id, cache_t.c.url)
-            upserted = s.execute(stmt).all()
-            new_video_ids = [vid for vid, url in upserted if url not in existing_urls]
+        # Flush so new_rows get their PK ids before we write attribution.
+        if new_rows:
+            s.flush()
 
-        if new_video_ids:
             # Resolve the account's CURRENT group memberships once.
             group_ids = [
                 gid
@@ -1129,17 +1111,28 @@ def merge_internal_cache(username: str, new_videos: List[Dict]) -> List[Dict]:
 
             if group_ids:
                 # One attribution row per (new video × current group).
-                # DO NOTHING on the (video_id, group_id) unique constraint
-                # makes this idempotent, including against a concurrent
-                # worker that inserted the same video first (both workers
-                # see the URL as new; both attribution attempts are safe).
-                attr_t = InternalVideoGroupAttribution.__table__
-                attr_stmt = dialect_insert(attr_t).values([
-                    {"video_id": vid, "group_id": gid}
-                    for vid in new_video_ids
-                    for gid in group_ids
-                ]).on_conflict_do_nothing(index_elements=["video_id", "group_id"])
-                s.execute(attr_stmt)
+                # Idempotent: dedup against any existing rows by the
+                # (video_id, group_id) unique constraint.
+                existing_pairs = set()
+                new_video_ids = [r.id for r in new_rows]
+                if new_video_ids:
+                    existing_pairs = {
+                        (vid, gid)
+                        for (vid, gid) in s.query(
+                            InternalVideoGroupAttribution.video_id,
+                            InternalVideoGroupAttribution.group_id,
+                        ).filter(
+                            InternalVideoGroupAttribution.video_id.in_(new_video_ids)
+                        ).all()
+                    }
+                for row in new_rows:
+                    for gid in group_ids:
+                        if (row.id, gid) in existing_pairs:
+                            continue
+                        s.add(InternalVideoGroupAttribution(
+                            video_id=row.id,
+                            group_id=gid,
+                        ))
 
         s.commit()
 
@@ -1151,25 +1144,13 @@ def merge_internal_cache(username: str, new_videos: List[Dict]) -> List[Dict]:
 # ── Internal Scrape Results ───────────────────────────────────────────
 
 def get_internal_results() -> Dict:
-    """Get the latest FULL-scope internal scrape results.
-
-    "Latest row wins" used to mean a tiny manual single-account scrape
-    finishing after the 06:02 full cron shadowed the full results in
-    /api/internal/results. Prefer the newest full-scope row (NULL scope
-    = legacy rows, treated as full); fall back to the newest row of any
-    scope if no full row exists."""
+    """Get the latest internal scrape results."""
     with get_session() as s:
         result = s.query(InternalScrapeResult)\
-            .filter(or_(InternalScrapeResult.scope.is_(None),
-                        InternalScrapeResult.scope == "full"))\
             .order_by(desc(InternalScrapeResult.scraped_at)).first()
-        if not result:
-            result = s.query(InternalScrapeResult)\
-                .order_by(desc(InternalScrapeResult.scraped_at)).first()
         if not result:
             return {}
         return {
-            "scope": result.scope or "full",
             "scraped_at": result.scraped_at.isoformat() if result.scraped_at else "",
             "hours": result.hours,
             "start_dt": result.start_dt.isoformat() if result.start_dt else "",
@@ -1210,7 +1191,6 @@ def save_internal_results(data: Dict):
             total_videos_unfiltered=data.get("total_videos_unfiltered", 0),
             unique_songs=data.get("unique_songs", 0),
             songs=data.get("songs", []),
-            scope=(data.get("scope") or None),
         )
         s.add(result)
         s.commit()
@@ -1652,25 +1632,12 @@ def add_group_members(group_id: int, usernames: List[str]) -> List[str]:
                     func.lower(InternalCreatorGroupMember.username).in_(cleaned))
             .all()
         }
-        # The known/already pre-checks keep the case-insensitive skip
-        # semantics; the ON CONFLICT DO NOTHING below is the cross-worker
-        # race guard (two requests adding the same member concurrently
-        # used to IntegrityError one of them). RETURNING reports which
-        # rows this call actually inserted.
-        candidates = []
+        added = []
         for u in cleaned:
             if u in known and u not in already:
-                candidates.append(u)
+                s.add(InternalCreatorGroupMember(group_id=group_id, username=u))
+                added.append(u)
                 already.add(u)
-        added: List[str] = []
-        if candidates:
-            member_t = InternalCreatorGroupMember.__table__
-            stmt = dialect_insert(member_t).values([
-                {"group_id": group_id, "username": u} for u in candidates
-            ]).on_conflict_do_nothing(
-                index_elements=["group_id", "username"],
-            ).returning(member_t.c.username)
-            added = [row[0] for row in s.execute(stmt).all()]
         s.commit()
         return added
 
@@ -2274,28 +2241,3 @@ def inbox_intent_counts(days: int = 30) -> Dict[str, int]:
             .all()
         )
         return {(intent or "unclassified"): int(n) for intent, n in rows}
-
-
-def get_internal_freshness() -> Dict:
-    """Freshness of the internal scrape corpus — powers the staleness banner.
-
-    Returns: { total_videos, newest_upload_date (YYYYMMDD or None),
-               newest_cached_at (ISO or None), days_since_newest_upload }
-    """
-    with get_session() as s:
-        total = s.query(func.count(InternalVideoCache.id)).scalar() or 0
-        newest_upload = s.query(func.max(InternalVideoCache.upload_date)).scalar()
-        newest_cached = s.query(func.max(InternalVideoCache.cached_at)).scalar()
-
-    days_stale = None
-    if newest_upload:
-        try:
-            days_stale = (datetime.now() - datetime.strptime(newest_upload, "%Y%m%d")).days
-        except ValueError:
-            pass
-    return {
-        "total_videos": int(total),
-        "newest_upload_date": newest_upload,
-        "newest_cached_at": newest_cached.isoformat() if newest_cached else None,
-        "days_since_newest_upload": days_stale,
-    }
