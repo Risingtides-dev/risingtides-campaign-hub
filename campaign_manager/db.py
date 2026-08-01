@@ -32,6 +32,37 @@ _engine = None
 _SessionLocal = None
 
 
+def _sync_columns():
+    """Add any model column missing from its live table (idempotent, additive).
+
+    Guards the class of failure where a model column has no ALTER migration, or
+    where a column is dropped out-of-band: the next boot re-adds it instead of
+    every SELECT 500ing. New columns are added nullable / with the model default;
+    existing columns and data are never touched. Postgres-only; per-column
+    failures are swallowed so one bad column can't abort startup.
+    """
+    from sqlalchemy import inspect, text
+    insp = inspect(_engine)
+    existing_tables = set(insp.get_table_names())
+    for table in Base.metadata.sorted_tables:
+        if table.name not in existing_tables:
+            continue  # create_all already made it with the full current schema
+        have = {col["name"] for col in insp.get_columns(table.name)}
+        for col in table.columns:
+            if col.name in have:
+                continue
+            ddl = col.type.compile(_engine.dialect)
+            try:
+                with _SessionLocal() as s:
+                    s.execute(text(
+                        f'ALTER TABLE {table.name} '
+                        f'ADD COLUMN IF NOT EXISTS "{col.name}" {ddl}'
+                    ))
+                    s.commit()
+            except Exception:
+                pass
+
+
 def init(database_url: Optional[str] = None):
     """Initialize the database connection and create tables."""
     global _engine, _SessionLocal
@@ -68,10 +99,18 @@ def init(database_url: Optional[str] = None):
         else:
             raise
 
+    # Reconcile columns. create_all() creates missing *tables* but NEVER adds a
+    # new column to a table that already exists — and it can't restore a column
+    # that was dropped out-of-band. Any model column the live table lacks makes
+    # every SELECT of that model throw UndefinedColumn -> 500 (this is what took
+    # /api/campaigns down when `campaigns.status` went missing). Auto-add any
+    # model column the table is missing so the schema self-heals on boot,
+    # instead of relying on the hand-maintained ALTER blocks below.
     # NOTE: the dead `status` column is dropped as a DELIBERATE one-time
     # migration AFTER this code deploys (so no running code references it),
     # NOT here. Auto-running schema DROPs on every db.init() broke prod once
     # already — see scripts/migrations/drop_campaigns_status.sql.
+    _sync_columns()
 
     # Add completion_status column if missing (create_all won't add columns to existing tables)
     try:
