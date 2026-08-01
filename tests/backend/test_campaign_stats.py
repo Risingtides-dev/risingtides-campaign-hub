@@ -1,6 +1,7 @@
 """Tests for campaign_manager.services.campaign_stats (RTA-43)."""
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timezone
 from unittest.mock import patch
 
@@ -506,3 +507,56 @@ class TestLivePostsSource:
         from campaign_manager.blueprints.campaigns import _stats_from_result
         stats = _stats_from_result({}, self._creators(), self._result("scraper_fallback", 4))
         assert stats["live_posts"] == 5  # 2+3, removed creator excluded
+
+
+class TestStaleWhileRevalidate:
+    """A stale-but-present cache entry must NOT block the bulk response; it is
+    served immediately and refreshed off the request path (perf fix 2026-08)."""
+
+    def _seed_stale_entry(self, tracker_id: str, age_seconds: int):
+        from datetime import timedelta
+        old = datetime.now(timezone.utc) - timedelta(seconds=age_seconds)
+        campaign_stats._cache_set(tracker_id, campaign_stats._CacheEntry(
+            submissions=[Submission(video_url="https://tt.com/v/a", views=42)],
+            fetched_at=old, api_fetched_at="2026-05-01T00:00:00Z",
+        ))
+
+    def test_stale_entry_does_not_block_and_refreshes_in_background(self, db):
+        slug = "swr_stale"
+        _seed_campaign_with_tracker(slug, tracker_id="swr-tracker")
+        # 600s old vs default 300s TTL -> stale.
+        self._seed_stale_entry("swr-tracker", age_seconds=600)
+
+        called = {"n": 0}
+        done = threading.Event()
+
+        def _tracked_fetch(tid, timeout=5):
+            called["n"] += 1
+            done.set()
+            return _ok_fetch(tid, [Submission(video_url="https://tt.com/v/b", views=99)])
+
+        with patch.object(campaign_stats, "fetch_campaign_submissions", side_effect=_tracked_fetch):
+            out = get_campaign_stats_bulk(
+                [slug],
+                matched_videos_by_slug={slug: []},
+                tracker_id_by_slug={slug: "swr-tracker"},
+            )
+            # Response comes back synchronously off the stale cache...
+            assert slug in out
+            # ...and a background refresh was kicked (give the daemon a beat).
+            assert done.wait(timeout=3), "background refresh never fired"
+        assert called["n"] == 1
+
+    def test_cold_entry_still_blocks_for_first_ever_data(self, db):
+        slug = "swr_cold"
+        _seed_campaign_with_tracker(slug, tracker_id="swr-cold-tracker")
+        # No cache seeded -> truly cold -> must fetch synchronously.
+        with patch.object(campaign_stats, "fetch_campaign_submissions",
+                          side_effect=lambda tid, timeout=5: _ok_fetch(
+                              tid, [Submission(video_url="https://tt.com/v/c", views=5)])):
+            out = get_campaign_stats_bulk(
+                [slug],
+                matched_videos_by_slug={slug: []},
+                tracker_id_by_slug={slug: "swr-cold-tracker"},
+            )
+        assert slug in out
