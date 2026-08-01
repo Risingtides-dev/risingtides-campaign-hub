@@ -171,6 +171,47 @@ def _is_fresh(entry: _CacheEntry, ttl_seconds: int) -> bool:
     return age < ttl_seconds
 
 
+# Stale-while-revalidate: when a tracker has a cached value that has aged past
+# the TTL, we serve the stale value immediately and refresh it OFF the request
+# path in a daemon thread. `_refresh_inflight` dedupes so two concurrent
+# /api/campaigns loads don't both fetch the same tracker. This is the whole
+# reason the endpoint was 3-8s: the old bulk path treated a stale-but-present
+# entry as "cold" and blocked on a live 5s fetch before responding, even though
+# good-enough data was already in the L2 cache.
+_refresh_inflight: set = set()
+_refresh_lock = threading.Lock()
+
+
+def _refresh_tracker_async(tracker_id: str) -> None:
+    """Fire-and-forget background refresh of one tracker's cache entry."""
+    if not tracker_id:
+        return
+    with _refresh_lock:
+        if tracker_id in _refresh_inflight:
+            return
+        _refresh_inflight.add(tracker_id)
+
+    def _work():
+        try:
+            fres = fetch_campaign_submissions(tracker_id, timeout=5)
+            if fres.ok:
+                _cache_set(tracker_id, _CacheEntry(
+                    submissions=fres.submissions,
+                    fetched_at=datetime.now(timezone.utc),
+                    api_fetched_at=fres.fetched_at,
+                ))
+        except Exception:
+            logger.exception(
+                "campaign_stats: background refresh failed for tracker %s", tracker_id,
+            )
+        finally:
+            with _refresh_lock:
+                _refresh_inflight.discard(tracker_id)
+
+    threading.Thread(target=_work, name=f"tracker-refresh-{tracker_id[:8]}",
+                     daemon=True).start()
+
+
 def invalidate_cache(tracker_id: Optional[str] = None) -> None:
     """Drop one tracker's cached entry, or the whole cache."""
     with _cache_lock:
@@ -623,9 +664,15 @@ def get_campaign_stats_bulk(
             except Exception:
                 tracker_map[s] = ""
 
-    # Collect distinct cold tracker_ids that need a live fetch.
+    # Split distinct trackers three ways:
+    #   fresh  -> cache hit within TTL, nothing to do
+    #   stale  -> cache entry exists but aged out: serve it NOW, refresh in the
+    #             background (stale-while-revalidate) — never block the response
+    #   cold   -> no cache entry at all (brand-new tracker, or L2 empty): this is
+    #             the only case we block on, and only in a bounded batch
     ttl = _cache_ttl_seconds()
     cold_tracker_ids: List[str] = []
+    stale_tracker_ids: List[str] = []
     seen: set = set()
     for s in slugs:
         tid = tracker_map.get(s, "")
@@ -633,11 +680,21 @@ def get_campaign_stats_bulk(
             continue
         seen.add(tid)
         cached = _cache_get(tid)
-        if not (cached and _is_fresh(cached, ttl)):
-            cold_tracker_ids.append(tid)
+        if cached and _is_fresh(cached, ttl):
+            continue
+        if cached:
+            stale_tracker_ids.append(tid)  # have data, refresh off-path
+        else:
+            cold_tracker_ids.append(tid)   # no data, must block once
 
-    # One bounded batch keeps a slow Tracker upstream from occupying every
-    # sync Gunicorn worker. Later requests fill the remaining cold entries.
+    # Stale entries: kick background refreshes and move on. The per-slug pass
+    # below serves their existing (stale) cache with allow_live_fetch=False.
+    for tid in stale_tracker_ids:
+        _refresh_tracker_async(tid)
+
+    # Truly-cold trackers still block, but only for first-ever data. One bounded
+    # batch keeps a slow Tracker upstream from occupying every sync Gunicorn
+    # worker; later requests fill any remainder.
     if cold_tracker_ids:
         cold_tracker_ids = cold_tracker_ids[:10]
         max_workers = len(cold_tracker_ids)
