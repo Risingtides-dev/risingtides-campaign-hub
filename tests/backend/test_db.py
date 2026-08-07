@@ -282,3 +282,59 @@ class TestNetworkCreators:
         assert db.remove_network_creator("alice") is True
         assert db.get_network_creator("alice") is None
         assert db.remove_network_creator("alice") is False
+
+
+class TestListCampaignsWithCreatorsCompletionFilter:
+    """The `completion` narrowing has to happen IN THE QUERY.
+
+    The campaigns list endpoint's cost scales with what this function
+    returns — every campaign costs a meta dict, a dict per creator, a
+    dict per matched_video, a budget calc, and a stats resolution. Prod
+    sits at ~285 completed vs ~37 active campaigns, with ~90% of all
+    matched_videos hanging off the completed ones, so loading the lot
+    and filtering in Python made the default page load do roughly 10x
+    the work it needed to. These tests fail if someone drops the filter
+    back into the caller.
+    """
+
+    def _two_campaigns(self, db):
+        _make_campaign(db, slug="live_one", title="Live One")
+        _make_campaign(db, slug="done_one", title="Done One",
+                       completion_status="completed")
+        db.save_creators("live_one", [{"username": "live_creator", "rate": 100}])
+        db.save_creators("done_one", [{"username": "done_creator", "rate": 100}])
+        db.save_matched_videos("live_one", [
+            {"url": "https://tiktok.com/@live_creator/video/1", "account": "live_creator"},
+        ])
+        db.save_matched_videos("done_one", [
+            {"url": "https://tiktok.com/@done_creator/video/2", "account": "done_creator"},
+            {"url": "https://tiktok.com/@done_creator/video/3", "account": "done_creator"},
+        ])
+
+    def test_active_returns_only_live_campaigns(self, db):
+        self._two_campaigns(db)
+        rows = db.list_campaigns_with_creators(
+            with_matched_videos=True, completion="active")
+        assert [meta["slug"] for meta, _c, _mv in rows] == ["live_one"]
+
+    def test_finished_returns_only_completed_campaigns(self, db):
+        self._two_campaigns(db)
+        rows = db.list_campaigns_with_creators(
+            with_matched_videos=True, completion="finished")
+        assert [meta["slug"] for meta, _c, _mv in rows] == ["done_one"]
+
+    def test_default_still_returns_everything(self, db):
+        self._two_campaigns(db)
+        rows = db.list_campaigns_with_creators(with_matched_videos=True)
+        assert sorted(meta["slug"] for meta, _c, _mv in rows) == ["done_one", "live_one"]
+
+    def test_filter_also_narrows_the_child_fetches(self, db):
+        """The point of filtering here rather than in the caller: the
+        selectinload for creators/matched_videos is driven by the
+        campaign IDs this query returns, so completed campaigns' rows
+        are never pulled out of Postgres at all."""
+        self._two_campaigns(db)
+        rows = db.list_campaigns_with_creators(
+            with_matched_videos=True, completion="active")
+        assert sum(len(c) for _m, c, _mv in rows) == 1     # not 2
+        assert sum(len(mv) for _m, _c, mv in rows) == 1    # not 3

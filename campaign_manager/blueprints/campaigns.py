@@ -12,7 +12,7 @@ import re
 import requests as _requests
 from datetime import date, datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from flask import Blueprint, current_app, jsonify, request
 
@@ -236,8 +236,8 @@ def _save_meta(slug: str, meta: Dict, campaign_dir=None):
         save_json(campaign_dir / "campaign.json", meta)
 
 
-def get_campaigns() -> List[Dict]:
-    """Return all active campaigns with budget/stats attached.
+def get_campaigns(completion: Optional[str] = None) -> List[Dict]:
+    """Return campaigns with budget/stats attached.
 
     Stats come from the Tides Tracker API path (RTA-43) via
     `get_campaign_stats`. Falls back to scraper data per-campaign if a
@@ -246,10 +246,21 @@ def get_campaigns() -> List[Dict]:
     Bulk-loads creators, matched_videos, and tracker_id mappings up
     front so the per-campaign work below is pure-Python + cache lookups
     (no DB roundtrips inside the loop). See CAMP-40.
+
+    `completion` ("active" | "finished" | None) narrows the set BEFORE
+    any of the expensive work happens. Callers that only render live
+    campaigns must pass "active": every campaign in this list costs a
+    `to_meta_dict()`, a dict per creator, a dict per matched_video, a
+    `calc_budget`, and a stats resolution. Filtering the result
+    afterwards pays all of that for rows nobody looks at — with ~285 of
+    ~322 campaigns completed and 90% of matched_videos hanging off
+    them, the default list endpoint was doing roughly 10x the work it
+    needed to.
     """
     if _db.is_active():
         rows = _db.list_campaigns_with_creators(
-            with_matched_videos=True
+            with_matched_videos=True,
+            completion=completion,
         )
         tracker_map = _db.get_campaign_to_tracker_map()
 
@@ -302,6 +313,11 @@ def get_campaigns() -> List[Dict]:
             continue
         meta = load_json(d / "campaign.json")
         if not meta:
+            continue
+        # Mirror the DB path's `completion` narrowing so dev-mode and
+        # prod agree on what a filtered list contains.
+        is_done = meta.get("completion_status", "none") == "completed"
+        if (completion == "active" and is_done) or (completion == "finished" and not is_done):
             continue
         creators = load_creators(d)
         budget = calc_budget(meta, creators)
@@ -379,18 +395,19 @@ def list_campaigns():
         (request.args.get("include_finished") or request.args.get("all") or "")
         .strip().lower() in ("true", "1", "yes")
     )
-    campaigns = get_campaigns()
-
-    def _is_active(c):
-        return c["meta"].get("completion_status", "none") != "completed"
-
+    # Resolve the active/finished split BEFORE fetching, not after. This
+    # endpoint's cost scales with the number of campaigns it loads, and
+    # the default (active-only) view wants ~37 of ~322 — loading all of
+    # them plus their ~15.7k completed-campaign matched_videos just to
+    # discard them is where the multi-second page load came from.
     if active_param in ("false", "0", "no"):
-        campaigns = [c for c in campaigns if not _is_active(c)]
+        completion = "finished"
     elif include_finished:
-        pass  # return everything (active + finished)
+        completion = None  # everything (active + finished)
     else:
-        # Default + ?active=true: active only.
-        campaigns = [c for c in campaigns if _is_active(c)]
+        completion = "active"  # default + ?active=true
+
+    campaigns = get_campaigns(completion=completion)
 
     if search:
         tokens = [t for t in re.split(r"\s+", search) if t]
