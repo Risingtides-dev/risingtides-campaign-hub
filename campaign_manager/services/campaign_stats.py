@@ -102,6 +102,87 @@ def _submissions_from_json(rows) -> List[Submission]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# Refresh attempt cooldown (per worker)
+#
+# A tracker whose upstream fetch fails — or exceeds the list endpoint's 5s
+# prewarm timeout — never gets a cache write, so before this every single
+# /api/campaigns request re-attempted it and burned the full timeout again.
+# One slow tracker (sombr_june_release: 7.5s upstream, 262KB) held the whole
+# campaigns page at ~5-7s for every user until the cron happened to rescue it.
+# Record every live-fetch attempt; don't re-attempt the same tracker from the
+# request path until the cooldown passes. Stale data (or scraper fallback)
+# serves in the meantime — the 30-min cron with its 15s timeout remains the
+# thing that actually heals slow trackers.
+# ---------------------------------------------------------------------------
+
+_REFRESH_COOLDOWN_SECONDS = 120
+_refresh_attempts: Dict[str, datetime] = {}
+_refresh_attempts_lock = threading.Lock()
+
+
+def _in_cooldown(tracker_id: str) -> bool:
+    with _refresh_attempts_lock:
+        at = _refresh_attempts.get(tracker_id)
+    if at is None:
+        return False
+    return (datetime.now(timezone.utc) - at).total_seconds() < _REFRESH_COOLDOWN_SECONDS
+
+
+def _mark_attempt(tracker_id: str) -> None:
+    with _refresh_attempts_lock:
+        _refresh_attempts[tracker_id] = datetime.now(timezone.utc)
+
+
+def _refresh_trackers_sync(tracker_ids: List[str], *, timeout: float) -> None:
+    """Fetch + cache each tracker; failures are recorded, never raised."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    if not tracker_ids:
+        return
+    with ThreadPoolExecutor(max_workers=len(tracker_ids)) as ex:
+        futures = {
+            ex.submit(fetch_campaign_submissions, tid, timeout=timeout): tid
+            for tid in tracker_ids
+        }
+        for fut in as_completed(futures):
+            tid = futures[fut]
+            try:
+                fres = fut.result()
+            except Exception:
+                logger.exception(
+                    "campaign_stats: refresh fetch raised for tracker %s", tid,
+                )
+                continue
+            if not fres.ok:
+                # Don't poison the cache with a failure; the cooldown mark
+                # (set before dispatch) keeps request paths from re-burning
+                # the timeout until it expires.
+                continue
+            _cache_set(tid, _CacheEntry(
+                submissions=fres.submissions,
+                fetched_at=datetime.now(timezone.utc),
+                api_fetched_at=fres.fetched_at,
+            ))
+
+
+def _spawn_background_refresh(tracker_ids: List[str]) -> None:
+    """Refresh stale-but-present trackers off the request thread.
+
+    Uses the full 15s upstream timeout — the whole point is that trackers
+    too slow for the list endpoint's 5s budget (the sombr class) can still
+    heal here, instead of being permanently unwarmable from the request
+    path. Tests monkeypatch this to run inline / record calls.
+    """
+    threading.Thread(
+        target=_refresh_trackers_sync,
+        args=(tracker_ids,),
+        kwargs={"timeout": 15},
+        daemon=True,
+        name="tides-stats-bg-refresh",
+    ).start()
+
+
 def _cache_get(tracker_id: str) -> Optional[_CacheEntry]:
     # L1: fast in-process dict (per worker).
     with _cache_lock:
@@ -172,12 +253,23 @@ def _is_fresh(entry: _CacheEntry, ttl_seconds: int) -> bool:
 
 
 def invalidate_cache(tracker_id: Optional[str] = None) -> None:
-    """Drop one tracker's cached entry, or the whole cache."""
+    """Drop one tracker's cached entry, or the whole cache.
+
+    Also clears the matching refresh-attempt cooldown marks: a caller
+    invalidating a tracker wants the next read to actually go live, not
+    to sit out the rest of a cooldown started by an earlier attempt.
+    (The test suite's autouse cache reset relies on this too.)
+    """
     with _cache_lock:
         if tracker_id is None:
             _cache.clear()
         else:
             _cache.pop(tracker_id, None)
+    with _refresh_attempts_lock:
+        if tracker_id is None:
+            _refresh_attempts.clear()
+        else:
+            _refresh_attempts.pop(tracker_id, None)
 
 
 # ---------------------------------------------------------------------------
@@ -622,8 +714,6 @@ def get_campaign_stats_bulk(
     done) or the scraper fallback. A tracker shared with a non-frozen
     slug still gets fetched.
     """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
     out: Dict[str, CampaignStatsResult] = {}
     mv = matched_videos_by_slug or {}
     sd = start_date_by_slug or {}
@@ -636,13 +726,29 @@ def get_campaign_stats_bulk(
             except Exception:
                 tracker_map[s] = ""
 
-    # Collect distinct cold tracker_ids that need a live fetch. Frozen
-    # slugs never nominate their tracker — but iterate non-frozen slugs
-    # only (rather than filtering trackers), so a tracker shared by an
-    # active and a finished campaign is still fetched for the active one.
+    # Sort distinct non-fresh trackers into two buckets. Frozen slugs
+    # never nominate their tracker — but iterate non-frozen slugs only
+    # (rather than filtering trackers), so a tracker shared by an active
+    # and a finished campaign is still refreshed for the active one.
+    #
+    #   stale (cache entry exists, just old)  -> serve the stale entry NOW,
+    #       refresh in a background thread with the full 15s timeout
+    #       (stale-while-revalidate). This is the common case and it must
+    #       never block: one tracker whose upstream exceeded the old 5s
+    #       inline budget used to hold EVERY page load at ~5-7s, because a
+    #       timed-out fetch writes no cache and next request retried it.
+    #   missing (no cache anywhere)           -> block briefly (5s cap) so
+    #       brand-new trackers show data on first load. Rare: only ever a
+    #       just-linked tracker, and only until its first successful fetch
+    #       lands in the durable L2.
+    #
+    # Both buckets respect the attempt cooldown so a dead/slow upstream is
+    # probed at most once per _REFRESH_COOLDOWN_SECONDS per worker, not on
+    # every request.
     frozen = frozen_slugs or set()
     ttl = _cache_ttl_seconds()
-    cold_tracker_ids: List[str] = []
+    stale_ids: List[str] = []
+    missing_ids: List[str] = []
     seen: set = set()
     for s in slugs:
         if s in frozen:
@@ -652,37 +758,25 @@ def get_campaign_stats_bulk(
             continue
         seen.add(tid)
         cached = _cache_get(tid)
-        if not (cached and _is_fresh(cached, ttl)):
-            cold_tracker_ids.append(tid)
+        if cached and _is_fresh(cached, ttl):
+            continue
+        if _in_cooldown(tid):
+            continue
+        (stale_ids if cached is not None else missing_ids).append(tid)
+
+    if stale_ids:
+        stale_ids = stale_ids[:10]
+        for tid in stale_ids:
+            _mark_attempt(tid)
+        _spawn_background_refresh(stale_ids)
 
     # One bounded batch keeps a slow Tracker upstream from occupying every
     # sync Gunicorn worker. Later requests fill the remaining cold entries.
-    if cold_tracker_ids:
-        cold_tracker_ids = cold_tracker_ids[:10]
-        max_workers = len(cold_tracker_ids)
-        with ThreadPoolExecutor(max_workers=max_workers) as ex:
-            futures = {
-                ex.submit(fetch_campaign_submissions, tid, timeout=5): tid
-                for tid in cold_tracker_ids
-            }
-            for fut in as_completed(futures):
-                tid = futures[fut]
-                try:
-                    fres = fut.result()
-                except Exception:
-                    logger.exception(
-                        "campaign_stats: prewarm fetch raised for tracker %s", tid,
-                    )
-                    continue
-                if not fres.ok:
-                    # Don't poison the cache with a failure; per-slug call
-                    # below will serve stale-cache or scraper fallback.
-                    continue
-                _cache_set(tid, _CacheEntry(
-                    submissions=fres.submissions,
-                    fetched_at=datetime.now(timezone.utc),
-                    api_fetched_at=fres.fetched_at,
-                ))
+    if missing_ids:
+        missing_ids = missing_ids[:10]
+        for tid in missing_ids:
+            _mark_attempt(tid)
+        _refresh_trackers_sync(missing_ids, timeout=5)
 
     # Per-slug pass — now hitting a warm cache for every tracker we
     # successfully pre-warmed.

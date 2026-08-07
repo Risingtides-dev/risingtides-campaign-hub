@@ -583,3 +583,81 @@ class TestBulkFrozenSlugs:
             call.args[0].startswith("tk-live-")
             for call in fetch.call_args_list
         )
+
+
+class TestStaleWhileRevalidate:
+    """The bulk prewarm must never block a page load on a stale tracker.
+
+    One slow tracker (7.5s upstream vs the 5s inline budget) used to
+    hold EVERY /api/campaigns request at ~5-7s: the inline fetch timed
+    out, wrote no cache, and the next request retried it. Stale entries
+    now serve immediately and refresh off-thread with the full 15s
+    timeout; only trackers with no cache anywhere may block (new
+    trackers, once). All attempts respect a per-worker cooldown.
+    """
+
+    @staticmethod
+    def _stale_entry(tracker_id):
+        from datetime import datetime, timedelta, timezone
+        campaign_stats._cache[tracker_id] = campaign_stats._CacheEntry(
+            submissions=[],
+            fetched_at=datetime.now(timezone.utc) - timedelta(hours=2),
+            api_fetched_at="2026-05-14T10:00:00Z",
+        )
+
+    def test_stale_tracker_serves_now_refreshes_in_background(self, db):
+        self._stale_entry("tk-stale")
+        scheduled = []
+        with patch.object(
+            campaign_stats, "_spawn_background_refresh", scheduled.append,
+        ), patch.object(
+            campaign_stats, "fetch_campaign_submissions",
+        ) as fetch:
+            out = get_campaign_stats_bulk(
+                ["c1"], tracker_id_by_slug={"c1": "tk-stale"})
+
+        fetch.assert_not_called()               # request thread never blocked
+        assert scheduled == [["tk-stale"]]      # refresh handed off
+        assert out["c1"].source == SOURCE_API_CACHED  # stale served now
+
+    def test_missing_tracker_blocks_briefly_once(self, db):
+        with patch.object(
+            campaign_stats, "fetch_campaign_submissions",
+            side_effect=lambda tid, **_: _ok_fetch(tid, []),
+        ) as fetch:
+            get_campaign_stats_bulk(["c1"], tracker_id_by_slug={"c1": "tk-new"})
+        assert fetch.call_count == 1
+        assert fetch.call_args.kwargs["timeout"] == 5
+
+    def test_cooldown_stops_repeat_attempts(self, db):
+        # First request: fetch fails (upstream down). Second request within
+        # the cooldown: no new attempt — this is the fix for the retry loop.
+        with patch.object(
+            campaign_stats, "fetch_campaign_submissions",
+            side_effect=lambda tid, **_: _err_fetch(tid),
+        ) as fetch:
+            get_campaign_stats_bulk(["c1"], tracker_id_by_slug={"c1": "tk-down"})
+            get_campaign_stats_bulk(["c1"], tracker_id_by_slug={"c1": "tk-down"})
+        assert fetch.call_count == 1
+
+    def test_stale_refresh_respects_cooldown(self, db):
+        self._stale_entry("tk-slow")
+        scheduled = []
+        with patch.object(
+            campaign_stats, "_spawn_background_refresh", scheduled.append,
+        ):
+            get_campaign_stats_bulk(["c1"], tracker_id_by_slug={"c1": "tk-slow"})
+            get_campaign_stats_bulk(["c1"], tracker_id_by_slug={"c1": "tk-slow"})
+        assert scheduled == [["tk-slow"]]       # second request: no re-schedule
+
+    def test_background_refresh_uses_full_timeout_and_caches(self, db):
+        # The background path is the only request-side way a slow tracker
+        # heals: it must use the 15s timeout, and a success must land in
+        # the cache so later requests are fresh.
+        with patch.object(
+            campaign_stats, "fetch_campaign_submissions",
+            side_effect=lambda tid, **kw: _ok_fetch(tid, []),
+        ) as fetch:
+            campaign_stats._refresh_trackers_sync(["tk-heal"], timeout=15)
+        assert fetch.call_args.kwargs["timeout"] == 15
+        assert campaign_stats._cache_get("tk-heal") is not None
