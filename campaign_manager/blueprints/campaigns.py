@@ -273,11 +273,22 @@ def get_campaigns(completion: Optional[str] = None) -> List[Dict]:
         slugs = [meta["slug"] for meta, _c, _mv in rows]
         matched_videos_by_slug = {meta["slug"]: mv for meta, _c, mv in rows}
         start_date_by_slug = {meta["slug"]: meta.get("start_date", "") for meta, _c, _mv in rows}
+        # Completed campaigns' stats are frozen — never spend the live-fetch
+        # budget on them. Their trackers aren't warmed by the cron (it only
+        # pulls active campaigns), so before this every ?include_finished
+        # load burned the full 10-tracker cold batch at timeout=5s (~6.5s
+        # wall) re-fetching numbers that can't change. They serve from the
+        # durable L2 cache or scraper fallback instead.
+        frozen_slugs = {
+            meta["slug"] for meta, _c, _mv in rows
+            if meta.get("completion_status", "none") == "completed"
+        }
         bulk_results = get_campaign_stats_bulk(
             slugs,
             matched_videos_by_slug=matched_videos_by_slug,
             start_date_by_slug=start_date_by_slug,
             tracker_id_by_slug=tracker_map,
+            frozen_slugs=frozen_slugs,
         )
 
         items = []

@@ -5,6 +5,11 @@ import type { ScrapeStatus, JobScrapeStatus, BreakerLens } from "./types"
 // Query keys
 export const keys = {
   campaigns: ["campaigns"] as const,
+  // Split keys share the "campaigns" prefix so every existing
+  // invalidateQueries({ queryKey: keys.campaigns }) call refetches
+  // these too (React Query invalidation matches by prefix).
+  campaignsActive: ["campaigns", "active"] as const,
+  campaignsFinished: ["campaigns", "finished"] as const,
   campaign: (slug: string) => ["campaign", slug] as const,
   campaignLinks: (slug: string) => ["campaign", slug, "links"] as const,
   cobrandStats: (slug: string) => ["campaign", slug, "cobrand"] as const,
@@ -41,6 +46,18 @@ export const keys = {
 
 export function useCampaigns() {
   return useQuery({ queryKey: keys.campaigns, queryFn: api.getCampaigns })
+}
+
+// Split hooks for the campaigns list page: active is small and fast (~37
+// rows, ~200ms), finished is the big slow set (~285 rows). Fetching them
+// independently lets the page render the Active tab as soon as it lands
+// instead of blocking on the slowest request.
+export function useActiveCampaigns() {
+  return useQuery({ queryKey: keys.campaignsActive, queryFn: api.getActiveCampaigns })
+}
+
+export function useFinishedCampaigns() {
+  return useQuery({ queryKey: keys.campaignsFinished, queryFn: api.getFinishedCampaigns })
 }
 
 export function useCampaign(slug: string) {

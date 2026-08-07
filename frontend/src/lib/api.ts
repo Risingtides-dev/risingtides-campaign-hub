@@ -66,10 +66,18 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
 export const api = {
   // Campaigns
-  // Fetches ALL campaigns (active + finished) — the list page splits them into
-  // its Active/Finished tabs. Note: /api/campaigns now defaults to active-only,
-  // so the finished set must be requested explicitly.
+  // Fetches ALL campaigns (active + finished) — kept for pages that want the
+  // full set in one call (tracker mapping, dropdowns). Note: /api/campaigns
+  // defaults to active-only, so the finished set must be requested explicitly.
   getCampaigns: () => request<CampaignSummary[]>("/api/campaigns?include_finished=true"),
+
+  // Split fetches for the campaigns list page: the Active tab is ~37 rows and
+  // returns in ~200ms; the finished set is ~285 rows and pays the big query.
+  // Loading them separately lets the page paint active campaigns immediately
+  // instead of blocking first render on the slowest set (which is what made
+  // the list page take seconds to show any data).
+  getActiveCampaigns: () => request<CampaignSummary[]>("/api/campaigns"),
+  getFinishedCampaigns: () => request<CampaignSummary[]>("/api/campaigns?active=false"),
 
   getCampaign: (slug: string) =>
     request<CampaignDetail>(`/api/campaign/${slug}`),
