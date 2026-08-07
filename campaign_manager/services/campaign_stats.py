@@ -586,6 +586,7 @@ def get_campaign_stats_bulk(
     matched_videos_by_slug: Optional[Dict[str, List[Dict[str, Any]]]] = None,
     start_date_by_slug: Optional[Dict[str, str]] = None,
     tracker_id_by_slug: Optional[Dict[str, str]] = None,
+    frozen_slugs: Optional[set] = None,
 ) -> Dict[str, CampaignStatsResult]:
     """Resolve stats for many campaigns in one call.
 
@@ -608,6 +609,18 @@ def get_campaign_stats_bulk(
     slug->tracker_id in bulk (campaigns list endpoint does) to avoid
     re-querying per-slug. Falls back to per-slug resolution when not
     provided.
+
+    Pass ``frozen_slugs`` (completed campaigns) to exclude their
+    trackers from the cold-fetch batch. Completed campaigns' numbers
+    don't move, but the ``tides_tracker_pull`` cron only warms ACTIVE
+    campaigns' trackers — so a finished campaign's cache entry is
+    stale forever, and without this exclusion every ``?include_finished``
+    page load burned the whole 10-tracker cold batch (at timeout=5s,
+    ~6.5s wall) re-fetching stats that cannot change, crowding out the
+    active trackers the batch exists for. Frozen slugs still get served
+    below — from the durable L2 cache (stale is fine: the campaign is
+    done) or the scraper fallback. A tracker shared with a non-frozen
+    slug still gets fetched.
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -623,11 +636,17 @@ def get_campaign_stats_bulk(
             except Exception:
                 tracker_map[s] = ""
 
-    # Collect distinct cold tracker_ids that need a live fetch.
+    # Collect distinct cold tracker_ids that need a live fetch. Frozen
+    # slugs never nominate their tracker — but iterate non-frozen slugs
+    # only (rather than filtering trackers), so a tracker shared by an
+    # active and a finished campaign is still fetched for the active one.
+    frozen = frozen_slugs or set()
     ttl = _cache_ttl_seconds()
     cold_tracker_ids: List[str] = []
     seen: set = set()
     for s in slugs:
+        if s in frozen:
+            continue
         tid = tracker_map.get(s, "")
         if not tid or tid in seen:
             continue

@@ -506,3 +506,80 @@ class TestLivePostsSource:
         from campaign_manager.blueprints.campaigns import _stats_from_result
         stats = _stats_from_result({}, self._creators(), self._result("scraper_fallback", 4))
         assert stats["live_posts"] == 5  # 2+3, removed creator excluded
+
+
+class TestBulkFrozenSlugs:
+    """Completed campaigns must never spend the live-fetch budget.
+
+    The tides_tracker_pull cron only warms ACTIVE campaigns' trackers,
+    so a finished campaign's cache entry is permanently stale — without
+    the frozen_slugs exclusion, every ?include_finished page load burned
+    the entire 10-tracker cold batch (timeout=5s each, ~6.5s wall)
+    re-fetching stats that cannot change, and the active trackers the
+    batch exists for got crowded out.
+    """
+
+    def test_frozen_slugs_never_fetch_live(self, db):
+        slugs = ["frozen-a", "frozen-b", "live-a"]
+        tracker_map = {
+            "frozen-a": "tk-frozen-a",
+            "frozen-b": "tk-frozen-b",
+            "live-a": "tk-live-a",
+        }
+        with patch.object(
+            campaign_stats, "fetch_campaign_submissions",
+            side_effect=lambda tracker_id, **_: _ok_fetch(tracker_id, []),
+        ) as fetch:
+            out = get_campaign_stats_bulk(
+                slugs,
+                tracker_id_by_slug=tracker_map,
+                frozen_slugs={"frozen-a", "frozen-b"},
+            )
+
+        fetched = {call.args[0] for call in fetch.call_args_list}
+        assert fetched == {"tk-live-a"}
+        # Frozen slugs still get a result — deferred, not dropped.
+        assert out["frozen-a"].error_kind == "refresh_deferred"
+        assert out["frozen-b"].error_kind == "refresh_deferred"
+        assert out["live-a"].source == SOURCE_API
+
+    def test_shared_tracker_still_fetched_for_the_live_slug(self, db):
+        # One tracker serves both a finished and an active campaign:
+        # the active campaign must still get a live fetch.
+        tracker_map = {"frozen-x": "tk-shared", "live-x": "tk-shared"}
+        with patch.object(
+            campaign_stats, "fetch_campaign_submissions",
+            side_effect=lambda tracker_id, **_: _ok_fetch(tracker_id, []),
+        ) as fetch:
+            out = get_campaign_stats_bulk(
+                ["frozen-x", "live-x"],
+                tracker_id_by_slug=tracker_map,
+                frozen_slugs={"frozen-x"},
+            )
+
+        assert fetch.call_count == 1
+        assert out["live-x"].source == SOURCE_API
+        # The frozen slug rides along on the now-warm shared cache.
+        assert out["frozen-x"].source == SOURCE_API
+
+    def test_frozen_budget_goes_to_live_trackers(self, db):
+        # 11 live + 5 frozen trackers, batch cap of 10: all 10 fetches
+        # must be live trackers, none frozen.
+        live = {f"live-{i}": f"tk-live-{i}" for i in range(11)}
+        frozen = {f"frozen-{i}": f"tk-frozen-{i}" for i in range(5)}
+        tracker_map = {**live, **frozen}
+        with patch.object(
+            campaign_stats, "fetch_campaign_submissions",
+            side_effect=lambda tracker_id, **_: _ok_fetch(tracker_id, []),
+        ) as fetch:
+            get_campaign_stats_bulk(
+                list(tracker_map),
+                tracker_id_by_slug=tracker_map,
+                frozen_slugs=set(frozen),
+            )
+
+        assert fetch.call_count == 10
+        assert all(
+            call.args[0].startswith("tk-live-")
+            for call in fetch.call_args_list
+        )

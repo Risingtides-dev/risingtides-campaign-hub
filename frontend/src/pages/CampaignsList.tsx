@@ -1,5 +1,5 @@
 import { useState, useMemo } from "react"
-import { useCampaigns } from "@/lib/queries"
+import { useActiveCampaigns, useFinishedCampaigns } from "@/lib/queries"
 import { CampaignsTable } from "@/components/campaigns/CampaignsTable"
 import { CreateCampaignForm } from "@/components/campaigns/CreateCampaignForm"
 import { Button } from "@/components/ui/button"
@@ -9,18 +9,20 @@ import { Plus, Search, X } from "lucide-react"
 type Tab = "active" | "finished"
 
 export default function CampaignsList() {
-  const { data: campaigns, isLoading, isError, error } = useCampaigns()
+  // Two independent fetches so first paint never waits on the slow set:
+  // active (~37 rows) lands in ~200ms and renders immediately; finished
+  // (~285 rows) streams in behind it and only gates its own tab.
+  const activeQuery = useActiveCampaigns()
+  const finishedQuery = useFinishedCampaigns()
   const [showCreate, setShowCreate] = useState(false)
   const [search, setSearch] = useState("")
   const [tab, setTab] = useState<Tab>("active")
 
-  const { active, finished } = useMemo(() => {
-    if (!campaigns) return { active: [], finished: [] }
-    return {
-      active: campaigns.filter((c) => c.completion_status !== "completed"),
-      finished: campaigns.filter((c) => c.completion_status === "completed"),
-    }
-  }, [campaigns])
+  const active = activeQuery.data ?? []
+  const finished = finishedQuery.data ?? []
+
+  const { isLoading, isError, error } =
+    tab === "active" ? activeQuery : finishedQuery
 
   const tabData = tab === "active" ? active : finished
 
@@ -78,7 +80,7 @@ export default function CampaignsList() {
                   : "bg-white/[0.03] text-rt-fg hover:bg-white/10"
               }`}
             >
-              Finished{finished.length > 0 && ` (${finished.length})`}
+              Finished{finishedQuery.isLoading ? " (…)" : finished.length > 0 && ` (${finished.length})`}
             </button>
           </div>
 
