@@ -1,4 +1,6 @@
+import { useState } from "react"
 import { Link, useLocation } from "react-router-dom"
+import { ChevronRight } from "lucide-react"
 
 const navItems = [
   {
@@ -18,28 +20,23 @@ const navItems = [
     ],
   },
   {
-    section: "Internal",
-    links: [
-      { label: "Rising Tides Tracker", path: "/rt-tracker" },
-      { label: "Internal TikTok", path: "/internal" },
-    ],
-  },
-  {
     section: "Outreach",
     links: [{ label: "Outreach Hub", path: "/network" }],
-  },
-  {
-    section: "Intake",
-    links: [{ label: "Slack Inbox", path: "/inbox" }],
   },
   {
     section: "Tracking",
     links: [{ label: "TidesTrackers", path: "/trackers" }],
   },
-  {
-    section: "Distribution",
-    links: [{ label: "Sound Assignments", path: "/sound-assignments" }],
-  },
+]
+
+// Low-traffic sections tucked behind a collapsed "Other" group so they
+// don't clutter the sidebar (john, 08-07). They render only when the
+// group is expanded.
+const otherItems = [
+  { label: "Rising Tides Tracker", path: "/rt-tracker" },
+  { label: "Internal TikTok", path: "/internal" },
+  { label: "Slack Inbox", path: "/inbox" },
+  { label: "Sound Assignments", path: "/sound-assignments" },
 ]
 
 interface SidebarProps {
@@ -54,6 +51,27 @@ export function Sidebar({ open, onClose }: SidebarProps) {
     if (path === "/") return location.pathname === "/" || location.pathname.startsWith("/campaign/")
     return location.pathname.startsWith(path)
   }
+
+  // Start expanded when the current route lives inside "Other", so the
+  // active link is never invisible.
+  const [showOther, setShowOther] = useState(() =>
+    otherItems.some((l) => isActive(l.path))
+  )
+
+  const renderLink = (link: { label: string; path: string }) => (
+    <Link
+      key={link.path}
+      to={link.path}
+      onClick={onClose}
+      className={`flex items-center gap-2.5 px-6 py-2.5 text-sm transition-colors ${
+        isActive(link.path)
+          ? "bg-rt-magenta/10 text-rt-fg font-semibold border-l-[3px] border-rt-magenta pl-[21px]"
+          : "text-rt-fg-secondary hover:bg-white/5 hover:text-rt-fg"
+      }`}
+    >
+      {link.label}
+    </Link>
+  )
 
   return (
     <>
@@ -79,22 +97,24 @@ export function Sidebar({ open, onClose }: SidebarProps) {
             <div className="pt-4 pb-1 px-6 text-[11px] font-semibold uppercase tracking-[0.12em] text-rt-fg-tertiary">
               {group.section}
             </div>
-            {group.links.map((link) => (
-              <Link
-                key={link.path}
-                to={link.path}
-                onClick={onClose}
-                className={`flex items-center gap-2.5 px-6 py-2.5 text-sm transition-colors ${
-                  isActive(link.path)
-                    ? "bg-rt-magenta/10 text-rt-fg font-semibold border-l-[3px] border-rt-magenta pl-[21px]"
-                    : "text-rt-fg-secondary hover:bg-white/5 hover:text-rt-fg"
-                }`}
-              >
-                {link.label}
-              </Link>
-            ))}
+            {group.links.map(renderLink)}
           </div>
         ))}
+
+        {/* Collapsed "Other" group */}
+        <div>
+          <button
+            type="button"
+            onClick={() => setShowOther((v) => !v)}
+            className="w-full flex items-center gap-1 pt-4 pb-1 px-6 text-[11px] font-semibold uppercase tracking-[0.12em] text-rt-fg-tertiary hover:text-rt-fg transition-colors"
+          >
+            Other
+            <ChevronRight
+              className={`size-3 transition-transform ${showOther ? "rotate-90" : ""}`}
+            />
+          </button>
+          {showOther && otherItems.map(renderLink)}
+        </div>
       </nav>
     </>
   )
