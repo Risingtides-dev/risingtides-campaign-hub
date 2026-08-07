@@ -286,8 +286,14 @@ def generate_efficiency_report(
     sorted_rois = sorted([m.roi_ratio for m in ranked])
     median_roi = sorted_rois[len(sorted_rois) // 2] if sorted_rois else 0
 
-    avg_cost_per_view = sum(m.cost_per_view for m in ranked if m.cost_per_view != float('inf')) / len([m for m in ranked if m.cost_per_view != float('inf')]) if ranked else 0
-    avg_cost_per_engagement = sum(m.cost_per_engagement for m in ranked if m.cost_per_engagement != float('inf')) / len([m for m in ranked if m.cost_per_engagement != float('inf')]) if ranked else 0
+    # Averages over the finite entries only — `if ranked` alone isn't enough:
+    # when EVERY creator has inf unit cost (spend but zero tracked views,
+    # e.g. a fresh window before any scrape), the filtered list is empty and
+    # the old expression raised ZeroDivisionError.
+    finite_cpv = [m.cost_per_view for m in ranked if m.cost_per_view != float('inf')]
+    finite_cpe = [m.cost_per_engagement for m in ranked if m.cost_per_engagement != float('inf')]
+    avg_cost_per_view = sum(finite_cpv) / len(finite_cpv) if finite_cpv else 0
+    avg_cost_per_engagement = sum(finite_cpe) / len(finite_cpe) if finite_cpe else 0
 
     # Tier distribution
     creators_by_tier = {}
