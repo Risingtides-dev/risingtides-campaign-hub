@@ -632,6 +632,7 @@ def list_campaigns(exclude_completed: bool = False) -> List[Dict]:
 def list_campaigns_with_creators(
     *,
     with_matched_videos: bool = False,
+    completion: Optional[str] = None,
 ) -> List[Tuple[Dict, List[Dict], List[Dict]]]:
     """List campaigns with their creators (and optionally matched_videos)
     eagerly loaded.
@@ -640,6 +641,20 @@ def list_campaigns_with_creators(
     optionally `get_matched_videos(slug)`) in a loop. Issues 2 queries
     when `with_matched_videos=False`, 3 when True — independent of the
     campaign count.
+
+    `completion` pushes the active/finished split DOWN INTO THE QUERY:
+      "active"   -> completion_status != 'completed'
+      "finished" -> completion_status == 'completed'
+      None       -> everything (the old behaviour)
+
+    This matters a lot more than it looks. The campaigns list endpoint
+    used to load every campaign, then filter to the active ones in
+    Python — so the default page load dragged all ~285 completed
+    campaigns and the ~15.7k matched_videos hanging off them out of
+    Postgres, built a dict for each, and threw ~90% of it away. The
+    selectinload for creators/matched_videos is driven by the campaign
+    IDs this query returns, so filtering here shrinks the child fetches
+    too. See CAMP-40 for the original N+1 pass.
 
     Returns a list of (meta_dict, creators_list, matched_videos_list)
     tuples. When `with_matched_videos=False`, the third element is an
@@ -650,6 +665,10 @@ def list_campaigns_with_creators(
         options.append(selectinload(Campaign.matched_videos))
     with get_session() as s:
         query = s.query(Campaign).options(*options)
+        if completion == "active":
+            query = query.filter(Campaign.completion_status != "completed")
+        elif completion == "finished":
+            query = query.filter(Campaign.completion_status == "completed")
         campaigns = query.all()
         return [
             (
