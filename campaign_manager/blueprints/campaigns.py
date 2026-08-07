@@ -329,6 +329,12 @@ def _campaign_summary(c: Dict) -> Dict:
         "artist": c["meta"].get("artist", ""),
         "song": c["meta"].get("song", ""),
         "start_date": c["meta"].get("start_date", ""),
+        # The sound a campaign runs on. Already searchable via ?search= but
+        # never returned, so downstream boards could not tell which TikTok
+        # sound a campaign meant — the ShipStream queue went stale because
+        # nothing could build a payload without it.
+        "official_sound": c["meta"].get("official_sound", ""),
+        "sound_id": c["meta"].get("sound_id", ""),
         "budget": c["budget"],
         "stats": c["stats"],
         "completion_status": c["meta"].get("completion_status", "none"),
