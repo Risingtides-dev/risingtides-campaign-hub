@@ -5,12 +5,17 @@ import {
   Plus,
   Loader2,
   Activity,
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
   Copy,
   Check,
   Pencil,
+  Search,
   Trash2,
   Undo2,
   Radar,
+  X,
 } from "lucide-react"
 import {
   useTrackers,
@@ -47,6 +52,9 @@ const ALL_GROUP = "__all__"
 const NO_GROUP = "__none__"
 const NO_CAMPAIGN = "__no_campaign__"
 const ARCHIVED_GROUP = "__archived__"
+
+type SortField = "name" | "campaign" | "group" | "created"
+type SortDir = "asc" | "desc"
 
 function formatDate(iso: string): string {
   if (!iso) return "-"
@@ -96,15 +104,81 @@ export default function TidesTrackers() {
     [campaigns]
   )
 
+  const [search, setSearch] = useState("")
+  const [sortField, setSortField] = useState<SortField>("created")
+  const [sortDir, setSortDir] = useState<SortDir>("desc")
+
+  function toggleSort(field: SortField) {
+    if (sortField === field) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"))
+    } else {
+      setSortField(field)
+      // Text columns start ascending, dates start newest-first.
+      setSortDir(field === "created" ? "desc" : "asc")
+    }
+  }
+
+  const groupTitleById = useMemo(() => {
+    const m = new Map<number, string>()
+    for (const g of groups) m.set(g.id, g.title)
+    return m
+  }, [groups])
+
   const filteredTrackers = useMemo(() => {
-    if (activeGroup === ARCHIVED_GROUP)
-      return trackers.filter((t) => !!t.archived_at)
-    const active = trackers.filter((t) => !t.archived_at)
-    if (activeGroup === ALL_GROUP) return active
-    if (activeGroup === NO_GROUP) return active.filter((t) => t.group_id == null)
-    const gid = Number(activeGroup)
-    return active.filter((t) => t.group_id === gid)
-  }, [trackers, activeGroup])
+    let rows: Tracker[]
+    if (activeGroup === ARCHIVED_GROUP) {
+      rows = trackers.filter((t) => !!t.archived_at)
+    } else {
+      const active = trackers.filter((t) => !t.archived_at)
+      if (activeGroup === ALL_GROUP) rows = active
+      else if (activeGroup === NO_GROUP) rows = active.filter((t) => t.group_id == null)
+      else {
+        const gid = Number(activeGroup)
+        rows = active.filter((t) => t.group_id === gid)
+      }
+    }
+
+    const q = search.trim().toLowerCase()
+    if (q) {
+      const tokens = q.split(/\s+/)
+      rows = rows.filter((t) => {
+        const blob = [
+          t.name,
+          t.original_name,
+          t.campaign_slug ?? "",
+          t.campaign?.title ?? "",
+          t.group_id != null ? groupTitleById.get(t.group_id) ?? "" : "",
+          t.cobrand_share_url,
+          t.tracker_url,
+        ]
+          .join(" ")
+          .toLowerCase()
+        return tokens.every((tok) => blob.includes(tok))
+      })
+    }
+
+    const dir = sortDir === "asc" ? 1 : -1
+    const key = (t: Tracker): string => {
+      switch (sortField) {
+        case "name":
+          return (t.name || t.original_name).toLowerCase()
+        case "campaign":
+          return (t.campaign?.title ?? t.campaign_slug ?? "").toLowerCase()
+        case "group":
+          return (t.group_id != null ? groupTitleById.get(t.group_id) ?? "" : "").toLowerCase()
+        case "created":
+          return t.created_at || ""
+      }
+    }
+    return [...rows].sort((a, b) => {
+      const ka = key(a)
+      const kb = key(b)
+      // Blank values sink to the bottom in either direction.
+      if (!ka && kb) return 1
+      if (ka && !kb) return -1
+      return ka < kb ? -dir : ka > kb ? dir : 0
+    })
+  }, [trackers, activeGroup, search, sortField, sortDir, groupTitleById])
 
   const ungroupedCount = useMemo(
     () =>
@@ -319,6 +393,28 @@ export default function TidesTrackers() {
 
           <div className="flex-1" />
 
+          {/* Search */}
+          <div className="relative">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-rt-fg-tertiary" />
+            <Input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search trackers..."
+              className="h-8 w-[220px] pl-8 text-[13px]"
+            />
+            {search && (
+              <button
+                type="button"
+                onClick={() => setSearch("")}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-rt-fg-tertiary hover:text-rt-fg"
+                aria-label="Clear search"
+              >
+                <X className="size-3.5" />
+              </button>
+            )}
+          </div>
+
           {showNewGroup ? (
             <div className="flex items-center gap-2">
               <Input
@@ -371,12 +467,39 @@ export default function TidesTrackers() {
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Name</TableHead>
+              <SortableHead
+                label="Name"
+                field="name"
+                sortField={sortField}
+                sortDir={sortDir}
+                onSort={toggleSort}
+              />
               <TableHead>Cobrand link</TableHead>
               <TableHead>Tracker</TableHead>
-              <TableHead className="w-[200px]">Campaign</TableHead>
-              <TableHead className="w-[180px]">Group</TableHead>
-              <TableHead className="w-[120px]">Created</TableHead>
+              <SortableHead
+                label="Campaign"
+                field="campaign"
+                sortField={sortField}
+                sortDir={sortDir}
+                onSort={toggleSort}
+                className="w-[200px]"
+              />
+              <SortableHead
+                label="Group"
+                field="group"
+                sortField={sortField}
+                sortDir={sortDir}
+                onSort={toggleSort}
+                className="w-[180px]"
+              />
+              <SortableHead
+                label="Created"
+                field="created"
+                sortField={sortField}
+                sortDir={sortDir}
+                onSort={toggleSort}
+                className="w-[120px]"
+              />
               <TableHead className="w-[90px] text-right">Actions</TableHead>
             </TableRow>
           </TableHeader>
@@ -406,9 +529,11 @@ export default function TidesTrackers() {
             ) : filteredTrackers.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={7} className="text-center py-10 text-rt-fg-tertiary text-[13px]">
-                  {viewingArchived
-                    ? "No archived trackers."
-                    : "No trackers in this group yet. Paste a Cobrand link above to create one."}
+                  {search.trim()
+                    ? "No trackers match your search."
+                    : viewingArchived
+                      ? "No archived trackers."
+                      : "No trackers in this group yet. Paste a Cobrand link above to create one."}
                 </TableCell>
               </TableRow>
             ) : (
@@ -600,6 +725,39 @@ export default function TidesTrackers() {
         </Table>
       </div>
     </div>
+  )
+}
+
+function SortableHead({
+  label,
+  field,
+  sortField,
+  sortDir,
+  onSort,
+  className,
+}: {
+  label: string
+  field: SortField
+  sortField: SortField
+  sortDir: SortDir
+  onSort: (field: SortField) => void
+  className?: string
+}) {
+  const active = sortField === field
+  const Icon = active ? (sortDir === "asc" ? ArrowUp : ArrowDown) : ArrowUpDown
+  return (
+    <TableHead className={className}>
+      <button
+        type="button"
+        onClick={() => onSort(field)}
+        className={`inline-flex items-center gap-1 hover:text-rt-fg transition-colors ${
+          active ? "text-rt-fg" : ""
+        }`}
+      >
+        {label}
+        <Icon className={`size-3 ${active ? "" : "opacity-40"}`} />
+      </button>
+    </TableHead>
   )
 }
 

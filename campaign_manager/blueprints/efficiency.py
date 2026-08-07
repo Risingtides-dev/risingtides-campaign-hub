@@ -1,4 +1,7 @@
 """Booking efficiency API endpoints — ROI analysis, creator valuation, pricing insights."""
+import math
+from typing import Optional
+
 from flask import Blueprint, request, jsonify
 from sqlalchemy.orm import Session
 
@@ -63,10 +66,10 @@ def get_efficiency_report():
             "total_spend": report.total_spend,
             "total_views": report.total_views,
             "total_engagement": report.total_engagement,
-            "avg_roi": round(report.avg_roi, 2),
-            "median_roi": round(report.median_roi, 2),
-            "avg_cost_per_view": round(report.avg_cost_per_view, 4),
-            "avg_cost_per_engagement": round(report.avg_cost_per_engagement, 2),
+            "avg_roi": _num(report.avg_roi, 2),
+            "median_roi": _num(report.median_roi, 2),
+            "avg_cost_per_view": _num(report.avg_cost_per_view, 4),
+            "avg_cost_per_engagement": _num(report.avg_cost_per_engagement, 2),
             "creators_by_tier": report.creators_by_tier,
             "efficiency_index": round(report.efficiency_index, 1),
             "top_performers": [
@@ -357,22 +360,38 @@ def get_efficiency_insights():
         session.close()
 
 
+def _num(value: float, digits: int) -> Optional[float]:
+    """Round for JSON output; non-finite values become None (JSON null).
+
+    Creators with spend but zero views/engagement get
+    ``float('inf')`` for cost_per_view / cost_per_engagement in
+    booking_efficiency.py. Python's json serializer writes that as bare
+    ``Infinity`` — which is NOT valid JSON, so the browser's
+    ``JSON.parse`` throws and the whole Booking Efficiency tab dies
+    with "Unexpected token 'I'". null is the honest wire value ("no
+    meaningful unit cost"); the frontend renders it as an em dash.
+    """
+    if not math.isfinite(value):
+        return None
+    return round(value, digits)
+
+
 def _creator_metrics_to_dict(metrics: CreatorMetrics) -> dict:
     """Convert CreatorMetrics dataclass to dict with rounded floats."""
     return {
         "creator_username": metrics.creator_username,
         "total_campaigns": metrics.total_campaigns,
         "total_bookings": metrics.total_bookings,
-        "total_spend": round(metrics.total_spend, 2),
+        "total_spend": _num(metrics.total_spend, 2),
         "total_views": metrics.total_views,
         "total_engagement": metrics.total_engagement,
-        "roi_ratio": round(metrics.roi_ratio, 2),
-        "cost_per_view": round(metrics.cost_per_view, 4),
-        "cost_per_engagement": round(metrics.cost_per_engagement, 2),
-        "engagement_rate": round(metrics.engagement_rate, 4),
-        "avg_post_rate": round(metrics.avg_post_rate, 2),
+        "roi_ratio": _num(metrics.roi_ratio, 2),
+        "cost_per_view": _num(metrics.cost_per_view, 4),
+        "cost_per_engagement": _num(metrics.cost_per_engagement, 2),
+        "engagement_rate": _num(metrics.engagement_rate, 4),
+        "avg_post_rate": _num(metrics.avg_post_rate, 2),
         "tier": metrics.tier.value,
-        "pricing_gap_pct": round(metrics.pricing_gap_pct, 1),
+        "pricing_gap_pct": _num(metrics.pricing_gap_pct, 1),
         "last_booked": metrics.last_booked,
         "platform": metrics.platform,
     }

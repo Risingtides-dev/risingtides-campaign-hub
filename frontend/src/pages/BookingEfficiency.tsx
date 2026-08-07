@@ -45,13 +45,16 @@ interface EfficiencyMetrics {
   total_spend: number;
   total_views: number;
   total_engagement: number;
-  roi_ratio: number;
-  cost_per_view: number;
-  cost_per_engagement: number;
-  engagement_rate: number;
-  avg_post_rate: number;
+  // Unit-cost / ratio fields are null when the denominator was zero
+  // (spend but no tracked views/engagement) — the API sends null instead
+  // of Infinity, which isn't valid JSON.
+  roi_ratio: number | null;
+  cost_per_view: number | null;
+  cost_per_engagement: number | null;
+  engagement_rate: number | null;
+  avg_post_rate: number | null;
   tier: string;
-  pricing_gap_pct: number;
+  pricing_gap_pct: number | null;
   last_booked: string;
   platform: string;
 }
@@ -64,10 +67,10 @@ interface EfficiencyReport {
   total_spend: number;
   total_views: number;
   total_engagement: number;
-  avg_roi: number;
-  median_roi: number;
-  avg_cost_per_view: number;
-  avg_cost_per_engagement: number;
+  avg_roi: number | null;
+  median_roi: number | null;
+  avg_cost_per_view: number | null;
+  avg_cost_per_engagement: number | null;
   creators_by_tier: Record<string, number>;
   top_performers: EfficiencyMetrics[];
   undervalued_deals: EfficiencyMetrics[];
@@ -76,9 +79,9 @@ interface EfficiencyReport {
   largest_efficiency_gaps: Array<{
     username: string;
     tier: string;
-    pricing_gap_pct: number;
-    avg_post_rate: number;
-    roi_ratio: number;
+    pricing_gap_pct: number | null;
+    avg_post_rate: number | null;
+    roi_ratio: number | null;
   }>;
 }
 
@@ -103,6 +106,12 @@ interface InsightsData {
   efficiency_index: number;
   key_findings: Insight[];
   recommendations: Recommendation[];
+}
+
+// Null-safe number formatting: metrics arrive as null when the unit cost
+// is undefined (division by zero server-side). Render an em dash.
+function fmt(v: number | null | undefined, f: (n: number) => string): string {
+  return v == null ? "\u2014" : f(v);
 }
 
 export default function BookingEfficiency() {
@@ -144,8 +153,8 @@ export default function BookingEfficiency() {
       .slice(0, 10)
       .map((g) => ({
         creator: g.username.substring(0, 15),
-        gap: Math.abs(g.pricing_gap_pct),
-        roi: g.roi_ratio,
+        gap: Math.abs(g.pricing_gap_pct ?? 0),
+        roi: g.roi_ratio ?? 0,
         tier: g.tier,
       }));
   }, [report]);
@@ -224,7 +233,7 @@ export default function BookingEfficiency() {
             <CardTitle className="text-sm font-medium text-rt-fg-secondary">Avg ROI</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{(report.avg_roi / 1000).toFixed(0)}K</div>
+            <div className="text-2xl font-bold">{fmt(report.avg_roi, (n) => `${(n / 1000).toFixed(0)}K`)}</div>
             <p className="text-xs text-rt-fg-tertiary">views per dollar</p>
           </CardContent>
         </Card>
@@ -234,7 +243,7 @@ export default function BookingEfficiency() {
             <CardTitle className="text-sm font-medium text-rt-fg-secondary">Cost per View</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">${report.avg_cost_per_view.toFixed(4)}</div>
+            <div className="text-2xl font-bold">{fmt(report.avg_cost_per_view, (n) => `$${n.toFixed(4)}`)}</div>
             <p className="text-xs text-rt-fg-tertiary">average across all creators</p>
           </CardContent>
         </Card>
@@ -314,10 +323,10 @@ export default function BookingEfficiency() {
               <div key={creator.creator_username} className="flex items-start justify-between py-2 border-b">
                 <div>
                   <p className="font-medium text-sm">{creator.creator_username}</p>
-                  <p className="text-xs text-rt-fg-tertiary">${creator.avg_post_rate.toFixed(0)}/post</p>
+                  <p className="text-xs text-rt-fg-tertiary">{fmt(creator.avg_post_rate, (n) => `$${n.toFixed(0)}`)}/post</p>
                 </div>
                 <Badge className="bg-rt-green/15 text-rt-green">
-                  {(creator.roi_ratio / 1000).toFixed(0)}K ROI
+                  {fmt(creator.roi_ratio, (n) => `${(n / 1000).toFixed(0)}K`)} ROI
                 </Badge>
               </div>
             ))}
@@ -335,10 +344,10 @@ export default function BookingEfficiency() {
               <div key={creator.creator_username} className="flex items-start justify-between py-2 border-b">
                 <div>
                   <p className="font-medium text-sm">{creator.creator_username}</p>
-                  <p className="text-xs text-rt-fg-tertiary">${creator.avg_post_rate.toFixed(0)}/post</p>
+                  <p className="text-xs text-rt-fg-tertiary">{fmt(creator.avg_post_rate, (n) => `$${n.toFixed(0)}`)}/post</p>
                 </div>
                 <Badge className="bg-cyan-100 text-cyan-800">
-                  {(creator.pricing_gap_pct * -1).toFixed(0)}% under
+                  {fmt(creator.pricing_gap_pct, (n) => (n * -1).toFixed(0))}% under
                 </Badge>
               </div>
             ))}
@@ -356,10 +365,10 @@ export default function BookingEfficiency() {
               <div key={creator.creator_username} className="flex items-start justify-between py-2 border-b">
                 <div>
                   <p className="font-medium text-sm">{creator.creator_username}</p>
-                  <p className="text-xs text-rt-fg-tertiary">${creator.avg_post_rate.toFixed(0)}/post</p>
+                  <p className="text-xs text-rt-fg-tertiary">{fmt(creator.avg_post_rate, (n) => `$${n.toFixed(0)}`)}/post</p>
                 </div>
                 <Badge className="bg-rt-red/15 text-rt-red">
-                  {creator.pricing_gap_pct.toFixed(0)}% over
+                  {fmt(creator.pricing_gap_pct, (n) => n.toFixed(0))}% over
                 </Badge>
               </div>
             ))}
