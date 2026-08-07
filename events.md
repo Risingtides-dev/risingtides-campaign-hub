@@ -106,3 +106,12 @@ area:      [infra]
 
 Hosted the Hub at https://campaignhub.risingtidesviral.com per john. Railway custom domain attached to the risingtides-campaign-hub service via CLI (domain id 6b397763), then created the two DNS records in Cloudflare (zone risingtidesviral.com on the Smathdaddy account, driven through the dashboard with browser-use since the wrangler OAuth token lacks DNS write scope): CNAME campaignhub -> 6mqle4gy.up.railway.app set to DNS-only so Railway could validate ownership and issue its own certificate, plus TXT _railway-verify.campaignhub with Railway's verification string. Cert issued ~90s after the records landed; verified in the browser: page serves on the new domain with rows visible in 0.82s. Also set CORS_ORIGINS to the new domain + the railway.app URL (it still pointed at the deleted Vercel deployment), and PR #219 fixes the browser tab title from "frontend" to "Campaign Hub". The old railway.app URL keeps serving, so nothing that references it (webhooks, scripts, bookmarks) breaks. Same session: PR #218 tucked the Internal/Intake/Distribution sidebar sections behind a collapsed "Other" group (auto-expands when the active route lives inside it), browser-verified collapsed by default with all four links present on expand.
 _________________________________________________________________________________
+_________________________________________________________________________________
+time:      [14:43] [08-07-26]
+agent:     [claude] [fable 5]
+worktree:  main
+type:      [feature-request]
+area:      [frontend]
+
+Added the RT wave favicon to Campaign Hub per john (PR #220): same rt-logo-icon.svg mark that tidestracker and content-posting-lab use (both carry the identical path data, fill #FAFCFF), recolored to solid black as requested and wired into frontend/index.html in place of the leftover vite.svg. Verified live on campaignhub.risingtidesviral.com — /favicon.svg serves the black-fill SVG and the link tag points at it. Note: a black mark is near-invisible against dark browser tab bars; if it vanishes on john's theme, the gradient variant (rt-logo-primary-gradient.svg) is sitting in tidestracker/public ready to swap in.
+_________________________________________________________________________________
