@@ -52,6 +52,11 @@ def _normalize_video(item: dict) -> dict:
 
     music_id = str(music.get("musicId", "")) if music.get("musicId") else ""
 
+    # Thumbnail: try videoMeta.coverUrl first, then covers.default
+    video_meta = item.get("videoMeta") or {}
+    covers = item.get("covers") or {}
+    thumbnail_url = video_meta.get("coverUrl", "") or covers.get("default", "")
+
     return {
         "url": item.get("webVideoUrl") or "",
         "video_id": str(item.get("id", "")),
@@ -63,6 +68,9 @@ def _normalize_video(item: dict) -> dict:
         "account": f"@{author.get('name', '')}" if author.get("name") else "",
         "views": item.get("playCount") or 0,
         "likes": item.get("diggCount") or 0,
+        "shares": item.get("shareCount") or 0,
+        "comments": item.get("commentCount") or 0,
+        "thumbnail_url": thumbnail_url,
         "timestamp": timestamp,
         "upload_date": upload_date,
         "platform": "tiktok",

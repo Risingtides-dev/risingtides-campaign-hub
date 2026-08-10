@@ -242,7 +242,7 @@ export function SongsResults({ results, isLoading }: SongsResultsProps) {
     return (
       <div className="bg-white border border-[#e8e8ef] rounded-[10px] p-10 text-center">
         <p className="text-[#888] text-sm">
-          No videos found in the last {results.hours || 48} hours.
+          No videos found in the last {results.hours || 72} hours.
           <br />
           Try increasing the time window.
         </p>

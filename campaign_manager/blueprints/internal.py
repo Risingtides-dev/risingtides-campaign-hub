@@ -241,6 +241,9 @@ def _run_internal_scrape(hours: int, creators: List[str], *,
         else:
             end_dt = datetime.now(EST)
 
+        # Recalculate hours to reflect actual date range (for display)
+        hours = max(1, int((end_dt - start_dt).total_seconds() / 3600))
+
         all_videos: List[Dict] = []
         successful = 0
         failed = 0
@@ -453,7 +456,7 @@ def trigger_scrape():
         return jsonify({"error": "A scrape is already running. Please wait."}), 409
 
     data = request.get_json(silent=True) or {}
-    hours = int(data.get("hours", 48))
+    hours = int(data.get("hours", 72))
 
     # Determine which creators to scrape
     group_slug = (data.get("group") or "").strip()

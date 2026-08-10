@@ -516,8 +516,8 @@ def run_internal_scrape():
         # Extract real sound IDs for better song grouping
         all_videos = _enhance_sound_ids(all_videos, max_workers=10)
 
-        # Filter to last 48 hours
-        cutoff = datetime.now(EST) - timedelta(hours=48)
+        # Filter to last 72 hours
+        cutoff = datetime.now(EST) - timedelta(hours=72)
         filtered = []
         for v in all_videos:
             ts = v.get("timestamp", "")
@@ -572,7 +572,7 @@ def run_internal_scrape():
 
         # Save results
         _db.save_internal_results({
-            "hours": 48,
+            "hours": 72,
             "start_dt": cutoff.replace(tzinfo=None).isoformat(),
             "end_dt": datetime.now(EST).replace(tzinfo=None).isoformat(),
             "accounts_total": len(creators),
