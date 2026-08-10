@@ -12,6 +12,7 @@ import { useQueryClient } from "@tanstack/react-query"
 import { ArrowUpDown, ArrowUp, ArrowDown, Check } from "lucide-react"
 import type { CampaignSummary } from "@/lib/types"
 import { api } from "@/lib/api"
+import { keys } from "@/lib/queries"
 import {
   Table,
   TableBody,
@@ -285,9 +286,56 @@ export function CampaignsTable({ data }: CampaignsTableProps) {
   const handleToggleCompletion = useCallback(
     (slug: string, current: CampaignSummary["completion_status"]) => {
       const next = COMPLETION_CYCLE[current] || "none"
-      api.editCampaign(slug, { completion_status: next }).then(() => {
-        qc.invalidateQueries({ queryKey: ["campaigns"] })
+
+      // Optimistic update. The old flow waited for the API call AND a full
+      // refetch of both campaign lists (~1-2s for the finished set) before
+      // the checkbox changed — the single slowest-feeling interaction on
+      // the site. Patch the caches immediately (including moving the row
+      // between the Active/Finished lists), then reconcile with the server
+      // in the background; roll back on API failure.
+      const nowActive = next !== "completed"
+      const snapshot = [keys.campaigns, keys.campaignsActive, keys.campaignsFinished]
+        .map((k) => [k, qc.getQueryData<CampaignSummary[]>(k)] as const)
+
+      let moved: CampaignSummary | undefined
+      const patchRow = (c: CampaignSummary): CampaignSummary =>
+        c.slug === slug ? { ...c, completion_status: next } : c
+
+      qc.setQueryData<CampaignSummary[]>(keys.campaigns, (list) => list?.map(patchRow))
+      qc.setQueryData<CampaignSummary[]>(keys.campaignsActive, (list) => {
+        if (!list) return list
+        const row = list.find((c) => c.slug === slug)
+        if (row && !nowActive) {
+          moved = patchRow(row)
+          return list.filter((c) => c.slug !== slug)
+        }
+        return list.map(patchRow)
       })
+      qc.setQueryData<CampaignSummary[]>(keys.campaignsFinished, (list) => {
+        if (!list) return list
+        const row = list.find((c) => c.slug === slug)
+        if (row && nowActive) {
+          moved = patchRow(row)
+          return list.filter((c) => c.slug !== slug)
+        }
+        const patched = list.map(patchRow)
+        return moved && !nowActive ? [moved, ...patched] : patched
+      })
+      if (moved && nowActive) {
+        qc.setQueryData<CampaignSummary[]>(keys.campaignsActive, (list) =>
+          list ? [moved as CampaignSummary, ...list] : list
+        )
+      }
+
+      api
+        .editCampaign(slug, { completion_status: next })
+        .then(() => {
+          // Background reconcile — the UI is already correct.
+          qc.invalidateQueries({ queryKey: ["campaigns"] })
+        })
+        .catch(() => {
+          for (const [k, data] of snapshot) qc.setQueryData(k, data)
+        })
     },
     [qc]
   )
