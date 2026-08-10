@@ -230,7 +230,14 @@ def query_new_clients(synced_page_ids: Set[str]) -> List[Dict]:
         label = _get_rich_text(props.get("Label/Distro Partner", {}))
         lead = _get_multi_select(props.get("Project Lead", {}))
         email = _get_email(props.get("Key Contact Email", {}))
-        content_types = _get_multi_select(props.get("Types of Content Creators", {}))
+        # The CRM property is "Content Niche Targets" (multi_select). We were
+        # reading "Types of Content Creators", which does not exist on the
+        # database — so this came back empty for every campaign ever synced
+        # (0 of 326 populated) while 286 of 300 CRM rows actually carry tags.
+        # A missing property is silently empty here, so nothing ever surfaced.
+        # Legacy name kept as a fallback in case an older DB copy still uses it.
+        content_types = (_get_multi_select(props.get("Content Niche Targets", {}))
+                         or _get_multi_select(props.get("Types of Content Creators", {})))
         tiktok_pct = _get_multi_select(props.get("TikTok", {}))
         insta_pct = _get_multi_select(props.get("Instagram", {}))
 

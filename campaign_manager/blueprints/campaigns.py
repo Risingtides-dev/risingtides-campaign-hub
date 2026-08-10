@@ -362,6 +362,10 @@ def _campaign_summary(c: Dict) -> Dict:
         # nothing could build a payload without it.
         "official_sound": c["meta"].get("official_sound", ""),
         "sound_id": c["meta"].get("sound_id", ""),
+        # CRM "Content Niche Targets" — which page niches this campaign is for.
+        # Without it a board has no routing signal and can only broadcast every
+        # sound to every page, which is what ShipStream was doing.
+        "content_types": c["meta"].get("content_types", []),
         "budget": c["budget"],
         "stats": c["stats"],
         "completion_status": c["meta"].get("completion_status", "none"),
