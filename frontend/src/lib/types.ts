@@ -878,11 +878,19 @@ export interface LibraryRate {
   campaigns: number
 }
 
-export interface LibraryRefreshResult {
-  ok: boolean
+export interface LibraryRefreshSummary {
   trackers: number
   failed: number
   creators: number
   posts: number
   updated_at: string
+}
+
+/** The refresh walks every tracker server-side, so the UI polls rather
+ *  than holding a request open. */
+export interface LibraryRefreshStatus {
+  running: boolean
+  started_at: string
+  last: LibraryRefreshSummary | null
+  error: string
 }

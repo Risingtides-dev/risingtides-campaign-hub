@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -31,6 +32,11 @@ from campaign_manager.services.creator_library_stats import (
 )
 
 log = logging.getLogger(__name__)
+
+# Concurrent tracker fetches. Bounded well below the tracker API's comfort
+# level — this is one internal service politely reading another, not a
+# reason to hammer it.
+DEFAULT_FETCH_WORKERS = 12
 
 Row = Tuple[str, date, int]
 
@@ -107,11 +113,17 @@ def refresh_creator_stats(
     fetch_videos: Optional[Callable[[str], Sequence[Dict]]] = None,
     tracker_ids: Optional[Sequence[str]] = None,
     today: Optional[date] = None,
+    max_workers: int = DEFAULT_FETCH_WORKERS,
 ) -> Dict:
     """Rebuild cached performance windows for every creator on a tracker.
 
     `fetch_videos` is injectable so this can be tested without network and
     driven from a cron job in production.
+
+    Tracker fetches run concurrently. Sequentially, ~255 trackers at up to
+    15s each overran gunicorn's 120s worker timeout and the request died
+    with a 500; the work is pure network wait, so a small pool collapses it
+    to well under a minute.
 
     Returns a summary suitable for a cron log:
         {trackers, failed, creators, posts, updated_at}
@@ -124,13 +136,24 @@ def refresh_creator_stats(
     followers: Dict[str, int] = {}
     failed = 0
 
-    for tracker_id in ids:
+    def _safe_fetch(tracker_id: str):
         try:
-            videos = fetch(tracker_id) or []
-        except Exception as exc:
+            return tracker_id, fetch(tracker_id) or [], None
+        except Exception as exc:  # noqa: BLE001 — reported per tracker below
+            return tracker_id, [], exc
+
+    if ids:
+        workers = max(1, min(max_workers, len(ids)))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(_safe_fetch, ids))
+    else:
+        results = []
+
+    for tracker_id, videos, error in results:
+        if error is not None:
             # One unreachable tracker must not cost us the other 250.
             failed += 1
-            log.warning("library refresh: tracker %s failed: %s", tracker_id, exc)
+            log.warning("library refresh: tracker %s failed: %s", tracker_id, error)
             continue
 
         rows, counts = extract_rows(videos)

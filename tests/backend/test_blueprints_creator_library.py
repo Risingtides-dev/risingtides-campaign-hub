@@ -216,3 +216,59 @@ def test_usernames_with_dots_survive_routing(client):
     )
     creators = client.get("/api/library/creators").get_json()["creators"]
     assert any(c["key"] == "4real.corey" for c in creators)
+
+
+# ── stats refresh ──────────────────────────────────────────────────────
+
+def test_refresh_returns_immediately_rather_than_blocking(client, monkeypatch):
+    """Holding the request open while walking 255 trackers tripped
+    gunicorn's 120s worker timeout and 500'd in production."""
+    import campaign_manager.blueprints.creator_library as bp
+
+    monkeypatch.setattr(
+        bp, "refresh_creator_stats",
+        lambda *a, **k: {"trackers": 1, "failed": 0, "creators": 1,
+                         "posts": 1, "updated_at": "now"},
+    )
+    res = client.post("/api/library/refresh-stats")
+    assert res.status_code == 202
+    assert res.get_json()["status"] in {"started", "already_running"}
+
+
+def test_refresh_status_reports_the_last_run(client, monkeypatch):
+    import campaign_manager.blueprints.creator_library as bp
+
+    summary = {"trackers": 3, "failed": 0, "creators": 2, "posts": 9,
+               "updated_at": "2026-08-11T00:00:00"}
+    monkeypatch.setattr(bp, "refresh_creator_stats", lambda *a, **k: summary)
+
+    client.post("/api/library/refresh-stats")
+    for _ in range(50):
+        body = client.get("/api/library/refresh-status").get_json()
+        if not body["running"]:
+            break
+        import time
+        time.sleep(0.05)
+
+    assert body["running"] is False
+    assert body["last"] == summary
+    assert body["error"] == ""
+
+
+def test_a_failing_refresh_surfaces_its_error(client, monkeypatch):
+    import campaign_manager.blueprints.creator_library as bp
+
+    def boom(*a, **k):
+        raise RuntimeError("tracker API down")
+
+    monkeypatch.setattr(bp, "refresh_creator_stats", boom)
+    client.post("/api/library/refresh-stats")
+
+    for _ in range(50):
+        body = client.get("/api/library/refresh-status").get_json()
+        if not body["running"]:
+            break
+        import time
+        time.sleep(0.05)
+
+    assert body["error"] == "tracker API down"

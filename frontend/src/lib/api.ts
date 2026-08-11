@@ -42,7 +42,7 @@ import type {
   LibraryNiche,
   LibraryCreator,
   LibraryRate,
-  LibraryRefreshResult,
+  LibraryRefreshStatus,
   LibraryWindow,
   SoundFitResponse,
 } from "./types"
@@ -628,10 +628,14 @@ export const api = {
       `/api/library/niches/${id}/apply`,
       { method: "POST", body: JSON.stringify({ usernames }) }
     ),
+  /** Returns 202 immediately; the walk runs server-side. Poll
+   *  getLibraryRefreshStatus for completion. */
   refreshLibraryStats: () =>
-    request<LibraryRefreshResult>("/api/library/refresh-stats", {
+    request<{ status: string }>("/api/library/refresh-stats", {
       method: "POST",
     }),
+  getLibraryRefreshStatus: () =>
+    request<LibraryRefreshStatus>("/api/library/refresh-status"),
 }
 
 export { ApiError }

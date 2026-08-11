@@ -178,3 +178,61 @@ def test_tracker_ids_are_collected_from_campaigns(session):
 
     refresh_creator_stats(session, fetch_videos=fetch, today=date(2026, 8, 10))
     assert seen == ["uuid-a"], "campaigns without a tracker are skipped"
+
+
+def test_trackers_are_fetched_concurrently(session):
+    """Sequential fetches overran gunicorn's 120s worker timeout in
+    production. The work is pure network wait, so it must overlap."""
+    import threading
+    import time
+
+    active = 0
+    peak = 0
+    lock = threading.Lock()
+
+    def slow_fetch(tracker_id):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        time.sleep(0.05)
+        with lock:
+            active -= 1
+        return [_video("alice", tracker_id, 100, "2026-08-05T00:00:00Z")]
+
+    ids = [str(i) for i in range(12)]
+    started = time.monotonic()
+    refresh_creator_stats(
+        session, tracker_ids=ids, fetch_videos=slow_fetch,
+        today=date(2026, 8, 10), max_workers=6,
+    )
+    elapsed = time.monotonic() - started
+
+    assert peak > 1, "fetches ran one at a time"
+    assert elapsed < 12 * 0.05, "no better than sequential"
+
+
+def test_concurrent_run_still_isolates_a_failing_tracker(session):
+    def fetch(tracker_id):
+        if tracker_id in {"bad1", "bad2"}:
+            raise RuntimeError("boom")
+        return [_video("alice", tracker_id, 5_000, "2026-08-05T00:00:00Z")]
+
+    summary = refresh_creator_stats(
+        session,
+        tracker_ids=["bad1", "good1", "bad2", "good2"],
+        fetch_videos=fetch,
+        today=date(2026, 8, 10),
+    )
+
+    assert summary["failed"] == 2
+    assert summary["trackers"] == 2
+    assert session.get(CreatorProfile, "alice").stats["w30"]["posts"] == 2
+
+
+def test_no_trackers_is_a_clean_no_op(session):
+    summary = refresh_creator_stats(
+        session, tracker_ids=[], fetch_videos=lambda _: [],
+        today=date(2026, 8, 10),
+    )
+    assert summary["creators"] == 0 and summary["trackers"] == 0

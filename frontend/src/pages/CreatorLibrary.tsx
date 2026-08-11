@@ -323,9 +323,12 @@ export default function CreatorLibrary() {
           disabled={refreshStats.isPending}
           onClick={async () => {
             try {
+              toast.info("Pulling live views from every tracker…")
               const res = await refreshStats.mutateAsync()
               toast.success(
-                `Refreshed ${res.creators} creators from ${res.trackers} trackers`
+                res
+                  ? `Refreshed ${res.creators} creators from ${res.trackers} trackers`
+                  : "Stats refreshed"
               )
             } catch (e) {
               toast.error(e instanceof Error ? e.message : "Refresh failed")

@@ -19,8 +19,10 @@ Endpoints:
 from __future__ import annotations
 
 import logging
+import threading
+from datetime import datetime
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 
 from campaign_manager import db as _db
 from campaign_manager.services import creator_library as lib
@@ -34,6 +36,12 @@ from campaign_manager.services.creator_library_view import (
 log = logging.getLogger(__name__)
 
 creator_library_bp = Blueprint("creator_library", __name__)
+
+# Progress for the manual refresh. Per-worker, not shared across gunicorn
+# processes — enough to stop one browser tab starting three overlapping
+# runs, which is what this guards. The scheduled job is the real path.
+_refresh_lock = threading.Lock()
+_refresh_state = {"running": False, "started_at": "", "last": None, "error": ""}
 
 
 def _session():
@@ -299,17 +307,51 @@ def refresh_stats():
 
     Completed campaigns are skipped by the read-time overlay, so without
     this their numbers stay frozen at whatever the last scrape caught.
-    Runs inline; the roster is a few hundred trackers.
+
+    Runs in a background thread and returns 202 immediately. Even
+    parallelised, walking a few hundred trackers can approach gunicorn's
+    120s sync-worker timeout, and a refresh that dies at the proxy while
+    still running server-side is the worst of both worlds. Callers poll
+    /api/library/refresh-status.
     """
-    session = _session()
-    if session is None:
+    if not _db.is_active():
         return _requires_db()
-    try:
-        summary = refresh_creator_stats(session)
-        log.info("library refresh: %s", summary)
-        return jsonify({"ok": True, **summary})
-    except Exception as exc:
-        log.exception("library refresh failed")
-        return jsonify({"error": f"Refresh failed: {exc}"}), 500
-    finally:
-        session.close()
+
+    with _refresh_lock:
+        if _refresh_state.get("running"):
+            return jsonify({"status": "already_running", **_refresh_state}), 202
+        _refresh_state.update({
+            "running": True,
+            "started_at": datetime.now().isoformat(),
+            "error": "",
+        })
+
+    app = current_app._get_current_object()
+
+    def _run():
+        session = _db.get_session()
+        try:
+            summary = refresh_creator_stats(session)
+            log.info("library refresh: %s", summary)
+            with _refresh_lock:
+                _refresh_state.update({"running": False, "last": summary, "error": ""})
+        except Exception as exc:
+            log.exception("library refresh failed")
+            with _refresh_lock:
+                _refresh_state.update({"running": False, "error": str(exc)})
+        finally:
+            session.close()
+
+    def _with_context():
+        with app.app_context():
+            _run()
+
+    threading.Thread(target=_with_context, daemon=True).start()
+    return jsonify({"status": "started"}), 202
+
+
+@creator_library_bp.get("/api/library/refresh-status")
+def refresh_status():
+    """Whether a refresh is in flight, and the last run's summary."""
+    with _refresh_lock:
+        return jsonify(dict(_refresh_state))

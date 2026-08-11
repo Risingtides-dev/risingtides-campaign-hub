@@ -1032,8 +1032,27 @@ export function useApplyNiche() {
   )
 }
 
+/** Kicks off the refresh (202) and polls until the server reports it done,
+ *  then invalidates the roster so the new numbers appear. */
 export function useRefreshLibraryStats() {
-  return useLibraryMutation<void, Awaited<ReturnType<typeof api.refreshLibraryStats>>>(
-    () => api.refreshLibraryStats()
-  )
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async () => {
+      await api.refreshLibraryStats()
+      // Poll for up to 5 minutes. The walk is a few hundred trackers and
+      // finishes in well under a minute, but a slow tracker shouldn't make
+      // the UI claim failure while the job is still working.
+      const deadline = Date.now() + 5 * 60_000
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 4000))
+        const status = await api.getLibraryRefreshStatus()
+        if (!status.running) {
+          if (status.error) throw new Error(status.error)
+          return status.last
+        }
+      }
+      throw new Error("Refresh is taking longer than expected — check back shortly")
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: libraryKeys.all }),
+  })
 }
