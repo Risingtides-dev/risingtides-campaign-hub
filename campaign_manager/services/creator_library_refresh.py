@@ -85,19 +85,48 @@ def extract_rows(
     return rows, followers
 
 
-def collect_tracker_ids(session) -> List[str]:
-    """Every tracker UUID the Hub knows about, completed campaigns included.
+def collect_tracker_ids(session, list_trackers: Optional[Callable] = None) -> List[str]:
+    """Every tracker UUID worth walking.
 
-    Completed campaigns are the whole point of this job, so unlike the
-    read-time overlay we deliberately do not filter them out.
+    Two sources, because neither is complete on its own:
+
+    * `Campaign.tracker_campaign_id` — trackers linked to a Hub campaign.
+      Completed campaigns are the whole point of this job, so unlike the
+      read-time overlay we deliberately do not filter them out.
+    * The TidesTracker campaign list — trackers that exist but were never
+      linked back to a Hub campaign. In production that was the difference
+      between 148 and 255 trackers, i.e. most of a creator's history.
+
+    The remote list is best-effort: if it fails we still walk everything
+    the Hub knows about locally rather than aborting the run.
     """
     seen: List[str] = []
     known = set()
-    for (tracker_id,) in session.query(Campaign.tracker_campaign_id).all():
-        cleaned = (tracker_id or "").strip()
+
+    def add(value) -> None:
+        cleaned = (value or "").strip()
         if cleaned and cleaned not in known:
             known.add(cleaned)
             seen.append(cleaned)
+
+    for (tracker_id,) in session.query(Campaign.tracker_campaign_id).all():
+        add(tracker_id)
+
+    if list_trackers is None:
+        try:
+            from campaign_manager.services.tidestracker import list_tracker_campaigns
+
+            list_trackers = list_tracker_campaigns
+        except Exception:  # pragma: no cover - import guard
+            list_trackers = None
+
+    if list_trackers is not None:
+        try:
+            for tracker in list_trackers() or []:
+                add(tracker.get("id"))
+        except Exception as exc:
+            log.warning("library refresh: tracker list unavailable (%s)", exc)
+
     return seen
 
 

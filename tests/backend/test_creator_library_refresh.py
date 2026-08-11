@@ -17,6 +17,7 @@ import pytest
 from campaign_manager.models import Campaign, CreatorProfile
 from campaign_manager.services import creator_library as lib
 from campaign_manager.services.creator_library_refresh import (
+    collect_tracker_ids,
     extract_rows,
     refresh_creator_stats,
 )
@@ -170,14 +171,32 @@ def test_tracker_ids_are_collected_from_campaigns(session):
     session.add(Campaign(slug="camp-b", title="B", tracker_campaign_id=""))
     session.commit()
 
-    seen = []
+    ids = collect_tracker_ids(session, list_trackers=lambda: [])
+    assert ids == ["uuid-a"], "campaigns without a tracker are skipped"
 
-    def fetch(tracker_id):
-        seen.append(tracker_id)
-        return []
 
-    refresh_creator_stats(session, fetch_videos=fetch, today=date(2026, 8, 10))
-    assert seen == ["uuid-a"], "campaigns without a tracker are skipped"
+def test_tracker_ids_include_trackers_never_linked_to_a_campaign(session):
+    """Reading only Campaign.tracker_campaign_id found 148 of 255 trackers
+    in production — most of some creators' history was invisible."""
+    session.add(Campaign(slug="camp-a", title="A", tracker_campaign_id="uuid-a"))
+    session.commit()
+
+    ids = collect_tracker_ids(
+        session,
+        list_trackers=lambda: [{"id": "uuid-a"}, {"id": "uuid-remote"}],
+    )
+
+    assert ids == ["uuid-a", "uuid-remote"], "linked first, then remote-only"
+
+
+def test_an_unavailable_tracker_list_still_walks_local_ids(session):
+    session.add(Campaign(slug="camp-a", title="A", tracker_campaign_id="uuid-a"))
+    session.commit()
+
+    def boom():
+        raise RuntimeError("service key rejected")
+
+    assert collect_tracker_ids(session, list_trackers=boom) == ["uuid-a"]
 
 
 def test_trackers_are_fetched_concurrently(session):
