@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { api } from "./api"
-import type { ScrapeStatus, JobScrapeStatus, BreakerLens } from "./types"
+import type { ScrapeStatus, JobScrapeStatus, BreakerLens, LibraryWindow } from "./types"
 
 // Query keys
 export const keys = {
@@ -919,4 +919,121 @@ export function useScrapeJobStatus(jobId: string | null) {
       return s === "running" ? 1500 : false
     },
   })
+}
+
+// ── Creator Library ────────────────────────────────────────────────────
+// Every mutation invalidates the roster; tagging also invalidates the
+// vocabulary so usage counts in the picker stay honest.
+
+export const libraryKeys = {
+  all: ["library"] as const,
+  creators: (window: LibraryWindow) => ["library", "creators", window] as const,
+  niches: ["library", "niches"] as const,
+  rate: (username: string) => ["library", "rate", username] as const,
+}
+
+export function useLibrary(window: LibraryWindow = "w60") {
+  return useQuery({
+    queryKey: libraryKeys.creators(window),
+    queryFn: () => api.getLibrary(window),
+    // Windows are cheap to switch between and the payload is a few hundred
+    // rows; keeping previous data avoids a full-page spinner on every toggle.
+    placeholderData: (prev) => prev,
+  })
+}
+
+export function useNiches() {
+  return useQuery({
+    queryKey: libraryKeys.niches,
+    queryFn: () => api.getNiches(),
+  })
+}
+
+export function useLibraryRate(username: string, enabled = true) {
+  return useQuery({
+    queryKey: libraryKeys.rate(username),
+    queryFn: () => api.getLibraryRate(username),
+    enabled: enabled && Boolean(username),
+  })
+}
+
+function useLibraryMutation<TArgs, TResult>(
+  fn: (args: TArgs) => Promise<TResult>,
+  opts: { touchesNiches?: boolean } = {}
+) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: fn,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: libraryKeys.all })
+      if (opts.touchesNiches) {
+        qc.invalidateQueries({ queryKey: libraryKeys.niches })
+      }
+    },
+  })
+}
+
+export function useAddLibraryCreator() {
+  return useLibraryMutation(
+    (data: Parameters<typeof api.addLibraryCreator>[0]) =>
+      api.addLibraryCreator(data),
+    { touchesNiches: true }
+  )
+}
+
+export function useUpdateLibraryCreator() {
+  return useLibraryMutation(
+    (args: {
+      username: string
+      data: Parameters<typeof api.updateLibraryCreator>[1]
+    }) => api.updateLibraryCreator(args.username, args.data)
+  )
+}
+
+export function useSetLibraryNiches() {
+  return useLibraryMutation(
+    (args: { username: string; niches: string[] }) =>
+      api.setLibraryNiches(args.username, args.niches),
+    { touchesNiches: true }
+  )
+}
+
+export function useCreateNiche() {
+  return useLibraryMutation((name: string) => api.createNiche(name), {
+    touchesNiches: true,
+  })
+}
+
+export function useRenameNiche() {
+  return useLibraryMutation(
+    (args: { id: number; name: string }) => api.renameNiche(args.id, args.name),
+    { touchesNiches: true }
+  )
+}
+
+export function useDeleteNiche() {
+  return useLibraryMutation((id: number) => api.deleteNiche(id), {
+    touchesNiches: true,
+  })
+}
+
+export function useMergeNiche() {
+  return useLibraryMutation(
+    (args: { id: number; into: number }) => api.mergeNiche(args.id, args.into),
+    { touchesNiches: true }
+  )
+}
+
+export function useApplyNiche() {
+  return useLibraryMutation(
+    (args: { id: number; usernames: string[] }) =>
+      api.applyNiche(args.id, args.usernames),
+    { touchesNiches: true }
+  )
+}
+
+export function useRefreshLibraryStats() {
+  return useLibraryMutation<void, Awaited<ReturnType<typeof api.refreshLibraryStats>>>(
+    () => api.refreshLibraryStats()
+  )
 }

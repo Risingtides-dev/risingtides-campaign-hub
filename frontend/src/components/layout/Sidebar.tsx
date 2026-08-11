@@ -13,6 +13,7 @@ const navItems = [
   {
     section: "Creators",
     links: [
+      { label: "Creator Library", path: "/library" },
       { label: "Creator Database", path: "/creators" },
       { label: "Creator Intelligence", path: "/intelligence" },
       { label: "Booking Wizard", path: "/booking-wizard" },

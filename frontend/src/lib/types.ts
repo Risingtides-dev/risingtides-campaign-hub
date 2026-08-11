@@ -795,3 +795,94 @@ export interface CreatorRollup {
   internal: { views: number; likes: number; posts: number; label: string | null }
   external: { views: number; likes: number; posts: number; campaigns: CreatorRollupCampaign[] }
 }
+
+// ---------------------------------------------------------------------------
+// Creator Library
+//
+// The person-level view: tags that follow a creator between campaigns, a
+// remembered rate, and performance measured over a recent window rather
+// than all time.
+// ---------------------------------------------------------------------------
+
+export type LibraryWindow = "w30" | "w60" | "w90" | "wall"
+
+export const LIBRARY_WINDOW_LABELS: Record<LibraryWindow, string> = {
+  w30: "30d",
+  w60: "60d",
+  w90: "90d",
+  wall: "All",
+}
+
+/** One performance window. `null` where the creator has no posts in it —
+ *  which must render as a dash, never as a zero. */
+export interface LibraryWindowStats {
+  posts: number
+  total: number
+  median: number
+  avg: number
+  p25: number
+  peak: number
+  /** Share of posts at or above 100k views. */
+  viral_rate: number
+  /** Current rate ÷ typical views. Null when either is unknown. */
+  pcpm: number | null
+  /** Same sum against a bottom-quartile post: the downside case. */
+  floor: number | null
+}
+
+export interface LibraryNiche {
+  id: number
+  name: string
+  count: number
+  created_at: string
+}
+
+export interface LibraryCreator {
+  /** Display casing. */
+  username: string
+  /** Lowercased join key — use this for lookups and mutations. */
+  key: string
+  niches: string[]
+  rate: number | null
+  rate_source: "override" | "booking" | "none"
+  rate_override: number | null
+  slow: boolean
+  note: string
+  paypal_email: string
+  platform: string
+  followers: number
+  campaigns: number
+  posts_owed: number
+  posts_done: number
+  spend: number
+  last_booked_at: string
+  /** Never booked — show dashes for performance. */
+  scouted: boolean
+  stats: Partial<Record<LibraryWindow, LibraryWindowStats | null>>
+  stats_updated_at: string
+}
+
+export interface LibraryResponse {
+  window: LibraryWindow
+  windows: LibraryWindow[]
+  count: number
+  creators: LibraryCreator[]
+}
+
+export interface LibraryRate {
+  username: string
+  rate: number | null
+  source: "override" | "booking" | "none"
+  last_rate: number | null
+  last_booked_at: string
+  campaigns: number
+}
+
+export interface LibraryRefreshResult {
+  ok: boolean
+  trackers: number
+  failed: number
+  creators: number
+  posts: number
+  updated_at: string
+}

@@ -38,6 +38,12 @@ import type {
   PosterSummary,
   BookerStats,
   CreatorRollup,
+  LibraryResponse,
+  LibraryNiche,
+  LibraryCreator,
+  LibraryRate,
+  LibraryRefreshResult,
+  LibraryWindow,
   SoundFitResponse,
 } from "./types"
 
@@ -564,6 +570,68 @@ export const api = {
     }>(
       `/api/scrape-tasks/trigger/status${job_id ? `?job_id=${encodeURIComponent(job_id)}` : ""}`
     ),
+  // ── Creator Library ──────────────────────────────────────────────────
+  // `key` (lowercased username) is the join key everywhere below; it is
+  // encoded because handles legitimately contain dots and underscores.
+  getLibrary: (window: LibraryWindow = "w60") =>
+    request<LibraryResponse>(`/api/library/creators?window=${window}`),
+  addLibraryCreator: (data: {
+    username: string
+    rate?: number | null
+    niches?: string[]
+    paypal_email?: string
+  }) =>
+    request<ApiOk & { username: string }>("/api/library/creators", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  updateLibraryCreator: (
+    username: string,
+    data: { rate?: number | null; slow?: boolean; note?: string; paypal_email?: string }
+  ) =>
+    request<ApiOk & { creator: LibraryCreator }>(
+      `/api/library/creators/${encodeURIComponent(username)}`,
+      { method: "PATCH", body: JSON.stringify(data) }
+    ),
+  setLibraryNiches: (username: string, niches: string[]) =>
+    request<ApiOk & { niches: string[] }>(
+      `/api/library/creators/${encodeURIComponent(username)}/niches`,
+      { method: "PUT", body: JSON.stringify({ niches }) }
+    ),
+  getLibraryRate: (username: string) =>
+    request<LibraryRate>(
+      `/api/library/creators/${encodeURIComponent(username)}/rate`
+    ),
+
+  getNiches: () =>
+    request<{ count: number; niches: LibraryNiche[] }>("/api/library/niches"),
+  createNiche: (name: string) =>
+    request<LibraryNiche>("/api/library/niches", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    }),
+  renameNiche: (id: number, name: string) =>
+    request<LibraryNiche>(`/api/library/niches/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    }),
+  deleteNiche: (id: number) =>
+    request<ApiOk>(`/api/library/niches/${id}`, { method: "DELETE" }),
+  mergeNiche: (id: number, into: number) =>
+    request<LibraryNiche>(`/api/library/niches/${id}/merge`, {
+      method: "POST",
+      body: JSON.stringify({ into }),
+    }),
+  /** Tag many creators at once — the bulk path for working the backlog. */
+  applyNiche: (id: number, usernames: string[]) =>
+    request<ApiOk & { tagged: number; requested: number }>(
+      `/api/library/niches/${id}/apply`,
+      { method: "POST", body: JSON.stringify({ usernames }) }
+    ),
+  refreshLibraryStats: () =>
+    request<LibraryRefreshResult>("/api/library/refresh-stats", {
+      method: "POST",
+    }),
 }
 
 export { ApiError }

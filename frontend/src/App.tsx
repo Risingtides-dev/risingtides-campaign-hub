@@ -10,6 +10,7 @@ const CampaignDetail = lazy(() => import("./pages/CampaignDetail"))
 const CampaignReport = lazy(() => import("./pages/CampaignReport"))
 const CampaignLinks = lazy(() => import("./pages/CampaignLinks"))
 const CreatorDatabase = lazy(() => import("./pages/CreatorDatabase"))
+const CreatorLibrary = lazy(() => import("./pages/CreatorLibrary"))
 const CreatorIntelligence = lazy(() => import("./pages/CreatorIntelligence"))
 const BookingWizard = lazy(() => import("./pages/BookingWizard"))
 const RisingTidesTracker = lazy(() => import("./pages/RisingTidesTracker"))
@@ -52,6 +53,7 @@ function App() {
                   <Route path="/campaign/:slug/links" element={<CampaignLinks />} />
                   <Route path="/campaign/:slug/outreach" element={<CampaignOutreach />} />
                   <Route path="/creators" element={<CreatorDatabase />} />
+                  <Route path="/library" element={<CreatorLibrary />} />
                   <Route path="/intelligence" element={<CreatorIntelligence />} />
                   <Route path="/booking-wizard" element={<BookingWizard />} />
                   <Route path="/creators/:username" element={<CreatorProfilePage />} />
