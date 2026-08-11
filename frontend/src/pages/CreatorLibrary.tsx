@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react"
+import { Link } from "react-router-dom"
 import { toast } from "sonner"
 import { Loader2, Plus, RefreshCw, Search, Settings2, X } from "lucide-react"
 import {
@@ -16,7 +17,8 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { NichePicker } from "@/components/library/NichePicker"
-import { avatarStyle, initials, nicheStyle } from "@/components/library/nicheColors"
+import { nicheStyle } from "@/components/library/nicheColors"
+import { CreatorAvatar } from "@/components/library/CreatorAvatar"
 import { CreatorDrawer } from "@/components/library/CreatorDrawer"
 import { NicheManager } from "@/components/library/NicheManager"
 import { AddCreatorDialog } from "@/components/library/AddCreatorDialog"
@@ -466,16 +468,22 @@ export default function CreatorLibrary() {
                 )}
 
                 <div className={`flex items-center gap-3 ${ranked ? "pl-8" : ""} ${tagMode ? "pr-7" : ""}`}>
-                  <div
-                    style={avatarStyle(creator.key)}
-                    className="grid size-10 shrink-0 place-items-center rounded-full text-[15px] font-semibold text-white"
-                  >
-                    {initials(creator.key)}
-                  </div>
+                  <CreatorAvatar
+                    username={creator.key}
+                    src={creator.avatar_url}
+                    size={40}
+                  />
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-[14px] font-semibold text-rt-fg">
+                    {/* Straight to the full profile; the rest of the card
+                        opens the quick drawer. */}
+                    <Link
+                      to={`/creators/${encodeURIComponent(creator.key)}`}
+                      onClick={(e) => e.stopPropagation()}
+                      title="Open full profile"
+                      className="block truncate text-[14px] font-semibold text-rt-fg hover:text-rt-magenta hover:underline"
+                    >
                       @{creator.username}
-                    </p>
+                    </Link>
                     <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11.5px] text-rt-fg-tertiary">
                       {creator.scouted ? (
                         <span className="rounded bg-rt-amber/15 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-rt-amber">

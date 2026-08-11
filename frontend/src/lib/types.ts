@@ -851,6 +851,9 @@ export interface LibraryCreator {
   paypal_email: string
   platform: string
   followers: number
+  /** Cover of their most recent tracked post — stands in for a profile
+   *  picture. Empty when we have no tracked posts for them. */
+  avatar_url: string
   campaigns: number
   posts_owed: number
   posts_done: number

@@ -29,20 +29,21 @@ def session(db):
         yield s
 
 
-def _video(username, vid, views, published, followers=0):
+def _video(username, vid, views, published, followers=0, cover=""):
     return {
         "username": username,
         "video_url": f"https://www.tiktok.com/@{username}/video/{vid}",
         "views": views,
         "published_at": published,
         "author_followers": followers,
+        "cover_url": cover,
     }
 
 
 # ── payload parsing ────────────────────────────────────────────────────
 
 def test_extract_rows_reads_the_tracker_payload():
-    rows, followers = extract_rows([
+    rows, followers, _ = extract_rows([
         _video("alice", 111, 5000, "2026-08-01T12:00:00Z", followers=1200),
     ])
 
@@ -53,7 +54,7 @@ def test_extract_rows_reads_the_tracker_payload():
 
 
 def test_extract_rows_ignores_entries_without_a_usable_date():
-    rows, _ = extract_rows([
+    rows, _, _ = extract_rows([
         _video("alice", 111, 5000, ""),
         _video("alice", 222, 6000, "2026-08-02T00:00:00Z"),
     ])
@@ -61,12 +62,12 @@ def test_extract_rows_ignores_entries_without_a_usable_date():
 
 
 def test_extract_rows_normalises_the_username():
-    rows, _ = extract_rows([_video("@Alice", 111, 10, "2026-08-01T00:00:00Z")])
+    rows, _, _ = extract_rows([_video("@Alice", 111, 10, "2026-08-01T00:00:00Z")])
     assert "alice" in rows
 
 
 def test_extract_rows_keeps_the_highest_follower_count_seen():
-    rows, followers = extract_rows([
+    rows, followers, _ = extract_rows([
         _video("alice", 111, 10, "2026-08-01T00:00:00Z", followers=900),
         _video("alice", 222, 10, "2026-08-02T00:00:00Z", followers=1500),
     ])
@@ -255,3 +256,29 @@ def test_no_trackers_is_a_clean_no_op(session):
         today=date(2026, 8, 10),
     )
     assert summary["creators"] == 0 and summary["trackers"] == 0
+
+
+def test_cover_of_the_newest_post_is_kept_as_an_avatar(session):
+    """Not a true profile picture — TikTok's oEmbed stopped returning
+    author thumbnails — but a durable cobrand-public URL beats initials."""
+    payloads = {"t": [
+        _video("alice", 111, 10, "2026-08-01T00:00:00Z", cover="https://x/old.jpg"),
+        _video("alice", 222, 10, "2026-08-09T00:00:00Z", cover="https://x/new.jpg"),
+    ]}
+    refresh_creator_stats(
+        session, tracker_ids=["t"], fetch_videos=payloads.get,
+        today=date(2026, 8, 10),
+    )
+    assert session.get(CreatorProfile, "alice").avatar_url == "https://x/new.jpg"
+
+
+def test_posts_without_a_cover_do_not_blank_an_existing_avatar(session):
+    payloads = {"t": [
+        _video("alice", 111, 10, "2026-08-01T00:00:00Z", cover="https://x/pic.jpg"),
+        _video("alice", 222, 10, "2026-08-09T00:00:00Z", cover=""),
+    ]}
+    refresh_creator_stats(
+        session, tracker_ids=["t"], fetch_videos=payloads.get,
+        today=date(2026, 8, 10),
+    )
+    assert session.get(CreatorProfile, "alice").avatar_url == "https://x/pic.jpg"

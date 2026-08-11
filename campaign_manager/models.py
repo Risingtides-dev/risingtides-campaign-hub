@@ -920,6 +920,13 @@ class CreatorProfile(Base):
     followers = Column(Integer, default=0)
     stats_updated_at = Column(DateTime, nullable=True)
 
+    # Cover image of the creator's most recent tracked post. Not a true
+    # profile picture — TikTok's oEmbed stopped returning author thumbnails
+    # and the Cobrand author payload comes back empty — but these are
+    # durable cobrand-public URLs that never expire, and a real image beats
+    # coloured initials for recognising someone at a glance.
+    avatar_url = Column(Text, default="")
+
     added_at = Column(DateTime, default=datetime.now)
 
     def to_dict(self):
@@ -935,6 +942,7 @@ class CreatorProfile(Base):
             "paypal_email": self.paypal_email or "",
             "stats": self.stats or {},
             "followers": self.followers or 0,
+            "avatar_url": self.avatar_url or "",
             "stats_updated_at": (
                 self.stats_updated_at.isoformat() if self.stats_updated_at else ""
             ),

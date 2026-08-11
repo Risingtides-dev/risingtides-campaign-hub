@@ -54,16 +54,21 @@ def _parse_published(value) -> Optional[date]:
 
 def extract_rows(
     videos: Sequence[Dict],
-) -> Tuple[Dict[str, List[Row]], Dict[str, int]]:
-    """Turn a tracker payload into per-creator rows and follower counts.
+) -> Tuple[Dict[str, List[Row]], Dict[str, int], Dict[str, Tuple[date, str]]]:
+    """Turn a tracker payload into per-creator rows, followers and covers.
 
-    Returns ({username: [(url, date, views)]}, {username: followers}).
+    Returns:
+        ({username: [(url, date, views)]},
+         {username: followers},
+         {username: (date, cover_url)})
+
     Entries without a parseable date are dropped — they cannot be placed in
     a window, and guessing would corrupt the recency signal that the whole
     ranking depends on.
     """
     rows: Dict[str, List[Row]] = {}
     followers: Dict[str, int] = {}
+    covers: Dict[str, Tuple[date, str]] = {}
 
     for video in videos or []:
         username = normalize_username(video.get("username"))
@@ -82,7 +87,14 @@ def extract_rows(
         if count > followers.get(username, 0):
             followers[username] = count
 
-    return rows, followers
+        # Newest post's cover stands in for a profile picture.
+        cover = video.get("cover_url") or ""
+        if cover:
+            current = covers.get(username)
+            if current is None or published > current[0]:
+                covers[username] = (published, cover)
+
+    return rows, followers, covers
 
 
 def collect_tracker_ids(session, list_trackers: Optional[Callable] = None) -> List[str]:
@@ -163,6 +175,7 @@ def refresh_creator_stats(
 
     all_rows: Dict[str, List[Row]] = {}
     followers: Dict[str, int] = {}
+    covers: Dict[str, Tuple[date, str]] = {}
     failed = 0
 
     def _safe_fetch(tracker_id: str):
@@ -185,12 +198,16 @@ def refresh_creator_stats(
             log.warning("library refresh: tracker %s failed: %s", tracker_id, error)
             continue
 
-        rows, counts = extract_rows(videos)
+        rows, counts, shots = extract_rows(videos)
         for username, items in rows.items():
             all_rows.setdefault(username, []).extend(items)
         for username, count in counts.items():
             if count > followers.get(username, 0):
                 followers[username] = count
+        for username, shot in shots.items():
+            current = covers.get(username)
+            if current is None or shot[0] > current[0]:
+                covers[username] = shot
 
     stamped = datetime.now()
     posts_seen = 0
@@ -208,6 +225,8 @@ def refresh_creator_stats(
         profile.stats_updated_at = stamped
         if followers.get(username):
             profile.followers = followers[username]
+        if covers.get(username):
+            profile.avatar_url = covers[username][1]
 
     session.commit()
 

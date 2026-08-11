@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react"
 import { toast } from "sonner"
-import { Loader2, X } from "lucide-react"
+import { Link } from "react-router-dom"
+import { ExternalLink, Loader2, X } from "lucide-react"
 import { useSetLibraryNiches, useUpdateLibraryCreator } from "@/lib/queries"
 import {
   LIBRARY_WINDOW_LABELS,
@@ -11,7 +12,8 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { NichePicker } from "./NichePicker"
-import { avatarStyle, initials, nicheStyle } from "./nicheColors"
+import { nicheStyle } from "./nicheColors"
+import { CreatorAvatar } from "./CreatorAvatar"
 
 interface Props {
   creator: LibraryCreator
@@ -146,16 +148,19 @@ export function CreatorDrawer({ creator, window: win, niches, onClose }: Props) 
       />
       <aside className="fixed inset-y-0 right-0 z-50 flex w-full max-w-[468px] flex-col border-l border-white/15 bg-rt-bg-raised">
         <header className="flex items-start gap-3.5 border-b border-white/10 p-5">
-          <div
-            style={avatarStyle(creator.key)}
-            className="grid size-14 shrink-0 place-items-center rounded-full text-[22px] font-semibold text-white"
-          >
-            {initials(creator.key)}
-          </div>
+          <CreatorAvatar
+            username={creator.key}
+            src={creator.avatar_url}
+            size={56}
+          />
           <div className="min-w-0 pt-1">
-            <p className="text-[18px] font-semibold text-rt-fg">
+            <Link
+              to={`/creators/${encodeURIComponent(creator.key)}`}
+              className="inline-flex items-center gap-1.5 text-[18px] font-semibold text-rt-fg hover:text-rt-magenta hover:underline"
+            >
               @{creator.username}
-            </p>
+              <ExternalLink className="size-3.5 opacity-60" />
+            </Link>
             <p className="mt-1 text-[12px] text-rt-fg-tertiary">
               {creator.scouted
                 ? "Never booked"
@@ -174,6 +179,14 @@ export function CreatorDrawer({ creator, window: win, niches, onClose }: Props) 
         </header>
 
         <div className="flex-1 space-y-6 overflow-y-auto p-5 pb-12">
+          <Link
+            to={`/creators/${encodeURIComponent(creator.key)}`}
+            className="flex items-center justify-center gap-2 rounded-xl border border-white/10 bg-rt-bg-card py-2.5 text-[13px] font-semibold text-rt-fg-secondary transition-colors hover:border-rt-magenta/40 hover:text-rt-fg"
+          >
+            Open full profile
+            <ExternalLink className="size-3.5" />
+          </Link>
+
           <section>
             <SectionTitle>Niches</SectionTitle>
             <div className="flex flex-wrap items-center gap-1.5 rounded-xl border border-white/10 bg-rt-bg-card p-2.5">

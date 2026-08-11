@@ -163,6 +163,7 @@ def build_library(session, window: str = DEFAULT_WINDOW) -> List[Dict]:
                 or (profile.platform if profile else "tiktok")
             ),
             "followers": (profile.followers or 0) if profile else 0,
+            "avatar_url": (profile.avatar_url or "") if profile else "",
             "campaigns": booking.get("campaigns", 0),
             "posts_owed": booking.get("posts_owed", 0),
             "posts_done": booking.get("posts_done", 0),
