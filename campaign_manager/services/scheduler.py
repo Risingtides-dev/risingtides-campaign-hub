@@ -296,6 +296,27 @@ def init_scheduler(database_url: str, hour: int = 6, minute: int = 0):
         misfire_grace_time=300,
     )
 
+    # Creator Library stats (CAMP-LIB): rebuild per-creator performance
+    # windows from every Tides Tracker, completed campaigns included. The
+    # read-time overlay deliberately skips completed campaigns, so without
+    # this their view counts stay frozen at whatever the last scrape caught
+    # — measured at roughly a 4x undercount across the roster.
+    from campaign_manager.services.creator_library_refresh import (
+        get_library_stats_interval_minutes,
+        run_library_stats_refresh,
+    )
+    library_interval = get_library_stats_interval_minutes()
+    _scheduler.add_job(
+        run_library_stats_refresh,
+        "interval",
+        minutes=library_interval,
+        id="library_stats",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=600,
+    )
+
     # Cron-log janitor: reaps cron_log rows stuck in 'running' beyond
     # CRON_REAP_THRESHOLD_MINUTES (default 30). Daemon threads spawned
     # from /api/cron/trigger die on worker recycle and leave their rows

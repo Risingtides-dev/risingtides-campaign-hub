@@ -104,6 +104,7 @@ def create_app(config=None):
     from campaign_manager.blueprints.scrape_tasks import scrape_tasks_bp
     from campaign_manager.blueprints.efficiency import efficiency_bp
     from campaign_manager.blueprints.creator_intelligence import creator_intelligence_bp
+    from campaign_manager.blueprints.creator_library import creator_library_bp
 
     app.register_blueprint(health_bp)
     app.register_blueprint(campaigns_bp)
@@ -119,6 +120,7 @@ def create_app(config=None):
     app.register_blueprint(scrape_tasks_bp)
     app.register_blueprint(efficiency_bp)
     app.register_blueprint(creator_intelligence_bp)
+    app.register_blueprint(creator_library_bp)
 
     # Initialize Slack bot (no-op if credentials aren't set)
     if app.config.get("SLACK_BOT_TOKEN"):

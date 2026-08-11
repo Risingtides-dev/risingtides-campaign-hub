@@ -833,3 +833,109 @@ class TidesTrackerStatsCache(Base):
         DateTime(timezone=True), nullable=False,
         default=lambda: datetime.now(_timezone.utc),
     )
+
+
+# ---------------------------------------------------------------------------
+# Creator Library (CAMP-LIB)
+#
+# The Creator Database aggregates bookings on the fly, so a creator only
+# exists there once they've been hired and anything you record about them
+# has to live on a per-campaign row. The Library models the *person*:
+#   Niche / CreatorNiche  — a custom, user-owned vocabulary, tagged per person
+#   CreatorProfile        — rate memory, working notes, cached tracker stats
+#
+# Usernames are stored lowercased throughout and used as the join key, since
+# that is the only stable identifier shared across campaigns and trackers.
+# ---------------------------------------------------------------------------
+
+class Niche(Base):
+    """One entry in the niche vocabulary.
+
+    Deliberately a table and not a constant: the whole point is that Jake can
+    invent "pinterest moodboard" mid-session without a deploy. Names are
+    stored lowercased so "Gym" and "gym" can't both exist.
+    """
+    __tablename__ = "niches"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(80), nullable=False, unique=True, index=True)
+    created_at = Column(DateTime, default=datetime.now)
+
+    def to_dict(self, count: int = 0):
+        return {
+            "id": self.id,
+            "name": self.name or "",
+            "count": count,
+            "created_at": self.created_at.isoformat() if self.created_at else "",
+        }
+
+
+class CreatorNiche(Base):
+    """Join row: this creator carries this niche.
+
+    A creator can hold many niches and a niche many creators, so tagging one
+    creator never rewrites another's tags — the failure mode of storing tags
+    as a JSON blob on each booking row.
+    """
+    __tablename__ = "creator_niches"
+    __table_args__ = (
+        UniqueConstraint("username", "niche_id", name="uq_creator_niche"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    username = Column(String(255), nullable=False, index=True)
+    niche_id = Column(
+        Integer, ForeignKey("niches.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    created_at = Column(DateTime, default=datetime.now)
+
+
+class CreatorProfile(Base):
+    """Per-person library record.
+
+    Exists for creators who have never been booked (scouted off the platform)
+    as well as for everyone in the booking history, so the Library can be a
+    real roster rather than a view over past invoices.
+    """
+    __tablename__ = "creator_profiles"
+
+    username = Column(String(255), primary_key=True)
+    display_username = Column(String(255), default="")
+    platform = Column(String(20), default="tiktok")
+
+    # Rate memory. `rate_override` is what Jake typed; `rate_override_at`
+    # timestamps it so a *newer* real booking can supersede it. See
+    # services/creator_library.effective_rate for the resolution rule.
+    rate_override = Column(Float, nullable=True)
+    rate_override_at = Column(DateTime, nullable=True)
+
+    slow = Column(Boolean, default=False)
+    note = Column(Text, default="")
+    paypal_email = Column(String(255), default="")
+
+    # Tracker-derived performance, refreshed by the stats job. Cached because
+    # rebuilding it means walking every tracker — far too slow per request.
+    stats = Column(JSONB, default=dict)
+    followers = Column(Integer, default=0)
+    stats_updated_at = Column(DateTime, nullable=True)
+
+    added_at = Column(DateTime, default=datetime.now)
+
+    def to_dict(self):
+        return {
+            "username": self.display_username or self.username or "",
+            "platform": self.platform or "tiktok",
+            "rate_override": self.rate_override,
+            "rate_override_at": (
+                self.rate_override_at.isoformat() if self.rate_override_at else ""
+            ),
+            "slow": bool(self.slow),
+            "note": self.note or "",
+            "paypal_email": self.paypal_email or "",
+            "stats": self.stats or {},
+            "followers": self.followers or 0,
+            "stats_updated_at": (
+                self.stats_updated_at.isoformat() if self.stats_updated_at else ""
+            ),
+        }
