@@ -63,6 +63,35 @@ def _sync_columns():
                 pass
 
 
+def dialect_insert(table):
+    """Dialect-aware INSERT construct for upserts.
+
+    Production is Postgres, the test suite runs in-memory sqlite — both
+    dialects support ``on_conflict_do_nothing`` / ``on_conflict_do_update``,
+    but each needs its own Insert construct. This helper was referenced by
+    ``notion_sync._apply_membership_diff`` (and pinned by
+    tests/backend/test_upsert_dialect_compile.py) but never landed in db.py
+    — every membership insert raised AttributeError, which the resolver
+    swallowed per-row as "resolve_failed". Prod ran with 0 membership rows
+    for months while the cron logged success.
+    """
+    name = getattr(getattr(_engine, "dialect", None), "name", "")
+    if name == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+        return pg_insert(table)
+    from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+    return sqlite_insert(table)
+
+
+def _sql_greatest(current, incoming):
+    """GREATEST(COALESCE(a,0), COALESCE(b,0)) — keep the larger of the
+    stored and incoming value in an upsert. Postgres spells it GREATEST;
+    sqlite's scalar ``max()`` takes two args and does the same job."""
+    name = getattr(getattr(_engine, "dialect", None), "name", "")
+    fn = func.greatest if name == "postgresql" else func.max
+    return fn(func.coalesce(current, 0), func.coalesce(incoming, 0))
+
+
 def init(database_url: Optional[str] = None):
     """Initialize the database connection and create tables."""
     global _engine, _SessionLocal
