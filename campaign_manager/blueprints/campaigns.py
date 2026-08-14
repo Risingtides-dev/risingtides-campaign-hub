@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 import os
 import re
 
@@ -17,6 +18,8 @@ from typing import Dict, List, Optional
 from flask import Blueprint, current_app, jsonify, request
 
 from campaign_manager import db as _db
+
+logger = logging.getLogger(__name__)
 from campaign_manager.utils.helpers import (
     slugify,
     campaign_title,
@@ -258,11 +261,19 @@ def get_campaigns(completion: Optional[str] = None) -> List[Dict]:
     needed to.
     """
     if _db.is_active():
+        # Phase timing: post-deploy cold windows have shown 10-30s
+        # requests whose cost we could only guess at. Log the breakdown
+        # whenever a request is slow so the next cold window tells us
+        # exactly which phase to fix instead of theorizing.
+        import time as _time
+        _t0 = _time.monotonic()
         rows = _db.list_campaigns_with_creators(
             with_matched_videos=True,
             completion=completion,
         )
+        _t_rows = _time.monotonic()
         tracker_map = _db.get_campaign_to_tracker_map()
+        _t_map = _time.monotonic()
 
         # Bulk-resolve stats with a parallel cache pre-warm. The previous
         # per-slug loop went serial across the Tides Tracker API on every
@@ -290,6 +301,7 @@ def get_campaigns(completion: Optional[str] = None) -> List[Dict]:
             tracker_id_by_slug=tracker_map,
             frozen_slugs=frozen_slugs,
         )
+        _t_stats = _time.monotonic()
 
         items = []
         for meta, creators, matched_videos in rows:
@@ -315,6 +327,15 @@ def get_campaigns(completion: Optional[str] = None) -> List[Dict]:
                 "stats": stats,
                 "created_dt": parse_sort_datetime(meta),
             })
+        _t_end = _time.monotonic()
+        if _t_end - _t0 > 2.0:
+            logger.warning(
+                "get_campaigns slow (completion=%s, n=%d): total=%.2fs "
+                "rows=%.2fs tracker_map=%.2fs stats_bulk=%.2fs assemble=%.2fs",
+                completion, len(rows), _t_end - _t0,
+                _t_rows - _t0, _t_map - _t_rows,
+                _t_stats - _t_map, _t_end - _t_stats,
+            )
         return items
 
     ensure_dirs()
