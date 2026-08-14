@@ -211,16 +211,25 @@ def _cache_get(tracker_id: str) -> Optional[_CacheEntry]:
 
 
 def _cache_set(tracker_id: str, entry: _CacheEntry) -> None:
-    # Write-through: L1 in-process + L2 Postgres.
+    # Write-through: L1 in-process + L2 Postgres. Aggregates ride along so
+    # list reads never have to parse the blob (get_tides_stats_agg).
     with _cache_lock:
         _cache[tracker_id] = entry
     try:
         from campaign_manager import db as _db
+        subs = entry.submissions
         _db.upsert_tides_stats_cache(
             tracker_id,
-            _submissions_to_json(entry.submissions),
+            _submissions_to_json(subs),
             entry.api_fetched_at,
             entry.fetched_at,
+            aggregates={
+                "views": sum(s.views for s in subs),
+                "likes": sum(s.likes for s in subs),
+                "comments": sum(s.comments for s in subs),
+                "shares": sum(s.shares for s in subs),
+                "post_count": len(subs),
+            },
         )
     except Exception:
         pass
@@ -246,9 +255,17 @@ def warm_cache(tracker_id: str, submissions, api_fetched_at: str = "") -> None:
 
 
 def _is_fresh(entry: _CacheEntry, ttl_seconds: int) -> bool:
+    return _is_fresh_at(entry.fetched_at, ttl_seconds)
+
+
+def _is_fresh_at(fetched_at: datetime, ttl_seconds: int) -> bool:
     if ttl_seconds <= 0:
         return False
-    age = (datetime.now(timezone.utc) - entry.fetched_at).total_seconds()
+    if fetched_at.tzinfo is None:
+        # sqlite (tests / file-mode dev) round-trips DateTime(timezone=True)
+        # as naive; values are written as UTC, so interpret them as UTC.
+        fetched_at = fetched_at.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - fetched_at).total_seconds()
     return age < ttl_seconds
 
 
@@ -299,26 +316,43 @@ class CampaignStatsResult:
     fetched_at: str = ""
     stale_since: str = ""
     error_kind: str = ""
+    # Precomputed rollups from the L2 cache's aggregate columns. When set,
+    # the totals below serve from here and `submissions` is intentionally
+    # empty — the campaigns list only reads sums, and parsing every cached
+    # submissions blob to re-derive them was ~3s of each cold finished-list
+    # request. Detail views (allow_live_fetch=True) never use this path and
+    # always carry real submissions.
+    agg: Optional[Dict[str, int]] = None
 
     # Derived rollups callers commonly need.
     @property
     def total_views(self) -> int:
+        if self.agg is not None:
+            return int(self.agg.get("views") or 0)
         return sum(s.views for s in self.submissions)
 
     @property
     def total_likes(self) -> int:
+        if self.agg is not None:
+            return int(self.agg.get("likes") or 0)
         return sum(s.likes for s in self.submissions)
 
     @property
     def total_comments(self) -> int:
+        if self.agg is not None:
+            return int(self.agg.get("comments") or 0)
         return sum(s.comments for s in self.submissions)
 
     @property
     def total_shares(self) -> int:
+        if self.agg is not None:
+            return int(self.agg.get("shares") or 0)
         return sum(s.shares for s in self.submissions)
 
     @property
     def post_count(self) -> int:
+        if self.agg is not None:
+            return int(self.agg.get("post_count") or 0)
         return len(self.submissions)
 
 
@@ -491,6 +525,35 @@ def get_campaign_stats(
         )
 
     ttl = _cache_ttl_seconds()
+
+    # List path (no live fetch): serve from the L2 aggregate columns when
+    # this worker's L1 has no entry, instead of hydrating the full
+    # submissions blob. The list only reads totals, and blob-parsing every
+    # tracker per worker after a deploy measured ~3s per finished-list
+    # request (which then queued into 12-21s walls on 4 sync workers).
+    # Legacy rows (post_count NULL) and L1 hits keep the original path.
+    if not allow_live_fetch and not force_refresh:
+        with _cache_lock:
+            l1 = _cache.get(tracker_id)
+        if l1 is None:
+            agg = None
+            try:
+                agg = _db.get_tides_stats_agg(tracker_id)
+            except Exception:
+                agg = None
+            if agg is not None and agg.get("post_count") is not None:
+                fresh = _is_fresh_at(agg["fetched_at"], ttl)
+                return CampaignStatsResult(
+                    slug=s,
+                    tracker_id=tracker_id,
+                    source=SOURCE_API if fresh else SOURCE_API_CACHED,
+                    submissions=[],
+                    agg=agg,
+                    fetched_at=agg.get("api_fetched_at", ""),
+                    stale_since="" if fresh else agg["fetched_at"].isoformat(),
+                    error_kind="" if fresh else "refresh_deferred",
+                )
+
     cached = None if force_refresh else _cache_get(tracker_id)
 
     if cached and _is_fresh(cached, ttl):
@@ -757,12 +820,23 @@ def get_campaign_stats_bulk(
         if not tid or tid in seen:
             continue
         seen.add(tid)
-        cached = _cache_get(tid)
-        if cached and _is_fresh(cached, ttl):
+        # Freshness classification needs only fetched_at — probe L1 then the
+        # L2 aggregate columns rather than _cache_get, which deserializes the
+        # full submissions blob per tracker (the dominant cost of a cold
+        # request; the per-slug pass below serves from aggregates anyway).
+        with _cache_lock:
+            l1 = _cache.get(tid)
+        if l1 is not None:
+            has_cache, fetched_at = True, l1.fetched_at
+        else:
+            agg = _db.get_tides_stats_agg(tid)
+            has_cache = agg is not None
+            fetched_at = agg["fetched_at"] if agg else None
+        if has_cache and fetched_at is not None and _is_fresh_at(fetched_at, ttl):
             continue
         if _in_cooldown(tid):
             continue
-        (stale_ids if cached is not None else missing_ids).append(tid)
+        (stale_ids if has_cache else missing_ids).append(tid)
 
     if stale_ids:
         stale_ids = stale_ids[:10]

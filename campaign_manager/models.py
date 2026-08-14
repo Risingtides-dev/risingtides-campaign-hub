@@ -833,6 +833,19 @@ class TidesTrackerStatsCache(Base):
         DateTime(timezone=True), nullable=False,
         default=lambda: datetime.now(_timezone.utc),
     )
+    # Precomputed rollups of submissions_json, written on every upsert.
+    # The campaigns LIST endpoint only ever needs these sums — parsing the
+    # full submissions blob (up to ~800KB per tracker, ~29k rows across the
+    # table) per L1-miss was measured at ~3s of the finished-list request
+    # after every deploy, and those 3-4s requests then queued behind each
+    # other on 4 sync workers into 12-21s walls. NULL means a legacy row
+    # written before these columns existed — readers fall back to parsing
+    # the blob, and the next cache write heals the row.
+    agg_views = Column(BigInteger, nullable=True)
+    agg_likes = Column(BigInteger, nullable=True)
+    agg_comments = Column(BigInteger, nullable=True)
+    agg_shares = Column(BigInteger, nullable=True)
+    agg_post_count = Column(Integer, nullable=True)
 
 
 # ---------------------------------------------------------------------------
