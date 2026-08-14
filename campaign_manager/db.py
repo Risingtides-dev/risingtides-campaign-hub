@@ -501,20 +501,34 @@ def get_tides_stats_cache(tracker_id: str):
         return None
 
 
-def upsert_tides_stats_cache(tracker_id: str, submissions_json, api_fetched_at: str, fetched_at):
+def upsert_tides_stats_cache(
+    tracker_id: str, submissions_json, api_fetched_at: str, fetched_at,
+    aggregates: Optional[Dict] = None,
+):
     """Write-through upsert of one tracker's cached submissions. Best-effort —
-    a cache write must never break the request that produced the data."""
+    a cache write must never break the request that produced the data.
+
+    ``aggregates`` is {views, likes, comments, shares, post_count} rolled up
+    from the submissions at write time, so the campaigns list can read sums
+    without parsing the blob (see get_tides_stats_agg). None leaves the
+    columns NULL (legacy shape) and readers fall back to the blob.
+    """
     if not tracker_id or not is_active():
         return
     try:
-        from sqlalchemy.dialects.postgresql import insert as pg_insert
         from campaign_manager.models import TidesTrackerStatsCache
+        agg = aggregates or {}
         with _SessionLocal() as s:
-            stmt = pg_insert(TidesTrackerStatsCache.__table__).values(
+            stmt = dialect_insert(TidesTrackerStatsCache.__table__).values(
                 tracker_id=tracker_id,
                 submissions_json=submissions_json,
                 api_fetched_at=api_fetched_at or "",
                 fetched_at=fetched_at,
+                agg_views=agg.get("views"),
+                agg_likes=agg.get("likes"),
+                agg_comments=agg.get("comments"),
+                agg_shares=agg.get("shares"),
+                agg_post_count=agg.get("post_count"),
             )
             stmt = stmt.on_conflict_do_update(
                 index_elements=["tracker_id"],
@@ -522,12 +536,47 @@ def upsert_tides_stats_cache(tracker_id: str, submissions_json, api_fetched_at: 
                     "submissions_json": stmt.excluded.submissions_json,
                     "api_fetched_at": stmt.excluded.api_fetched_at,
                     "fetched_at": stmt.excluded.fetched_at,
+                    "agg_views": stmt.excluded.agg_views,
+                    "agg_likes": stmt.excluded.agg_likes,
+                    "agg_comments": stmt.excluded.agg_comments,
+                    "agg_shares": stmt.excluded.agg_shares,
+                    "agg_post_count": stmt.excluded.agg_post_count,
                 },
             )
             s.execute(stmt)
             s.commit()
     except Exception:
         pass
+
+
+def get_tides_stats_agg(tracker_id: str) -> Optional[Dict]:
+    """Cheap freshness + rollup probe for one tracker's L2 cache row.
+
+    Returns {views, likes, comments, shares, post_count, api_fetched_at,
+    fetched_at} WITHOUT touching submissions_json — the whole point is that
+    the campaigns list can serve totals without deserializing the blob.
+    ``post_count`` is None on a legacy row written before the aggregate
+    columns existed; callers must fall back to the blob path for those.
+    Returns None when the row doesn't exist at all.
+    """
+    if not tracker_id or not is_active():
+        return None
+    try:
+        from campaign_manager.models import TidesTrackerStatsCache as T
+        with _SessionLocal() as s:
+            row = s.query(
+                T.agg_views, T.agg_likes, T.agg_comments, T.agg_shares,
+                T.agg_post_count, T.api_fetched_at, T.fetched_at,
+            ).filter(T.tracker_id == tracker_id).first()
+            if row is None:
+                return None
+            return {
+                "views": row[0], "likes": row[1], "comments": row[2],
+                "shares": row[3], "post_count": row[4],
+                "api_fetched_at": row[5] or "", "fetched_at": row[6],
+            }
+    except Exception:
+        return None
 
 
 def get_session() -> Session:

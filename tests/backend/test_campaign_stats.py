@@ -661,3 +661,70 @@ class TestStaleWhileRevalidate:
             campaign_stats._refresh_trackers_sync(["tk-heal"], timeout=15)
         assert fetch.call_args.kwargs["timeout"] == 15
         assert campaign_stats._cache_get("tk-heal") is not None
+
+
+class TestAggregateFastPath:
+    """The campaigns list must serve totals from the L2 aggregate columns
+    without deserializing submissions blobs.
+
+    Blob-parsing every tracker per worker after a deploy measured ~3s per
+    finished-list request (phase log: stats_bulk=3.15s of total=4.18s),
+    and those requests queued into 12-21s walls on 4 sync workers.
+    """
+
+    @staticmethod
+    def _write_l2(db, tracker_id, subs, when=None):
+        from datetime import datetime, timezone
+        campaign_stats._cache_set(tracker_id, campaign_stats._CacheEntry(
+            submissions=subs,
+            fetched_at=when or datetime.now(timezone.utc),
+            api_fetched_at="2026-08-14T00:00:00Z",
+        ))
+        campaign_stats.invalidate_cache(tracker_id)  # clear L1, keep L2
+
+    def test_cache_set_writes_aggregates(self, db):
+        subs = [
+            Submission(video_url="u1", views=100, likes=10, comments=3, shares=1),
+            Submission(video_url="u2", views=50, likes=5, comments=2, shares=0),
+        ]
+        self._write_l2(db, "tk-agg", subs)
+        agg = _db.get_tides_stats_agg("tk-agg")
+        assert agg["views"] == 150 and agg["likes"] == 15
+        assert agg["comments"] == 5 and agg["shares"] == 1
+        assert agg["post_count"] == 2
+
+    def test_list_path_serves_aggregates_without_blob_parse(self, db):
+        self._write_l2(db, "tk-agg2", [Submission(video_url="u", views=777, likes=7)])
+        with patch.object(_db, "get_tides_stats_cache",
+                          side_effect=AssertionError("blob path must not run")):
+            r = get_campaign_stats("some-slug", tracker_id="tk-agg2",
+                                   allow_live_fetch=False)
+        assert r.total_views == 777
+        assert r.post_count == 1
+        assert r.submissions == []          # aggregates-only result
+        assert r.source in (SOURCE_API, SOURCE_API_CACHED)
+
+    def test_stale_aggregates_carry_provenance(self, db):
+        from datetime import datetime, timedelta, timezone
+        old = datetime.now(timezone.utc) - timedelta(hours=3)
+        self._write_l2(db, "tk-agg3", [Submission(video_url="u", views=5)], when=old)
+        r = get_campaign_stats("s", tracker_id="tk-agg3", allow_live_fetch=False)
+        assert r.source == SOURCE_API_CACHED
+        assert r.error_kind == "refresh_deferred"
+        assert r.stale_since != ""
+
+    def test_legacy_row_without_aggregates_falls_back_to_blob(self, db):
+        # Write a legacy-shaped row (no aggregate columns) directly.
+        from datetime import datetime, timezone
+        _db.upsert_tides_stats_cache(
+            "tk-legacy",
+            [{"video_url": "u", "views": 42, "likes": 1, "comments": 0,
+              "shares": 0, "engagement_rate": 0.0, "follower_count": 0,
+              "posted_at": "", "creator_username": ""}],
+            "2026-08-14T00:00:00Z",
+            datetime.now(timezone.utc),
+            aggregates=None,
+        )
+        r = get_campaign_stats("s", tracker_id="tk-legacy", allow_live_fetch=False)
+        assert r.total_views == 42          # served via the blob path
+        assert len(r.submissions) == 1
