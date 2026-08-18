@@ -140,6 +140,49 @@ class TestNotionSync:
         # The sync now reads ALL client rows (add-only would never see this one).
         assert query.call_args.args[0] == set()
 
+    def test_backfill_refreshes_existing_fleet_by_page_id_regardless_of_pipeline_status(self, client, db):
+        # The real-world case: a campaign imported long ago, its CRM row no
+        # longer at Pipeline Status 'Client' (782/783 rows are 'Lead'), so
+        # the import funnel never sees it — but its niche targets must still
+        # track the CRM.
+        db.save_campaign("old_campaign", {
+            "title": "Old", "notion_page_id": "page-old", "content_types": [],
+        })
+        with patch(
+            "campaign_manager.services.notion.query_new_clients",
+            return_value=[],
+        ), patch(
+            "campaign_manager.services.notion.fetch_page_content_types",
+            return_value=["Trucktok", "Coffee"],
+        ) as fetch:
+            resp = client.post("/api/webhooks/notion/sync")
+        body = resp.get_json()
+        assert {"slug": "old_campaign", "content_types": ["Trucktok", "Coffee"]} in body["refreshed"]
+        assert db.get_campaign("old_campaign")["content_types"] == ["Trucktok", "Coffee"]
+        fetch.assert_called_once_with("page-old")
+
+    def test_backfill_never_empties_on_unreadable_page_and_skips_unchanged(self, client, db):
+        db.save_campaign("unreadable", {
+            "title": "U", "notion_page_id": "page-gone", "content_types": ["Trucktok"],
+        })
+        db.save_campaign("already_fresh", {
+            "title": "F", "notion_page_id": "page-fresh", "content_types": ["Coffee"],
+        })
+        def fake_fetch(page_id):
+            return None if page_id == "page-gone" else ["Coffee"]
+        with patch(
+            "campaign_manager.services.notion.query_new_clients",
+            return_value=[],
+        ), patch(
+            "campaign_manager.services.notion.fetch_page_content_types",
+            side_effect=fake_fetch,
+        ):
+            resp = client.post("/api/webhooks/notion/sync")
+        body = resp.get_json()
+        assert body["refreshed"] == []
+        # An unreadable page keeps its current tags — never emptied.
+        assert db.get_campaign("unreadable")["content_types"] == ["Trucktok"]
+
     def test_unchanged_content_types_skip_quietly(self, client, db):
         db.save_campaign("b_two", {"title": "B - Two", "content_types": ["Trucktok"]})
         entries = [

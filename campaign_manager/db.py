@@ -1310,6 +1310,23 @@ def update_cobrand_cache(slug: str, stats: dict):
 
 # ── Notion Sync ───────────────────────────────────────────────────────
 
+def get_campaign_notion_links() -> List[Dict]:
+    """(slug, notion_page_id, content_types) for every campaign imported from Notion.
+
+    Drives the niche-target refresh: these are the campaigns whose CRM row
+    exists and whose content_types should track it.
+    """
+    with get_session() as s:
+        rows = s.query(Campaign.slug, Campaign.notion_page_id, Campaign.content_types).filter(
+            Campaign.notion_page_id.isnot(None),
+            Campaign.notion_page_id != "",
+        ).all()
+        return [
+            {"slug": slug, "notion_page_id": page_id, "content_types": content_types or []}
+            for slug, page_id, content_types in rows
+        ]
+
+
 def get_synced_notion_ids() -> set:
     """Get all Notion page IDs that have already been synced."""
     with get_session() as s:
