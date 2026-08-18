@@ -102,6 +102,62 @@ class TestNotionSync:
         assert {c["slug"] for c in body["created"]} == {"a_one"}
         assert {s["slug"] for s in body["skipped"]} == {"b_two"}
 
+    def test_existing_campaigns_get_content_types_refreshed_and_nothing_else(self, client, db):
+        # The pre-fix reality: campaigns imported before the property-name
+        # fix have empty content_types while the CRM row carries tags.
+        db.save_campaign("b_two", {
+            "title": "B - Two", "artist": "B", "content_types": [],
+            "label": "Operator Edited Label",
+        })
+        entries = [
+            {
+                "notion_page_id": "page-2",
+                "title": "B - Two",
+                "slug": "b_two",
+                "artist": "B",
+                "song": "Two",
+                "official_sound": "",
+                "sound_id": "",
+                "start_date": "",
+                "budget": 0,
+                "content_types": ["Trucktok", "POV"],
+            },
+        ]
+        with patch(
+            "campaign_manager.services.notion.query_new_clients",
+            return_value=entries,
+        ) as query:
+            resp = client.post("/api/webhooks/notion/sync")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["created"] == []
+        assert body["skipped"] == []
+        assert body["refreshed"] == [{"slug": "b_two", "content_types": ["Trucktok", "POV"]}]
+        meta = db.get_campaign("b_two")
+        assert meta["content_types"] == ["Trucktok", "POV"]
+        # Only content_types was refreshed — operator-edited fields are untouched.
+        assert meta["label"] == "Operator Edited Label"
+        # The sync now reads ALL client rows (add-only would never see this one).
+        assert query.call_args.args[0] == set()
+
+    def test_unchanged_content_types_skip_quietly(self, client, db):
+        db.save_campaign("b_two", {"title": "B - Two", "content_types": ["Trucktok"]})
+        entries = [
+            {
+                "notion_page_id": "page-2", "title": "B - Two", "slug": "b_two",
+                "artist": "B", "song": "Two", "official_sound": "", "sound_id": "",
+                "start_date": "", "budget": 0, "content_types": ["Trucktok"],
+            },
+        ]
+        with patch(
+            "campaign_manager.services.notion.query_new_clients",
+            return_value=entries,
+        ):
+            resp = client.post("/api/webhooks/notion/sync")
+        body = resp.get_json()
+        assert body["refreshed"] == []
+        assert {s["slug"] for s in body["skipped"]} == {"b_two"}
+
 
 class TestSlackSoundsHook:
     def test_returns_500_without_channel_configured(self, client, monkeypatch):

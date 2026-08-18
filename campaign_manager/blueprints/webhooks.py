@@ -121,25 +121,38 @@ def notion_sync():
 
     from campaign_manager.services.notion import query_new_clients
 
-    synced_ids = _db.get_synced_notion_ids()
-    new_entries = query_new_clients(synced_ids)
+    # Fetch ALL client rows, not just unsynced ones: the sync is add-only by
+    # design, but content_types was empty for every campaign imported before
+    # the property-name fix (0 of 326 populated while 286 of 300 CRM rows
+    # carry tags). Existing campaigns are REFRESHED (content_types only —
+    # operator-edited Hub fields are never touched), new ones are created.
+    new_entries = query_new_clients(set())
 
     if not new_entries:
         return jsonify({
             "ok": True,
             "created": [],
             "skipped": [],
-            "message": "No new campaigns to sync from Notion",
+            "refreshed": [],
+            "message": "No campaigns to sync from Notion",
         })
 
     created = []
     skipped = []
+    refreshed = []
 
     for entry in new_entries:
         slug = entry["slug"]
 
         if _db.campaign_exists(slug):
-            skipped.append({"slug": slug, "reason": "already exists"})
+            entry_types = sorted(entry.get("content_types") or [])
+            existing = _db.get_campaign(slug) or {}
+            existing_types = sorted(existing.get("content_types") or [])
+            if entry_types != existing_types:
+                _db.update_campaign_fields(slug, {"content_types": entry.get("content_types") or []})
+                refreshed.append({"slug": slug, "content_types": entry.get("content_types") or []})
+            else:
+                skipped.append({"slug": slug, "reason": "already exists"})
             continue
 
         meta = {
@@ -178,6 +191,8 @@ def notion_sync():
         "ok": True,
         "created": created,
         "skipped": skipped,
+        "refreshed": refreshed,
         "message": f"Synced {len(created)} new campaign(s) from Notion"
+            + (f", {len(refreshed)} refreshed" if refreshed else "")
             + (f", {len(skipped)} skipped" if skipped else ""),
     })
