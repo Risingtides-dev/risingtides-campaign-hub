@@ -128,15 +128,6 @@ def notion_sync():
     # operator-edited Hub fields are never touched), new ones are created.
     new_entries = query_new_clients(set())
 
-    if not new_entries:
-        return jsonify({
-            "ok": True,
-            "created": [],
-            "skipped": [],
-            "refreshed": [],
-            "message": "No campaigns to sync from Notion",
-        })
-
     created = []
     skipped = []
     refreshed = []
@@ -186,6 +177,22 @@ def notion_sync():
         _db.save_campaign(slug, meta)
         _db.save_creators(slug, [])
         created.append({"slug": slug, "title": entry["title"]})
+
+    # Refresh pass for the EXISTING fleet, keyed by stored notion_page_id —
+    # independent of Pipeline Status. The client-import funnel above only
+    # sees 'Client' rows, but 782 of 783 CRM rows are 'Lead', and a
+    # campaign's niche targets must keep syncing wherever the row lives.
+    # A page we cannot read is skipped (never emptied); only actual changes
+    # are written.
+    from campaign_manager.services.notion import fetch_page_content_types
+
+    for link in _db.get_campaign_notion_links():
+        fresh = fetch_page_content_types(link["notion_page_id"])
+        if fresh is None:
+            continue
+        if sorted(fresh) != sorted(link["content_types"]):
+            _db.update_campaign_fields(link["slug"], {"content_types": fresh})
+            refreshed.append({"slug": link["slug"], "content_types": fresh})
 
     return jsonify({
         "ok": True,

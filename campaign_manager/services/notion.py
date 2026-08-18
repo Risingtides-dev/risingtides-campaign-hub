@@ -170,6 +170,31 @@ def _parse_platform_split(tiktok_pct: List[str], insta_pct: List[str]) -> Dict:
     return split
 
 
+def fetch_page_content_types(notion_page_id: str) -> Optional[List[str]]:
+    """Fetch one CRM page's Content Niche Targets by page id.
+
+    Used to refresh EXISTING campaigns: the client-import funnel filters on
+    Pipeline Status = 'Client', but a campaign's niche targets must keep
+    syncing after the row leaves that status (782 of 783 CRM rows are
+    'Lead', and campaigns keep their niche targets there). Returns None on
+    any fetch failure — a page we cannot read is skipped, never emptied.
+    """
+    api_key = _get_api_key()
+    if not api_key or not notion_page_id:
+        return None
+    url = f"{NOTION_API_BASE}/pages/{notion_page_id}"
+    try:
+        resp = requests.get(url, headers=_headers(), timeout=15)
+    except Exception as e:
+        logger.warning("CRM page fetch failed for %s: %s", notion_page_id, e)
+        return None
+    if resp.status_code != 200:
+        logger.warning("CRM page fetch %s -> %s", notion_page_id, resp.status_code)
+        return None
+    props = resp.json().get("properties", {}) or {}
+    return _get_multi_select(props.get("Content Niche Targets", {}))
+
+
 def query_new_clients(synced_page_ids: Set[str]) -> List[Dict]:
     """Query Notion CRM for entries with Pipeline Status = 'Client' not yet synced.
 
