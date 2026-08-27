@@ -50,6 +50,13 @@ DEFAULT_MAX_WORKERS = 2
 DEFAULT_VIDEO_LIMIT = 50
 
 
+# A native subprocess crash (SIGABRT etc.) kills one creator's yt-dlp, not the
+# fleet. Only a widespread crash rate means the environment itself is broken.
+NATIVE_CRASH_PREFIX = "native subprocess crash: "
+NATIVE_CRASH_FATAL_RATE = 0.5
+NATIVE_CRASH_MIN_FLEET = 5
+
+
 def _scrape_run_is_degraded(
     outcome_counts: dict,
     *,
@@ -64,8 +71,14 @@ def _scrape_run_is_degraded(
         if total_creators > 0
         else 0.0
     )
+    native_crash_rate = (
+        outcome_counts.get("native_crash", 0) / total_creators
+        if total_creators > 0
+        else 0.0
+    )
     return bool(
         (empty_rate > 0.7 and total_creators > 5)
+        or (native_crash_rate > 0.2 and total_creators > 5)
         or (
             campaigns_refreshed > 5
             and total_new_matches == 0
@@ -121,7 +134,7 @@ def _scrape_creator_accounts_v2(usernames, start_date=None, max_workers=DEFAULT_
     accounts_scraped = 0
     errors = []
     outcomes: dict = {}
-    fatal_event = threading.Event()
+    native_crashes: list = []
 
     def _scrape_one(username):
         # Per-creator jitter (0.5-2s) to spread the burst — 216 creators
@@ -129,8 +142,6 @@ def _scrape_creator_accounts_v2(usernames, start_date=None, max_workers=DEFAULT_
         # succession otherwise.
         import random
         import time
-        if fatal_event.is_set():
-            return username, [], "cancelled after native subprocess crash"
         time.sleep(random.uniform(0.5, 2.0))
 
         last_err: Optional[str] = None
@@ -143,11 +154,13 @@ def _scrape_creator_accounts_v2(usernames, start_date=None, max_workers=DEFAULT_
                     use_cache=True,
                 )
                 return username, videos, None
-            except NativeSubprocessCrash:
-                # Native allocator corruption is not a network retry. Stop
-                # queued creator work and propagate to fail the cron run.
-                fatal_event.set()
-                raise
+            except NativeSubprocessCrash as e:
+                # Native allocator corruption is not a network retry, so this
+                # creator is done — but one bad subprocess out of ~216 must not
+                # cancel the fleet. Report it as a per-creator failure; the
+                # systemic guard below still fails the run if crashes are
+                # widespread rather than isolated.
+                return username, [], f"{NATIVE_CRASH_PREFIX}{e}"
             except Exception as e:
                 last_err = str(e)
                 if attempt == 0:
@@ -162,17 +175,14 @@ def _scrape_creator_accounts_v2(usernames, start_date=None, max_workers=DEFAULT_
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(_scrape_one, u): u for u in usernames}
         for future in as_completed(futures):
-            try:
-                username, videos, error = future.result()
-            except NativeSubprocessCrash:
-                fatal_event.set()
-                for pending in futures:
-                    pending.cancel()
-                raise
+            username, videos, error = future.result()
             if error:
                 errors.append(f"@{username}: {error}")
+                is_native = error.startswith(NATIVE_CRASH_PREFIX)
+                if is_native:
+                    native_crashes.append(username)
                 outcomes[username] = {
-                    "status": "error",
+                    "status": "native_crash" if is_native else "error",
                     "video_count": 0,
                     "error": error,
                 }
@@ -190,6 +200,21 @@ def _scrape_creator_accounts_v2(usernames, start_date=None, max_workers=DEFAULT_
                     on_progress(done, total, username)
                 except Exception:
                     log.debug("on_progress callback raised (ignored)", exc_info=True)
+
+    if native_crashes:
+        crash_rate = len(native_crashes) / total if total else 0.0
+        log.warning(
+            "CRON: %d/%d creator(s) died on a native subprocess crash (%.0f%%): %s",
+            len(native_crashes), total, crash_rate * 100,
+            ", ".join(f"@{u}" for u in native_crashes[:10]),
+        )
+        # Isolated crashes are creator-level noise. A fleet-wide crash rate is
+        # real allocator corruption and must still fail the run loudly.
+        if total > NATIVE_CRASH_MIN_FLEET and crash_rate > NATIVE_CRASH_FATAL_RATE:
+            raise NativeSubprocessCrash(
+                f"{len(native_crashes)}/{total} creators died on native signals",
+                -6,
+            )
 
     return all_videos, accounts_scraped, errors, outcomes
 
