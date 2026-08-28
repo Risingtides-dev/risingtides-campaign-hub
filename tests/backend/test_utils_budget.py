@@ -85,3 +85,28 @@ class TestCalcStats:
         meta = {"budget": 1000, "stats": {"total_views": 10000}}
         result = calc_stats(meta, [])
         assert result["cpm"] is None
+
+
+class TestPostsExpected:
+    """Expected posts = what we booked, so the detail page can show
+    collected-vs-expected rather than a bare delivery count."""
+
+    def test_sums_posts_owed_across_creators(self):
+        creators = [{"posts_owed": 5}, {"posts_owed": 3}]
+        assert calc_stats({"budget": 0}, creators)["posts_expected"] == 8
+
+    def test_excludes_removed_creators(self):
+        creators = [
+            {"posts_owed": 5},
+            {"posts_owed": 100, "status": "removed"},
+        ]
+        assert calc_stats({"budget": 0}, creators)["posts_expected"] == 5
+
+    def test_tolerates_missing_and_junk_values(self):
+        # Legacy/imported rows carry '' or 'TBD' where a number belongs;
+        # one bad row must not 500 the campaign page.
+        creators = [{"posts_owed": 4}, {}, {"posts_owed": ""}, {"posts_owed": "TBD"}]
+        assert calc_stats({"budget": 0}, creators)["posts_expected"] == 4
+
+    def test_no_creators_expects_nothing(self):
+        assert calc_stats({"budget": 0}, [])["posts_expected"] == 0

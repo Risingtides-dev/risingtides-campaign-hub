@@ -12,6 +12,7 @@ const baseBudget = {
 
 const baseStats = {
   live_posts: 7,
+  posts_expected: 20,
   total_views: 123456,
   cpm: 3.5,
 }
@@ -19,7 +20,7 @@ const baseStats = {
 describe('<StatCards />', () => {
   it('renders all five stat cards', () => {
     render(<StatCards budget={baseBudget} stats={baseStats} />)
-    for (const label of ['Budget Used', 'Paid Out', 'Live Posts', 'Total Views', 'CPM']) {
+    for (const label of ['Budget Used', 'Paid Out', 'Posts Collected', 'Total Views', 'CPM']) {
       expect(screen.getByText(label)).toBeInTheDocument()
     }
   })
@@ -57,8 +58,49 @@ describe('<StatCards />', () => {
     expect(screen.getAllByText('-').length).toBeGreaterThanOrEqual(1)
   })
 
-  it('renders live posts as a string', () => {
+  it('renders collected posts against what was booked', () => {
     render(<StatCards budget={baseBudget} stats={baseStats} />)
+    expect(screen.getByText('7 / 20')).toBeInTheDocument()
+  })
+})
+
+describe('<StatCards /> delivery ratio', () => {
+  it('shows collected against expected, with the percentage', () => {
+    render(<StatCards budget={baseBudget} stats={baseStats} />)
+    expect(screen.getByText('7 / 20')).toBeInTheDocument()
+    expect(screen.getByText('35% of 20 booked')).toBeInTheDocument()
+  })
+
+  it('falls back to a plain count when nothing is booked', () => {
+    // Dividing by zero here would render "7 / 0" and an Infinity percentage.
+    render(
+      <StatCards budget={baseBudget} stats={{ ...baseStats, posts_expected: 0 }} />
+    )
     expect(screen.getByText('7')).toBeInTheDocument()
+    expect(screen.getByText('no posts booked yet')).toBeInTheDocument()
+  })
+
+  it('reads 100% when every booked post has landed', () => {
+    render(
+      <StatCards
+        budget={baseBudget}
+        stats={{ ...baseStats, live_posts: 20, posts_expected: 20 }}
+      />
+    )
+    expect(screen.getByText('20 / 20')).toBeInTheDocument()
+    expect(screen.getByText('100% of 20 booked')).toBeInTheDocument()
+  })
+
+  it('handles over-delivery without breaking', () => {
+    // Creators sometimes post more than they owed; the ratio should say so
+    // rather than clamp and hide it.
+    render(
+      <StatCards
+        budget={baseBudget}
+        stats={{ ...baseStats, live_posts: 25, posts_expected: 20 }}
+      />
+    )
+    expect(screen.getByText('25 / 20')).toBeInTheDocument()
+    expect(screen.getByText('125% of 20 booked')).toBeInTheDocument()
   })
 })

@@ -31,7 +31,7 @@ from campaign_manager.utils.helpers import (
     save_json,
     video_posted_before_start,
 )
-from campaign_manager.utils.budget import calc_budget, calc_cpm, calc_stats
+from campaign_manager.utils.budget import calc_budget, calc_cpm, calc_stats, to_number
 from campaign_manager.services.campaign_stats import (
     CampaignStatsResult,
     get_campaign_stats,
@@ -82,12 +82,17 @@ def _stats_from_result(
     else:
         live_posts = scraper_live_posts
 
+    # What we booked, as the denominator for delivery. Always creator-side:
+    # the tracker knows what came in, only the Hub knows what was owed.
+    posts_expected = sum(int(to_number(c.get("posts_owed", 0))) for c in active)
+
     total_views = result.total_views
     booked = sum(float(c.get("total_rate", 0) or 0) for c in active)
     cpm = calc_cpm(booked, total_views)
 
     return {
         "live_posts": live_posts,
+        "posts_expected": posts_expected,
         "total_views": total_views,
         "total_likes": result.total_likes,
         "total_comments": result.total_comments,

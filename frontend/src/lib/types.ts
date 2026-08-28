@@ -20,7 +20,11 @@ export interface CampaignBudget {
 }
 
 export interface CampaignStats {
+  /** Posts actually collected — from the Tides Tracker where there is one,
+   *  otherwise the scraper's per-creator counts. */
   live_posts: number
+  /** Posts booked across active creators: the delivery denominator. */
+  posts_expected: number
   total_views: number
   cpm: number | null
 }

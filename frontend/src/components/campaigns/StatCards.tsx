@@ -23,6 +23,13 @@ function formatCpm(value: number | null): string {
 }
 
 export function StatCards({ budget, stats }: StatCardsProps) {
+  // Older cached payloads predate posts_expected; treat a missing value as
+  // "unknown" so the card degrades to a plain count instead of "12 / 0".
+  const expected = stats.posts_expected ?? 0
+  const deliveredPct = expected
+    ? Math.round((stats.live_posts / expected) * 100)
+    : 0
+
   const cards = [
     {
       label: "Budget Used",
@@ -35,8 +42,15 @@ export function StatCards({ budget, stats }: StatCardsProps) {
       sub: `$${formatCurrency(budget.left)} remaining`,
     },
     {
-      label: "Live Posts",
-      value: stats.live_posts.toString(),
+      // Delivery against what was booked. A bare count of live posts can't
+      // tell you whether a campaign is finished or barely started.
+      label: "Posts Collected",
+      value: expected
+        ? `${stats.live_posts} / ${expected}`
+        : stats.live_posts.toString(),
+      sub: expected
+        ? `${deliveredPct}% of ${expected} booked`
+        : "no posts booked yet",
     },
     {
       label: "Total Views",
