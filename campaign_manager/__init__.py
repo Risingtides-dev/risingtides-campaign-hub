@@ -122,6 +122,13 @@ def create_app(config=None):
     app.register_blueprint(creator_intelligence_bp)
     app.register_blueprint(creator_library_bp)
 
+    # CAMP-96: app-wide API auth gate. STAGED + OFF BY DEFAULT — it does nothing
+    # at request time unless APP_API_KEY is set in the environment, so this is
+    # safe to ship inert. Operator enables it (and wires the frontend to send
+    # the key) as a deliberate, coordinated step. See campaign_manager/auth.py.
+    from campaign_manager.auth import install_auth_gate
+    install_auth_gate(app)
+
     # Initialize Slack bot (no-op if credentials aren't set)
     if app.config.get("SLACK_BOT_TOKEN"):
         from campaign_manager.services.slack_bot import init_slack_app
