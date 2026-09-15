@@ -1326,6 +1326,16 @@ def api_paypal(username: str):
 
 
 # -------------------------------------------------------------------
+# 11b. GET /api/last-rate/<username>  -- last booked rate lookup
+# -------------------------------------------------------------------
+@campaigns_bp.get("/api/last-rate/<username>")
+def api_last_rate(username: str):
+    name = username.strip().lstrip("@")
+    last = _db.get_last_rate(name) if _db.is_active() else None
+    return jsonify({"last_rate": last})
+
+
+# -------------------------------------------------------------------
 # 12. GET /api/campaign/<slug>/budget  -- quick budget lookup
 # -------------------------------------------------------------------
 @campaigns_bp.get("/api/campaign/<slug>/budget")
