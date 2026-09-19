@@ -300,6 +300,14 @@ def init_scheduler(database_url: str, hour: int = 6, minute: int = 0):
         misfire_grace_time=300,
     )
 
+    # Preserve CRM-declared niche demand for the D1 playlist consumer.
+    from campaign_manager.services.notion import request_campaign_niche_refresh
+    _scheduler.add_job(
+        request_campaign_niche_refresh, "interval", minutes=15,
+        id="campaign_niche_refresh", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=300,
+    )
+
     # Tides Tracker pull (RTA-42): hit the public stats API for every
     # tracker in `tracker_names` every N minutes (default 30). Same
     # cron knobs as notion_sync — `coalesce=True` + `max_instances=1`,

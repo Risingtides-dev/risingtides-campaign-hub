@@ -9,6 +9,8 @@ Integration: "Rising Tides AI" bot (internal integration)
 """
 import logging
 import os
+import threading
+import time
 from typing import Dict, List, Optional, Set
 
 import requests
@@ -191,8 +193,18 @@ def fetch_page_content_types(notion_page_id: str) -> Optional[List[str]]:
     if resp.status_code != 200:
         logger.warning("CRM page fetch %s -> %s", notion_page_id, resp.status_code)
         return None
-    props = resp.json().get("properties", {}) or {}
-    return _get_multi_select(props.get("Content Niche Targets", {}))
+    try:
+        props = resp.json().get("properties", {}) or {}
+        target = props.get("Content Niche Targets")
+        if not isinstance(target, dict) or not isinstance(target.get("multi_select"), list):
+            return None
+        options = target["multi_select"]
+        if any(not isinstance(option, dict) or not isinstance(option.get("name"), str)
+               or not option["name"].strip() for option in options):
+            return None
+        return [option["name"] for option in options]
+    except (ValueError, AttributeError):
+        return None
 
 
 def query_new_clients(synced_page_ids: Set[str]) -> List[Dict]:
@@ -308,3 +320,82 @@ def query_new_clients(synced_page_ids: Set[str]) -> List[Dict]:
         })
 
     return results
+
+
+_niche_refresh_after = ""
+
+
+def refresh_campaign_niche_targets():
+    """Refresh up to 50 existing active campaigns from their exact CRM links.
+
+    No campaign creation, inferred categories, or notifications. The cursor
+    walks slugs so a larger roster advances across ticks, including failures.
+    """
+    global _niche_refresh_after
+    from campaign_manager import db
+
+    if not db.is_active():
+        return {"checked": 0, "updated": 0, "unavailable": 0}
+    links = sorted(db.get_campaign_notion_links(active_only=True), key=lambda row: row["slug"])
+    ahead = [row for row in links if row["slug"] > _niche_refresh_after]
+    behind = [row for row in links if row["slug"] <= _niche_refresh_after]
+    selected = (ahead + behind)[:50]
+    counts = {"checked": 0, "updated": 0, "unavailable": 0}
+    for link in selected:
+        counts["checked"] += 1
+        try:
+            fresh = fetch_page_content_types(link["notion_page_id"])
+            if fresh is None:
+                counts["unavailable"] += 1
+            elif sorted(fresh) != sorted(link["content_types"]):
+                db.update_campaign_fields(link["slug"], {"content_types": fresh})
+                counts["updated"] += 1
+        except Exception:
+            counts["unavailable"] += 1
+            logger.exception("CRM niche refresh failed for %s", link["slug"])
+        _niche_refresh_after = link["slug"]
+    logger.info("CRM niche refresh: %s", counts)
+    return counts
+
+
+_niche_refresh_lock = threading.Lock()
+_niche_refresh_running = False
+_niche_refresh_requested_at = None
+
+
+def request_campaign_niche_refresh():
+    """Refresh in the background at most every 15 minutes on campaign reads.
+
+    This keeps the CRM projection current when the scraping scheduler is off.
+    Requests return the existing snapshot immediately while one refresh runs.
+    """
+    global _niche_refresh_running, _niche_refresh_requested_at
+    from campaign_manager import db
+
+    if not _get_api_key() or not db.is_active():
+        return False
+    with _niche_refresh_lock:
+        now = time.monotonic()
+        if _niche_refresh_running or (_niche_refresh_requested_at is not None
+                                     and now - _niche_refresh_requested_at < 900):
+            return False
+        _niche_refresh_running = True
+        _niche_refresh_requested_at = now
+    def refresh():
+        global _niche_refresh_running
+        try:
+            refresh_campaign_niche_targets()
+        except Exception:
+            logger.exception("CRM niche refresh failed")
+        finally:
+            with _niche_refresh_lock:
+                _niche_refresh_running = False
+    try:
+        threading.Thread(target=refresh, name="crm-niche-refresh", daemon=True).start()
+    except Exception:
+        with _niche_refresh_lock:
+            _niche_refresh_running = False
+            _niche_refresh_requested_at = None
+        logger.exception("Could not start CRM niche refresh")
+        return False
+    return True

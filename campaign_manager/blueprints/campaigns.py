@@ -430,6 +430,9 @@ def list_campaigns():
       ?include_finished=true  -> ALL campaigns (the UI uses this for its tabs)
                                  (alias: ?all=true)
     """
+    from campaign_manager.services.notion import request_campaign_niche_refresh
+    request_campaign_niche_refresh()
+
     search = (request.args.get("search") or "").strip().lower()
     active_param = (request.args.get("active") or "").strip().lower()
     include_finished = (
