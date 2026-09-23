@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react"
+import { useState, useCallback, useRef } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/select"
 import { Plus, Loader2 } from "lucide-react"
 import { api } from "@/lib/api"
+import type { LastRate } from "@/lib/types"
 import { CreatorAutocomplete } from "@/components/CreatorAutocomplete"
 
 interface AddCreatorFormProps {
@@ -69,18 +70,26 @@ function verdictFor(intel: {
   return { kind: "neutral", ...base }
 }
 
+const DEFAULT_POSTS_OWED = "5"
+const DEFAULT_TOTAL_RATE = "100"
+
 const fmtViews = (n: number) =>
   n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1_000 ? `${Math.round(n / 1_000)}K` : `${n}`
 
 export function AddCreatorForm({ onAdd, isPending }: AddCreatorFormProps) {
   const [username, setUsername] = useState("")
-  const [postsOwed, setPostsOwed] = useState("5")
-  const [totalRate, setTotalRate] = useState("100")
+  const [postsOwed, setPostsOwed] = useState(DEFAULT_POSTS_OWED)
+  const [totalRate, setTotalRate] = useState(DEFAULT_TOTAL_RATE)
   const [paypalEmail, setPaypalEmail] = useState("")
   const [platform, setPlatform] = useState("tiktok")
   const [lookingUpPaypal, setLookingUpPaypal] = useState(false)
   const [verdict, setVerdict] = useState<IntelVerdict | null>(null)
   const [bookAnyway, setBookAnyway] = useState(false)
+  const [lastRate, setLastRate] = useState<LastRate | null>(null)
+  // Once the price or post count is typed by hand, a lookup must never clobber it.
+  const rateTouchedRef = useRef(false)
+  // Guards against a slow lookup for a previous handle landing after a newer one.
+  const latestLookupRef = useRef("")
 
   const lookupIntel = useCallback(async (name: string) => {
     setVerdict(null)
@@ -95,10 +104,27 @@ export function AddCreatorForm({ onAdd, isPending }: AddCreatorFormProps) {
     }
   }, [])
 
-  const lookupPaypal = useCallback(async () => {
-    const name = username.replace(/^@/, "").trim()
-    if (!name) return
+  const lookupLastRate = useCallback(async (name: string) => {
+    let last: LastRate | null = null
+    try {
+      last = (await api.getLastRate(name)).last_rate
+    } catch {
+      // Silently fail - rate lookup is optional, the defaults still work
+    }
+    if (latestLookupRef.current !== name) return
+    setLastRate(last)
+    if (rateTouchedRef.current) return
+    setTotalRate(last ? String(last.total_rate) : DEFAULT_TOTAL_RATE)
+    setPostsOwed(last && last.posts_owed > 0 ? String(last.posts_owed) : DEFAULT_POSTS_OWED)
+  }, [])
+
+  // onSelect passes the picked handle; onBlur relies on the typed value.
+  const lookupCreator = useCallback(async (selected?: string) => {
+    const name = (selected ?? username).replace(/^@/, "").trim()
+    if (!name || name === latestLookupRef.current) return
+    latestLookupRef.current = name
     void lookupIntel(name)
+    void lookupLastRate(name)
     if (paypalEmail.trim()) return
 
     setLookingUpPaypal(true)
@@ -112,7 +138,7 @@ export function AddCreatorForm({ onAdd, isPending }: AddCreatorFormProps) {
     } finally {
       setLookingUpPaypal(false)
     }
-  }, [username, paypalEmail, lookupIntel])
+  }, [username, paypalEmail, lookupIntel, lookupLastRate])
 
   const coldBlocked = verdict?.kind === "cold" && !bookAnyway
 
@@ -131,12 +157,15 @@ export function AddCreatorForm({ onAdd, isPending }: AddCreatorFormProps) {
 
     // Reset form
     setUsername("")
-    setPostsOwed("5")
-    setTotalRate("100")
+    setPostsOwed(DEFAULT_POSTS_OWED)
+    setTotalRate(DEFAULT_TOTAL_RATE)
     setPaypalEmail("")
     setPlatform("tiktok")
     setVerdict(null)
     setBookAnyway(false)
+    setLastRate(null)
+    rateTouchedRef.current = false
+    latestLookupRef.current = ""
   }
 
   return (
@@ -148,8 +177,8 @@ export function AddCreatorForm({ onAdd, isPending }: AddCreatorFormProps) {
           <CreatorAutocomplete
             value={username}
             onChange={setUsername}
-            onSelect={lookupPaypal}
-            onBlur={lookupPaypal}
+            onSelect={lookupCreator}
+            onBlur={() => void lookupCreator()}
             className="w-full sm:w-[160px]"
           />
         </div>
@@ -171,7 +200,10 @@ export function AddCreatorForm({ onAdd, isPending }: AddCreatorFormProps) {
             type="number"
             min="1"
             value={postsOwed}
-            onChange={(e) => setPostsOwed(e.target.value)}
+            onChange={(e) => {
+              rateTouchedRef.current = true
+              setPostsOwed(e.target.value)
+            }}
             required
             className="w-full sm:w-[90px]"
           />
@@ -182,7 +214,10 @@ export function AddCreatorForm({ onAdd, isPending }: AddCreatorFormProps) {
             type="number"
             step="0.01"
             value={totalRate}
-            onChange={(e) => setTotalRate(e.target.value)}
+            onChange={(e) => {
+              rateTouchedRef.current = true
+              setTotalRate(e.target.value)
+            }}
             required
             className="w-full sm:w-[110px]"
           />
@@ -214,6 +249,14 @@ export function AddCreatorForm({ onAdd, isPending }: AddCreatorFormProps) {
           )}
           {isPending ? "Adding..." : "Add"}
         </Button>
+        {lastRate && (
+          <div className="w-full text-[12px] leading-5 text-rt-fg-tertiary">
+            Last booked ${lastRate.total_rate.toLocaleString()} for {lastRate.posts_owed}{" "}
+            {lastRate.posts_owed === 1 ? "post" : "posts"}
+            {lastRate.campaign && <> · {lastRate.campaign}</>}
+            {lastRate.added_date && <> ({lastRate.added_date})</>}
+          </div>
+        )}
         {verdict && (
           <div className="w-full text-[12px] leading-5">
             {verdict.kind === "cold" && (

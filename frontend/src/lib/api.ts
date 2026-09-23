@@ -6,6 +6,7 @@ import type {
   CampaignReport,
   CreatorSummary,
   CreatorProfile,
+  LastRate,
   InternalCreator,
   InternalGroup,
   InternalGroupDetail,
@@ -162,6 +163,9 @@ export const api = {
 
   getPaypal: (username: string) =>
     request<{ paypal: string }>(`/api/paypal/${username}`),
+
+  getLastRate: (username: string) =>
+    request<{ last_rate: LastRate | null }>(`/api/last-rate/${username}`),
 
   // Creator Database
   getCreators: () => request<CreatorSummary[]>("/api/creators"),

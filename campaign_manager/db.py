@@ -1033,6 +1033,38 @@ def get_all_paypal() -> Dict[str, str]:
         return {p.username: p.email for p in s.query(PaypalMemory).all()}
 
 
+# ── Rate Memory ───────────────────────────────────────────────────────
+
+def get_last_rate(username: str) -> Optional[Dict]:
+    """The most recent booking with a real rate for this username, or None.
+
+    Derived from the creators table rather than a separate memory table, so an
+    edited rate is remembered too. Ordered by added_date — save_creators
+    deletes and re-inserts a campaign's rows, so ids don't track booking order.
+    """
+    if not username:
+        return None
+    with get_session() as s:
+        row = (
+            s.query(Creator, Campaign.title)
+            .join(Campaign, Creator.campaign_id == Campaign.id)
+            .filter(func.lower(Creator.username) == username.lower())
+            .filter(Creator.total_rate > 0)
+            .filter(Creator.status != "removed")
+            .order_by(desc(Creator.added_date), desc(Creator.id))
+            .first()
+        )
+        if not row:
+            return None
+        cr, title = row
+        return {
+            "total_rate": cr.total_rate,
+            "posts_owed": cr.posts_owed or 0,
+            "campaign": title or "",
+            "added_date": cr.added_date or "",
+        }
+
+
 # ── Inbox ─────────────────────────────────────────────────────────────
 
 def get_inbox(status: Optional[str] = None) -> List[Dict]:
