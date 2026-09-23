@@ -245,7 +245,7 @@ def fetch_campaign_submissions(
         - ``request_error``      — any other `requests.RequestException`
         - ``http_4xx`` / ``http_5xx`` — non-200 response
         - ``bad_json``           — 200 but body wasn't JSON
-        - ``bad_payload``        — JSON returned but no `videos` array
+        - ``bad_payload``        — JSON returned but `videos` was not an array
 
     The cron caller (`pull_all_trackers`) buckets these in the audit
     log; this lets us tell "tracker doesn't exist anymore (404)" from
@@ -312,15 +312,15 @@ def fetch_campaign_submissions(
             status_code=resp.status_code,
         )
 
-    if not isinstance(payload, dict) or "videos" not in payload:
+    if not isinstance(payload, dict) or not isinstance(payload.get("videos"), list):
         return TidesTrackerFetchResult(
             ok=False, tracker_id=tid,
             error_kind="bad_payload",
-            detail="response missing `videos` array",
+            detail="response missing a `videos` array",
             status_code=resp.status_code,
         )
 
-    videos = payload.get("videos") or []
+    videos = payload["videos"]
     submissions = [_parse_submission(v) for v in videos if isinstance(v, dict)]
 
     return TidesTrackerFetchResult(
