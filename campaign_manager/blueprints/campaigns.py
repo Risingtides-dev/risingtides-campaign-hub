@@ -1099,6 +1099,38 @@ def campaign_links(slug: str):
 VALID_CREATOR_PLATFORMS = frozenset({"tiktok", "instagram"})
 
 
+def _creator_platform(c: dict) -> str:
+    return (c.get("platform") or "tiktok").lower()
+
+
+def _requested_platform() -> Optional[str]:
+    """Platform a creator action targets (?platform= or JSON body). None = unspecified.
+
+    The same handle can be booked once per platform on a campaign (e.g. a
+    creator's TikTok AND Instagram), so username alone can be ambiguous.
+    """
+    body = request.get_json(silent=True) or {}
+    raw = request.args.get("platform") or body.get("platform") or ""
+    return str(raw).strip().lower() or None
+
+
+def _find_active_creator(creators: list, username: str, platform: Optional[str]):
+    """Return (creator, None) or (None, error_response) for an ACTIVE row."""
+    matches = [
+        c for c in creators
+        if c.get("username") == username
+        and c.get("status", "active") != "removed"
+        and (platform is None or _creator_platform(c) == platform)
+    ]
+    if not matches:
+        return None, (jsonify({"error": f"Creator @{username} not found."}), 404)
+    if len(matches) > 1:
+        return None, (jsonify({
+            "error": f"@{username} is booked on more than one platform — specify which one."
+        }), 400)
+    return matches[0], None
+
+
 @campaigns_bp.post("/api/campaign/<slug>/creator/add")
 def add_creator(slug: str):
     if _db.is_active():
@@ -1147,12 +1179,16 @@ def add_creator(slug: str):
     else:
         creators = load_creators(campaign_dir)
 
-    if any(c.get("username") == username and c.get("status", "active") != "removed" for c in creators):
-        return jsonify({"error": f"@{username} already exists."}), 409
+    def _same(c: dict) -> bool:
+        return c.get("username") == username and _creator_platform(c) == platform
 
-    # Remove any previously-removed entries for this username to avoid
-    # unique constraint violations on (campaign_id, username).
-    creators = [c for c in creators if not (c.get("username") == username and c.get("status") == "removed")]
+    if any(_same(c) and c.get("status", "active") != "removed" for c in creators):
+        label = "Instagram" if platform == "instagram" else "TikTok"
+        return jsonify({"error": f"@{username} is already on this campaign for {label}."}), 409
+
+    # Remove any previously-removed entries for this username+platform to
+    # avoid unique constraint violations on (campaign_id, username, platform).
+    creators = [c for c in creators if not (_same(c) and c.get("status") == "removed")]
 
     per_post = round(total_rate / posts_owed, 2) if posts_owed > 0 else 0.0
     creators.append({
@@ -1216,31 +1252,30 @@ def edit_creator(slug: str, username: str):
     # otherwise we create a duplicate (campaign_id, username), which hits the
     # unique constraint (500 in DB mode) or makes two colliding active rows
     # that desync every later username-keyed lookup / payout (JSON mode).
+    target, err = _find_active_creator(creators, username, _requested_platform())
+    if err:
+        return err
+    target_platform = _creator_platform(target)
+
     if new_username and new_username != username:
         clash = any(
-            (o.get("username") == new_username and o.get("status", "active") != "removed")
+            (o.get("username") == new_username
+             and _creator_platform(o) == target_platform
+             and o.get("status", "active") != "removed")
             for o in creators
         )
         if clash:
             return jsonify({"error": f"@{new_username} is already a creator on this campaign."}), 409
 
-    found = False
-    for c in creators:
-        if c.get("username") == username and c.get("status", "active") != "removed":
-            if new_username and new_username != username:
-                c["username"] = new_username
-            c["posts_owed"] = posts_owed
-            c["total_rate"] = total_rate
-            c["per_post_rate"] = round(total_rate / posts_owed, 2) if posts_owed > 0 else 0.0
-            c["paypal_email"] = paypal
-            c["notes"] = notes
-            if niches is not None:
-                c["niches"] = niches
-            found = True
-            break
-
-    if not found:
-        return jsonify({"error": f"Creator @{username} not found."}), 404
+    if new_username and new_username != username:
+        target["username"] = new_username
+    target["posts_owed"] = posts_owed
+    target["total_rate"] = total_rate
+    target["per_post_rate"] = round(total_rate / posts_owed, 2) if posts_owed > 0 else 0.0
+    target["paypal_email"] = paypal
+    target["notes"] = notes
+    if niches is not None:
+        target["niches"] = niches
 
     if _db.is_active():
         _db.save_creators(slug, creators)
@@ -1267,21 +1302,15 @@ def toggle_paid(slug: str, username: str):
         creators = load_creators(campaign_dir)
 
     new_status = "no"
-    found = False
-    for c in creators:
-        # Sweep #4: skip removed rows — matching the first by-name row could
-        # flip a leftover removed entry's paid flag instead of the active one,
-        # desyncing the live payout.
-        if c.get("username") == username and c.get("status", "active") != "removed":
-            now_paid = str(c.get("paid", "no")).lower() != "yes"
-            c["paid"] = "yes" if now_paid else "no"
-            c["payment_date"] = str(date.today()) if now_paid else ""
-            new_status = c["paid"]
-            found = True
-            break
-
-    if not found:
-        return jsonify({"error": f"Creator @{username} not found."}), 404
+    # Sweep #4: only ACTIVE rows — flipping a leftover removed entry's paid
+    # flag would desync the live payout.
+    target, err = _find_active_creator(creators, username, _requested_platform())
+    if err:
+        return err
+    now_paid = str(target.get("paid", "no")).lower() != "yes"
+    target["paid"] = "yes" if now_paid else "no"
+    target["payment_date"] = str(date.today()) if now_paid else ""
+    new_status = target["paid"]
 
     if _db.is_active():
         _db.save_creators(slug, creators)
@@ -1303,17 +1332,12 @@ def remove_creator(slug: str, username: str):
         campaign_dir = ACTIVE_DIR / slug
         creators = load_creators(campaign_dir)
 
-    found = False
-    for c in creators:
-        # Sweep #4: only remove an ACTIVE row — matching a leftover removed
-        # entry first would re-remove it and miss the live one.
-        if c.get("username") == username and c.get("status", "active") != "removed":
-            c["status"] = "removed"
-            found = True
-            break
-
-    if not found:
-        return jsonify({"error": f"Creator @{username} not found."}), 404
+    # Sweep #4: only remove an ACTIVE row — matching a leftover removed
+    # entry first would re-remove it and miss the live one.
+    target, err = _find_active_creator(creators, username, _requested_platform())
+    if err:
+        return err
+    target["status"] = "removed"
 
     if _db.is_active():
         _db.save_creators(slug, creators)
@@ -1341,17 +1365,12 @@ def remove_creator_by_body(slug: str):
         campaign_dir = ACTIVE_DIR / slug
         creators = load_creators(campaign_dir)
 
-    found = False
-    for c in creators:
-        # Sweep #4: only remove an ACTIVE row — matching a leftover removed
-        # entry first would re-remove it and miss the live one.
-        if c.get("username") == username and c.get("status", "active") != "removed":
-            c["status"] = "removed"
-            found = True
-            break
-
-    if not found:
-        return jsonify({"error": f"Creator @{username} not found."}), 404
+    # Sweep #4: only remove an ACTIVE row — matching a leftover removed
+    # entry first would re-remove it and miss the live one.
+    target, err = _find_active_creator(creators, username, _requested_platform())
+    if err:
+        return err
+    target["status"] = "removed"
 
     if _db.is_active():
         _db.save_creators(slug, creators)
@@ -1717,6 +1736,9 @@ def list_creators():
                     (upload_date, int(v.get("views", 0) or 0))
                 )
 
+        # A creator can hold two bookings on one campaign (TikTok + IG) —
+        # campaign count and views are per person, so add them only once.
+        seen_this_campaign: set = set()
         for c in creators:
             if c.get("status", "active") == "removed":
                 continue
@@ -1743,14 +1765,17 @@ def list_creators():
                 }
 
             entry = creator_map[key]
-            entry["campaigns_count"] += 1
+            first_booking_here = key not in seen_this_campaign
+            seen_this_campaign.add(key)
+            if first_booking_here:
+                entry["campaigns_count"] += 1
+                entry["total_views"] += views_by_account.get(key, 0)
+                entry["_video_records"].extend(video_records_by_account.get(key, []))
             entry["total_posts_owed"] += int(c.get("posts_owed", 0) or 0)
             entry["total_posts_done"] += int(c.get("posts_done", 0) or 0)
             entry["total_spend"] += float(c.get("total_rate", 0) or 0)
             if str(c.get("paid", "no")).lower() == "yes":
                 entry["total_payout"] += float(c.get("total_rate", 0) or 0)
-            entry["total_views"] += views_by_account.get(key, 0)
-            entry["_video_records"].extend(video_records_by_account.get(key, []))
             entry["_platforms"].append(c.get("platform", "tiktok"))
 
             # Keep latest non-empty paypal

@@ -260,6 +260,33 @@ def init(database_url: Optional[str] = None):
     except Exception:
         pass
 
+    # Allow the same handle once per platform on a campaign (TikTok + IG
+    # bookings of one creator). Backfill NULL/blank platforms first so the
+    # new unique key can't be sidestepped by NULLs.
+    try:
+        with _SessionLocal() as s:
+            sa = __import__("sqlalchemy")
+            s.execute(sa.text(
+                "UPDATE creators SET platform = 'tiktok' "
+                "WHERE platform IS NULL OR platform = ''"
+            ))
+            s.execute(sa.text(
+                "ALTER TABLE creators DROP CONSTRAINT IF EXISTS uq_campaign_creator"
+            ))
+            s.execute(sa.text(
+                "DO $$ BEGIN "
+                "IF NOT EXISTS (SELECT 1 FROM pg_constraint "
+                "WHERE conname = 'uq_campaign_creator_platform') THEN "
+                "ALTER TABLE creators ADD CONSTRAINT uq_campaign_creator_platform "
+                "UNIQUE (campaign_id, username, platform); "
+                "END IF; END $$;"
+            ))
+            s.commit()
+    except Exception as e:
+        __import__("logging").getLogger(__name__).warning(
+            "creators per-platform unique key migration failed: %s", e
+        )
+
     # Chartmetric track link for pop-score (Spotify popularity) tracking.
     try:
         with _SessionLocal() as s:

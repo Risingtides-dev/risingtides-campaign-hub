@@ -163,11 +163,11 @@ export default function CampaignDetail() {
       {/* Creators Table */}
       <CreatorsTable
         creators={campaign.creators}
-        onTogglePaid={(username) => togglePaid.mutate(username)}
-        onEditCreator={(username, data) =>
-          editCreator.mutate({ username, data })
+        onTogglePaid={(creator) => togglePaid.mutate(creator)}
+        onEditCreator={(creator, data) =>
+          editCreator.mutate({ creator, data })
         }
-        onRemoveCreator={(username) => removeCreator.mutate(username)}
+        onRemoveCreator={(creator) => removeCreator.mutate(creator)}
         isToggling={togglePaid.isPending}
         isEditing={editCreator.isPending}
         isRemoving={removeCreator.isPending}

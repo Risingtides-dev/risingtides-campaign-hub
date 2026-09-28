@@ -280,19 +280,25 @@ def update_creator_post_counts(
     creators: List[Dict],
     matched_videos: List[Dict],
 ) -> List[Dict]:
-    """Update posts_matched and posts_done for each creator based on matched videos."""
-    account_counts: Dict[str, int] = {}
+    """Update posts_matched and posts_done for each creator based on matched videos.
+
+    Counts are per (handle, platform): a creator booked for both TikTok and
+    Instagram on one campaign gets TikToks credited to the TikTok booking and
+    reels to the Instagram booking.
+    """
+    account_counts: Dict[Tuple[str, str], int] = {}
     for v in matched_videos:
         acct = (v.get("account", "") or "").lstrip("@").lower()
         if acct:
-            account_counts[acct] = account_counts.get(acct, 0) + 1
+            key = (acct, (v.get("platform") or "tiktok").lower())
+            account_counts[key] = account_counts.get(key, 0) + 1
 
     updated = []
     for c in creators:
         c = dict(c)  # immutable — new copy
-        uname = c.get("username", "").lower()
-        c["posts_matched"] = account_counts.get(uname, 0)
-        c["posts_done"] = account_counts.get(uname, 0)
+        key = (c.get("username", "").lower(), (c.get("platform") or "tiktok").lower())
+        c["posts_matched"] = account_counts.get(key, 0)
+        c["posts_done"] = account_counts.get(key, 0)
         updated.append(c)
 
     return updated

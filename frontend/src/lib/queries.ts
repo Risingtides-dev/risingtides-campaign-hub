@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { api } from "./api"
-import type { ScrapeStatus, JobScrapeStatus, BreakerLens, LibraryWindow } from "./types"
+import type { ScrapeStatus, JobScrapeStatus, BreakerLens, LibraryWindow, CreatorRef } from "./types"
 
 // Query keys
 export const keys = {
@@ -134,12 +134,12 @@ export function useEditCreator(slug: string) {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: ({
-      username,
+      creator,
       data,
     }: {
-      username: string
+      creator: CreatorRef
       data: Record<string, unknown>
-    }) => api.editCreator(slug, username, data),
+    }) => api.editCreator(slug, creator, data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: keys.campaign(slug) })
       qc.invalidateQueries({ queryKey: keys.campaigns })
@@ -150,7 +150,7 @@ export function useEditCreator(slug: string) {
 export function useTogglePaid(slug: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (username: string) => api.togglePaid(slug, username),
+    mutationFn: (creator: CreatorRef) => api.togglePaid(slug, creator),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: keys.campaign(slug) })
       qc.invalidateQueries({ queryKey: keys.campaigns })
@@ -161,7 +161,7 @@ export function useTogglePaid(slug: string) {
 export function useRemoveCreator(slug: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (username: string) => api.removeCreator(slug, username),
+    mutationFn: (creator: CreatorRef) => api.removeCreator(slug, creator),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: keys.campaign(slug) })
       qc.invalidateQueries({ queryKey: keys.campaigns })

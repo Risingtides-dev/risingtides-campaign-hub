@@ -143,7 +143,9 @@ class Campaign(Base):
 class Creator(Base):
     __tablename__ = "creators"
     __table_args__ = (
-        UniqueConstraint("campaign_id", "username", name="uq_campaign_creator"),
+        # One booking per handle PER PLATFORM — a creator can be booked for
+        # both their TikTok and Instagram on the same campaign.
+        UniqueConstraint("campaign_id", "username", "platform", name="uq_campaign_creator_platform"),
     )
 
     id = Column(Integer, primary_key=True)

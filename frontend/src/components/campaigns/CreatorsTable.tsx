@@ -27,16 +27,16 @@ import {
   DialogDescription,
   DialogFooter,
 } from "@/components/ui/dialog"
-import type { Creator } from "@/lib/types"
+import type { Creator, CreatorRef } from "@/lib/types"
 import { NICHE_VOCAB } from "@/lib/types"
 
 // ---- Types ----
 
 interface CreatorsTableProps {
   creators: Creator[]
-  onTogglePaid: (username: string) => void
-  onEditCreator: (username: string, data: Record<string, unknown>) => void
-  onRemoveCreator: (username: string) => void
+  onTogglePaid: (creator: CreatorRef) => void
+  onEditCreator: (creator: CreatorRef, data: Record<string, unknown>) => void
+  onRemoveCreator: (creator: CreatorRef) => void
   isToggling: boolean
   isEditing: boolean
   isRemoving: boolean
@@ -109,7 +109,7 @@ function PaidToggle({
   onToggle,
 }: {
   creator: Creator
-  onToggle: (username: string) => void
+  onToggle: (creator: CreatorRef) => void
 }) {
   const isPaid = creator.paid?.toLowerCase() === "yes"
 
@@ -118,7 +118,7 @@ function PaidToggle({
       <input
         type="checkbox"
         checked={isPaid}
-        onChange={() => onToggle(creator.username)}
+        onChange={() => onToggle(toRef(creator))}
         className="w-4 h-4 accent-green-500 cursor-pointer"
       />
       <span
@@ -134,6 +134,16 @@ function PaidToggle({
   )
 }
 
+// A booking is handle + platform — the same handle can be booked for both
+// TikTok and Instagram on one campaign, so username alone isn't unique.
+function toRef(c: Creator): CreatorRef {
+  return { username: c.username, platform: c.platform || "tiktok" }
+}
+
+function rowKey(c: Creator): string {
+  return `${c.username}|${c.platform || "tiktok"}`
+}
+
 // ---- Main Component ----
 
 export function CreatorsTable({
@@ -145,7 +155,7 @@ export function CreatorsTable({
   isEditing,
   isRemoving,
 }: CreatorsTableProps) {
-  const [editingUsername, setEditingUsername] = useState<string | null>(null)
+  const [editingKey, setEditingKey] = useState<string | null>(null)
   const [editState, setEditState] = useState<EditState>({
     postsOwed: "",
     totalRate: "",
@@ -162,12 +172,12 @@ export function CreatorsTable({
     },
     []
   )
-  const [removeConfirm, setRemoveConfirm] = useState<string | null>(null)
+  const [removeConfirm, setRemoveConfirm] = useState<Creator | null>(null)
   const [sorting, setSorting] = useState<SortingState>([])
   const [nicheFilter, setNicheFilter] = useState<string | null>(null)
 
   function startEdit(creator: Creator) {
-    setEditingUsername(creator.username)
+    setEditingKey(rowKey(creator))
     setEditState({
       postsOwed: creator.posts_owed.toString(),
       totalRate: creator.total_rate.toFixed(2),
@@ -178,23 +188,23 @@ export function CreatorsTable({
   }
 
   function cancelEdit() {
-    setEditingUsername(null)
+    setEditingKey(null)
   }
 
-  function saveEdit(username: string) {
+  function saveEdit(creator: Creator) {
     const s = editStateRef.current
-    onEditCreator(username, {
+    onEditCreator(toRef(creator), {
       posts_owed: parseInt(s.postsOwed, 10),
       total_rate: parseFloat(s.totalRate),
       paypal_email: s.paypalEmail,
       notes: s.notes,
       niches: s.niches,
     })
-    setEditingUsername(null)
+    setEditingKey(null)
   }
 
-  function confirmRemove(username: string) {
-    onRemoveCreator(username)
+  function confirmRemove(creator: Creator) {
+    onRemoveCreator(toRef(creator))
     setRemoveConfirm(null)
   }
 
@@ -223,7 +233,7 @@ export function CreatorsTable({
         ),
         cell: ({ row }) => {
           const c = row.original
-          if (editingUsername === c.username) {
+          if (editingKey === rowKey(c)) {
             return (
               <span className="font-semibold text-rt-magenta">
                 @{c.username}
@@ -238,6 +248,16 @@ export function CreatorsTable({
               >
                 @{c.username}
               </Link>
+              <span
+                className={`text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded ${
+                  c.platform === "instagram"
+                    ? "bg-pink-500/15 text-pink-400"
+                    : "bg-white/8 text-rt-fg-tertiary"
+                }`}
+                title={c.platform === "instagram" ? "Instagram booking" : "TikTok booking"}
+              >
+                {c.platform === "instagram" ? "IG" : "TT"}
+              </span>
               {c.platform === "instagram" ? (
                 <a
                   href={`https://www.instagram.com/${c.username}/reels/`}
@@ -287,7 +307,7 @@ export function CreatorsTable({
         header: "Niches",
         cell: ({ row }) => {
           const c = row.original
-          if (editingUsername === c.username) {
+          if (editingKey === rowKey(c)) {
             const current = editStateRef.current.niches
             return (
               <div className="flex flex-wrap gap-1 items-center max-w-[220px]">
@@ -339,7 +359,7 @@ export function CreatorsTable({
         ),
         cell: ({ row }) => {
           const c = row.original
-          if (editingUsername === c.username) {
+          if (editingKey === rowKey(c)) {
             return (
               <div className="flex items-center gap-1">
                 <span className="font-semibold">{c.posts_done}/</span>
@@ -370,7 +390,7 @@ export function CreatorsTable({
         ),
         cell: ({ row }) => {
           const c = row.original
-          if (editingUsername === c.username) {
+          if (editingKey === rowKey(c)) {
             return (
               <Input
                 type="number"
@@ -400,7 +420,7 @@ export function CreatorsTable({
         header: "PayPal",
         cell: ({ row }) => {
           const c = row.original
-          if (editingUsername === c.username) {
+          if (editingKey === rowKey(c)) {
             return (
               <div className="flex items-center gap-2">
                 <Input
@@ -427,7 +447,7 @@ export function CreatorsTable({
         header: "Notes",
         cell: ({ row }) => {
           const c = row.original
-          if (editingUsername === c.username) {
+          if (editingKey === rowKey(c)) {
             return (
               <Input
                 defaultValue={editStateRef.current.notes}
@@ -447,12 +467,12 @@ export function CreatorsTable({
         header: "Actions",
         cell: ({ row }) => {
           const c = row.original
-          if (editingUsername === c.username) {
+          if (editingKey === rowKey(c)) {
             return (
               <div className="flex items-center gap-1.5">
                 <Button
                   size="xs"
-                  onClick={() => saveEdit(c.username)}
+                  onClick={() => saveEdit(c)}
                   disabled={isEditing}
                   className="bg-rt-magenta hover:bg-rt-purple text-white"
                 >
@@ -480,7 +500,7 @@ export function CreatorsTable({
               <Button
                 size="xs"
                 variant="destructive"
-                onClick={() => setRemoveConfirm(c.username)}
+                onClick={() => setRemoveConfirm(c)}
                 disabled={isRemoving}
               >
                 <Trash2 className="size-3" />
@@ -492,7 +512,7 @@ export function CreatorsTable({
       },
     ],
     // editState is accessed via ref inside cells; no dep needed here
-    [editingUsername, isEditing, isRemoving, isToggling, onTogglePaid, updateField]
+    [editingKey, isEditing, isRemoving, isToggling, onTogglePaid, updateField]
   )
 
   const table = useReactTable({
@@ -607,8 +627,9 @@ export function CreatorsTable({
           <DialogHeader>
             <DialogTitle>Remove Creator</DialogTitle>
             <DialogDescription>
-              Are you sure you want to remove @{removeConfirm} from this
-              campaign? This action cannot be undone.
+              Are you sure you want to remove @{removeConfirm?.username}
+              {removeConfirm?.platform === "instagram" ? " (Instagram)" : " (TikTok)"} from
+              this campaign? This action cannot be undone.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

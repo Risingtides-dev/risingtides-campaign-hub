@@ -910,6 +910,13 @@ export interface LibraryRefreshStatus {
   error: string
 }
 
+// A creator booking is identified by handle + platform: the same handle can
+// be booked for both TikTok and Instagram on one campaign.
+export interface CreatorRef {
+  username: string
+  platform: string
+}
+
 // --- Chartmetric pop score (Spotify popularity) ---
 
 export interface PopScorePoint {

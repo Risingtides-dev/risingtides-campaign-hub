@@ -165,9 +165,9 @@ describe('api client', () => {
 
     it('removeCreator uses POST', async () => {
       const fetchMock = mockFetchOk({ ok: true })
-      await api.removeCreator('slug', 'alice')
+      await api.removeCreator('slug', { username: 'alice', platform: 'instagram' })
       const [url, init] = fetchMock.mock.calls[0]
-      expect(url).toContain('/api/campaign/slug/creator/alice/remove')
+      expect(url).toContain('/api/campaign/slug/creator/alice/remove?platform=instagram')
       expect(init?.method).toBe('POST')
     })
 

@@ -1,5 +1,6 @@
 import type {
   CampaignSummary,
+  CreatorRef,
   PopScore,
   CampaignDetail,
   MatchedVideo,
@@ -58,6 +59,11 @@ class ApiError extends Error {
     this.status = status
     this.name = "ApiError"
   }
+}
+
+function creatorActionPath(slug: string, creator: CreatorRef, action: string) {
+  const platform = encodeURIComponent(creator.platform || "tiktok")
+  return `/api/campaign/${slug}/creator/${creator.username}/${action}?platform=${platform}`
 }
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -151,25 +157,24 @@ export const api = {
 
   editCreator: (
     slug: string,
-    username: string,
+    creator: CreatorRef,
     data: Record<string, unknown>
   ) =>
-    request<ApiOk>(`/api/campaign/${slug}/creator/${username}/edit`, {
+    request<ApiOk>(creatorActionPath(slug, creator, "edit"), {
       method: "POST",
       body: JSON.stringify(data),
     }),
 
-  togglePaid: (slug: string, username: string) =>
+  togglePaid: (slug: string, creator: CreatorRef) =>
     request<{ ok: boolean; paid: string; username: string }>(
-      `/api/campaign/${slug}/creator/${username}/toggle-paid`,
+      creatorActionPath(slug, creator, "toggle-paid"),
       { method: "POST" }
     ),
 
-  removeCreator: (slug: string, username: string) =>
-    request<ApiOk>(
-      `/api/campaign/${slug}/creator/${username}/remove`,
-      { method: "POST" }
-    ),
+  removeCreator: (slug: string, creator: CreatorRef) =>
+    request<ApiOk>(creatorActionPath(slug, creator, "remove"), {
+      method: "POST",
+    }),
 
   getPaypal: (username: string) =>
     request<{ paypal: string }>(`/api/paypal/${username}`),
