@@ -7,10 +7,13 @@ maintains a local "folder" overlay (groups + assignments).
 """
 from __future__ import annotations
 
+import logging
 from typing import Dict, List, Optional, Tuple
 
 import requests as _requests
 from flask import current_app
+
+log = logging.getLogger(__name__)
 
 
 class TidesTrackerError(Exception):
@@ -293,3 +296,61 @@ def list_tracker_campaigns(client_id: Optional[str] = None) -> List[Dict]:
         raise TidesTrackerError(f"Failed to list trackers: {e}", status_code=502)
 
     return result.get("campaigns") or []
+
+# Campaign Hub owns delivery status — it is where a campaign gets marked
+# complete — and pushes it to TidesTracker so the client-facing report can
+# show a badge. Deliberately status-only: tracker *names* sync from Cobrand
+# on the TidesTracker side, and a second writer would fight that sync.
+TRACKER_STATUS_IN_PROGRESS = "in_progress"
+TRACKER_STATUS_COMPLETE = "complete"
+
+
+def tracker_status_for(completion_status: str) -> str:
+    """Map a Hub completion_status onto the tracker's public badge.
+
+    The Hub distinguishes "none" (booked nothing yet) from "booked", but a
+    client only cares whether their campaign is still running or finished,
+    so both collapse to in_progress.
+    """
+    return (
+        TRACKER_STATUS_COMPLETE
+        if (completion_status or "").strip().lower() == "completed"
+        else TRACKER_STATUS_IN_PROGRESS
+    )
+
+
+def set_tracker_status(tracker_id: str, status: Optional[str]) -> bool:
+    """PATCH a tracker's delivery status. Returns True when it landed.
+
+    Best-effort by design: this runs inside the request that saves a
+    campaign, and TidesTracker being down must not fail the save. A missed
+    push self-heals on the next edit or backfill, and the badge simply shows
+    its previous value in the meantime.
+    """
+    tid = (tracker_id or "").strip()
+    if not tid:
+        return False
+    if status is not None and status not in (
+        TRACKER_STATUS_IN_PROGRESS, TRACKER_STATUS_COMPLETE
+    ):
+        raise ValueError(f"Invalid tracker status: {status!r}")
+
+    try:
+        api, key, _base = _config()
+    except TidesTrackerError as e:
+        log.warning("tracker status push skipped — not configured: %s", e)
+        return False
+
+    try:
+        resp = _requests.patch(
+            f"{api}/campaigns/{tid}",
+            json={"status": status},
+            headers={"Content-Type": "application/json", "x-service-key": key},
+            timeout=10,
+        )
+        resp.raise_for_status()
+    except _requests.RequestException as e:
+        log.warning("tracker status push failed for %s: %s", tid, e)
+        return False
+
+    return True

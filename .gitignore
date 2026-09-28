@@ -85,3 +85,6 @@ backups/
 
 # MkDocs build output
 /site/
+
+# stitchpad runtime (isolated history)
+.stitchpad/

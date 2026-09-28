@@ -605,6 +605,20 @@ def edit_campaign(slug: str):
     else:
         save_json(campaign_dir / "campaign.json", meta)
 
+    # Mirror delivery status onto the client-facing tracker badge. Only when
+    # the caller actually set completion_status, so unrelated edits (budget,
+    # sound id) don't fire a network call. Best-effort: a failed push is
+    # logged inside set_tracker_status and self-heals on the next save or
+    # backfill — a tracker outage must not fail saving the campaign.
+    if completion_status is not None and meta.get("tracker_campaign_id"):
+        from campaign_manager.services.tidestracker import (
+            set_tracker_status,
+            tracker_status_for,
+        )
+        set_tracker_status(
+            meta["tracker_campaign_id"], tracker_status_for(completion_status)
+        )
+
     return jsonify({"ok": True, "slug": slug, "message": "Campaign updated."})
 
 
