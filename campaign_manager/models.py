@@ -83,6 +83,10 @@ class Campaign(Base):
     platform_split = Column(JSONB, default=dict)
     content_types = Column(JSONB, default=list)
 
+    # Chartmetric link for Spotify popularity ("pop score") tracking.
+    chartmetric_track_id = Column(BigInteger, nullable=True)
+    chartmetric_link = Column(Text, default="")
+
     creators = relationship("Creator", back_populates="campaign", cascade="all, delete-orphan")
     matched_videos = relationship("MatchedVideo", back_populates="campaign", cascade="all, delete-orphan")
     scrape_logs = relationship("ScrapeLog", back_populates="campaign", cascade="all, delete-orphan")
@@ -131,6 +135,8 @@ class Campaign(Base):
             "client_email": self.client_email or "",
             "platform_split": self.platform_split or {},
             "content_types": self.content_types or [],
+            "chartmetric_track_id": self.chartmetric_track_id,
+            "chartmetric_link": self.chartmetric_link or "",
         }
 
 

@@ -909,3 +909,25 @@ export interface LibraryRefreshStatus {
   last: LibraryRefreshSummary | null
   error: string
 }
+
+// --- Chartmetric pop score (Spotify popularity) ---
+
+export interface PopScorePoint {
+  date: string
+  value: number
+}
+
+export interface PopScore {
+  linked: boolean
+  link?: string
+  error?: string
+  chartmetric_track_id?: number
+  track?: { name: string; artists: string[]; image_url: string }
+  spotify_popularity?: number | null
+  chartmetric_score?: number | null
+  spotify_streams?: number | null
+  baseline?: number | null
+  change_since_start?: number | null
+  start_date?: string
+  history?: PopScorePoint[]
+}

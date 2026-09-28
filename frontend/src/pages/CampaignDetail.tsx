@@ -18,6 +18,7 @@ import { CobrandStatsCard, CobrandLinkInput, CobrandUploadSection } from "@/comp
 import { ShareTokenSection } from "@/components/campaigns/ShareTokenSection"
 import { AddCreatorForm } from "@/components/campaigns/AddCreatorForm"
 import { CreatorsTable } from "@/components/campaigns/CreatorsTable"
+import { PopScoreCard } from "@/components/campaigns/PopScoreCard"
 import { ChevronRight, Loader2 } from "lucide-react"
 
 export default function CampaignDetail() {
@@ -139,6 +140,9 @@ export default function CampaignDetail() {
           error={cobrandStats.error as Error | null}
         />
       )}
+
+      {/* Pop Score (Spotify popularity via Chartmetric) */}
+      <PopScoreCard slug={slug!} />
 
       {/* Share with Client */}
       <ShareTokenSection slug={slug!} />

@@ -1,5 +1,6 @@
 import type {
   CampaignSummary,
+  PopScore,
   CampaignDetail,
   MatchedVideo,
   CobrandStats,
@@ -105,6 +106,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify(data),
     }),
+
+  getPopScore: (slug: string) =>
+    request<PopScore>(`/api/campaign/${slug}/pop-score`),
+
+  setPopScoreTrack: (slug: string, link: string) =>
+    request<ApiOk & { chartmetric_track_id: number | null; link: string }>(
+      `/api/campaign/${slug}/pop-score/track`,
+      { method: "POST", body: JSON.stringify({ link }) },
+    ),
 
   refreshStats: (slug: string) =>
     request<ApiOk>(`/api/campaign/${slug}/refresh`, {

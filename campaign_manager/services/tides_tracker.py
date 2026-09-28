@@ -77,6 +77,20 @@ def _extract_tiktok_video_id(url: str) -> str:
     return m.group(1) if m else ""
 
 
+# Instagram posts are identified by shortcode; /p/, /reel/ and /reels/ all
+# point at the same post. Case-sensitive — shortcodes are base64-ish.
+_INSTAGRAM_SHORTCODE_RE = re.compile(r"instagram\.com/(?:[^/?#]+/)?(?:p|reels?|tv)/([A-Za-z0-9_-]{5,})")
+
+
+def _extract_post_id(url: str) -> str:
+    """Platform-namespaced post ID for dedupe: TikTok video id or 'ig:<shortcode>'."""
+    tiktok_id = _extract_tiktok_video_id(url)
+    if tiktok_id:
+        return tiktok_id
+    m = _INSTAGRAM_SHORTCODE_RE.search(url or "")
+    return f"ig:{m.group(1)}" if m else ""
+
+
 # Pinned to the canonical Tides Tracker domain. The auth-free public
 # endpoint lives at /api/public/<tracker_id>. Env override only for
 # dev/staging.
@@ -654,7 +668,7 @@ def auto_track_submitted_videos(triggered_by: str = "cron") -> AutoTrackResult:
                 })
                 continue
             for sub in fres.submissions:
-                vid = _extract_tiktok_video_id(sub.video_url)
+                vid = _extract_post_id(sub.video_url)
                 if vid:
                     submitted.add(vid)
 
@@ -674,7 +688,7 @@ def auto_track_submitted_videos(triggered_by: str = "cron") -> AutoTrackResult:
             )).fetchall()
             matching_ids: List[int] = []
             for row_id, url in rows:
-                vid = _extract_tiktok_video_id(url or "")
+                vid = _extract_post_id(url or "")
                 if vid and vid in submitted:
                     matching_ids.append(int(row_id))
 

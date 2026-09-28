@@ -345,6 +345,26 @@ export function useSetCobrandLinks(slug: string) {
   })
 }
 
+// --- Chartmetric pop score ---
+
+export function usePopScore(slug: string) {
+  return useQuery({
+    queryKey: ["popScore", slug] as const,
+    queryFn: () => api.getPopScore(slug),
+    enabled: !!slug,
+    staleTime: 30 * 60 * 1000, // Chartmetric updates popularity daily
+    retry: false,
+  })
+}
+
+export function useSetPopScoreTrack(slug: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (link: string) => api.setPopScoreTrack(slug, link),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["popScore", slug] }),
+  })
+}
+
 // --- Internal ---
 
 export function useInternalCreators() {

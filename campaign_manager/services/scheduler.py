@@ -40,6 +40,22 @@ def _import_scraper():
     return scrape_tiktok_account, match_video_to_sounds
 
 
+def _shared_key(platform: str, username: str) -> str:
+    """Key into the cron's shared video cache.
+
+    TikTok keeps the bare lowercase handle (existing behavior); Instagram is
+    namespaced so a creator with the same handle on both platforms can't have
+    their TikToks matched as reels or vice versa.
+    """
+    handle = (username or "").lstrip("@").strip().lower()
+    return f"instagram:{handle}" if platform == "instagram" else handle
+
+
+def _scrape_instagram(usernames, start_date=None):
+    from campaign_manager.services.apify_instagram import scrape_instagram_reels
+    return scrape_instagram_reels(usernames, start_date=start_date)
+
+
 # Concurrency caps — kept low to avoid burst-rate-limit from TikTok.
 # 216 creators × parallelism × 500-video pulls used to mean ~108k metadata
 # requests in a few minutes from one Railway IP, which TikTok responded to
@@ -471,13 +487,17 @@ def run_campaign_refresh(only_slugs=None, on_progress=None) -> dict:
         # Improvement #4: Deduplicate creators across campaigns
         # Scrape each unique creator once, share results across all their campaigns
         all_usernames = set()
+        ig_usernames = set()
         for meta in campaigns:
             campaign_creators = _db.get_creators(meta.get("slug", ""))
             for c in campaign_creators:
-                if c.get("platform", "tiktok") == "tiktok" and c.get("status") == "active":
-                    uname = c.get("username", "")
-                    if uname:
-                        all_usernames.add(uname)
+                if c.get("status") != "active" or not c.get("username"):
+                    continue
+                platform = c.get("platform", "tiktok")
+                if platform == "tiktok":
+                    all_usernames.add(c["username"])
+                elif platform == "instagram":
+                    ig_usernames.add(c["username"])
 
         # Bound the pre-scrape by the earliest active campaign start_date.
         # Previously this passed start_date=None which pulled full video history
@@ -519,6 +539,18 @@ def run_campaign_refresh(only_slugs=None, on_progress=None) -> dict:
                 acct = (v.get("account", "") or "").lstrip("@").lower()
                 if acct:
                     shared_videos.setdefault(acct, []).append(v)
+
+        # Instagram creators go through Apify in one batched run. Their
+        # outcomes are kept out of scrape_outcomes so a quiet IG roster can't
+        # trip the TikTok rate-limit (empty-rate) anomaly.
+        ig_outcomes: dict = {}
+        if ig_usernames:
+            ig_result = _scrape_instagram(ig_usernames, earliest_start)
+            errors.extend(ig_result.errors)
+            ig_outcomes = ig_result.outcomes
+            for v in ig_result.videos:
+                key = _shared_key("instagram", v.get("account", ""))
+                shared_videos.setdefault(key, []).append(v)
 
         # Roll up scrape outcome distribution
         outcome_counts = {"ok": 0, "empty": 0, "error": 0}
@@ -618,6 +650,10 @@ def run_campaign_refresh(only_slugs=None, on_progress=None) -> dict:
             "per_campaign": per_campaign,
             # New observability fields
             "scrape_outcome_counts": outcome_counts,
+            "instagram_outcome_counts": {
+                st: sum(1 for o in ig_outcomes.values() if o.get("status") == st)
+                for st in ("ok", "empty", "error")
+            },
             "creators_scraped_total": total_creators_scraped,
             "empty_creator_rate": round(empty_rate, 3),
             "degraded": is_degraded,
@@ -678,11 +714,11 @@ def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None) 
     sound_ids, sound_keys, core_song_words = build_sound_sets(meta)
     artist = meta.get("artist", "")
 
-    # Collect TikTok creator usernames
-    tiktok_creators = [c for c in creators if c.get("platform", "tiktok") == "tiktok" and c.get("status") == "active"]
-    usernames = [c.get("username", "") for c in tiktok_creators if c.get("username")]
+    active = [c for c in creators if c.get("status") == "active" and c.get("username")]
+    usernames = [c["username"] for c in active if c.get("platform", "tiktok") == "tiktok"]
+    ig_usernames = [c["username"] for c in active if c.get("platform") == "instagram"]
 
-    if not usernames:
+    if not usernames and not ig_usernames:
         return {"new_matches": 0, "total_matches": len(existing_videos), "videos_checked": 0}
 
     # Step 1: Get videos — use shared cache if available, otherwise scrape
@@ -690,8 +726,11 @@ def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None) 
         # Pull this campaign's creators from the pre-scraped cache
         all_videos = []
         misses = []
-        for uname in usernames:
-            hits = shared_videos.get(uname.lower(), [])
+        lookups = [_shared_key("tiktok", u) for u in usernames] + [
+            _shared_key("instagram", u) for u in ig_usernames
+        ]
+        for uname in lookups:
+            hits = shared_videos.get(uname, [])
             if hits:
                 all_videos.extend(hits)
             else:
@@ -714,9 +753,15 @@ def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None) 
                 scrape_start = datetime.strptime(start_date_str, "%Y-%m-%d")
             except ValueError:
                 pass
-        all_videos, _, scrape_errors = _scrape_creator_accounts(
-            usernames, start_date=scrape_start, max_workers=DEFAULT_MAX_WORKERS
-        )
+        all_videos, scrape_errors = [], []
+        if usernames:
+            all_videos, _, scrape_errors = _scrape_creator_accounts(
+                usernames, start_date=scrape_start, max_workers=DEFAULT_MAX_WORKERS
+            )
+        if ig_usernames:
+            ig_result = _scrape_instagram(ig_usernames, scrape_start)
+            all_videos = all_videos + ig_result.videos
+            scrape_errors = list(scrape_errors) + ig_result.errors
         if scrape_errors:
             for err in scrape_errors[:5]:
                 log.warning("CRON: scrape error for %s: %s", slug, err)
@@ -743,8 +788,11 @@ def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None) 
     )
 
     # Step 4: Auto-discover original sounds — fuzzy mode only
+    # TikTok-only: discovered IDs are saved as TikTok additional_sounds, and
+    # IG audio IDs aren't resolvable as TikTok sounds downstream.
+    tiktok_videos = [v for v in all_videos if v.get("platform", "tiktok") == "tiktok"]
     extra_matched, discovered_sound_ids = discover_original_sounds(
-        all_videos, matched, sound_ids, usernames, artist,
+        tiktok_videos, matched, sound_ids, usernames, artist,
         tt_artist_label=tt_artist_label,
         match_strategy=match_strategy,
     )
@@ -855,7 +903,7 @@ def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None) 
     _db.update_campaign_stats(slug, total_views, total_likes)
 
     _db.save_scrape_log(slug, {
-        "accounts_scraped": len(usernames),
+        "accounts_scraped": len(usernames) + len(ig_usernames),
         "videos_checked": len(all_videos),
         "new_matches": new_count,
         "total_matches": len(all_matched),

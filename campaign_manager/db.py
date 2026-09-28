@@ -256,6 +256,20 @@ def init(database_url: Optional[str] = None):
     except Exception:
         pass
 
+    # Chartmetric track link for pop-score (Spotify popularity) tracking.
+    try:
+        with _SessionLocal() as s:
+            sa = __import__("sqlalchemy")
+            s.execute(sa.text(
+                "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS chartmetric_track_id BIGINT NULL"
+            ))
+            s.execute(sa.text(
+                "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS chartmetric_link TEXT DEFAULT ''"
+            ))
+            s.commit()
+    except Exception:
+        pass
+
     # Add tracking-workflow + match metadata to matched_videos.
     # - first_seen_at: when the cron first matched this video (used by
     #   the Scrape Tasks tab to show "new since" filtering)

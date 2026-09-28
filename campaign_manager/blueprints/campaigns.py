@@ -927,6 +927,20 @@ def _refresh_stats_inner(slug: str):
                 all_videos.extend(videos)
                 accounts_scraped += 1
 
+    # Instagram creators: one batched Apify run (IG blocks yt-dlp/Instaloader).
+    ig_creators = [
+        c.get("username", "") for c in active_creators
+        if c.get("platform") == "instagram" and c.get("username")
+    ]
+    if ig_creators:
+        from campaign_manager.services.apify_instagram import scrape_instagram_reels
+        ig_result = scrape_instagram_reels(ig_creators, start_date=scrape_start)
+        all_videos.extend(ig_result.videos)
+        errors.extend(ig_result.errors)
+        accounts_scraped += sum(
+            1 for o in ig_result.outcomes.values() if o.get("status") != "error"
+        )
+
     # Match videos using shared matching logic
     from campaign_manager.services.matching import (
         core_song_name as _csn, match_videos, merge_matched_videos,
@@ -1079,6 +1093,9 @@ def campaign_links(slug: str):
 # -------------------------------------------------------------------
 # 7. POST /api/campaign/<slug>/creator/add  -- add a creator
 # -------------------------------------------------------------------
+VALID_CREATOR_PLATFORMS = frozenset({"tiktok", "instagram"})
+
+
 @campaigns_bp.post("/api/campaign/<slug>/creator/add")
 def add_creator(slug: str):
     if _db.is_active():
@@ -1096,8 +1113,18 @@ def add_creator(slug: str):
     posts_owed_raw = data.get("posts_owed", 0)
     total_rate_raw = data.get("total_rate", 0)
     paypal = (data.get("paypal_email") or "").strip()
-    platform = (data.get("platform") or "tiktok").strip() or "tiktok"
+    platform = (data.get("platform") or "tiktok").strip().lower() or "tiktok"
     niches = data.get("niches", [])
+
+    # Pasting an IG profile link is common — pull the handle out and force
+    # the platform so the creator is scraped as Instagram.
+    if "instagram.com/" in username:
+        from campaign_manager.services.apify_instagram import clean_username
+        username = clean_username(username)
+        platform = "instagram"
+
+    if platform not in VALID_CREATOR_PLATFORMS:
+        return jsonify({"error": f"Platform must be one of: {', '.join(sorted(VALID_CREATOR_PLATFORMS))}."}), 400
 
     # Auto-fill PayPal from memory if not provided
     if not paypal and username:
