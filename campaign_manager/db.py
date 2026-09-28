@@ -103,6 +103,10 @@ def init(database_url: Optional[str] = None):
     # Railway uses postgres:// but SQLAlchemy 2.x needs postgresql://
     if url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql://", 1)
+    # Pin the driver we actually ship (psycopg2-binary). SQLAlchemy 2.1+
+    # resolves bare postgresql:// to psycopg v3, which isn't installed.
+    if url.startswith("postgresql://"):
+        url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
 
     _engine = create_engine(url, pool_pre_ping=True, pool_size=5, max_overflow=10)
     _SessionLocal = sessionmaker(bind=_engine)

@@ -259,6 +259,9 @@ def init_scheduler(database_url: str, hour: int = 6, minute: int = 0):
     url = database_url
     if url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql://", 1)
+    # Same driver pin as db.init — SQLAlchemy 2.1+ defaults to psycopg v3.
+    if url.startswith("postgresql://"):
+        url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
 
     jobstores = {
         "default": SQLAlchemyJobStore(url=url),
