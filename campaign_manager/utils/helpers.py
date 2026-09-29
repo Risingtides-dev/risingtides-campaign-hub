@@ -5,6 +5,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 from typing import Dict
+from urllib.parse import urlsplit, urlunsplit
 
 import requests
 
@@ -20,6 +21,33 @@ def slugify(text: str) -> str:
     text = re.sub(r"[^\w\s-]", "_", text)
     text = re.sub(r"[\s\-_]+", "_", text)
     return text.strip("_")
+
+def canonical_http_url(value: str) -> str | None:
+    """Return one stable HTTP(S) URL identity, or ``None`` when invalid."""
+    if not isinstance(value, str):
+        return None
+    raw = value.strip()
+    if not raw or len(raw) > 2048 or any(ord(char) < 32 for char in raw):
+        return None
+    try:
+        parsed = urlsplit(raw)
+        port = parsed.port
+        hostname = parsed.hostname
+    except ValueError:
+        return None
+    scheme = parsed.scheme.lower()
+    if scheme not in {"http", "https"} or not hostname or parsed.username or parsed.password:
+        return None
+    try:
+        host = hostname.encode("idna").decode("ascii").lower()
+    except UnicodeError:
+        return None
+    if ":" in host:
+        host = f"[{host}]"
+    if port is not None and not ((scheme == "http" and port == 80) or (scheme == "https" and port == 443)):
+        host = f"{host}:{port}"
+    return urlunsplit((scheme, host, parsed.path or "/", parsed.query, ""))
+
 
 
 def load_json(path: Path) -> Dict:

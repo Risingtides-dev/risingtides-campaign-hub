@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 EST = ZoneInfo("America/New_York")
 
-from sqlalchemy import create_engine, desc, func
+from sqlalchemy import create_engine, desc, func, text
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
 from campaign_manager.models import (
@@ -27,6 +27,7 @@ from campaign_manager.models import (
     NotionMasterPage, NotionSyncLog,
     TidesTrackerSyncLog,
 )
+from campaign_manager.utils.helpers import canonical_http_url
 
 _engine = None
 _SessionLocal = None
@@ -709,6 +710,31 @@ def save_campaign(slug: str, meta: Dict):
 
         c.updated_at = datetime.now()
         s.commit()
+
+
+def set_unique_campaign_sound_url(slug: str, url: str, expected_url: str) -> str:
+    """CAS one canonical sound URL onto a campaign.
+
+    Returns ``updated``, ``missing``, ``conflict``, or ``duplicate``. Postgres
+    takes one transaction-scoped advisory lock so two simultaneous drop-ins
+    cannot both pass the cross-row uniqueness check.
+    """
+    with get_session() as s:
+        if s.bind and s.bind.dialect.name == "postgresql":
+            s.execute(text("SELECT pg_advisory_xact_lock(hashtext('campaign-sound-url'))"))
+        campaign = s.query(Campaign).filter_by(slug=slug).with_for_update().first()
+        if campaign is None:
+            return "missing"
+        current = campaign.official_sound or ""
+        if current != expected_url:
+            return "conflict"
+        for other in s.query(Campaign.slug, Campaign.official_sound).filter(Campaign.slug != slug):
+            if canonical_http_url(other.official_sound or "") == url:
+                return "duplicate"
+        campaign.official_sound = url
+        campaign.updated_at = datetime.now()
+        s.commit()
+        return "updated"
 
 
 def update_campaign_fields(slug: str, fields: Dict):

@@ -113,6 +113,12 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
+  setCampaignSoundLink: (slug: string, data: { url: string; expected_url: string }) =>
+    request<ApiOk & { official_sound: string }>(`/api/campaign/${slug}/sound-link`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
+
   getPopScore: (slug: string) =>
     request<PopScore>(`/api/campaign/${slug}/pop-score`),
 

@@ -4,6 +4,7 @@ import {
   useCampaign,
   useEditCampaign,
   useRefreshStats,
+  useSetCampaignSoundLink,
   useAddCreator,
   useEditCreator,
   useTogglePaid,
@@ -32,6 +33,7 @@ export default function CampaignDetail() {
 
   // Mutations
   const editCampaign = useEditCampaign(slug!)
+  const setCampaignSoundLink = useSetCampaignSoundLink(slug!)
   const refreshStats = useRefreshStats(slug!)
   const addCreator = useAddCreator(slug!)
   const editCreator = useEditCreator(slug!)
@@ -82,6 +84,11 @@ export default function CampaignDetail() {
         onRefresh={() => refreshStats.mutate()}
         isEditing={editCampaign.isPending}
         isRefreshing={refreshStats.isPending}
+        onDropLink={(url, expectedUrl) => setCampaignSoundLink.mutateAsync({
+          url,
+          expected_url: expectedUrl,
+        })}
+        isDroppingLink={setCampaignSoundLink.isPending}
         onToggleCobrand={() => {
           setCobrandVisible((v) => !v)
         }}
