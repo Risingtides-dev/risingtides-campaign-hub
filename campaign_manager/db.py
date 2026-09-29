@@ -655,6 +655,12 @@ def save_campaign(slug: str, meta: Dict):
         if not c:
             c = Campaign(slug=slug)
             s.add(c)
+            # Captions are set when the campaign is created and after that
+            # change only through the CRM refresh (update_campaign_fields).
+            # A whole-campaign save carries whatever copy its caller loaded,
+            # sometimes minutes earlier, and must not put that copy back over
+            # captions the CRM has since changed.
+            c.internal_captions = meta.get("internal_captions")
 
         c.title = meta.get("title", "")
         c.name = meta.get("name", meta.get("title", ""))
@@ -1388,13 +1394,17 @@ def update_cobrand_cache(slug: str, stats: dict):
 # ── Notion Sync ───────────────────────────────────────────────────────
 
 def get_campaign_notion_links(*, active_only: bool = False) -> List[Dict]:
-    """(slug, notion_page_id, content_types) for every campaign imported from Notion.
+    """(slug, notion_page_id, content_types, internal_captions) for every
+    campaign imported from Notion.
 
-    Drives the niche-target refresh: these are the campaigns whose CRM row
-    exists and whose content_types should track it.
+    Drives the CRM refresh: these are the campaigns whose CRM row exists and
+    whose content_types and internal_captions should track it.
     """
     with get_session() as s:
-        query = s.query(Campaign.slug, Campaign.notion_page_id, Campaign.content_types).filter(
+        query = s.query(
+            Campaign.slug, Campaign.notion_page_id, Campaign.content_types,
+            Campaign.internal_captions,
+        ).filter(
             Campaign.notion_page_id.isnot(None),
             Campaign.notion_page_id != "",
         )
@@ -1402,8 +1412,33 @@ def get_campaign_notion_links(*, active_only: bool = False) -> List[Dict]:
             query = query.filter(Campaign.completion_status.in_(["none", "booked"]))
         rows = query.order_by(Campaign.slug).all()
         return [
-            {"slug": slug, "notion_page_id": page_id, "content_types": content_types or []}
-            for slug, page_id, content_types in rows
+            {"slug": slug, "notion_page_id": page_id, "content_types": content_types or [],
+             "internal_captions": internal_captions}
+            for slug, page_id, content_types, internal_captions in rows
+        ]
+
+
+def list_campaign_captions() -> List[Dict]:
+    """Every active campaign whose CRM captions have been read, with its sound.
+
+    The posting control plane attaches these lines to the campaign's TikTok
+    sound. A campaign whose CRM row has never been read (NULL) is left out,
+    so "not read yet" is never mistaken for "no captions". Finished campaigns
+    are left out too: the refresh no longer follows their CRM rows, so their
+    stored captions could never be corrected from the CRM again.
+    """
+    with get_session() as s:
+        rows = s.query(
+            Campaign.slug, Campaign.sound_id, Campaign.official_sound,
+            Campaign.internal_captions,
+        ).filter(
+            Campaign.internal_captions.isnot(None),
+            Campaign.completion_status.in_(["none", "booked"]),
+        ).order_by(Campaign.slug).all()
+        return [
+            {"slug": slug, "sound_id": sound_id or "", "official_sound": official_sound or "",
+             "internal_captions": internal_captions}
+            for slug, sound_id, official_sound, internal_captions in rows
         ]
 
 

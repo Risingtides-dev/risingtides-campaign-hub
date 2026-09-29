@@ -474,6 +474,43 @@ def list_campaigns():
 
 
 # -------------------------------------------------------------------
+# 1b. GET /api/campaigns/captions  -- CRM captions per campaign sound
+# -------------------------------------------------------------------
+@campaigns_bp.get("/api/campaigns/captions")
+def list_campaign_captions():
+    """CRM "Internal Captions" for every active campaign that has had them read.
+
+    The posting control plane reads this to keep each campaign sound's
+    caption rows in step with the CRM. `internal_captions` is the CRM text
+    verbatim; an empty string means the CRM explicitly holds none. Finished
+    campaigns, and campaigns whose CRM row has never been read, are left
+    out. Kept off the campaign list so that payload stays small for every
+    other reader.
+    """
+    from campaign_manager.services.notion import request_campaign_niche_refresh
+    request_campaign_niche_refresh()
+
+    if _db.is_active():
+        return jsonify(_db.list_campaign_captions())
+
+    ensure_dirs()
+    rows = []
+    for d in sorted(ACTIVE_DIR.iterdir()) if ACTIVE_DIR.exists() else []:
+        meta = load_json(d / "campaign.json") if d.is_dir() else None
+        if not meta or not isinstance(meta.get("internal_captions"), str):
+            continue
+        if meta.get("completion_status", "none") == "completed":
+            continue
+        rows.append({
+            "slug": d.name,
+            "sound_id": meta.get("sound_id", ""),
+            "official_sound": meta.get("official_sound", ""),
+            "internal_captions": meta["internal_captions"],
+        })
+    return jsonify(rows)
+
+
+# -------------------------------------------------------------------
 # 2. POST /api/campaign/create  -- create a new campaign
 # -------------------------------------------------------------------
 @campaigns_bp.post("/api/campaign/create")
@@ -734,6 +771,7 @@ def campaign_detail(slug: str):
         "client_email": meta.get("client_email", ""),
         "platform_split": meta.get("platform_split", {}),
         "content_types": meta.get("content_types", []),
+        "internal_captions": meta.get("internal_captions"),
     })
 
 

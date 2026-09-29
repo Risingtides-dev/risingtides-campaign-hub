@@ -82,6 +82,11 @@ class Campaign(Base):
     client_email = Column(String(255), default="")
     platform_split = Column(JSONB, default=dict)
     content_types = Column(JSONB, default=list)
+    # CRM "Internal Captions": the text-on-screen lines for this campaign's
+    # sound, exactly as typed in the CRM or submitted on an intake form.
+    # NULL means the CRM property has never been read for this campaign; an
+    # empty string means the CRM explicitly holds no captions.
+    internal_captions = Column(Text, nullable=True)
 
     # Chartmetric link for Spotify popularity ("pop score") tracking.
     chartmetric_track_id = Column(BigInteger, nullable=True)
@@ -135,6 +140,7 @@ class Campaign(Base):
             "client_email": self.client_email or "",
             "platform_split": self.platform_split or {},
             "content_types": self.content_types or [],
+            "internal_captions": self.internal_captions,
             "chartmetric_track_id": self.chartmetric_track_id,
             "chartmetric_link": self.chartmetric_link or "",
         }
