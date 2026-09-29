@@ -30,6 +30,7 @@ from campaign_manager.utils.helpers import (
     load_json,
     save_json,
     video_posted_before_start,
+    canonical_http_url,
 )
 from campaign_manager.utils.budget import calc_budget, calc_cpm, calc_stats, to_number
 from campaign_manager.services.campaign_stats import (
@@ -623,6 +624,46 @@ def edit_campaign(slug: str):
         )
 
     return jsonify({"ok": True, "slug": slug, "message": "Campaign updated."})
+
+@campaigns_bp.put("/api/campaign/<slug>/sound-link")
+def set_campaign_sound_link(slug: str):
+    """Store one unique HTTP(S) link in the campaign's official sound field."""
+    data = request.get_json(silent=True) or {}
+    url = canonical_http_url(data.get("url"))
+    expected_url = data.get("expected_url")
+    if url is None:
+        return jsonify({"error": "Paste a valid HTTP(S) URL.", "code": "invalid_url"}), 400
+    if not isinstance(expected_url, str):
+        return jsonify({"error": "Reload the campaign and try again.", "code": "missing_revision"}), 409
+
+    if _db.is_active():
+        result = _db.set_unique_campaign_sound_url(slug, url, expected_url)
+    else:
+        campaign_dir = ACTIVE_DIR / slug
+        if not campaign_dir.exists():
+            result = "missing"
+        else:
+            meta = load_json(campaign_dir / "campaign.json")
+            if (meta.get("official_sound") or "") != expected_url:
+                result = "conflict"
+            elif any(
+                row["slug"] != slug
+                and canonical_http_url(row["meta"].get("official_sound") or "") == url
+                for row in get_campaigns()
+            ):
+                result = "duplicate"
+            else:
+                meta["official_sound"] = url
+                save_json(campaign_dir / "campaign.json", meta)
+                result = "updated"
+
+    if result == "missing":
+        return jsonify({"error": "Campaign not found.", "code": "not_found"}), 404
+    if result == "conflict":
+        return jsonify({"error": "This campaign changed. Reload it before saving the link.", "code": "conflict"}), 409
+    if result == "duplicate":
+        return jsonify({"error": "That link already belongs to another campaign.", "code": "duplicate"}), 409
+    return jsonify({"ok": True, "slug": slug, "official_sound": url})
 
 
 # -------------------------------------------------------------------

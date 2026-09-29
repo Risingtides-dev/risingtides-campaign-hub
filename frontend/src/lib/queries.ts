@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { api } from "./api"
-import type { ScrapeStatus, JobScrapeStatus, BreakerLens, LibraryWindow, CreatorRef } from "./types"
+import type { ScrapeStatus, JobScrapeStatus, BreakerLens, LibraryWindow, CreatorRef, CampaignDetail } from "./types"
 
 // Query keys
 export const keys = {
@@ -98,6 +98,20 @@ export function useEditCampaign(slug: string) {
     mutationFn: (data: Record<string, unknown>) =>
       api.editCampaign(slug, data),
     onSuccess: () => {
+      qc.invalidateQueries({ queryKey: keys.campaign(slug) })
+      qc.invalidateQueries({ queryKey: keys.campaigns })
+    },
+  })
+}
+
+export function useSetCampaignSoundLink(slug: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (data: Parameters<typeof api.setCampaignSoundLink>[1]) =>
+      api.setCampaignSoundLink(slug, data),
+    onSuccess: (data) => {
+      qc.setQueryData<CampaignDetail>(keys.campaign(slug), (campaign) =>
+        campaign ? { ...campaign, official_sound: data.official_sound } : campaign)
       qc.invalidateQueries({ queryKey: keys.campaign(slug) })
       qc.invalidateQueries({ queryKey: keys.campaigns })
     },

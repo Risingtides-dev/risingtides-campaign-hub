@@ -171,6 +171,48 @@ class TestEditCampaign:
         assert resp.status_code == 200
 
 
+class TestCampaignSoundLink:
+    def test_stores_one_canonical_http_url_without_mutating_sound_id(self, client, db):
+        _create(client, official_sound="https://old.example/sound", title="First - Song")
+        before = db.get_campaign("first_song")["sound_id"]
+        response = client.put("/api/campaign/first_song/sound-link", json={
+            "url": " HTTPS://Example.COM:443/music/123#details ",
+            "expected_url": "https://old.example/sound",
+        })
+        assert response.status_code == 200
+        assert response.get_json()["official_sound"] == "https://example.com/music/123"
+        saved = db.get_campaign("first_song")
+        assert saved["official_sound"] == "https://example.com/music/123"
+        assert saved["sound_id"] == before
+
+    @pytest.mark.parametrize("url", ["", "not a link", "ftp://example.com/x", "https://user:pass@example.com/x"])
+    def test_rejects_non_http_urls(self, client, url):
+        _create(client)
+        response = client.put("/api/campaign/sam_barber_fever_dream/sound-link", json={
+            "url": url, "expected_url": "",
+        })
+        assert response.status_code == 400
+        assert response.get_json()["code"] == "invalid_url"
+
+    def test_rejects_a_link_already_used_by_another_campaign(self, client):
+        _create(client, title="First - Song", official_sound="https://EXAMPLE.com:443/music/123#old")
+        _create(client, title="Second - Song")
+        response = client.put("/api/campaign/second_song/sound-link", json={
+            "url": "https://example.com/music/123", "expected_url": "",
+        })
+        assert response.status_code == 409
+        assert response.get_json()["code"] == "duplicate"
+
+    def test_rejects_a_stale_browser_edit_without_overwriting(self, client, db):
+        _create(client, official_sound="https://example.com/current")
+        response = client.put("/api/campaign/sam_barber_fever_dream/sound-link", json={
+            "url": "https://example.com/new", "expected_url": "https://example.com/old",
+        })
+        assert response.status_code == 409
+        assert response.get_json()["code"] == "conflict"
+        assert db.get_campaign("sam_barber_fever_dream")["official_sound"] == "https://example.com/current"
+
+
 class TestCreatorNichesRoundtrip:
     """Regression: niches field was omitted from campaign_detail creator response,
     causing the frontend to silently overwrite stored niches with [] on every edit."""
