@@ -968,6 +968,7 @@ export interface PopScore {
     end_is_to_date: boolean; followup_is_to_date: boolean
     recounts?: AttributionRecount[]
     unusual?: AttributionUnusual[]
+    adjusted?: boolean
   }
   phase?: AttributionPhase
   popularity?: {
@@ -996,6 +997,7 @@ export interface PopScore {
     lift_pct_followup: number | null
     recounts?: AttributionRecount[]
     unusual?: AttributionUnusual[]
+    adjusted?: boolean
     now?: number | null; now_date?: string | null; change_since_start?: number | null; change_since_end?: number | null
   }
   streams_history?: AttributionStreamsPoint[]

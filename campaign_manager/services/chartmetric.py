@@ -270,6 +270,8 @@ def _date_gap(a, b):
 def _clean_points(data):
     points = []
     for p in data:
+        if not isinstance(p, dict):
+            continue
         stamp = p.get("timestp")
         try:
             day = stamp[:10]

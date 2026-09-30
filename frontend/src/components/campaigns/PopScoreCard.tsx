@@ -35,6 +35,28 @@ const pct = (v: number | null | undefined) => v == null ? "N/A" : `${v > 0 ? "+"
 const compact = (v: number | null | undefined) => v == null ? "—" : Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(v)
 const rate = (v: number | null | undefined) => v == null ? "—" : Math.abs(v) < 1000 ? Math.round(v).toLocaleString("en") : compact(v)
 const date = (v?: string) => v ? new Date(`${v}T00:00:00`).toLocaleDateString("en", { month: "short", day: "numeric", year: "numeric" }) : "—"
+const shortDate = (v: string) => new Date(`${v}T00:00:00`).toLocaleDateString("en", { month: "short", day: "numeric" })
+const signedCompact = (v: number) => `${v > 0 ? "+" : v < 0 ? "−" : ""}${compact(Math.abs(v))}`
+
+function anomalyNotes(metric: "streams" | "ugc", data: PopScore) {
+  const block = data[metric]
+  const unit = metric === "streams" ? "streams" : "TikTok videos"
+  const recounts = block?.recounts ?? []
+  const unusual = block?.unusual ?? []
+  const summary = (items: typeof recounts, kind: "recount" | "unusual") => {
+    const largestPositive = items.filter(item => item.change > 0).reduce<typeof items[number] | undefined>((largest, item) => !largest || item.change > largest.change ? item : largest, undefined)
+    const largestByMagnitude = items.reduce<typeof items[number] | undefined>((largest, item) => !largest || Math.abs(item.change) > Math.abs(largest.change) ? item : largest, undefined)
+    const largest = largestPositive ?? largestByMagnitude
+    if (kind === "unusual" && items.length > 1) {
+      return <p key={`${metric}-${kind}`} title={items.map(item => `${shortDate(item.date)} (${signedCompact(item.change)} ${unit})`).join("; ")} className="text-[10px] text-rt-fg-tertiary">{items.length} unusual jumps counted · largest {signedCompact(largest!.change)} on {shortDate(largest!.date)}</p>
+    }
+    if (kind === "recount" && items.length > 2) {
+      return <p key={`${metric}-${kind}`} title={items.map(item => `${shortDate(item.date)} (${signedCompact(item.change)} ${unit})`).join("; ")} className="text-[10px] text-rt-fg-tertiary">{items.length} Chartmetric recounts not counted · largest {signedCompact(largest!.change)} on {shortDate(largest!.date)}</p>
+    }
+    return items.map(item => <p key={`${metric}-${kind}-${item.date}-${item.change}`} className="text-[10px] text-rt-fg-tertiary">{kind === "unusual" ? `Unusual jump on ${shortDate(item.date)} (${signedCompact(item.change)} ${unit}) — counted` : `Chartmetric recount on ${date(item.date)} (${signedCompact(item.change)} ${unit}) not counted`}</p>)
+  }
+  return <>{summary(recounts, "recount")}{summary(unusual, "unusual")}</>
+}
 
 // eslint-disable-next-line react-refresh/only-export-components
 export function formatTrendTooltip(point: { date: string; value?: number | null; smoothed?: boolean; count?: number; recount?: boolean }, mode: TrendMode) {
@@ -76,10 +98,11 @@ function PopScoreChart({ data }: { data: PopScore }) {
     return () => observer.disconnect()
   }, [chartElement])
   const prepared = prepareTrendData(data, mode)
-  const chartData = prepared.points
-  const points = prepared.points.filter(p => p.value != null)
-  const sameBounds = !!data.start_date && data.start_date === data.end_date
   const today = new Date().setHours(0, 0, 0, 0)
+  const throughToday = new Set(prepared.events.filter(event => event.time <= today).map(event => event.date))
+  const chartData = prepared.points.map(point => prepared.events.some(event => event.date === point.date) && !throughToday.has(point.date) ? { ...point, postY: null } : point)
+  const points = chartData.filter(p => p.value != null)
+  const sameBounds = !!data.start_date && data.start_date === data.end_date
   const dates = [...points.map(point => point.time), ...prepared.events.filter(event => event.time <= today).map(event => event.time)]
   const min = dates.length ? Math.min(...dates) : 0
   const max = dates.length ? Math.max(...dates) : 0
@@ -181,7 +204,9 @@ export function PopScoreCard({ slug, tracker_url }: { slug: string; tracker_url?
           "Streams", streams?.start_total, streams?.end_total, streams?.followup_total, streams?.now, streams?.end_is_to_date, streams?.followup_is_to_date, streams?.gained_campaign, streams?.gained_followup, streams?.change_since_end,
         ], [
           "TikTok videos", data.ugc?.start_total, data.ugc?.end_total, data.ugc?.followup_total, data.ugc?.now, data.ugc?.end_is_to_date, data.ugc?.followup_is_to_date, data.ugc?.gained_campaign, data.ugc?.gained_followup, data.ugc?.change_since_end,
-        ]] as const).map(([label, a, b, c, d, endTd, followTd, changeCampaign, changeFollowup, changeNow]) => <tr key={label} className="border-t border-white/8"><th className="sticky left-0 bg-rt-bg-card py-1.5 text-left font-medium">{label}</th>{[a,b,c,d].map((value,i) => {
+        ]] as const).map(([label, a, b, c, d, endTd, followTd, changeCampaign, changeFollowup, changeNow]) => {
+          const adjusted = label === "Streams" ? streams?.adjusted : label === "TikTok videos" ? data.ugc?.adjusted : false
+          return <tr key={label} className="border-t border-white/8"><th className="sticky left-0 bg-rt-bg-card py-1.5 text-left font-medium">{label}{adjusted && <sup className="ml-0.5 text-[9px] text-rt-fg-tertiary">*</sup>}</th>{[a,b,c,d].map((value,i) => {
           const change = i === 1 ? changeCampaign : i === 2 ? changeFollowup : i === 3 ? changeNow : null
           const block = label === "Popularity" ? pop : label === "Streams" ? streams : data.ugc
           const readingDate = i === 3 ? block?.now_date : undefined
@@ -189,12 +214,12 @@ export function PopScoreCard({ slug, tracker_url }: { slug: string; tracker_url?
           const sameReading = i === 3 && !!readingDate && readingDate === followDate
           const asOf = i === 3 ? block?.now_date : i === 1 ? data.end_date : i === 0 ? data.start_date : undefined
           return <td key={i} className="py-1.5 text-right tabular-nums">{i === 3 && d != null && d === c && sameReading ? <span className="text-rt-fg-tertiary">same as +28 days</span> : value == null ? "—" : label === "Popularity" ? num(value) : compact(value)}{i === 1 && endTd && <> <span className="text-[10px] text-rt-fg-tertiary">to date</span></>}{i === 2 && followTd && <> <span className="text-[10px] text-rt-fg-tertiary">to date</span></>}{i === 3 && asOf && <span className="block text-[10px] text-rt-fg-tertiary">as of {date(asOf)}</span>}{change != null && !sameReading && <span className="block text-[10px] text-rt-fg-tertiary">{change > 0 ? "+" : ""}{label === "Popularity" ? num(change) : compact(change)} {i === 1 ? "during campaign" : "since end"}</span>}</td>
-        })}</tr>)}
+        })}</tr>})}
       </tbody></table></div>
+      {(streams?.adjusted || data.ugc?.adjusted) && <p className="text-[10px] text-rt-fg-tertiary">* Totals are as reported; changes leave out Chartmetric recounts.</p>}
       {!data.streams_error && <p className="text-[11px] text-rt-fg-tertiary">Daily streams {rate(streams?.baseline_daily)} → {rate(streams?.campaign_daily)} during ({pct(streams?.lift_pct_campaign)}){streams?.followup_daily != null ? ` → ${rate(streams.followup_daily)} after` : ""}</p>}
       {!data.ugc_error && <p className="text-[11px] text-rt-fg-tertiary">New TikTok videos/day {rate(data.ugc?.baseline_daily)} → {rate(data.ugc?.campaign_daily)} during ({pct(data.ugc?.lift_pct_campaign)}){data.ugc?.followup_daily != null ? ` → ${rate(data.ugc.followup_daily)} after` : ""}{data.ugc?.gained_campaign != null ? ` · ${compact(data.ugc.gained_campaign)} new during the campaign` : ""}</p>}
-      {[...(data.streams?.recounts ?? []).map(r => ({...r, unit: "streams"})), ...(data.ugc?.recounts ?? []).map(r => ({...r, unit: "TikTok videos"}))].map(r => <p key={`${r.unit}-${r.date}-${r.change}`} className="text-[10px] text-rt-fg-tertiary">Chartmetric recount on {date(r.date)} ({r.change > 0 ? "+" : r.change < 0 ? "−" : ""}{compact(Math.abs(r.change))} {r.unit}) not counted</p>)}
-      {[...(data.streams?.unusual ?? []).map(r => ({...r, unit: "streams"})), ...(data.ugc?.unusual ?? []).map(r => ({...r, unit: "TikTok videos"}))].map(r => <p key={`${r.unit}-${r.date}-${r.change}`} className="text-[10px] text-rt-fg-tertiary">Unusual jump on {date(r.date)} ({r.change > 0 ? "+" : "−"}{compact(Math.abs(r.change))} {r.unit}) — counted</p>)}
+      {anomalyNotes("streams", data)}{anomalyNotes("ugc", data)}
       <div><button type="button" aria-expanded={showTrend} aria-controls={`attribution-trend-${slug}`} className="text-[12px] text-rt-fg-tertiary hover:text-rt-fg" onClick={() => setShowTrend(v => !v)}>{showTrend ? "Hide trend" : "Show trend"}</button><div id={`attribution-trend-${slug}`} hidden={!showTrend} className="mt-2">{showTrend && <PopScoreChart data={data} />}</div></div>
       <div className="flex flex-wrap items-center justify-between gap-2 border-t border-white/8 pt-3 text-[12px] text-rt-fg-tertiary"><span>Shows what happened to the song around the campaign — not proof the campaign caused all of it.</span>{tracker_url && <a href={tracker_url} target="_blank" rel="noopener noreferrer" className="whitespace-nowrap text-rt-magenta hover:underline">Open Tides Tracker ↗</a>}</div>
     </>}

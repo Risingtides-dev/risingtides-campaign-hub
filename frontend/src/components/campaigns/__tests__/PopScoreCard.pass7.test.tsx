@@ -144,11 +144,11 @@ describe('pass7 probes', () => {
   it('shows unusual jumps as muted counted notes', () => {
     const real = { ...espressoWalk, ugc: { ...espressoWalk.ugc, unusual: [{ date: '2026-08-02', change: 51_743 }] } } as unknown as PopScore
     setup(real)
-    expect(document.body.textContent).toContain('Unusual jump on Aug 2, 2026 (+51.7K TikTok videos) — counted')
+    expect(document.body.textContent).toContain('Unusual jump on Aug 2 (+51.7K TikTok videos) — counted')
   })
   it('keeps unusual streams notes', () => {
     const real = { ...espressoWalk, streams: { ...espressoWalk.streams, unusual: [{ date: '2026-08-02', change: 12500 }] } } as unknown as PopScore
     setup(real)
-    expect(document.body.textContent).toContain('Unusual jump on Aug 2, 2026 (+12.5K streams) — counted')
+    expect(document.body.textContent).toContain('Unusual jump on Aug 2 (+12.5K streams) — counted')
   })
 })

@@ -1,9 +1,12 @@
 """Pure campaign attribution calculations for Chartmetric histories."""
 from datetime import date, datetime, timedelta
-from statistics import mean, median
+from statistics import median
 from zoneinfo import ZoneInfo
 
 FOLLOWUP_DAYS = 28
+# Chartmetric recount sizes observed in production histories.
+UGC_RECOUNT_ABS_FLOOR = 10_000
+STREAMS_RECOUNT_ABS_FLOOR = 1_000_000
 
 
 def _day(value):
@@ -77,24 +80,24 @@ def calculate_attribution(popularity, streams, start_date, end_date="", today=No
     in_followup = phase == "followup"
     pop_follow_to_date = bool(in_followup or (follow_target and (pop_latest is None or pop_latest < follow_target)))
     stream_follow_to_date = bool(in_followup or (follow_target and (stream_latest is None or stream_latest < follow_target)))
-    def adjust_recounts(history):
+    def adjust_recounts(history, absolute_floor):
         ordered = _dedupe(history)
         increments = [ordered[i]["value"] - ordered[i-1]["value"] for i in range(1, len(ordered))]
         offsets = [0] * len(ordered)
         recount_indices, found, unusual = set(), [], []
         for i, inc in enumerate(increments, 1):
             previous = ordered[i-1]["value"]
-            is_recount = inc < 0 and abs(inc) > previous * .01
+            is_recount = inc < 0 and abs(inc) > previous * .01 and abs(inc) >= absolute_floor
             candidate = False
             if inc > 0:
                 prior = increments[max(0, i - 15):i - 1]
                 later = increments[i:i + 3]
-                baseline = median(prior) if prior else 0
-                if baseline == 0 and prior:
-                    baseline = mean(prior)
-                candidate = len(prior) >= 5 and (baseline == 0 or inc > 20 * baseline)
-                candidate = candidate and len(later) == 3 and median(later) < inc / 20
-                is_recount = candidate and previous > 0 and inc >= previous * .10
+                pace = median(abs(value) for value in prior) if len(prior) >= 5 else None
+                if pace is not None:
+                    pace = max(1, pace)
+                candidate = pace is not None and inc >= 20 * pace
+                is_recount = (pace is not None and inc >= 50 * pace and inc >= absolute_floor
+                    and len(later) == 3 and median(later) < inc / 20)
                 if candidate and not is_recount:
                     unusual.append({"date": ordered[i]["date"], "change": inc})
             if is_recount:
@@ -104,8 +107,8 @@ def calculate_attribution(popularity, streams, start_date, end_date="", today=No
                 found.append({"date": ordered[i]["date"], "change": inc})
         adjusted = [{**p, "value": p["value"] - offsets[i]} for i, p in enumerate(ordered)]
         return adjusted, found, recount_indices, unusual
-    streams_adj, streams_recounts, streams_recount_indices, streams_unusual = adjust_recounts(streams)
-    ugc_adj, ugc_recounts, ugc_recount_indices, ugc_unusual = adjust_recounts(ugc)
+    streams_adj, streams_recounts, streams_recount_indices, streams_unusual = adjust_recounts(streams, STREAMS_RECOUNT_ABS_FLOOR)
+    ugc_adj, ugc_recounts, ugc_recount_indices, ugc_unusual = adjust_recounts(ugc, UGC_RECOUNT_ABS_FLOOR)
     baseline_daily = _avg(streams_adj, start - timedelta(days=14), start) if start else None
     campaign_daily = _avg(streams_adj, start, end_target) if start else None
     follow_daily = _avg(streams_adj, end, follow_target) if end and follow_target else None
@@ -171,6 +174,7 @@ def calculate_attribution(popularity, streams, start_date, end_date="", today=No
             "change_campaign": pop_end - pop_start if pop_end is not None and pop_start is not None and not same_campaign_reading else None,
             "change_followup": pop_follow - pop_end if pop_follow is not None and pop_end is not None and not same_follow_reading else None},
         "streams": {**block(streams_adj, _value(streams_adj, start) if start else None, _value(streams_adj, end_target), _value(streams_adj, follow_target) if follow_target else None, stream_end_to_date, stream_follow_to_date),
+            "adjusted": bool(streams_recounts),
             "start": stream_start, "end": stream_end, "followup": stream_follow,
             "now": None if phase == "not_started" else (_value(streams, stream_latest) if stream_latest else None),
             "start_total": stream_start, "end_total": stream_end, "end_is_to_date": stream_end_to_date,
@@ -185,6 +189,7 @@ def calculate_attribution(popularity, streams, start_date, end_date="", today=No
             "unusual": None if phase == "not_started" else streams_unusual},
         "streams_history": stream_history,
         "ugc": {**block(ugc_adj, _value(ugc_adj, start) if start else None, _value(ugc_adj, end_target), _value(ugc_adj, follow_target) if follow_target else None, ugc_end_td, ugc_follow_td),
+            "adjusted": bool(ugc_recounts),
             "start": None if phase == "not_started" else ugc_start, "end": None if phase == "not_started" else ugc_end,
             "followup": None if phase == "not_started" else ugc_follow,
             "now": None if phase == "not_started" else (_value(ugc, ugc_latest) if ugc_latest else None),

@@ -95,8 +95,8 @@ Existing fields stay exactly as they are (`linked`, `link`, `chartmetric_track_i
     "followup_daily": 8928.6,       // avg daily streams end_date -> followup_end (or -> latest); null when no follow-up yet
     "lift_pct_campaign": 185.7,     // (campaign_daily - baseline_daily) / baseline_daily * 100; null if baseline null or 0
     "lift_pct_followup": 78.6,      // (followup_daily - baseline_daily) / baseline_daily * 100 — the "rate of impact"
-    "recounts": [],                 // confirmed reporting resets, each {"date", "change"}
-    "unusual": []                   // large growth spikes that are not confirmed resets
+    "recounts": [],                 // excluded steps that meet the recount rule
+    "unusual": []                   // counted jumps ≥20× the normal daily pace
   },
   "streams_history": [
     {"date": "2026-08-01", "total": 1000000, "daily": null},   // daily = total - previous total, divided by day gap; null for first point
@@ -110,8 +110,8 @@ Existing fields stay exactly as they are (`linked`, `link`, `chartmetric_track_i
     "growth_pct_campaign": 40.0, "baseline_daily": 5.0,
     "campaign_daily": 14.3, "followup_daily": 8.9,
     "lift_pct_campaign": 185.7, "lift_pct_followup": 78.6,
-    "recounts": [],                 // confirmed reporting resets
-    "unusual": []                   // large growth spikes that are not confirmed resets
+    "recounts": [],                 // excluded steps that meet the recount rule
+    "unusual": []                   // counted jumps ≥20× the normal daily pace
   },
   "ugc_history": [],                // adjusted daily history; block totals remain raw
   "ugc_error": null,                // present with user-facing text if UGC history fetch failed
@@ -160,7 +160,7 @@ Keep the component file and the track-link form. Card title: **"Song attribution
    never 0. Percentages that are null show "N/A".
 4. **Impact** row: `Avg daily streams — before 5.0K · during 14.3K (+185.7%) · after 8.9K (+78.6% vs before)`.
 5. Chart with a toggle `Popularity | Daily streams`. Vertical reference lines at
-   start, end, follow-up end (only those that exist). Popularity = line (0–100 axis);
+   start, end, follow-up end (only those that exist inside the plotted date range). Popularity = line (0–100 axis);
    daily streams = line/area of `daily`. Chart dates and tooltip labels use the
    same local calendar date basis; coincident campaign start/end uses one
    `Start/End` marker.
@@ -302,17 +302,26 @@ and `true` only on daily points spread across a multi-day change interval.
 `streams_error` and `ugc_error` are omitted on success and included with
 user-facing text when their respective request fails.
 
-For both cumulative `streams` and `ugc`, a negative increment whose magnitude
-exceeds 1% of the previous total is a recount and is excluded from attribution.
-A positive increment is a candidate when it is strictly greater than 20 times
-the median of the previous 14 readings' increments (at least five prior
-increments). If that median is zero, use their mean; if that is also zero, any
-positive increment qualifies. The median of the next three increments must be
-strictly below one twentieth of the candidate, and all three later readings
-must exist. A candidate at least 10% of the previous total is excluded as a
-recount; a smaller candidate remains counted and appears in that block's
-`unusual` array as `{date, change}`. The calculation uses raw readings, never
-Spotify popularity or post dates. `post_events` remain available for the chart.
+For both cumulative `streams` and `ugc`, recount detection uses raw increments
+and never popularity. The normal pace is the median of the absolute increments
+over the previous 14 readings (14 prior increments, requiring at least five);
+if fewer than five exist there is no positive recount candidate, and pace is
+floored at 1. `ABS_FLOOR` reflects observed Chartmetric recount sizes: 10,000
+videos for UGC and 1,000,000 streams. A positive step is excluded as a recount
+only when it is at least 50× pace, the median of the next three increments is
+strictly less than one twentieth of the step (three later readings required),
+and it is at least the metric's absolute floor. Any positive step at least 20×
+pace that is not a recount remains counted and appears in `unusual` as
+`{date, change}`, regardless of its absolute size or reversion. A negative step
+is a recount only when its magnitude is greater than 1% of the previous total
+and at least the absolute floor; otherwise it is counted normally. There is no
+zero-median/mean fallback. `post_events` remain available for the chart.
+
+The `now` cumulative totals remain raw for display. `change_since_start`,
+`change_since_end`, and campaign/follow-up deltas use the recount-adjusted
+series consistently. A cumulative block sets `adjusted: true` when a recount
+falls within the available history range from its first reading through `now`.
+This lets the UI footnote that displayed raw `now` and adjusted changes differ.
 
 `popularity` uses `change_campaign` and `change_followup`; cumulative blocks
 (`streams`, `ugc`) use `gained_campaign`, `gained_followup` and

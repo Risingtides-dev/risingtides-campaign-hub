@@ -143,6 +143,20 @@ class TestClient:
         client, _ = _client_with({"most-history": _resp(200, {"obj": rows})})
         assert client.tiktok_posts_history(1, since=date(2026, 8, 5)) == [{"date": "2026-08-10", "value": 8}]
 
+    def test_all_history_types_skip_non_dict_rows(self):
+        mixed = [None, "x", ["bad"], {"timestp": "2026-09-01", "value": 7}]
+        series = [{"track_domain_id": "main", "data": mixed}]
+        client, _ = _client_with({"most-history": _resp(200, {"obj": series})})
+        expected = [{"date": "2026-09-01", "value": 7}]
+        def safely_matches(call):
+            try:
+                return call() == expected
+            except Exception:
+                return False
+        assert safely_matches(lambda: client.popularity_history(1))
+        assert safely_matches(lambda: client.streams_history(1))
+        assert safely_matches(lambda: client.tiktok_posts_history(1))
+
     def test_streams_keeps_entire_repeat_runs(self):
         rows = [{"track_domain_id": "x", "data": [
             {"timestp": "2026-09-24", "value": 3191203786},
@@ -193,8 +207,14 @@ class TestClient:
     def test_retryable_status_retries_and_succeeds(self, status):
         client, http = _client_with({})
         http.get.side_effect = [_resp(status), _resp(200, {"obj": TRACK_OBJ})]
-        assert client.track_snapshot(1).spotify_popularity == 87
+        sleeps = []
+        with patch.object(cm.time, "sleep", side_effect=lambda seconds: sleeps.append(seconds)):
+            assert client.track_snapshot(1).spotify_popularity == 87
         assert http.get.call_count == 2
+        if status == 401:
+            assert http.post.call_count == 2
+        else:
+            assert sleeps == [2.0]
 
     @pytest.mark.parametrize("status", [401, 429])
     def test_retryable_status_short_circuits_when_deadline_cannot_cover_retry(self, status):
@@ -207,6 +227,20 @@ class TestClient:
              pytest.raises(cm.ChartmetricError):
             client.track_snapshot(1, deadline=100.5)
         assert http.get.call_count == 1
+
+    def test_429_retry_cutoff_reserves_both_two_second_sleep_and_throttle_interval(self):
+        client, http = _client_with({})
+        http.get.side_effect = None
+        http.get.return_value = _resp(429)
+        sleeps = []
+        with patch.object(client, "_throttle"), \
+             patch.object(cm, "MIN_REQUEST_INTERVAL_S", 0.1), \
+             patch.object(cm.time, "monotonic", return_value=100.0), \
+             patch.object(cm.time, "sleep", side_effect=lambda seconds: sleeps.append(seconds)), \
+             pytest.raises(cm.ChartmetricError):
+            client.track_snapshot(1, deadline=102.05)
+        assert http.get.call_count == 1
+        assert sleeps == []
 
     def test_lock_wait_uses_deadline_with_fake_clock(self):
         client, http = _client_with({})
@@ -370,15 +404,20 @@ class TestPopScoreEndpoints:
         assert body["streams_error"] == "Chartmetric is slow — try again shortly"
 
     def test_chartmetric_call_receives_a_real_deadline(self, client):
+        from campaign_manager.blueprints import chartmetric as endpoint
         slug = self._campaign(client)
         fake = self._fake()
-        fake.track_snapshot.side_effect = lambda track_id, *, deadline: (
-            pytest.fail("deadline=None") if deadline is None else cm.TrackSnapshot(
-                118981138, "Espresso", ("Sabrina Carpenter",), 87, 99.3, 3196473434, "img"))
-        with patch.object(cm, "get_client", return_value=fake):
+        deadlines = []
+        def snapshot(track_id, *, deadline):
+            deadlines.append(deadline)
+            return cm.TrackSnapshot(118981138, "Espresso", ("Sabrina Carpenter",), 87, 99.3, 3196473434, "img")
+        fake.track_snapshot.side_effect = snapshot
+        with patch.object(cm, "get_client", return_value=fake), patch.object(endpoint.time, "monotonic", return_value=100.0):
             client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403305"})
             response = client.get(f"/api/campaign/{slug}/pop-score")
         assert response.status_code == 200
+        assert isinstance(deadlines[0], float)
+        assert deadlines[0] == pytest.approx(175.0)
 
     def test_history_uses_21_day_lead_and_retains_baseline_before_14_day_window(self, client):
         slug = self._campaign(client, start="2026-09-01")
@@ -420,6 +459,26 @@ class TestPopScoreEndpoints:
         assert stream_calls and stream_calls[-1].kwargs["params"] == {"type": "streams", "since": "2026-08-11"}
         assert body["linked"] is True
         assert body["streams"]["start_total"] == 80
+
+    def test_real_endpoint_skips_mixed_history_rows_and_returns_200(self, client):
+        slug = self._campaign(client)
+        real, http = _client_with({})
+        mixed_series = [{"track_domain_id": "main", "data": [None, "x", {"timestp": "2026-09-01", "value": 82}]}]
+        def fake_get(url, params=None, headers=None, timeout=None):
+            if url.endswith("/track/118981138"):
+                return _resp(200, {"obj": TRACK_OBJ})
+            if "most-history" in url:
+                return _resp(200, {"obj": mixed_series})
+            return _resp(404)
+        http.get.side_effect = fake_get
+        with patch.object(cm, "get_client", return_value=real):
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "https://chartmetric.com/track/118981138"})
+            response = client.get(f"/api/campaign/{slug}/pop-score")
+        assert response.status_code == 200
+        body = response.get_json()
+        assert body["history"] == [{"date": "2026-09-01", "value": 82}]
+        assert body["streams_history"] == [{"date": "2026-09-01", "total": 82, "daily": None}]
+        assert body["ugc_history"] == [{"date": "2026-09-01", "total": 82, "daily": None}]
 
     def test_release_selection_when_popularity_track_is_not_highest_stream_series(self, client):
         slug = self._campaign(client, title="release-selection pin")
