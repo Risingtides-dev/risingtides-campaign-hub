@@ -93,14 +93,14 @@ Existing fields stay exactly as they are (`linked`, `link`, `chartmetric_track_i
     "followup_daily": 8928.6,       // avg daily streams end_date -> followup_end (or -> latest); null when no follow-up yet
     "lift_pct_campaign": 185.7,     // (campaign_daily - baseline_daily) / baseline_daily * 100; null if baseline null or 0
     "lift_pct_followup": 78.6,      // (followup_daily - baseline_daily) / baseline_daily * 100 — the "rate of impact"
-    "recounts": []                  // cumulative reset steps, each {"date", "change"}
+    "recounts": [],                 // confirmed reporting resets, each {"date", "change"}
+    "unusual": []                   // large growth spikes that are not confirmed resets
   },
   "streams_history": [
     {"date": "2026-08-01", "total": 1000000, "daily": null},   // daily = total - previous total, divided by day gap; null for first point
     {"date": "2026-08-02", "total": 1005000, "daily": 5000}
   ],
   "followup_day": 8,                // only in follow-up; today - end_date, clamped 1..28
-  "end_date_auto": false,           // true when the campaign end date was set automatically
   "streams_error": null,            // present with user-facing text if streams fetch failed
   "ugc": {                          // same cumulative fields and semantics as streams
     "start_total": 100, "end_total": 140, "followup_total": 165,
@@ -108,7 +108,8 @@ Existing fields stay exactly as they are (`linked`, `link`, `chartmetric_track_i
     "growth_pct_campaign": 40.0, "baseline_daily": 5.0,
     "campaign_daily": 14.3, "followup_daily": 8.9,
     "lift_pct_campaign": 185.7, "lift_pct_followup": 78.6,
-    "recounts": []                  // detected cumulative reporting resets
+    "recounts": [],                 // confirmed reporting resets
+    "unusual": []                   // large growth spikes that are not confirmed resets
   },
   "ugc_history": [],                // adjusted daily history; block totals remain raw
   "ugc_error": null,                // present with user-facing text if UGC history fetch failed
@@ -297,6 +298,18 @@ and `true` only on daily points spread across a multi-day change interval.
 
 `streams_error` and `ugc_error` are omitted on success and included with
 user-facing text when their respective request fails.
+
+For both cumulative `streams` and `ugc`, a negative increment whose magnitude
+exceeds 1% of the previous total is a recount and is excluded from attribution.
+A positive increment is a candidate when it exceeds 20 times the median
+absolute increment in the previous 14 days (at least five prior increments),
+and the median of the next three increments is below one twentieth of the
+candidate (at least three later readings). A candidate is excluded as a recount
+only when it is also at least 5% of the previous total and there are no
+campaign `post_events` within one day of its date. Otherwise it remains counted
+and is reported in that block's `unusual` array as `{date, change}`. The endpoint
+supplies that campaign's post dates to the calculation. Recount detection uses
+raw cumulative readings and does not use Spotify popularity.
 
 `popularity` uses `change_campaign` and `change_followup`; cumulative blocks
 (`streams`, `ugc`) use `gained_campaign`, `gained_followup` and

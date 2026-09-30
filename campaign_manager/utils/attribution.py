@@ -47,7 +47,7 @@ def _pct(numerator, baseline):
     return round(numerator / baseline * 100, 1) if baseline is not None and baseline > 0 else None
 
 
-def calculate_attribution(popularity, streams, start_date, end_date="", today=None, ugc=None, completion_status=None):
+def calculate_attribution(popularity, streams, start_date, end_date="", today=None, ugc=None, completion_status=None, post_dates=None):
     today = today or datetime.now(ZoneInfo("America/New_York")).date()
     start = _day(start_date)
     end = _day(end_date)
@@ -77,30 +77,34 @@ def calculate_attribution(popularity, streams, start_date, end_date="", today=No
     in_followup = phase == "followup"
     pop_follow_to_date = bool(in_followup or (follow_target and (pop_latest is None or pop_latest < follow_target)))
     stream_follow_to_date = bool(in_followup or (follow_target and (stream_latest is None or stream_latest < follow_target)))
+    post_days = {_day(d) for d in (post_dates or [])}
     def adjust_recounts(history):
         ordered = _dedupe(history)
         increments = [ordered[i]["value"] - ordered[i-1]["value"] for i in range(1, len(ordered))]
         offsets = [0] * len(ordered)
-        recount_indices, found = set(), []
+        recount_indices, found, unusual = set(), [], []
         for i, inc in enumerate(increments, 1):
             previous = ordered[i-1]["value"]
-            if abs(inc) <= abs(previous) * .01:
-                continue
-            is_recount = inc < 0
+            is_recount = inc < 0 and abs(inc) > abs(previous) * .01
+            candidate = False
             if inc > 0:
                 prior = [abs(x) for x in increments[max(0, i - 15):i - 1]]
                 later = increments[i:i + 3]
                 candidate = len(prior) >= 5 and median(prior) > 0 and inc > 20 * median(prior)
-                is_recount = candidate and len(later) == 3 and median(later) < inc / 20
+                candidate = candidate and len(later) == 3 and median(later) < inc / 20
+                near_post = any(post and abs((post - _day(ordered[i]["date"])).days) <= 1 for post in post_days)
+                is_recount = candidate and previous > 0 and inc >= previous * .05 and not near_post
+                if candidate and not is_recount:
+                    unusual.append({"date": ordered[i]["date"], "change": inc})
             if is_recount:
                 recount_indices.add(i)
                 for k in range(i, len(ordered)):
                     offsets[k] += inc
                 found.append({"date": ordered[i]["date"], "change": inc})
         adjusted = [{**p, "value": p["value"] - offsets[i]} for i, p in enumerate(ordered)]
-        return adjusted, found, recount_indices
-    streams_adj, streams_recounts, streams_recount_indices = adjust_recounts(streams)
-    ugc_adj, ugc_recounts, ugc_recount_indices = adjust_recounts(ugc)
+        return adjusted, found, recount_indices, unusual
+    streams_adj, streams_recounts, streams_recount_indices, streams_unusual = adjust_recounts(streams)
+    ugc_adj, ugc_recounts, ugc_recount_indices, ugc_unusual = adjust_recounts(ugc)
     baseline_daily = _avg(streams_adj, start - timedelta(days=14), start) if start else None
     campaign_daily = _avg(streams_adj, start, end_target) if start else None
     follow_daily = _avg(streams_adj, end, follow_target) if end and follow_target else None
@@ -176,7 +180,8 @@ def calculate_attribution(popularity, streams, start_date, end_date="", today=No
             "baseline_daily": baseline_daily, "campaign_daily": campaign_daily, "followup_daily": follow_daily,
             "lift_pct_campaign": _pct(campaign_daily - baseline_daily, baseline_daily) if campaign_daily is not None and baseline_daily is not None else None,
             "lift_pct_followup": _pct(follow_daily - baseline_daily, baseline_daily) if follow_daily is not None and baseline_daily is not None else None,
-            "recounts": None if phase == "not_started" else streams_recounts},
+            "recounts": None if phase == "not_started" else streams_recounts,
+            "unusual": None if phase == "not_started" else streams_unusual},
         "streams_history": stream_history,
         "ugc": {**block(ugc_adj, _value(ugc_adj, start) if start else None, _value(ugc_adj, end_target), _value(ugc_adj, follow_target) if follow_target else None, ugc_end_td, ugc_follow_td),
             "start": None if phase == "not_started" else ugc_start, "end": None if phase == "not_started" else ugc_end,
@@ -192,7 +197,8 @@ def calculate_attribution(popularity, streams, start_date, end_date="", today=No
             "followup_daily": None if phase == "not_started" else ugc_follow_daily,
             "lift_pct_campaign": None if phase == "not_started" else (_pct(ugc_campaign_daily - ugc_baseline_daily, ugc_baseline_daily) if ugc_campaign_daily is not None and ugc_baseline_daily is not None else None),
             "lift_pct_followup": None if phase == "not_started" else (_pct(ugc_follow_daily - ugc_baseline_daily, ugc_baseline_daily) if ugc_follow_daily is not None and ugc_baseline_daily is not None else None),
-            "recounts": None if phase == "not_started" else ugc_recounts},
+            "recounts": None if phase == "not_started" else ugc_recounts,
+            "unusual": None if phase == "not_started" else ugc_unusual},
         "ugc_history": ugc_history,
         "data_as_of": data_as_of,
         "followup_day": max(1, min(FOLLOWUP_DAYS, (today - end).days)) if phase == "followup" and end else None,

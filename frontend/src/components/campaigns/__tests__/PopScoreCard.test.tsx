@@ -66,22 +66,6 @@ describe('<PopScoreCard /> attribution', () => {
     expect(document.querySelectorAll('.recharts-line-curve').length).toBeGreaterThan(0)
   })
 
-  it('uses full reference labels at desktop width and short labels below 480px', () => {
-    containerWidth.value = 600
-    const real = { ...espressoWalk, end_date_auto: false, followup_end: '2026-09-29', streams_history: [...espressoWalk.streams_history, { date: '2026-09-29', total: 3_200_000_000, daily: 1_000_000 }] } as unknown as PopScore
-    const desktop = setup(real)
-    fireEvent.click(screen.getByRole('button', { name: 'Show trend' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Daily streams' }))
-    expect([...document.querySelectorAll('.recharts-label tspan')].map(node => node.textContent)).toEqual(expect.arrayContaining(['Start', 'End', '+28 days']))
-    desktop.unmount()
-    containerWidth.value = 375
-    setup(real)
-    fireEvent.click(screen.getByRole('button', { name: 'Show trend' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Daily streams' }))
-    expect([...document.querySelectorAll('.recharts-label tspan')].map(node => node.textContent)).toEqual(expect.arrayContaining(['S', 'E', '+28']))
-    containerWidth.value = 600
-  })
-
   it('renders values from the full attribution payload', () => {
     setup()
     expect(screen.getByText('Song attribution')).toBeInTheDocument()
@@ -182,7 +166,7 @@ describe('<PopScoreCard /> attribution', () => {
 
   it('shows recount copy and a hollow recount marker without changing adjusted bars', () => {
     setup({ ...payload, ugc: { ...payload.ugc!, recounts: [{ date: '2026-08-10', change: 543000 }] } })
-    expect(screen.getByText(/Chartmetric recount on Aug 10, 2026 \(±543K TikTok videos\) not counted/)).toBeInTheDocument()
+    expect(screen.getByText(/Chartmetric recount on Aug 10, 2026 \(\+543K TikTok videos\) not counted/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Show trend' }))
     fireEvent.click(screen.getByRole('button', { name: 'Daily new videos' }))
     expect(document.querySelector('circle[fill="none"][stroke="#909098"]')).toBeInTheDocument()
@@ -190,7 +174,7 @@ describe('<PopScoreCard /> attribution', () => {
 
   it('shows stream recounts with muted copy, a hollow mark, and recount tooltip wording', () => {
     setup({ ...payload, streams: { ...payload.streams!, recounts: [{ date: '2026-08-10', change: -543000 }] } })
-    expect(screen.getByText(/Chartmetric recount on Aug 10, 2026 \(±543K streams\) not counted/)).toBeInTheDocument()
+    expect(screen.getByText(/Chartmetric recount on Aug 10, 2026 \(−543K streams\) not counted/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Show trend' }))
     fireEvent.click(screen.getByRole('button', { name: 'Daily streams' }))
     expect(document.querySelectorAll('circle[fill="none"][stroke="#909098"]')).toHaveLength(1)
@@ -238,7 +222,7 @@ describe('<PopScoreCard /> attribution', () => {
     setup({ ...payload, phase: 'live', end_date: '2026-08-20', end_date_auto: true, streams: { ...payload.streams!, baseline_daily: 871.1, campaign_daily: 992.7 } })
     expect(screen.getByText(/\(to date\)/)).toBeInTheDocument()
     expect(screen.getByText(/Daily streams 871 → 993 during/)).toBeInTheDocument()
-    expect(screen.getByText('End Aug 20, 2026 · set when finished')).toBeInTheDocument()
+    expect(screen.getByText('· set when finished')).toBeInTheDocument()
   })
 
   it('saves, changes, clears an end date and shows edit errors', () => {

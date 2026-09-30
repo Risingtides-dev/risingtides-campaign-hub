@@ -936,6 +936,7 @@ export interface AttributionStreamsPoint {
   smoothed?: boolean
 }
 export interface AttributionRecount { date: string; change: number }
+export interface AttributionUnusual { date: string; change: number }
 
 export type AttributionPhase = "not_started" | "live" | "followup" | "complete" | "no_start" | "finished_no_end"
 
@@ -966,6 +967,7 @@ export interface PopScore {
     gained_campaign: number | null; gained_followup: number | null; growth_pct_campaign?: number | null; lift_pct_campaign: number | null; lift_pct_followup?: number | null
     end_is_to_date: boolean; followup_is_to_date: boolean
     recounts?: AttributionRecount[]
+    unusual?: AttributionUnusual[]
   }
   phase?: AttributionPhase
   popularity?: {
@@ -993,6 +995,7 @@ export interface PopScore {
     lift_pct_campaign: number | null
     lift_pct_followup: number | null
     recounts?: AttributionRecount[]
+    unusual?: AttributionUnusual[]
     now?: number | null; now_date?: string | null; change_since_start?: number | null; change_since_end?: number | null
   }
   streams_history?: AttributionStreamsPoint[]

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import time
+import requests
 from datetime import date, datetime, timedelta
 
 from flask import Blueprint, jsonify, request
@@ -94,16 +95,28 @@ def get_pop_score(slug: str):
         streams = client.streams_history(row["track_id"], since=_history_start(row["start_date"]), track_domain_id=pop_track_domain_id, deadline=deadline)
     except Exception as e:
         log.exception("streams history fetch failed for %s", slug)
-        streams, streams_error = [], "Chartmetric is slow — try again shortly" if isinstance(e, TimeoutError) else "Streams history is temporarily unavailable."
+        streams, streams_error = [], "Chartmetric is slow — try again shortly" if isinstance(e, (TimeoutError, requests.Timeout, requests.ConnectionError)) else "Streams history is temporarily unavailable."
     try:
         if too_slow():
             raise TimeoutError
         ugc = client.tiktok_posts_history(row["track_id"], since=_history_start(row["start_date"]), deadline=deadline)
     except Exception as e:
         log.exception("TikTok posts history fetch failed for %s", slug)
-        ugc, ugc_error = [], "Chartmetric is slow — try again shortly" if isinstance(e, TimeoutError) else "TikTok video history is temporarily unavailable."
+        ugc, ugc_error = [], "Chartmetric is slow — try again shortly" if isinstance(e, (TimeoutError, requests.Timeout, requests.ConnectionError)) else "TikTok video history is temporarily unavailable."
     try:
-        attribution = calculate_attribution(history, streams, row["start_date"], row["end_date"], ugc=ugc, completion_status=row["completion_status"], today=datetime.now(_db.EST).date())
+        from campaign_manager.models import MatchedVideo
+        with _db.get_session() as s:
+            campaign = s.query(Campaign).filter_by(slug=slug).first()
+            post_dates = []
+            if campaign:
+                for video in s.query(MatchedVideo).filter(MatchedVideo.campaign_id == campaign.id, MatchedVideo.dismissed_at.is_(None)).all():
+                    raw = (video.upload_date or "").strip()
+                    day = raw[:4] + "-" + raw[4:6] + "-" + raw[6:8] if len(raw) == 8 and raw.isdigit() else raw[:10]
+                    try:
+                        post_dates.append(date.fromisoformat(day).isoformat())
+                    except ValueError:
+                        continue
+        attribution = calculate_attribution(history, streams, row["start_date"], row["end_date"], ugc=ugc, completion_status=row["completion_status"], today=datetime.now(_db.EST).date(), post_dates=post_dates)
     except Exception:
         log.exception("attribution calculation failed for %s", slug)
         return jsonify({"linked": True, "link": row["link"], "error": "Couldn't calculate song attribution."}), 502

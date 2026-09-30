@@ -23,11 +23,21 @@ export function trendEventTicks(data: PopScore) {
 }
 
 export function prepareTrendData(data: PopScore, mode: TrendMode) {
-  const points = selectTrendSeries(data, mode)
+  const series = selectTrendSeries(data, mode)
   const events = trendEventTicks(data)
+  const rows = new Map(series.map(point => [point.date, point]))
+  for (const event of events) {
+    if (!rows.has(event.date)) rows.set(event.date, { date: event.date, time: event.time, value: null })
+  }
+  const points = [...rows.values()].sort((a, b) => a.time - b.time)
   const counts = new Map(events.map(event => [event.date, event.count]))
   const recounts = new Set((mode === "streams" ? data.streams?.recounts : mode === "ugc" ? data.ugc?.recounts : [])?.map(r => r.date) ?? [])
   const domain = mode === "popularity" ? zoomedPopularityDomain(points) : undefined
+  if (mode === "popularity" && domain) {
+    const values = points.flatMap(point => point.value == null ? [] : [point.value])
+    const upper = Math.min(100, Math.max(...values) + 3)
+    domain[1] = upper
+  }
   const postY = mode === "popularity" ? domain?.[1] : Math.max(0, ...points.flatMap(p => p.value == null ? [] : [p.value]))
   return { points: points.map(point => ({ ...point, postCount: counts.get(point.date), postY: counts.has(point.date) ? postY : null, recountY: recounts.has(point.date) ? 0 : null })), events, domain }
 }

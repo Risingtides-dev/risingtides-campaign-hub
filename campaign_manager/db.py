@@ -92,6 +92,26 @@ def _sql_greatest(current, incoming):
     return fn(func.coalesce(current, 0), func.coalesce(incoming, 0))
 
 
+def _self_heal_chartmetric_columns():
+    """Add and normalize the additive Chartmetric campaign columns."""
+    try:
+        with _SessionLocal() as s:
+            sa = __import__("sqlalchemy")
+            statements = (
+                "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS chartmetric_track_id BIGINT NULL",
+                "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS chartmetric_link TEXT DEFAULT ''",
+                "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS end_date VARCHAR(20) DEFAULT ''",
+                "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS end_date_auto BOOLEAN DEFAULT FALSE",
+                "UPDATE campaigns SET end_date_auto = FALSE WHERE end_date_auto IS NULL",
+                "ALTER TABLE campaigns ALTER COLUMN end_date_auto SET DEFAULT FALSE",
+            )
+            for statement in statements:
+                s.execute(sa.text(statement))
+            s.commit()
+    except Exception:
+        pass
+
+
 def init(database_url: Optional[str] = None):
     """Initialize the database connection and create tables."""
     global _engine, _SessionLocal
@@ -288,30 +308,7 @@ def init(database_url: Optional[str] = None):
         )
 
     # Chartmetric track link for pop-score (Spotify popularity) tracking.
-    try:
-        with _SessionLocal() as s:
-            sa = __import__("sqlalchemy")
-            s.execute(sa.text(
-                "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS chartmetric_track_id BIGINT NULL"
-            ))
-            s.execute(sa.text(
-                "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS chartmetric_link TEXT DEFAULT ''"
-            ))
-            s.execute(sa.text(
-                "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS end_date VARCHAR(20) DEFAULT ''"
-            ))
-            s.execute(sa.text(
-                "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS end_date_auto BOOLEAN DEFAULT FALSE"
-            ))
-            s.execute(sa.text(
-                "UPDATE campaigns SET end_date_auto = FALSE WHERE end_date_auto IS NULL"
-            ))
-            s.execute(sa.text(
-                "ALTER TABLE campaigns ALTER COLUMN end_date_auto SET DEFAULT FALSE"
-            ))
-            s.commit()
-    except Exception:
-        pass
+    _self_heal_chartmetric_columns()
 
     # Add tracking-workflow + match metadata to matched_videos.
     # - first_seen_at: when the cron first matched this video (used by

@@ -194,6 +194,39 @@ class TestClient:
         http.get.side_effect = [_resp(429), _resp(200, {"obj": TRACK_OBJ})]
         assert client.track_snapshot(1).spotify_popularity == 87
 
+    @pytest.mark.parametrize("status", [401, 429])
+    def test_retryable_status_short_circuits_when_deadline_cannot_cover_retry(self, status):
+        client, http = _client_with({})
+        http.get.return_value = _resp(status)
+        with patch.object(cm.time, "monotonic", return_value=100), \
+             pytest.raises(cm.ChartmetricError):
+            client.track_snapshot(1, deadline=100.5)
+        assert http.get.call_count == 1
+
+    def test_lock_wait_uses_deadline_with_fake_clock(self):
+        client, http = _client_with({})
+        client._lock.acquire()
+        try:
+            with patch.object(cm.time, "monotonic", return_value=100), \
+                 pytest.raises(TimeoutError, match="deadline"):
+                client.track_snapshot(1, deadline=100.01)
+        finally:
+            client._lock.release()
+        http.get.assert_not_called()
+
+    def test_token_request_skips_http_when_deadline_is_expired(self):
+        client, http = _client_with({})
+        with patch.object(cm.time, "monotonic", return_value=100), \
+             pytest.raises(TimeoutError, match="deadline"):
+            client.track_snapshot(1, deadline=99)
+        http.post.assert_not_called()
+
+    def test_token_http_timeout_is_clamped_to_deadline(self):
+        client, http = _client_with({})
+        with patch.object(cm.time, "monotonic", return_value=100):
+            client._token(deadline=100.25)
+        assert http.post.call_args.kwargs["timeout"] == pytest.approx(0.25)
+
     def test_bad_refresh_token_raises_friendly_error(self):
         client, http = _client_with({})
         http.post.return_value = _resp(401, {"error": "bad"})
@@ -253,6 +286,45 @@ class TestPopScoreEndpoints:
         assert body["phase"] == "live"
         assert body["streams"]["start_total"] == 170
         assert body["streams_history"][1]["daily"] == 5.0
+
+    def test_refresh_resolved_field_preserves_finish_end_date_and_budget_edits(self, client):
+        from campaign_manager import db
+        from campaign_manager.blueprints.campaigns import _save_resolved_campaign_field
+        slug = self._campaign(client)
+        stale = db.get_campaign(slug)
+        client.post(f"/api/campaign/{slug}/edit", json={"completion_status": "completed"})
+        client.post(f"/api/campaign/{slug}/edit", json={"budget": 2500})
+        finished = db.get_campaign(slug)
+        stale["sound_id"] = "resolved-123"
+        _save_resolved_campaign_field(slug, stale, "sound_id")
+        current = db.get_campaign(slug)
+        assert current["sound_id"] == "resolved-123"
+        assert current["completion_status"] == "completed"
+        assert current["end_date"] == finished["end_date"]
+        assert current["budget"] == 2500
+
+    @pytest.mark.parametrize("failure", [__import__("requests").Timeout("slow"), __import__("requests").ConnectionError("offline")])
+    def test_stream_transport_errors_use_slow_message(self, client, failure):
+        from campaign_manager.blueprints import chartmetric as endpoint
+        slug = self._campaign(client)
+        fake = self._fake()
+        fake.streams_history.side_effect = failure
+        with patch.object(cm, "get_client", return_value=fake), patch.object(endpoint, "datetime") as clock:
+            clock.now.return_value = datetime(2026, 9, 29, tzinfo=timezone.utc)
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403305"})
+            body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
+        assert body["streams_error"] == "Chartmetric is slow — try again shortly"
+
+    def test_chartmetric_call_receives_a_real_deadline(self, client):
+        slug = self._campaign(client)
+        fake = self._fake()
+        fake.track_snapshot.side_effect = lambda track_id, *, deadline: (
+            pytest.fail("deadline=None") if deadline is None else cm.TrackSnapshot(
+                118981138, "Espresso", ("Sabrina Carpenter",), 87, 99.3, 3196473434, "img"))
+        with patch.object(cm, "get_client", return_value=fake):
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403305"})
+            response = client.get(f"/api/campaign/{slug}/pop-score")
+        assert response.status_code == 200
 
     def test_history_uses_21_day_lead_and_retains_baseline_before_14_day_window(self, client):
         slug = self._campaign(client, start="2026-09-01")
@@ -608,6 +680,20 @@ class TestPopScoreEndpoints:
         assert detail["end_date_auto"] is False
         summary = next(row for row in client.get("/api/campaigns").get_json() if row["slug"] == slug)
         assert summary["end_date_auto"] is False
+
+    def test_automatic_end_date_flag_is_exposed_on_popscore_detail_and_list(self, client):
+        slug = self._campaign(client, start="2026-09-01")
+        client.post(f"/api/campaign/{slug}/edit", json={"completion_status": "completed"})
+        fake = self._fake()
+        with patch.object(cm, "get_client", return_value=fake):
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403305"})
+            score = client.get(f"/api/campaign/{slug}/pop-score").get_json()
+        detail = client.get(f"/api/campaign/{slug}").get_json()
+        summary = next(row for row in client.get("/api/campaigns?active=false").get_json() if row["slug"] == slug)
+        assert score["end_date_auto"] is True
+        assert detail["end_date_auto"] is True
+        assert detail["meta"]["end_date_auto"] is True
+        assert summary["end_date_auto"] is True
 
     def test_sound_refresh_interleaving_preserves_new_completion_fields(self, client):
         from campaign_manager import db

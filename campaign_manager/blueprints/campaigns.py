@@ -244,6 +244,14 @@ def _save_meta(slug: str, meta: Dict, campaign_dir=None):
         save_json(campaign_dir / "campaign.json", meta)
 
 
+def _save_resolved_campaign_field(slug: str, meta: Dict, field: str, campaign_dir=None):
+    """Persist one sound-resolution result without overwriting concurrent edits."""
+    if _db.is_active():
+        _db.update_campaign_fields(slug, {field: meta[field]})
+    else:
+        _save_meta(slug, meta, campaign_dir)
+
+
 def get_campaigns(completion: Optional[str] = None) -> List[Dict]:
     """Return campaigns with budget/stats attached.
 
@@ -896,13 +904,13 @@ def _refresh_stats_inner(slug: str):
         if html_id and html_id != sound_id_raw:
             sound_id_raw = html_id
             meta["sound_id"] = html_id
-            _save_meta(slug, meta, campaign_dir)
+            _save_resolved_campaign_field(slug, meta, "sound_id", campaign_dir)
         # Auto-populate artist/song from HTML title if empty
         if not artist or not song:
             if html_title and not song:
                 song = html_title
                 meta["song"] = song
-                _save_meta(slug, meta, campaign_dir)
+                _save_resolved_campaign_field(slug, meta, "song", campaign_dir)
 
     # Resolve the sound ID -- if it's a URL, extract the real numeric ID
     sound_id = sound_id_raw
@@ -912,7 +920,7 @@ def _refresh_stats_inner(slug: str):
         if resolved_id and resolved_id != sound_id_raw:
             sound_id = resolved_id
             meta["sound_id"] = resolved_id
-            _save_meta(slug, meta, campaign_dir)
+            _save_resolved_campaign_field(slug, meta, "sound_id", campaign_dir)
 
     # If sound_id is still a URL (couldn't resolve), try HTML extraction
     if sound_id and "tiktok.com/" in sound_id:
@@ -925,7 +933,7 @@ def _refresh_stats_inner(slug: str):
                 sound_id = html_id
                 ref_song_title = html_title
                 meta["sound_id"] = html_id
-                _save_meta(slug, meta, campaign_dir)
+                _save_resolved_campaign_field(slug, meta, "sound_id", campaign_dir)
 
     # Resolve additional sounds
     additional_sounds = meta.get("additional_sounds", [])

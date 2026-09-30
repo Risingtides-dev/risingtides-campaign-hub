@@ -54,6 +54,20 @@ class TestCampaignCrud:
         db.update_campaign_fields("my_campaign", {"completion_status": "completed"})
         assert db.get_campaign("my_campaign")["completion_status"] == "completed"
 
+    def test_chartmetric_self_heal_issues_end_date_auto_statements(self, monkeypatch):
+        from campaign_manager import db as db_module
+        executed = []
+        class Session:
+            def __enter__(self): return self
+            def __exit__(self, *_): pass
+            def execute(self, statement): executed.append(str(statement))
+            def commit(self): pass
+        monkeypatch.setattr(db_module, "_SessionLocal", lambda: Session())
+        db_module._self_heal_chartmetric_columns()
+        assert any("ADD COLUMN IF NOT EXISTS end_date_auto BOOLEAN DEFAULT FALSE" in sql for sql in executed)
+        assert any("UPDATE campaigns SET end_date_auto = FALSE WHERE end_date_auto IS NULL" in sql for sql in executed)
+        assert any("ALTER COLUMN end_date_auto SET DEFAULT FALSE" in sql for sql in executed)
+
     def test_update_campaign_stats(self, db):
         _make_campaign(db)
         db.update_campaign_stats("my_campaign", total_views=999, total_likes=10)
