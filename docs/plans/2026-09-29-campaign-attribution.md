@@ -205,3 +205,88 @@ Direction from EC after v1 review rounds:
   since start and end. The endpoint also returns campaign-scoped post event counts.
 - The frontend presents a muted headline and compact Start / End / +28 days / Now
   table. Its trend chart is collapsed by default.
+
+### Round 4 response JSON (authoritative shape)
+
+`GET /api/campaign/<slug>/pop-score` retains all legacy top-level fields and adds
+the following attribution payload. All numeric fields below can be `null` when
+the reading/window is unavailable. Histories are arrays. `smoothed` is present
+and `true` only on daily points spread across a multi-day change interval.
+
+```json
+{
+  "linked": true,
+  "link": "USUM72403305",
+  "chartmetric_track_id": 118981138,
+  "track": {"name": "Espresso", "artists": ["Sabrina Carpenter"], "image_url": "img"},
+  "spotify_popularity": 69,
+  "chartmetric_score": 99.3,
+  "spotify_streams": 1700000,
+  "baseline": 61,
+  "change_since_start": 8,
+  "start_date": "2026-08-01",
+  "history": [{"date": "2026-08-01", "value": 61}, {"date": "2026-10-02", "value": 69}],
+  "end_date": "2026-09-01",
+  "followup_days": 28,
+  "followup_end": "2026-09-29",
+  "phase": "live",
+  "popularity": {
+    "start": 61, "end": 68, "end_is_to_date": false,
+    "followup": 66, "followup_is_to_date": false,
+    "now": 69, "now_date": "2026-10-02",
+    "change_since_end": 1, "change_since_start": 8,
+    "change_campaign": 7, "change_followup": -2
+  },
+  "streams": {
+    "start": 1000000, "end": 1400000, "end_is_to_date": false,
+    "followup": 1650000, "followup_is_to_date": false,
+    "now": 1700000, "now_date": "2026-10-02",
+    "change_since_end": 300000, "change_since_start": 700000,
+    "start_total": 1000000, "end_total": 1400000,
+    "followup_total": 1650000,
+    "gained_campaign": 400000, "gained_followup": 250000,
+    "growth_pct_campaign": 40.0,
+    "baseline_daily": 5000.0, "campaign_daily": 14285.7,
+    "followup_daily": 8928.6,
+    "lift_pct_campaign": 185.7, "lift_pct_followup": 78.6
+  },
+  "ugc": {
+    "start": 100, "end": 300, "end_is_to_date": false,
+    "followup": 360, "followup_is_to_date": false,
+    "now": 380, "now_date": "2026-10-02",
+    "change_since_end": 80, "change_since_start": 280,
+    "start_total": 100, "end_total": 300,
+    "followup_total": 360,
+    "gained_campaign": 200, "gained_followup": 60,
+    "growth_pct_campaign": 200.0,
+    "baseline_daily": 2.0, "campaign_daily": 7.1,
+    "followup_daily": 2.1,
+    "lift_pct_campaign": 255.0, "lift_pct_followup": 5.0
+  },
+  "streams_history": [
+    {"date": "2026-08-01", "total": 1000000, "daily": null},
+    {"date": "2026-08-02", "total": 1000000, "daily": null},
+    {"date": "2026-08-04", "total": 1010000, "daily": 5000.0, "smoothed": true}
+  ],
+  "ugc_history": [
+    {"date": "2026-08-01", "total": 100, "daily": null},
+    {"date": "2026-08-02", "total": 107, "daily": 7.0}
+  ],
+  "followup_day": 8,
+  "data_as_of": "2026-10-02",
+  "post_events": [{"date": "2026-08-15", "count": 3}]
+}
+```
+
+`streams_error` and `ugc_error` are omitted on success and included with
+user-facing text when their respective request fails.
+
+`popularity` uses `change_campaign` and `change_followup`; cumulative blocks
+(`streams`, `ugc`) use `gained_campaign`, `gained_followup` and
+`growth_pct_campaign`. All three blocks expose `start`, `end`, `followup`,
+`now`, `now_date`, `change_since_start`, `change_since_end`,
+`end_is_to_date`, and `followup_is_to_date`. The cumulative blocks additionally
+expose totals, daily averages, and lift percentages shown above. `post_events`
+counts only matched videos owned by the requested campaign, normalizes dates,
+and is limited to the attribution history window. `finished_no_end` is returned
+when completion status is completed and no effective end date exists.

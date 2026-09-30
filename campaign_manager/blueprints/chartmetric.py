@@ -123,7 +123,7 @@ def get_pop_score(slug: str):
                     day = date.fromisoformat(day).isoformat()
                 except ValueError:
                     continue
-                if day >= _history_start(row["start_date"]).isoformat():
+                if _history_start(row["start_date"]).isoformat() <= day <= date.today().isoformat():
                     events[day] = events.get(day, 0) + 1
     result["post_events"] = [{"date": d, "count": events[d]} for d in sorted(events)]
     return jsonify(result)

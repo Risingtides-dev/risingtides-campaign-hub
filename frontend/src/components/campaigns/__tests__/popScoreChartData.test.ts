@@ -1,0 +1,29 @@
+import { describe, expect, it } from "vitest"
+import type { PopScore } from "@/lib/types"
+import { prepareTrendData, selectTrendSeries, trendEventTicks, zoomedPopularityDomain } from "../popScoreChartData"
+
+const payload: PopScore = {
+  linked: true, phase: "live", streams: { start_total: 10, end_total: 20, followup_total: 20, now: 25, end_is_to_date: false, followup_is_to_date: false, gained_campaign: 10, gained_followup: 0, growth_pct_campaign: 100, baseline_daily: 5, campaign_daily: 4, followup_daily: 1, lift_pct_campaign: -20, lift_pct_followup: -80 },
+  ugc: { start: 2, end: 5, followup: 7, start_total: 2, end_total: 5, followup_total: 7, now: 8, now_date: "2026-01-04", change_since_start: 6, change_since_end: 3, baseline_daily: 2, campaign_daily: 3, followup_daily: 1, gained_campaign: 3, gained_followup: 2, lift_pct_campaign: 50, end_is_to_date: false, followup_is_to_date: false },
+  history: [{ date: "2026-01-01", value: 40 }, { date: "2026-01-02", value: 50 }, { date: "2026-01-03", value: 51 }],
+  streams_history: [{ date: "2026-01-01", total: 10, daily: null }, { date: "2026-01-02", total: 14, daily: 4, smoothed: true }],
+  ugc_history: [{ date: "2026-01-01", total: 2, daily: null }, { date: "2026-01-02", total: 5, daily: 3 }],
+  post_events: [{ date: "2026-01-02", count: 4 }, { date: "2026-01-05", count: 9 }],
+}
+
+describe("pop score trend preparation", () => {
+  it("selects each series and marks dim and smoothed daily bars", () => {
+    expect(selectTrendSeries(payload, "streams")[1]).toMatchObject({ value: 4, smoothed: true, belowBaseline: true })
+    expect(selectTrendSeries(payload, "ugc")[1]).toMatchObject({ value: 3, belowBaseline: false })
+    expect(selectTrendSeries(payload, "popularity").map(p => p.value)).toEqual([40, 50, 51])
+  })
+  it("zooms popularity to three points around its range and clamps at 0–100", () => {
+    expect(zoomedPopularityDomain(selectTrendSeries(payload, "popularity"))).toEqual([37, 54])
+    expect(zoomedPopularityDomain([{ date: "x", time: 0, value: 99 }])).toEqual([96, 100])
+    expect(zoomedPopularityDomain([])).toEqual([0, 100])
+  })
+  it("prepares only event ticks inside the selected series date window", () => {
+    expect(trendEventTicks(payload, selectTrendSeries(payload, "ugc"))).toEqual([{ date: "2026-01-02", time: new Date("2026-01-02T00:00:00").getTime(), count: 4 }])
+    expect(prepareTrendData(payload, "ugc").points[1].postCount).toBe(4)
+  })
+})

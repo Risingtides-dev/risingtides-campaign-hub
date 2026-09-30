@@ -924,12 +924,14 @@ export interface CreatorRef {
 export interface PopScorePoint {
   date: string
   value: number
+  smoothed?: boolean
 }
 
 export interface AttributionStreamsPoint {
   date: string
   total: number
   daily: number | null
+  smoothed?: boolean
 }
 
 export type AttributionPhase = "not_started" | "live" | "followup" | "complete" | "no_start" | "finished_no_end"
@@ -952,12 +954,12 @@ export interface PopScore {
   followup_day?: number | null
   streams_error?: string
   ugc_error?: string
-  post_events?: { date: string; count: number }[]
   ugc?: {
+    start?: number | null; end?: number | null; followup?: number | null
     start_total: number | null; end_total: number | null; followup_total: number | null
     now: number | null; now_date: string | null; change_since_start: number | null; change_since_end: number | null
     baseline_daily: number | null; campaign_daily: number | null; followup_daily: number | null
-    gained_campaign: number | null; gained_followup: number | null; lift_pct_campaign: number | null
+    gained_campaign: number | null; gained_followup: number | null; growth_pct_campaign?: number | null; lift_pct_campaign: number | null; lift_pct_followup?: number | null
     end_is_to_date: boolean; followup_is_to_date: boolean
   }
   phase?: AttributionPhase
@@ -988,6 +990,8 @@ export interface PopScore {
     now?: number | null; now_date?: string | null; change_since_start?: number | null; change_since_end?: number | null
   }
   streams_history?: AttributionStreamsPoint[]
+  ugc_history?: AttributionStreamsPoint[]
   data_as_of?: string
   history?: PopScorePoint[]
+  post_events?: { date: string; count: number }[]
 }

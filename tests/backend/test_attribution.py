@@ -128,7 +128,9 @@ def test_tail_repeat_daily_and_duplicate_dates_and_missing_baseline_followup():
     assert r["streams_history"][0]["daily"] is None
     assert [p["daily"] for p in r["streams_history"]] == [None, 10.0, None, None]
     dup = [{"date": "2026-01-01", "value": 10}, {"date": "2026-01-01", "value": 20}]
-    assert calculate_attribution(dup, dup, "2026-01-01", today=date(2026, 1, 1))["streams"]["start_total"] == 20
+    duplicate_result = calculate_attribution(dup, dup, "2026-01-01", today=date(2026, 1, 1))
+    assert duplicate_result["streams"]["start_total"] == 20
+    assert [p["date"] for p in duplicate_result["streams_history"]].count("2026-01-01") == 1
     no_base = calculate_attribution([], [{"date": "2026-01-01", "value": 10}], "2025-12-01", "2025-12-02", date(2026, 1, 1))
     assert no_base["streams"]["lift_pct_followup"] is None
 
@@ -156,3 +158,34 @@ def test_followup_to_date_flags_open_window_and_exact_close_boundary():
     assert calculate_attribution(h, h, "2026-01-01", "2026-01-10", date(2026, 1, 10))["streams"]["followup_total"] is None
     assert calculate_attribution(h, h, "2026-01-01", "2026-01-10", date(2026, 1, 11))["followup_day"] == 1
     assert calculate_attribution(h, h, "2026-01-01", "2026-01-10", date(2026, 1, 11))["end_date"] == "2026-01-10"
+
+
+def test_ugc_has_complete_cumulative_metric_block_and_smoothed_history():
+    h = [
+        {"date": "2025-12-18", "value": 0}, {"date": "2026-01-01", "value": 28},
+        {"date": "2026-01-02", "value": 38}, {"date": "2026-01-03", "value": 38},
+        {"date": "2026-01-04", "value": 58}, {"date": "2026-01-12", "value": 74},
+    ]
+    res = calculate_attribution(h, h[:-1], "2026-01-01", "2026-01-04", date(2026, 1, 12), ugc=h)
+    ugc = res["ugc"]
+    assert {"start", "end", "followup", "now", "now_date", "end_is_to_date",
+            "followup_is_to_date", "change_since_end", "change_since_start",
+            "start_total", "end_total", "followup_total", "gained_campaign",
+            "gained_followup", "growth_pct_campaign", "baseline_daily", "campaign_daily",
+            "followup_daily", "lift_pct_campaign", "lift_pct_followup"} <= ugc.keys()
+    assert ugc["now"] == 74 and ugc["now_date"] == "2026-01-12"
+    assert ugc["change_since_end"] == 16 and ugc["change_since_start"] == 46
+    assert res["data_as_of"] == "2026-01-12"
+    assert res["ugc_history"][3]["smoothed"] is True
+    assert [p["date"] for p in res["streams_history"]].count("2026-01-01") == 1
+
+
+def test_both_histories_empty_are_safe_and_to_date_popularity_flag_boundaries():
+    empty = calculate_attribution([], [], "2026-01-01", "2026-01-02", date(2026, 1, 10), ugc=[])
+    assert empty["popularity"]["now"] is None and empty["streams"]["now"] is None
+    assert empty["ugc"]["now"] is None and empty["streams_history"] == empty["ugc_history"] == []
+    h = [{"date": "2026-01-01", "value": 1}, {"date": "2026-01-10", "value": 2}]
+    at_end = calculate_attribution(h, h, "2026-01-01", "2026-01-10", date(2026, 1, 11))
+    assert at_end["popularity"]["followup_is_to_date"] is True
+    at_followup_close = calculate_attribution(h + [{"date": "2026-02-07", "value": 3}], h, "2026-01-01", "2026-01-10", date(2026, 2, 8))
+    assert at_followup_close["popularity"]["followup_is_to_date"] is False

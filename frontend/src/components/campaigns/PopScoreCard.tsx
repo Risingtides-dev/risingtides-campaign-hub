@@ -1,6 +1,6 @@
 import { useState } from "react"
 import {
-  Area, AreaChart, Line, LineChart, ReferenceLine, ResponsiveContainer,
+  Bar, Cell, ComposedChart, Line, LineChart, ReferenceLine, ResponsiveContainer, Scatter,
   Tooltip as RTooltip, XAxis, YAxis,
 } from "recharts"
 import { AlertCircle, Loader2, Pencil } from "lucide-react"
@@ -9,12 +9,12 @@ import { Input } from "@/components/ui/input"
 import { useEditCampaign, usePopScore, useSetPopScoreTrack } from "@/lib/queries"
 import type { PopScore } from "@/lib/types"
 import { chartAxisProps, chartTooltipProps } from "./chartDate"
+import { prepareTrendData, type TrendMode } from "./popScoreChartData"
 // eslint-disable-next-line react-refresh/only-export-components
 export { chartAxisProps } from "./chartDate"
 
 const ACCENT = "#E100C3"
 const AXIS = "#909098"
-const POPULARITY_AXIS_WIDTH = 54
 const STREAMS_AXIS_WIDTH = 70
 
 function TrackLinkForm({ initial, onSave, onCancel, isPending, error }: {
@@ -43,30 +43,38 @@ function phaseText(data: PopScore) {
 }
 
 function PopScoreChart({ data }: { data: PopScore }) {
-  const [mode, setMode] = useState<"popularity" | "streams">("popularity")
-  const points = (mode === "popularity" ? (data.history ?? []).map((p) => ({ date: p.date, value: p.value })) : (data.streams_history ?? []).map((p) => ({ date: p.date, value: p.daily }))).filter(p => p.value != null).map(p => ({ ...p, time: new Date(`${p.date}T00:00:00`).getTime() }))
+  const [mode, setMode] = useState<TrendMode>("popularity")
+  const prepared = prepareTrendData(data, mode)
+  const points = prepared.points.filter(p => p.value != null)
   const min = points.length ? Math.min(...points.map(p => p.time)) : 0
   const max = points.length ? Math.max(...points.map(p => p.time)) : 0
   const sameBounds = !!data.start_date && data.start_date === data.end_date
   const lines = [data.start_date, sameBounds ? "" : data.end_date, data.followup_end].map((d, i) => ({ date: d, label: [sameBounds ? "Start/End" : "Start", "End", "Follow-up"][i] })).filter((p): p is {date: string; label: string} => !!p.date).filter(p => new Date(`${p.date}T00:00:00`).getTime() >= min && new Date(`${p.date}T00:00:00`).getTime() <= max)
+  const chartLabel = mode === "popularity" ? "Popularity" : mode === "streams" ? "Daily streams" : "Daily new videos"
   return <div className="space-y-2">
     <div className="flex gap-1" role="group" aria-label="Chart metric">
       <button type="button" aria-pressed={mode === "popularity"} onClick={() => setMode("popularity")} className={`rounded px-2 py-1 text-xs ${mode === "popularity" ? "bg-white/10 text-rt-fg" : "text-rt-fg-tertiary"}`}>Popularity</button>
       <button type="button" aria-pressed={mode === "streams"} onClick={() => setMode("streams")} className={`rounded px-2 py-1 text-xs ${mode === "streams" ? "bg-white/10 text-rt-fg" : "text-rt-fg-tertiary"}`}>Daily streams</button>
+      <button type="button" aria-pressed={mode === "ugc"} onClick={() => setMode("ugc")} className={`rounded px-2 py-1 text-xs ${mode === "ugc" ? "bg-white/10 text-rt-fg" : "text-rt-fg-tertiary"}`}>Daily new videos</button>
     </div>
-    {points.length < 2 ? <p className="text-rt-fg-tertiary text-[13px]">Not enough history yet to chart.</p> : <div className="h-36 w-full" data-testid="attribution-chart" data-plotted-values={points.map(p => p.value).join(",")} data-reference-labels={lines.map(line => line.label).join(",")} aria-label={mode === "popularity" ? "Popularity chart" : "Daily streams chart"}>
+    {points.length < 2 ? <p className="text-rt-fg-tertiary text-[13px]">Not enough history yet to chart.</p> : <div className="h-36 w-full" data-testid="attribution-chart" data-plotted-values={points.map(p => p.value).join(",")} data-below-baseline={prepared.points.map(p => p.belowBaseline ? "dim" : "accent").join(",")} data-event-ticks={prepared.events.map(e => `${e.date}:${e.count}`).join(",")} data-reference-labels={lines.map(line => line.label).join(",")} aria-label={`${chartLabel} chart`}>
       <ResponsiveContainer width="100%" height="100%">
         {mode === "popularity" ? <LineChart data={points} margin={{ top: 6, right: 8, bottom: 0, left: 0 }}>
           <XAxis type="number" dataKey="time" domain={["dataMin", "dataMax"]} tick={{ fill: AXIS, fontSize: 10 }} {...chartAxisProps} axisLine={false} tickLine={false} minTickGap={24} />
-          <YAxis width={POPULARITY_AXIS_WIDTH} domain={[0, 100]} tick={{ fill: AXIS, fontSize: 10 }} axisLine={false} tickLine={false} />
-          <RTooltip {...chartTooltipProps} /><Line type="stepAfter" dataKey="value" stroke={ACCENT} strokeWidth={2} dot={false} />
+          <YAxis width={STREAMS_AXIS_WIDTH} domain={prepared.domain} tick={{ fill: AXIS, fontSize: 10 }} axisLine={false} tickLine={false} />
+          <RTooltip {...chartTooltipProps} /><Line type="stepAfter" dataKey="value" stroke={ACCENT} strokeWidth={2} dot={(props) => { const point = props.payload as { smoothed?: boolean }; return <circle cx={props.cx} cy={props.cy} r={2} fill={point.smoothed ? "#f08be0" : ACCENT} /> }} />
+          <Scatter data={prepared.events.map(e => ({ time: e.time, y: prepared.domain![1], count: e.count }))} dataKey="y" name="creator posts" fill={AXIS} shape={(props) => props.cx == null || props.cy == null ? null : <g><title>{`${props.payload.count} creator posts`}</title><line x1={props.cx} x2={props.cx} y1={props.cy} y2={props.cy + 5} stroke={AXIS} /></g>} />
           {lines.map(({date: d, label}) => <ReferenceLine key={`${label}-${d}`} x={new Date(`${d}T00:00:00`).getTime()} stroke={AXIS} strokeDasharray="3 3" label={{ value: label, fill: AXIS, fontSize: 10 }} />)}
-        </LineChart> : <AreaChart data={points} margin={{ top: 6, right: 8, bottom: 0, left: 0 }}>
+          <text x={6} y={12} fill={AXIS} fontSize={9}>zoomed · score is 0–100</text>
+        </LineChart> : <ComposedChart data={points} margin={{ top: 6, right: 8, bottom: 0, left: 0 }}>
           <XAxis type="number" dataKey="time" domain={["dataMin", "dataMax"]} tick={{ fill: AXIS, fontSize: 10 }} {...chartAxisProps} axisLine={false} tickLine={false} minTickGap={24} />
           <YAxis width={STREAMS_AXIS_WIDTH} tickFormatter={(v: number) => Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(v)} tick={{ fill: AXIS, fontSize: 10 }} axisLine={false} tickLine={false} />
-          <RTooltip {...chartTooltipProps} /><Area type="monotone" dataKey="value" stroke={ACCENT} fill={ACCENT} fillOpacity={0.18} connectNulls />
+          <ReferenceLine y={mode === "streams" ? data.streams?.baseline_daily ?? undefined : data.ugc?.baseline_daily ?? undefined} stroke={AXIS} strokeDasharray="4 3" label={{ value: "before", fill: AXIS, fontSize: 9, position: "insideTopLeft" }} />
+          <RTooltip {...chartTooltipProps} formatter={(value, name, item) => { const p = item.payload as { count?: number }; return name === "creator posts" ? [`${p.count} creator posts`, "Posts"] : [value, chartLabel] }} />
+          <Bar dataKey="value" name={chartLabel} maxBarSize={5} radius={[1, 1, 0, 0]}>{points.map((point, index) => <Cell key={index} fill={point.smoothed ? "#f08be0" : point.belowBaseline ? `${ACCENT}55` : ACCENT} />)}</Bar>
+          <Scatter data={prepared.events.map(e => ({ time: e.time, y: Math.max(...points.map(p => p.value ?? 0)), count: e.count }))} dataKey="y" name="creator posts" fill={AXIS} shape={(props) => props.cx == null || props.cy == null ? null : <g><title>{`${props.payload.count} creator posts`}</title><line x1={props.cx} x2={props.cx} y1={props.cy} y2={props.cy + 5} stroke={AXIS} /></g>} />
           {lines.map(({date: d, label}) => <ReferenceLine key={`${label}-${d}`} x={new Date(`${d}T00:00:00`).getTime()} stroke={AXIS} strokeDasharray="3 3" label={{ value: label, fill: AXIS, fontSize: 10 }} />)}
-        </AreaChart>}
+        </ComposedChart>}
       </ResponsiveContainer>
     </div>}
   </div>
@@ -103,6 +111,7 @@ export function PopScoreCard({ slug, tracker_url }: { slug: string; tracker_url?
     {popScore.isError && <div className="flex items-center gap-2 text-red-500 text-sm"><AlertCircle className="size-4" />{popScore.error?.message || "Couldn't load pop score"}</div>}
     {!popScore.isError && data?.linked && !editing && <>
       {data.streams_error && <div className="text-xs text-rt-fg-tertiary" role="status">{data.streams_error}</div>}
+      {data.ugc_error && <div className="text-xs text-rt-fg-tertiary" role="status">{data.ugc_error}</div>}
       <div className="flex flex-wrap items-center gap-3">
         {data.track?.image_url && <img src={data.track.image_url} alt="" className="size-12 rounded object-cover" />}
         <div className="min-w-0 flex-1"><div className="font-medium">{data.track?.name ?? "Linked track"}</div><div className="text-[13px] text-rt-fg-tertiary">{data.track?.artists?.join(", ")}</div></div>
@@ -118,7 +127,16 @@ export function PopScoreCard({ slug, tracker_url }: { slug: string; tracker_url?
       </div>
       {headline(data) && <p className="text-[12px] text-rt-fg-tertiary">{headline(data)}</p>}
       <div className="overflow-x-auto"><table className="w-full min-w-[520px] text-[12px]"><thead className="text-rt-fg-tertiary"><tr><th className="text-left font-normal">Metric</th>{["Start", "End", "+28 days", "Now"].map(x => <th className="text-right font-normal" key={x}>{x}</th>)}</tr></thead><tbody>
-        {([["Popularity", pop?.start, pop?.end, pop?.followup, pop?.now, pop?.end_is_to_date, pop?.followup_is_to_date], ["Streams", streams?.start_total, streams?.end_total, streams?.followup_total, streams?.now, streams?.end_is_to_date, false], ["TikTok videos", data.ugc?.start_total, data.ugc?.end_total, data.ugc?.followup_total, data.ugc?.now, data.ugc?.end_is_to_date, data.ugc?.followup_is_to_date]] as const).map(([label, a, b, c, d, endTd, followTd]) => <tr key={label} className="border-t border-white/8"><th className="py-1.5 text-left font-medium">{label}</th>{[a,b,c,d].map((value,i) => <td key={i} className="py-1.5 text-right tabular-nums">{value == null ? "—" : label === "Popularity" ? num(value) : compact(value)}{i === 1 && endTd && <span className="ml-1 text-[10px] text-rt-fg-tertiary">to date</span>}{i === 2 && followTd && <span className="ml-1 text-[10px] text-rt-fg-tertiary">to date</span>}{i === 3 && d != null && d === c && <span className="ml-1 text-[10px] text-rt-fg-tertiary">same</span>}</td>)}</tr>)}
+        {([[
+          "Popularity", pop?.start, pop?.end, pop?.followup, pop?.now, pop?.end_is_to_date, pop?.followup_is_to_date, pop?.change_campaign, pop?.change_followup, pop?.change_since_end,
+        ], [
+          "Streams", streams?.start_total, streams?.end_total, streams?.followup_total, streams?.now, streams?.end_is_to_date, streams?.followup_is_to_date, streams?.gained_campaign, streams?.gained_followup, streams?.change_since_end,
+        ], [
+          "TikTok videos", data.ugc?.start_total, data.ugc?.end_total, data.ugc?.followup_total, data.ugc?.now, data.ugc?.end_is_to_date, data.ugc?.followup_is_to_date, data.ugc?.gained_campaign, data.ugc?.gained_followup, data.ugc?.change_since_end,
+        ]] as const).map(([label, a, b, c, d, endTd, followTd, changeCampaign, changeFollowup, changeNow]) => <tr key={label} className="border-t border-white/8"><th className="py-1.5 text-left font-medium">{label}</th>{[a,b,c,d].map((value,i) => {
+          const change = i === 1 ? changeCampaign : i === 2 ? changeFollowup : i === 3 ? changeNow : null
+          return <td key={i} className="py-1.5 text-right tabular-nums">{value == null ? "—" : label === "Popularity" ? num(value) : compact(value)}{i === 1 && endTd && <span className="ml-1 text-[10px] text-rt-fg-tertiary">to date</span>}{i === 2 && followTd && <span className="ml-1 text-[10px] text-rt-fg-tertiary">to date</span>}{i === 3 && d != null && d === c && <span className="ml-1 text-[10px] text-rt-fg-tertiary">same</span>}{change != null && <span className="block text-[10px] text-rt-fg-tertiary">{change > 0 ? "+" : ""}{label === "Popularity" ? num(change) : compact(change)}</span>}</td>
+        })}</tr>)}
       </tbody></table></div>
       {!data.streams_error && <p className="text-[11px] text-rt-fg-tertiary">Daily streams {compact(streams?.baseline_daily)} → {compact(streams?.campaign_daily)} during ({pct(streams?.lift_pct_campaign)}){streams?.followup_daily != null ? ` → ${compact(streams.followup_daily)} after` : ""}</p>}
       {!data.ugc_error && <p className="text-[11px] text-rt-fg-tertiary">New TikTok videos/day {compact(data.ugc?.baseline_daily)} → {compact(data.ugc?.campaign_daily)} during ({pct(data.ugc?.lift_pct_campaign)}){data.ugc?.followup_daily != null ? ` → ${compact(data.ugc.followup_daily)} after` : ""}{data.ugc?.gained_campaign != null ? ` · ${compact(data.ugc.gained_campaign)} new during the campaign` : ""}</p>}

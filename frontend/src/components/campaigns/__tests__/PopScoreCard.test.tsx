@@ -18,8 +18,10 @@ const payload: PopScore = {
   track: { name: 'Example Song', artists: ['Artist One'], image_url: '' },
   popularity: { start: 61, end: 68, end_is_to_date: false, followup: 66, followup_is_to_date: false, change_campaign: 7, change_followup: -2 },
   streams: { start_total: 1_000_000, end_total: 1_400_000, end_is_to_date: false, followup_total: 1_650_000, followup_is_to_date: false, gained_campaign: 400_000, gained_followup: 250_000, growth_pct_campaign: 40, baseline_daily: 5000, campaign_daily: 14285.7, followup_daily: 8928.6, lift_pct_campaign: 185.7, lift_pct_followup: 78.6 },
+  ugc: { start: 120, end: 480, followup: 600, now: 600, now_date: '2026-09-18', start_total: 120, end_total: 480, followup_total: 600, end_is_to_date: false, followup_is_to_date: false, gained_campaign: 3600, gained_followup: 120, change_since_start: 480, change_since_end: 120, baseline_daily: 120, campaign_daily: 480, followup_daily: 210, lift_pct_campaign: 300, lift_pct_followup: 75 },
   history: [{ date: '2026-08-01', value: 61 }, { date: '2026-08-20', value: 68 }],
   streams_history: [{ date: '2026-08-01', total: 1_000_000, daily: null }, { date: '2026-08-10', total: 1_200_000, daily: 20000 }, { date: '2026-08-20', total: 1_400_000, daily: 20000 }],
+  ugc_history: [{ date: '2026-08-01', total: 120, daily: null }, { date: '2026-08-10', total: 300, daily: 18 }, { date: '2026-08-20', total: 480, daily: 18 }],
 }
 const mutate = vi.fn()
 function setup(data: PopScore = payload) {
@@ -41,8 +43,22 @@ describe('<PopScoreCard /> attribution', () => {
     expect(screen.getByText('68')).toBeInTheDocument()
     expect(screen.getByText('1.4M')).toBeInTheDocument()
     expect(screen.getByText(/streams 5K → 14.3K\/day \(\+185.7%\)/)).toBeInTheDocument()
+    expect(screen.getByText(/TikTok videos 120 → 480\/day, 3.6K new during the campaign/)).toBeInTheDocument()
     expect(screen.getByRole('columnheader', { name: '+28 days' })).toBeInTheDocument()
     expect(screen.getByText('Open Tides Tracker ↗')).toBeInTheDocument()
+    expect(screen.getByText('+400K')).toBeInTheDocument()
+    expect(screen.getByText(/New TikTok videos\/day 120 → 480 during \(\+300.0%\) → 210 after · 3.6K new during the campaign/)).toBeInTheDocument()
+  })
+
+  it('shows four snapshot columns, muted changes, to-date markers, and same for equal readings', () => {
+    setup({ ...payload, streams: { ...payload.streams!, end_is_to_date: true, followup_is_to_date: true, now: 1_650_000, followup_total: 1_650_000 } })
+    expect(screen.getByRole('columnheader', { name: 'Start' })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'End' })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: '+28 days' })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'Now' })).toBeInTheDocument()
+    expect(screen.getAllByText('to date').length).toBeGreaterThanOrEqual(2)
+    expect(screen.getAllByText('same')).toHaveLength(2)
+    expect(screen.getByText('+400K')).toBeInTheDocument()
   })
 
   it('renders null metrics as dashes and null percentages as N/A, never zero', () => {
@@ -65,6 +81,13 @@ describe('<PopScoreCard /> attribution', () => {
     expect(screen.getByText('Complete')).toBeInTheDocument()
   })
 
+  it('shows the finished without an end date badge and keeps the end date setter', () => {
+    setup({ ...payload, phase: 'finished_no_end', end_date: '', followup_end: '' })
+    expect(screen.getByText('Finished · end date not set')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Set an end date' })).toBeInTheDocument()
+    expect(screen.queryByText('Live')).not.toBeInTheDocument()
+  })
+
   it('switches the selected chart series with the toggle', () => {
     setup()
     fireEvent.click(screen.getByRole('button', { name: 'Show trend' }))
@@ -78,6 +101,11 @@ describe('<PopScoreCard /> attribution', () => {
     expect(screen.getByTestId('attribution-chart')).not.toHaveAttribute('data-y-axis-width')
     expect(streams).toHaveAttribute('aria-pressed', 'true')
     expect(popularity).toHaveAttribute('aria-pressed', 'false')
+    const ugc = screen.getByRole('button', { name: 'Daily new videos' })
+    fireEvent.click(ugc)
+    expect(screen.getByTestId('attribution-chart')).toHaveAttribute('aria-label', 'Daily new videos chart')
+    expect(screen.getByTestId('attribution-chart')).toHaveAttribute('data-plotted-values', '18,18')
+    expect(ugc).toHaveAttribute('aria-pressed', 'true')
   })
 
   it('saves, changes, clears an end date and shows edit errors', () => {
