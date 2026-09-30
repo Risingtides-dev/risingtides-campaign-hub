@@ -1,7 +1,7 @@
 """Chartmetric pop-score client + campaign endpoints (HTTP fully faked)."""
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -324,21 +324,56 @@ class TestPopScoreEndpoints:
         assert body["streams"]["lift_pct_campaign"] is not None
 
     def test_finished_without_end_has_distinct_phase(self, client):
+        from campaign_manager import db
         slug = self._campaign(client)
         fake = self._fake()
         with patch.object(cm, "get_client", return_value=fake):
             client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403305"})
-            with patch("campaign_manager.blueprints.chartmetric._load", return_value={"track_id": 118981138, "link": "USUM72403305", "start_date": "2026-09-01", "end_date": "", "completion_status": "completed"}):
-                body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
+            db.update_campaign_fields(slug, {"completion_status": "completed", "end_date": ""})
+            body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
         assert body["phase"] == "finished_no_end"
         assert body["end_date"] == ""
 
+    def test_completed_campaign_with_end_is_not_finished_no_end(self, client):
+        slug = self._campaign(client)
+        fake = self._fake()
+        with patch.object(cm, "get_client", return_value=fake):
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403305"})
+            client.post(f"/api/campaign/{slug}/edit", json={"end_date": "2026-09-20", "completion_status": "completed"})
+            assert client.get(f"/api/campaign/{slug}/pop-score").get_json()["phase"] != "finished_no_end"
+
+    def test_ugc_fetch_sends_since_and_surfaces_chartmetric_error(self, client):
+        slug = self._campaign(client, start="2026-09-01")
+        fake = self._fake()
+        fake.tiktok_posts_history.side_effect = cm.ChartmetricError("ugc endpoint failed")
+        with patch.object(cm, "get_client", return_value=fake):
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403305"})
+            body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
+        fake.tiktok_posts_history.assert_called_once_with(118981138, since=date(2026, 8, 11))
+        assert body.get("ugc_error") == "TikTok video history is temporarily unavailable."
+
+    def test_series_fetches_are_skipped_after_overall_latency_budget(self, client):
+        from campaign_manager.blueprints import chartmetric as chartmetric_bp
+        from types import SimpleNamespace
+        slug = self._campaign(client)
+        fake = self._fake()
+        ticks = iter([0, 1, 76, 77, 78])
+        with patch.object(cm, "get_client", return_value=fake), patch.object(chartmetric_bp, "time", SimpleNamespace(monotonic=lambda: next(ticks))):
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403305"})
+            body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
+        assert body.get("streams_error") == "Chartmetric is slow — try again shortly"
+        assert body.get("ugc_error") == "Chartmetric is slow — try again shortly"
+        fake.streams_history.assert_not_called()
+        fake.tiktok_posts_history.assert_not_called()
+
     def test_post_events_are_campaign_scoped_and_dates_normalized(self, client):
         from campaign_manager import db
+        today_et = datetime.now(db.EST).date().isoformat()
         first, second = self._campaign(client), self._campaign(client, title="Second Pop Test")
         db.save_matched_videos(first, [
             {"url": "https://tiktok/a", "upload_date": "20260901"},
             {"url": "https://tiktok/b", "upload_date": "2026-09-01T12:00:00"},
+            {"url": "https://tiktok/today", "upload_date": today_et},
             {"url": "https://tiktok/blank", "upload_date": ""},
             {"url": "https://tiktok/old", "upload_date": "2026-08-01"},
             {"url": "https://tiktok/future", "upload_date": (date.today() + timedelta(days=1)).isoformat()},
@@ -349,16 +384,36 @@ class TestPopScoreEndpoints:
             client.post(f"/api/campaign/{first}/pop-score/track", json={"link": "USUM72403305"})
             client.post(f"/api/campaign/{second}/pop-score/track", json={"link": "USUM72403305"})
             events = client.get(f"/api/campaign/{first}/pop-score").get_json()["post_events"]
-        assert events == [{"date": "2026-09-01", "count": 2}]
+        assert events == [{"date": "2026-09-01", "count": 2}, {"date": today_et, "count": 1}]
+
+    def test_post_events_exclude_dismissed_and_pre_campaign_videos(self, client):
+        from campaign_manager import db
+        from campaign_manager.models import Campaign, MatchedVideo
+        slug = self._campaign(client, start="2026-09-01")
+        db.save_matched_videos(slug, [
+            {"url": "https://tiktok/pre", "upload_date": "20260830"},
+            {"url": "https://tiktok/dismissed", "upload_date": "20260905"},
+            {"url": "https://tiktok/valid", "upload_date": "20260906"},
+        ])
+        with db.get_session() as session:
+            campaign = session.query(Campaign).filter_by(slug=slug).one()
+            dismissed = session.query(MatchedVideo).filter_by(campaign_id=campaign.id, url="https://tiktok/dismissed").one()
+            dismissed.dismissed_at = datetime.now()
+            session.commit()
+        fake = self._fake()
+        with patch.object(cm, "get_client", return_value=fake):
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403305"})
+            events = client.get(f"/api/campaign/{slug}/pop-score").get_json()["post_events"]
+        assert events == [{"date": "2026-09-06", "count": 1}]
 
     def test_two_campaigns_alternating_through_one_real_client_stay_segmented(self, client):
         from campaign_manager import db
-        a, b = self._campaign(client, "2026-09-01"), self._campaign(client, "2026-09-10", title="Second Pop Test")
+        a, b = self._campaign(client, "2026-09-01"), self._campaign(client, "2026-09-01", title="Second Pop Test")
         db.save_matched_videos(a, [{"url": "https://tiktok/a", "upload_date": "2026-09-02"}])
         db.save_matched_videos(b, [{"url": "https://tiktok/b", "upload_date": "2026-09-11"}])
         snapshots = {
-            111: {"obj": {**TRACK_OBJ, "cm_statistics": {"sp_popularity": 11, "sp_streams": 111}}},
-            222: {"obj": {**TRACK_OBJ, "cm_statistics": {"sp_popularity": 22, "sp_streams": 222}}},
+            111: {"obj": {**TRACK_OBJ, "name": "Track 111", "cm_statistics": {"sp_popularity": 11, "sp_streams": 111}}},
+            222: {"obj": {**TRACK_OBJ, "name": "Track 222", "cm_statistics": {"sp_popularity": 22, "sp_streams": 222}}},
         }
         calls = []
         http = MagicMock()
@@ -386,12 +441,14 @@ class TestPopScoreEndpoints:
                 # track linking does not fetch histories; endpoint fetches each independently.
                 body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
                 assert body["chartmetric_track_id"] == track_id
-                assert body["streams"]["start_total"] == track_id + 10
+                assert body["track"]["name"] == f"Track {track_id}"
+                assert body["streams"]["start_total"] == (track_id + 10 if track_id == 111 else track_id)
                 assert body["streams"]["now"] == track_id + 10
                 assert body["streams_history"][0]["total"] == track_id
                 assert body["post_events"] == [{"date": "2026-09-02" if track_id == 111 else "2026-09-11", "count": 1}]
-                expected_since = date(2026, 8, 11) if track_id == 111 else date(2026, 8, 20)
+                expected_since = date(2026, 8, 11)
                 assert any(t == track_id and p.get("since") == expected_since.isoformat() for t, p in calls)
+                assert any(t == track_id and p.get("type") == "posts" and p.get("since") == "2026-08-11" for t, p in calls)
 
     def test_invalid_link_rejected(self, client):
         slug = self._campaign(client)
@@ -452,14 +509,105 @@ class TestPopScoreEndpoints:
         for value in ("2026-9-30", "2026-08-31"):
             assert client.post(f"/api/campaign/{slug}/edit", json={"end_date": value}).status_code == 400
 
-    def test_finish_sets_today_once_and_reopen_keeps_the_end_date(self, client):
+    def test_finish_sets_today_and_reopen_clears_only_automatic_end_date(self, client):
         slug = self._campaign(client, start="2026-09-01")
         response = client.post(f"/api/campaign/{slug}/edit", json={"completion_status": "completed"})
         assert response.status_code == 200
-        assert client.get(f"/api/campaign/{slug}").get_json()["end_date"] == date.today().isoformat()
+        assert client.get(f"/api/campaign/{slug}").get_json()["end_date"]
+        client.post(f"/api/campaign/{slug}/edit", json={"completion_status": "none"})
+        assert client.get(f"/api/campaign/{slug}").get_json()["end_date"] == ""
+        client.post(f"/api/campaign/{slug}/edit", json={"completion_status": "booked"})
+        client.post(f"/api/campaign/{slug}/edit", json={"completion_status": "completed"})
+        assert client.get(f"/api/campaign/{slug}").get_json()["end_date"]
+
+    def test_future_start_is_not_auto_stamped(self, client):
+        from datetime import datetime, timedelta
+        start = (datetime.now().date() + timedelta(days=10)).isoformat()
+        slug = self._campaign(client, start=start)
+        response = client.post(f"/api/campaign/{slug}/edit", json={"completion_status": "completed"})
+        assert response.status_code == 200
+        assert client.get(f"/api/campaign/{slug}").get_json()["end_date"] == ""
+
+    def test_completion_uses_eastern_date_at_0200_utc(self, client):
+        from campaign_manager.blueprints import campaigns as campaigns_bp
+        from datetime import datetime as RealDateTime
+        from datetime import date as RealDate
+        class FrozenDateTime(RealDateTime):
+            @classmethod
+            def now(cls, tz=None):
+                frozen = RealDateTime(2026, 10, 1, 2, 0, tzinfo=timezone.utc)
+                return frozen.astimezone(tz) if tz else frozen.replace(tzinfo=None)
+        class FrozenDate(RealDate):
+            @classmethod
+            def today(cls):
+                return cls(2026, 10, 1)
+        slug = self._campaign(client, start="2026-09-30")
+        with patch.object(campaigns_bp, "datetime", FrozenDateTime), patch.object(campaigns_bp, "date", FrozenDate):
+            client.post(f"/api/campaign/{slug}/edit", json={"completion_status": "completed"})
+        body = client.get(f"/api/campaign/{slug}").get_json()
+        assert body["meta"]["end_date"] == "2026-09-30"
+
+    def test_attribution_phase_uses_eastern_day_at_0200_utc(self, client):
+        from campaign_manager.blueprints import chartmetric as chartmetric_bp
+        from datetime import datetime as RealDateTime
+        class FrozenDateTime(RealDateTime):
+            @classmethod
+            def now(cls, tz=None):
+                frozen = RealDateTime(2026, 10, 1, 2, 0, tzinfo=timezone.utc)
+                return frozen.astimezone(tz) if tz else frozen.replace(tzinfo=None)
+        slug = self._campaign(client, start="2026-10-01")
+        fake = self._fake()
+        with patch.object(cm, "get_client", return_value=fake), patch.object(chartmetric_bp, "datetime", FrozenDateTime):
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403305"})
+            body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
+        assert body["phase"] == "not_started"
+
+    def test_followup_day_uses_eastern_date_at_0200_utc(self, client):
+        from campaign_manager.blueprints import chartmetric as chartmetric_bp
+        from datetime import datetime as RealDateTime
+        class FrozenDateTime(RealDateTime):
+            @classmethod
+            def now(cls, tz=None):
+                frozen = RealDateTime(2026, 10, 1, 2, 0, tzinfo=timezone.utc)
+                return frozen.astimezone(tz) if tz else frozen.replace(tzinfo=None)
+        slug = self._campaign(client, start="2026-09-01")
+        fake = self._fake()
+        with patch.object(cm, "get_client", return_value=fake), patch.object(chartmetric_bp, "datetime", FrozenDateTime):
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403305"})
+            client.post(f"/api/campaign/{slug}/edit", json={"end_date": "2026-09-29"})
+            body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
+        assert body["phase"] == "followup"
+        assert body["followup_day"] == 1
+
+    def test_manual_date_survives_completion_reopen(self, client):
+        slug = self._campaign(client, start="2026-09-01")
         client.post(f"/api/campaign/{slug}/edit", json={"end_date": "2026-09-20"})
+        client.post(f"/api/campaign/{slug}/edit", json={"completion_status": "completed"})
         client.post(f"/api/campaign/{slug}/edit", json={"completion_status": "none"})
         assert client.get(f"/api/campaign/{slug}").get_json()["end_date"] == "2026-09-20"
+
+    def test_manual_date_is_never_marked_automatic(self, client):
+        slug = self._campaign(client, start="2026-09-01")
+        client.post(f"/api/campaign/{slug}/edit", json={"end_date": "2026-09-20"})
+        client.post(f"/api/campaign/{slug}/edit", json={"completion_status": "completed"})
+        client.post(f"/api/campaign/{slug}/edit", json={"completion_status": "none"})
+        meta = client.get(f"/api/campaign/{slug}").get_json()["meta"]
+        assert meta["end_date_auto"] is False
+        assert meta["end_date"] == "2026-09-20"
+
+    def test_sound_refresh_interleaving_preserves_new_completion_fields(self, client):
+        from campaign_manager import db
+        from campaign_manager.services.scheduler import _save_discovered_sounds
+        slug = self._campaign(client, start="2026-09-01")
+        stale_snapshot = db.get_campaign(slug)
+        client.post(f"/api/campaign/{slug}/edit", json={"completion_status": "completed"})
+        finished = client.get(f"/api/campaign/{slug}").get_json()
+        _save_discovered_sounds(slug, stale_snapshot, ["refreshed-sound"])
+        current = client.get(f"/api/campaign/{slug}").get_json()
+        assert current["meta"]["additional_sounds"] == ["refreshed-sound"]
+        assert current["meta"]["completion_status"] == "completed"
+        assert current["meta"]["end_date"] == finished["meta"]["end_date"]
+        assert current["meta"]["end_date_auto"] is True
 
     @pytest.mark.parametrize("legacy_start", ["", "not-a-date", "2026-09-01T00:00:00"])
     def test_finish_with_blank_or_unparseable_legacy_start_succeeds(self, client, legacy_start):

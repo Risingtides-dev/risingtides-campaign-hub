@@ -22,8 +22,8 @@ describe("pop score trend preparation", () => {
     expect(zoomedPopularityDomain([{ date: "x", time: 0, value: 99 }])).toEqual([96, 100])
     expect(zoomedPopularityDomain([])).toEqual([0, 100])
   })
-  it("prepares only event ticks inside the selected series date window", () => {
-    expect(trendEventTicks(payload, selectTrendSeries(payload, "ugc"))).toEqual([{ date: "2026-01-02", time: new Date("2026-01-02T00:00:00").getTime(), count: 4 }])
+  it("keeps post event ticks by date, including gap days without a reading", () => {
+    expect(trendEventTicks(payload).map(event => event.date)).toEqual(["2026-01-02", "2026-01-05"])
     expect(prepareTrendData(payload, "ugc").points[1].postCount).toBe(4)
   })
 })

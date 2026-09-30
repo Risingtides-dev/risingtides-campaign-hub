@@ -30,6 +30,7 @@ class Campaign(Base):
     cobrand_link = Column(Text, default="")
     start_date = Column(String(20), default="")
     end_date = Column(String(20), default="")
+    end_date_auto = Column(Boolean, default=False, nullable=False)
     budget = Column(Float, default=0.0)
     platform = Column(String(20), default="tiktok")
     total_views = Column(Integer, default=0)
@@ -111,6 +112,7 @@ class Campaign(Base):
             "cobrand_link": self.cobrand_link or "",
             "start_date": self.start_date or "",
             "end_date": self.end_date or "",
+            "end_date_auto": bool(self.end_date_auto),
             "budget": self.budget or 0.0,
             "platform": self.platform or "tiktok",
             "created_at": self.created_at.isoformat() if self.created_at else "",

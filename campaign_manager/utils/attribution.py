@@ -1,5 +1,7 @@
 """Pure campaign attribution calculations for Chartmetric histories."""
 from datetime import date, datetime, timedelta
+from statistics import median
+from zoneinfo import ZoneInfo
 
 FOLLOWUP_DAYS = 28
 
@@ -46,7 +48,7 @@ def _pct(numerator, baseline):
 
 
 def calculate_attribution(popularity, streams, start_date, end_date="", today=None, ugc=None, completion_status=None):
-    today = today or date.today()
+    today = today or datetime.now(ZoneInfo("America/New_York")).date()
     start = _day(start_date)
     end = _day(end_date)
     follow_end = end + timedelta(days=FOLLOWUP_DAYS) if end else None
@@ -61,6 +63,7 @@ def calculate_attribution(popularity, streams, start_date, end_date="", today=No
     stream_end = _value(streams, end_target)
     popularity, streams, ugc = _dedupe(popularity), _dedupe(streams), _dedupe(ugc or [])
     dates = [_day(p.get("date")) for h in (popularity, streams, ugc) for p in h]
+    dates = [d for d in dates if d]
     def latest_day(history):
         found = [_day(p.get("date")) for p in history if _day(p.get("date"))]
         return max(found) if found else None
@@ -74,9 +77,27 @@ def calculate_attribution(popularity, streams, start_date, end_date="", today=No
     in_followup = phase == "followup"
     pop_follow_to_date = bool(in_followup or (follow_target and (pop_latest is None or pop_latest < follow_target)))
     stream_follow_to_date = bool(in_followup or (follow_target and (stream_latest is None or stream_latest < follow_target)))
-    baseline_daily = _avg(streams, start - timedelta(days=14), start) if start else None
-    campaign_daily = _avg(streams, start, end_target) if start else None
-    follow_daily = _avg(streams, end, follow_target) if end and follow_target else None
+    def adjust_recounts(history):
+        ordered = _dedupe(history)
+        increments = [ordered[i]["value"] - ordered[i-1]["value"] for i in range(1, len(ordered))]
+        offsets = [0] * len(ordered)
+        found = []
+        for i, inc in enumerate(increments, 1):
+            d = _day(ordered[i]["date"])
+            peers = [abs(other) for j, other in enumerate(increments, 1) if j != i and abs((_day(ordered[j]["date"]) - d).days) <= 14]
+            med = median(peers) if peers else 0
+            previous = ordered[i-1]["value"]
+            if med and abs(inc) > 10 * med and abs(inc) > abs(previous) * .01:
+                for k in range(i, len(ordered)):
+                    offsets[k] += inc
+                found.append({"date": ordered[i]["date"], "change": inc})
+        adjusted = [{**p, "value": p["value"] - offsets[i]} for i, p in enumerate(ordered)]
+        return adjusted, found
+    streams_adj, streams_recounts = adjust_recounts(streams)
+    ugc_adj, ugc_recounts = adjust_recounts(ugc)
+    baseline_daily = _avg(streams_adj, start - timedelta(days=14), start) if start else None
+    campaign_daily = _avg(streams_adj, start, end_target) if start else None
+    follow_daily = _avg(streams_adj, end, follow_target) if end and follow_target else None
     data_as_of = max(dates).isoformat() if dates else ""
     same_campaign_reading = bool(start and end_target and reading(popularity, start) and reading(popularity, end_target) and reading(popularity, start)["date"] == reading(popularity, end_target)["date"])
     same_stream_campaign = bool(start and reading(streams, start) and reading(streams, end_target) and reading(streams, start)["date"] == reading(streams, end_target)["date"])
@@ -99,8 +120,8 @@ def calculate_attribution(popularity, streams, start_date, end_date="", today=No
                 if b - a > 1:
                     out[i]["smoothed"] = True
         return out
-    stream_history = metric_history(streams)
-    ugc_history = metric_history(ugc)
+    stream_history = metric_history(streams_adj)
+    ugc_history = metric_history(ugc_adj)
     def block(history, start_value, end_value, follow_value, end_to_date, follow_to_date):
         latest = history[-1] if history else None
         start_reading = reading(history, start) if start else None
@@ -119,6 +140,13 @@ def calculate_attribution(popularity, streams, start_date, end_date="", today=No
     ugc_latest = latest_day(ugc)
     ugc_end_td = not end or end > today or (ugc_latest is not None and ugc_latest < end_target)
     ugc_follow_td = bool(in_followup or (follow_target and (ugc_latest is None or ugc_latest < follow_target)))
+    ugc_same_campaign = bool(start and reading(ugc, start) and reading(ugc, end_target) and reading(ugc, start)["date"] == reading(ugc, end_target)["date"])
+    ugc_same_follow = bool(follow_target and reading(ugc, follow_target) and reading(ugc, end_target) and reading(ugc, follow_target)["date"] == reading(ugc, end_target)["date"])
+    ugc_start_adj, ugc_end_adj = (_value(ugc_adj, start) if start else None), _value(ugc_adj, end_target)
+    ugc_follow_adj = _value(ugc_adj, follow_target) if follow_target else None
+    ugc_baseline_daily = _avg(ugc_adj, start - timedelta(days=14), start) if start else None
+    ugc_campaign_daily = _avg(ugc_adj, start, end_target) if start else None
+    ugc_follow_daily = _avg(ugc_adj, end, follow_target) if end and follow_target else None
     return {
         "end_date": end_date or "", "followup_days": FOLLOWUP_DAYS,
         "followup_end": follow_end.isoformat() if end else "", "phase": phase,
@@ -126,26 +154,34 @@ def calculate_attribution(popularity, streams, start_date, end_date="", today=No
             "followup": pop_follow, "followup_is_to_date": pop_follow_to_date,
             "change_campaign": pop_end - pop_start if pop_end is not None and pop_start is not None and not same_campaign_reading else None,
             "change_followup": pop_follow - pop_end if pop_follow is not None and pop_end is not None and not same_follow_reading else None},
-        "streams": {**block(streams, stream_start, stream_end, stream_follow, stream_end_to_date, stream_follow_to_date), "start_total": stream_start, "end_total": stream_end, "end_is_to_date": stream_end_to_date,
+        "streams": {**block(streams_adj, _value(streams_adj, start) if start else None, _value(streams_adj, end_target), _value(streams_adj, follow_target) if follow_target else None, stream_end_to_date, stream_follow_to_date),
+            "start": stream_start, "end": stream_end, "followup": stream_follow,
+            "now": None if phase == "not_started" else (_value(streams, stream_latest) if stream_latest else None),
+            "start_total": stream_start, "end_total": stream_end, "end_is_to_date": stream_end_to_date,
             "followup_total": stream_follow, "followup_is_to_date": stream_follow_to_date,
-            "gained_campaign": stream_end - stream_start if stream_end is not None and stream_start is not None and not same_stream_campaign else None,
-            "gained_followup": stream_follow - stream_end if stream_follow is not None and stream_end is not None and not same_stream_follow else None,
-            "growth_pct_campaign": _pct(stream_end - stream_start, stream_start) if stream_end is not None and stream_start is not None and not same_stream_campaign else None,
+            "gained_campaign": _value(streams_adj, end_target) - _value(streams_adj, start) if stream_end is not None and stream_start is not None and not same_stream_campaign else None,
+            "gained_followup": _value(streams_adj, follow_target) - _value(streams_adj, end_target) if stream_follow is not None and stream_end is not None and not same_stream_follow else None,
+            "growth_pct_campaign": _pct(_value(streams_adj, end_target) - _value(streams_adj, start), _value(streams_adj, start)) if stream_end is not None and stream_start is not None and not same_stream_campaign else None,
             "baseline_daily": baseline_daily, "campaign_daily": campaign_daily, "followup_daily": follow_daily,
             "lift_pct_campaign": _pct(campaign_daily - baseline_daily, baseline_daily) if campaign_daily is not None and baseline_daily is not None else None,
-            "lift_pct_followup": _pct(follow_daily - baseline_daily, baseline_daily) if follow_daily is not None and baseline_daily is not None else None},
+            "lift_pct_followup": _pct(follow_daily - baseline_daily, baseline_daily) if follow_daily is not None and baseline_daily is not None else None,
+            "recounts": None if phase == "not_started" else streams_recounts},
         "streams_history": stream_history,
-        "ugc": {**block(ugc, ugc_start, ugc_end, ugc_follow, ugc_end_td, ugc_follow_td),
-            "start_total": ugc_start, "end_total": ugc_end,
-            "followup_total": ugc_follow,
-            "gained_campaign": ugc_end - ugc_start if ugc_end is not None and ugc_start is not None else None,
-            "gained_followup": ugc_follow - ugc_end if ugc_follow is not None and ugc_end is not None else None,
-            "growth_pct_campaign": _pct(ugc_end - ugc_start, ugc_start) if ugc_end is not None and ugc_start is not None else None,
-            "baseline_daily": _avg(ugc, start - timedelta(days=14), start) if start else None,
-            "campaign_daily": _avg(ugc, start, end_target) if start else None,
-            "followup_daily": _avg(ugc, end, follow_target) if end and follow_target else None,
-            "lift_pct_campaign": _pct(_avg(ugc, start, end_target) - _avg(ugc, start - timedelta(days=14), start), _avg(ugc, start - timedelta(days=14), start)) if start and _avg(ugc, start, end_target) is not None and _avg(ugc, start - timedelta(days=14), start) is not None else None,
-            "lift_pct_followup": _pct(_avg(ugc, end, follow_target) - _avg(ugc, start - timedelta(days=14), start), _avg(ugc, start - timedelta(days=14), start)) if start and end and follow_target and _avg(ugc, end, follow_target) is not None and _avg(ugc, start - timedelta(days=14), start) is not None else None},
+        "ugc": {**block(ugc_adj, _value(ugc_adj, start) if start else None, _value(ugc_adj, end_target), _value(ugc_adj, follow_target) if follow_target else None, ugc_end_td, ugc_follow_td),
+            "start": None if phase == "not_started" else ugc_start, "end": None if phase == "not_started" else ugc_end,
+            "followup": None if phase == "not_started" else ugc_follow,
+            "now": None if phase == "not_started" else (_value(ugc, ugc_latest) if ugc_latest else None),
+            "start_total": None if phase == "not_started" else ugc_start, "end_total": None if phase == "not_started" else ugc_end,
+            "followup_total": None if phase == "not_started" else ugc_follow,
+            "gained_campaign": None if phase == "not_started" else (_value(ugc_adj, end_target) - _value(ugc_adj, start) if ugc_end is not None and ugc_start is not None and not ugc_same_campaign else None),
+            "gained_followup": None if phase == "not_started" else (ugc_follow_adj - ugc_end_adj if ugc_follow is not None and ugc_end is not None and not ugc_same_follow else None),
+            "growth_pct_campaign": None if phase == "not_started" else (_pct(_value(ugc_adj, end_target) - _value(ugc_adj, start), _value(ugc_adj, start)) if ugc_end is not None and ugc_start is not None and not ugc_same_campaign else None),
+            "baseline_daily": None if phase == "not_started" else ugc_baseline_daily,
+            "campaign_daily": None if phase == "not_started" else ugc_campaign_daily,
+            "followup_daily": None if phase == "not_started" else ugc_follow_daily,
+            "lift_pct_campaign": None if phase == "not_started" else (_pct(ugc_campaign_daily - ugc_baseline_daily, ugc_baseline_daily) if ugc_campaign_daily is not None and ugc_baseline_daily is not None else None),
+            "lift_pct_followup": None if phase == "not_started" else (_pct(ugc_follow_daily - ugc_baseline_daily, ugc_baseline_daily) if ugc_follow_daily is not None and ugc_baseline_daily is not None else None),
+            "recounts": None if phase == "not_started" else ugc_recounts},
         "ugc_history": ugc_history,
         "data_as_of": data_as_of,
         "followup_day": max(1, min(FOLLOWUP_DAYS, (today - end).days)) if phase == "followup" and end else None,

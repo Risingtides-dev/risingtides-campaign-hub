@@ -7,6 +7,7 @@ POST /api/campaign/<slug>/pop-score/track  link a song {"link": "<spotify url | 
 from __future__ import annotations
 
 import logging
+import time
 from datetime import date, datetime, timedelta
 
 from flask import Blueprint, jsonify, request
@@ -15,6 +16,7 @@ from campaign_manager import db as _db
 from campaign_manager.models import Campaign
 from campaign_manager.services import chartmetric
 from campaign_manager.utils.attribution import calculate_attribution
+from campaign_manager.utils.helpers import video_posted_before_start
 
 log = logging.getLogger(__name__)
 
@@ -30,7 +32,7 @@ def _history_start(start_date: str) -> date:
     try:
         return datetime.strptime(start_date, "%Y-%m-%d").date() - timedelta(days=HISTORY_LEAD_DAYS)
     except (TypeError, ValueError):
-        return date.today() - timedelta(days=DEFAULT_HISTORY_DAYS)
+        return datetime.now(_db.EST).date() - timedelta(days=DEFAULT_HISTORY_DAYS)
 
 
 def _baseline(history: list, start_date: str):
@@ -63,6 +65,10 @@ def get_pop_score(slug: str):
     if not row["track_id"]:
         return jsonify({"linked": False})
 
+    budget_started = time.monotonic()
+    budget_seconds = 75
+    def too_slow():
+        return time.monotonic() - budget_started >= budget_seconds
     try:
         client = chartmetric.get_client()
         snap = client.track_snapshot(row["track_id"])
@@ -78,18 +84,24 @@ def get_pop_score(slug: str):
     streams_error = None
     ugc_error = None
     try:
+        if too_slow():
+            raise TimeoutError
         pop_track_domain_id = client.popularity_track_domain_id(row["track_id"], since=_history_start(row["start_date"]))
+        if too_slow():
+            raise TimeoutError
         streams = client.streams_history(row["track_id"], since=_history_start(row["start_date"]), track_domain_id=pop_track_domain_id)
     except Exception as e:
         log.exception("streams history fetch failed for %s", slug)
-        streams, streams_error = [], "Streams history is temporarily unavailable."
+        streams, streams_error = [], "Chartmetric is slow — try again shortly" if isinstance(e, TimeoutError) else "Streams history is temporarily unavailable."
     try:
+        if too_slow():
+            raise TimeoutError
         ugc = client.tiktok_posts_history(row["track_id"], since=_history_start(row["start_date"]))
-    except Exception:
+    except Exception as e:
         log.exception("TikTok posts history fetch failed for %s", slug)
-        ugc, ugc_error = [], "TikTok video history is temporarily unavailable."
+        ugc, ugc_error = [], "Chartmetric is slow — try again shortly" if isinstance(e, TimeoutError) else "TikTok video history is temporarily unavailable."
     try:
-        attribution = calculate_attribution(history, streams, row["start_date"], row["end_date"], ugc=ugc, completion_status=row["completion_status"])
+        attribution = calculate_attribution(history, streams, row["start_date"], row["end_date"], ugc=ugc, completion_status=row["completion_status"], today=datetime.now(_db.EST).date())
     except Exception:
         log.exception("attribution calculation failed for %s", slug)
         return jsonify({"linked": True, "link": row["link"], "error": "Couldn't calculate song attribution."}), 502
@@ -116,14 +128,17 @@ def get_pop_score(slug: str):
         campaign = s.query(Campaign).filter_by(slug=slug).first()
         events = {}
         if campaign:
-            for upload_date, in s.query(MatchedVideo.upload_date).filter(MatchedVideo.campaign_id == campaign.id).all():
+            for video in s.query(MatchedVideo).filter(MatchedVideo.campaign_id == campaign.id, MatchedVideo.dismissed_at.is_(None)).all():
+                upload_date = video.upload_date
+                if video_posted_before_start({"timestamp": video.timestamp, "upload_date": upload_date}, row["start_date"]):
+                    continue
                 raw = (upload_date or "").strip()
                 day = raw[:4] + "-" + raw[4:6] + "-" + raw[6:8] if len(raw) == 8 and raw.isdigit() else raw[:10]
                 try:
                     day = date.fromisoformat(day).isoformat()
                 except ValueError:
                     continue
-                if _history_start(row["start_date"]).isoformat() <= day <= date.today().isoformat():
+                if _history_start(row["start_date"]).isoformat() <= day <= datetime.now(_db.EST).date().isoformat():
                     events[day] = events.get(day, 0) + 1
     result["post_events"] = [{"date": d, "count": events[d]} for d in sorted(events)]
     return jsonify(result)

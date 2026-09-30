@@ -520,7 +520,7 @@ def create_campaign():
 
     title = (data.get("title") or "").strip()
     official_sound = (data.get("official_sound") or "").strip()
-    start_date = (data.get("start_date") or "").strip() or str(date.today())
+    start_date = (data.get("start_date") or "").strip() or datetime.now(_db.EST).date().isoformat()
     budget_raw = (data.get("budget") or "0")
 
     if not title:
@@ -582,6 +582,7 @@ def edit_campaign(slug: str):
     if not meta:
         return jsonify({"error": "Campaign not found."}), 404
 
+    prior_completion_status = meta.get("completion_status", "none")
     data = request.get_json(silent=True) or {}
 
     title = (data.get("title") or "").strip()
@@ -669,15 +670,23 @@ def edit_campaign(slug: str):
             "error": f"Invalid completion_status: {completion_status!r}",
             "valid": ["none", "booked", "completed"],
         }), 400
-    if completion_status == "completed" and not meta.get("end_date"):
-        auto_end = date.today().isoformat()
+    today_et = datetime.now(_db.EST).date()
+    if "end_date" in data:
+        meta["end_date_auto"] = False
+    if prior_completion_status != "completed" and completion_status == "completed" and "end_date" not in data and not meta.get("end_date"):
         try:
             parsed_start = datetime.strptime(meta.get("start_date", ""), "%Y-%m-%d").date()
-            if date.today() < parsed_start:
+            if today_et < parsed_start:
                 logger.warning("Finishing campaign %s with future start date %s", slug, meta.get("start_date"))
+            else:
+                meta["end_date"] = today_et.isoformat()
+                meta["end_date_auto"] = True
         except (TypeError, ValueError):
-            logger.warning("Finishing campaign %s with missing or invalid start date", slug)
-        meta["end_date"] = auto_end
+            meta["end_date"] = today_et.isoformat()
+            meta["end_date_auto"] = True
+    elif prior_completion_status == "completed" and completion_status in ("none", "booked") and meta.get("end_date_auto"):
+        meta["end_date"] = ""
+        meta["end_date_auto"] = False
 
     # Match strategy — controls whether fuzzy fallback is allowed.
     # "strict" = sound_id only (use for original sound campaigns)

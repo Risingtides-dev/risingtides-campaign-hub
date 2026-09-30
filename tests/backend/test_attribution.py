@@ -50,13 +50,14 @@ def test_boundary_baseline_uses_reading_before_fourteen_day_boundary():
 
 def test_not_started_has_no_attribution_values_and_nonpositive_baseline_pct_is_null():
     hist = [{"date": "2026-01-01", "value": 10}, {"date": "2026-01-02", "value": 20}]
-    res = calculate_attribution(hist, hist, "2026-01-03", "2026-01-10", date(2026, 1, 2))
+    res = calculate_attribution(hist, hist, "2026-01-03", "2026-01-10", date(2026, 1, 2), ugc=hist)
     assert all(v is None for k, v in res["popularity"].items() if k.startswith("change_") or k in ("start", "end", "followup"))
     assert all(v is None for k, v in res["streams"].items() if k not in ("end_is_to_date", "followup_is_to_date"))
     assert res["popularity"]["end_is_to_date"] is False
     assert res["popularity"]["followup_is_to_date"] is False
     assert res["streams"]["end_is_to_date"] is False
     assert res["streams"]["followup_is_to_date"] is False
+    assert all(v is None for k, v in res["ugc"].items() if k not in ("end_is_to_date", "followup_is_to_date"))
     from campaign_manager.utils.attribution import _pct
     assert _pct(10, 0) is None and _pct(10, -2) is None
 
@@ -148,6 +149,7 @@ def test_change_point_smoothing_covers_stalls_without_fake_leading_or_tail_rates
     assert [p["daily"] for p in tail] == [None, 10.0, None, None]
     ordinary = run([100, 170, 360, 400])
     assert [p["daily"] for p in ordinary] == [None, 70.0, 190.0, 40.0]
+    assert all("smoothed" not in p for p in ordinary[1:])
 
 
 def test_followup_to_date_flags_open_window_and_exact_close_boundary():
@@ -166,7 +168,7 @@ def test_ugc_has_complete_cumulative_metric_block_and_smoothed_history():
         {"date": "2026-01-02", "value": 38}, {"date": "2026-01-03", "value": 38},
         {"date": "2026-01-04", "value": 58}, {"date": "2026-01-12", "value": 74},
     ]
-    res = calculate_attribution(h, h[:-1], "2026-01-01", "2026-01-04", date(2026, 1, 12), ugc=h)
+    res = calculate_attribution(h[:-1], h[:-1], "2026-01-01", "2026-01-04", date(2026, 1, 12), ugc=h)
     ugc = res["ugc"]
     assert {"start", "end", "followup", "now", "now_date", "end_is_to_date",
             "followup_is_to_date", "change_since_end", "change_since_start",
@@ -178,6 +180,72 @@ def test_ugc_has_complete_cumulative_metric_block_and_smoothed_history():
     assert res["data_as_of"] == "2026-01-12"
     assert res["ugc_history"][3]["smoothed"] is True
     assert [p["date"] for p in res["streams_history"]].count("2026-01-01") == 1
+
+
+def test_ugc_calculations_use_ugc_series_for_campaign_and_followup():
+    streams = [{"date": "2026-01-01", "value": 100}, {"date": "2026-01-15", "value": 240},
+               {"date": "2026-01-25", "value": 340}, {"date": "2026-02-08", "value": 480}]
+    ugc = [{"date": "2025-12-18", "value": 0}, {"date": "2026-01-01", "value": 50}, {"date": "2026-01-15", "value": 106},
+               {"date": "2026-01-25", "value": 156}, {"date": "2026-02-08", "value": 226},
+               {"date": "2026-02-22", "value": 296}]
+    result = calculate_attribution([], streams, "2026-01-01", "2026-01-25", date(2026, 3, 1), ugc=ugc)
+    block = result["ugc"]
+    assert block["gained_campaign"] == 106
+    assert block["growth_pct_campaign"] == 212
+    assert block["baseline_daily"] == 3.6
+    assert block["campaign_daily"] == 4.4
+    assert block["followup_daily"] == 5.0
+    assert block["followup_total"] == 296
+    assert block["lift_pct_campaign"] == 22.2
+    assert block["lift_pct_followup"] == 38.9
+    assert block["end_is_to_date"] is False and block["followup_is_to_date"] is False
+    assert block["gained_campaign"] != result["streams"]["gained_campaign"]
+
+
+def test_recount_steps_adjust_cumulative_history_but_keep_raw_headlines():
+    h = [{"date": f"2026-09-{d:02}", "value": 100000 + 1000*(d-20)} for d in range(20, 23)]
+    h += [{"date": "2026-09-23", "value": 645105}]
+    h += [{"date": f"2026-09-{d:02}", "value": 648105 + 1000*(d-24)} for d in range(24, 27)]
+    result = calculate_attribution([], h, "2026-09-20", "2026-09-26", date(2026, 9, 26), ugc=h)
+    assert result["ugc"]["end_total"] == 650105
+    assert result["ugc"]["now"] == 650105
+    assert result["ugc"]["gained_campaign"] == 7000
+    assert result["ugc"]["recounts"] == [{"date": "2026-09-23", "change": 543105}]
+    assert result["ugc_history"][-1]["total"] == 107000
+    popularity = [{"date": point["date"], "value": point["value"]} for point in h]
+    pop_result = calculate_attribution(popularity, h, "2026-09-20", "2026-09-26", date(2026, 9, 26), ugc=h)
+    assert pop_result["popularity"]["change_campaign"] == 550105
+
+
+def test_ordinary_volatile_five_times_day_is_not_recount():
+    h = [{"date": "2026-05-20", "value": 100000}, {"date": "2026-05-21", "value": 101000},
+         {"date": "2026-05-22", "value": 102000}, {"date": "2026-05-23", "value": 107000},
+         {"date": "2026-05-24", "value": 108000}, {"date": "2026-05-25", "value": 109000}]
+    assert calculate_attribution([], [], "2026-05-20", today=date(2026, 5, 25), ugc=h)["ugc"]["recounts"] == []
+
+
+def test_negative_ugc_recount_in_baseline_window_is_adjusted():
+    values = [10_000_000, 10_001_000, 10_002_000, 7_181_770, 7_182_770,
+              7_183_770, 7_184_770, 7_185_770, 7_186_770, 7_187_770, 7_188_770]
+    h = [{"date": "2026-05-10", "value": 9_989_000}]
+    h += [{"date": "2026-05-15", "value": 9_993_770}]
+    h += [{"date": f"2026-05-{20+i:02d}", "value": value} for i, value in enumerate(values)]
+    result = calculate_attribution([], [], "2026-05-24", "2026-05-30", date(2026, 5, 30), ugc=h)
+    assert result["ugc"]["recounts"] == [{"date": "2026-05-23", "change": -2820230}]
+    assert result["ugc"]["start_total"] == 7_182_770
+    assert result["ugc"]["end_total"] == 7_188_770
+    assert result["ugc"]["gained_campaign"] == 6000
+    assert result["ugc"]["baseline_daily"] == 1000
+
+
+def test_ugc_one_day_behind_uses_same_reading_guard():
+    h = [{"date": "2026-01-01", "value": 50}]
+    result = calculate_attribution([], [], "2026-01-02", "2026-01-03", date(2026, 1, 4), ugc=h)
+    assert result["ugc"]["gained_campaign"] is None
+    assert result["ugc"]["growth_pct_campaign"] is None
+    assert result["ugc"]["gained_followup"] is None
+    assert result["ugc"]["change_since_start"] is None
+    assert result["ugc"]["change_since_end"] is None
 
 
 def test_both_histories_empty_are_safe_and_to_date_popularity_flag_boundaries():

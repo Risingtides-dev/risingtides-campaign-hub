@@ -45,6 +45,10 @@ view.
   `start_date` (`YYYY-MM-DD`). Add it to the model, both dict serialisers, the
   JSON-file storage path in `db.py` if it round-trips meta, and the self-heal
   `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` block next to the chartmetric columns.
+- Add `campaigns.end_date_auto BOOLEAN DEFAULT FALSE` to distinguish an
+  automatically stamped completion date from a manually entered date. Include
+  it in the campaign detail `meta` object as `end_date_auto: false` by default
+  and clear it with the date when reopening a campaign.
 - `POST /api/campaign/<slug>/edit` accepts `end_date`. Semantics: key absent →
   unchanged; `""` → cleared; otherwise must parse as `YYYY-MM-DD` and be on or
   after `start_date` (400 with a plain message if not).
@@ -64,7 +68,7 @@ Existing fields stay exactly as they are (`linked`, `link`, `chartmetric_track_i
   "end_date": "2026-09-01",         // "" when not set
   "followup_days": 28,
   "followup_end": "2026-09-29",     // end_date + 28 days; "" when end_date is ""
-  "phase": "live",                  // "not_started" | "live" | "followup" | "complete" | "no_start"
+  "phase": "live",                  // "not_started" | "live" | "followup" | "complete" | "no_start" | "finished_no_end"
   "popularity": {
     "start": 61,                    // last reading on/before start_date
     "end": 68,                      // last reading on/before end_date; latest reading if end_date "" or in the future
@@ -87,7 +91,8 @@ Existing fields stay exactly as they are (`linked`, `link`, `chartmetric_track_i
     "campaign_daily": 14285.7,      // avg daily streams start_date -> end (or -> latest)
     "followup_daily": 8928.6,       // avg daily streams end_date -> followup_end (or -> latest); null when no follow-up yet
     "lift_pct_campaign": 185.7,     // (campaign_daily - baseline_daily) / baseline_daily * 100; null if baseline null or 0
-    "lift_pct_followup": 78.6       // (followup_daily - baseline_daily) / baseline_daily * 100 — the "rate of impact"
+    "lift_pct_followup": 78.6,      // (followup_daily - baseline_daily) / baseline_daily * 100 — the "rate of impact"
+    "recounts": []                  // cumulative reset steps, each {"date", "change"}
   },
   "streams_history": [
     {"date": "2026-08-01", "total": 1000000, "daily": null},   // daily = total - previous total, divided by day gap; null for first point
@@ -95,7 +100,17 @@ Existing fields stay exactly as they are (`linked`, `link`, `chartmetric_track_i
   ],
   "followup_day": 8,                // only in follow-up; today - end_date, clamped 1..28
   "streams_error": null,            // present with user-facing text if streams fetch failed
-  "data_as_of": "2026-09-28"        // date of the latest reading across both series ("" if none)
+  "ugc": {                          // same cumulative fields and semantics as streams
+    "start_total": 100, "end_total": 140, "followup_total": 165,
+    "gained_campaign": 40, "gained_followup": 25,
+    "growth_pct_campaign": 40.0, "baseline_daily": 5.0,
+    "campaign_daily": 14.3, "followup_daily": 8.9,
+    "lift_pct_campaign": 185.7, "lift_pct_followup": 78.6,
+    "recounts": []                  // detected cumulative reporting resets
+  },
+  "ugc_history": [],                // adjusted daily history; block totals remain raw
+  "ugc_error": null,                // present with user-facing text if UGC history fetch failed
+  "data_as_of": "2026-09-28"        // latest reading across popularity, streams, and UGC
 }
 ```
 

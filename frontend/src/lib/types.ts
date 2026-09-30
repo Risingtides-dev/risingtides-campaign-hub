@@ -36,6 +36,7 @@ export interface CampaignSummary {
   song: string
   start_date: string
   end_date: string
+  end_date_auto?: boolean
   completion_status: "none" | "booked" | "completed"
   budget: CampaignBudget
   stats: CampaignStats
@@ -74,6 +75,7 @@ export interface CampaignDetail {
   cobrand_upload_url: string
   start_date: string
   end_date: string
+  end_date_auto?: boolean
   budget: CampaignBudget
   stats: CampaignStats
   creators: Creator[]
@@ -933,6 +935,7 @@ export interface AttributionStreamsPoint {
   daily: number | null
   smoothed?: boolean
 }
+export interface AttributionRecount { date: string; change: number }
 
 export type AttributionPhase = "not_started" | "live" | "followup" | "complete" | "no_start" | "finished_no_end"
 
@@ -949,6 +952,7 @@ export interface PopScore {
   change_since_start?: number | null
   start_date?: string
   end_date?: string
+  end_date_auto?: boolean
   followup_days?: number
   followup_end?: string
   followup_day?: number | null
@@ -961,6 +965,7 @@ export interface PopScore {
     baseline_daily: number | null; campaign_daily: number | null; followup_daily: number | null
     gained_campaign: number | null; gained_followup: number | null; growth_pct_campaign?: number | null; lift_pct_campaign: number | null; lift_pct_followup?: number | null
     end_is_to_date: boolean; followup_is_to_date: boolean
+    recounts?: AttributionRecount[]
   }
   phase?: AttributionPhase
   popularity?: {
@@ -987,6 +992,7 @@ export interface PopScore {
     followup_daily: number | null
     lift_pct_campaign: number | null
     lift_pct_followup: number | null
+    recounts?: AttributionRecount[]
     now?: number | null; now_date?: string | null; change_since_start?: number | null; change_since_end?: number | null
   }
   streams_history?: AttributionStreamsPoint[]
