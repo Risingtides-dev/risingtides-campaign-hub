@@ -253,6 +253,54 @@ def _parse_internal_captions(notion_page_id: str, props: Dict) -> Optional[str]:
     return "".join(part["plain_text"] for part in parts)
 
 
+# Notion takes rich text in pieces of at most 2,000 characters, and at most
+# 100 pieces per property.
+_RICH_TEXT_PIECE = 2000
+MAX_INTERNAL_CAPTIONS = 100_000
+
+
+def _rich_text_pieces(text: str) -> List[Dict]:
+    """Text as Notion takes it. Python slices by code point, so no emoji is cut."""
+    pieces = []
+    start = 0
+    while start < len(text):
+        end = min(start + _RICH_TEXT_PIECE, len(text))
+        pieces.append({"type": "text", "text": {"content": text[start:end]}})
+        start = end
+    return pieces
+
+
+def write_page_internal_captions(notion_page_id: str, text: str) -> Optional[str]:
+    """Write a campaign's Internal Captions back to its CRM page.
+
+    Returns None when the write went through, or the reason it did not, in
+    plain words for the caller's response. The CRM is the source of truth
+    for captions, so a caller that gets a reason must not store the value
+    locally either.
+    """
+    api_key = _get_api_key()
+    if not api_key:
+        return "CRM writes are not configured (NOTION_API_KEY)"
+    if not notion_page_id:
+        return "campaign has no CRM page"
+    url = f"{NOTION_API_BASE}/pages/{notion_page_id}"
+    payload = {"properties": {CAPTIONS_PROPERTY: {"rich_text": _rich_text_pieces(text)}}}
+    try:
+        resp = requests.patch(url, headers=_headers(), json=payload, timeout=15)
+    except Exception as e:
+        logger.warning("CRM caption write failed for %s: %s", notion_page_id, e)
+        return "CRM could not be reached"
+    if resp.status_code != 200:
+        logger.warning("CRM caption write %s -> %s: %s", notion_page_id, resp.status_code, resp.text[:300])
+        detail = ""
+        try:
+            detail = (resp.json() or {}).get("message", "") or ""
+        except ValueError:
+            pass
+        return f"CRM answered {resp.status_code}" + (f": {detail[:200]}" if detail else "")
+    return None
+
+
 def fetch_page_campaign_fields(notion_page_id: str) -> Optional[Dict]:
     """Fetch the CRM fields an existing campaign keeps tracking, by page id.
 
