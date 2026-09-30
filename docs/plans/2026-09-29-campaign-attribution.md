@@ -21,6 +21,30 @@ view.
 
 ## Facts about the Chartmetric data (verified against the live API 2026-09-29)
 
+## Auto-linking
+
+Campaigns with neither `chartmetric_track_id` nor `chartmetric_link` are checked
+by a scheduled job every six hours (first run ten minutes after boot). The
+interval is configurable with `CHARTMETRIC_AUTOLINK_INTERVAL_MINUTES` (30–1440)
+and the job is disabled when `CHARTMETRIC_REFRESH_TOKEN` is unset. Each run
+checks at most 15 newest campaigns and has a five-minute budget. A no-match or
+ambiguous match is retried after seven days; API authentication failure stops
+the run. Updates are field-only, preserving unrelated campaign edits.
+
+Resolution uses `GET /api/search?q=<artist>&type=artists&limit=10`; only exact
+normalized artist-name matches are considered. For every matching artist
+profile, tracks are read from `GET /api/artist/<id>/tracks?limit=100&offset=N`,
+up to 15 pages (stopping at an empty or short page). Track titles and
+`artist_names` must exactly match after casefolding and punctuation/spacing
+normalization. When several versions match, the one with the most Spotify
+streams in `cm_statistics.sp_streams` wins; missing stream counts fall back to
+`sp_popularity`, then the lowest Chartmetric ID. This avoids relying on the
+poorly ranked `/api/search?...type=tracks` results. The acceptance probe at
+`scripts/chartmetric_autolink_probe.py` checks Espresso / Sabrina Carpenter
+(118981138) and Blinding Lights / The Weeknd (27552418), and verifies each
+against its main Spotify track using
+`GET /api/track/spotify/<spotify_id>/get-ids`.
+
 - `GET /api/track/<cm_id>/spotify/stats/most-history?type=streams` returns
   `obj: [ {domain, track_domain_id, type, data: [{timestp: "YYYY-MM-DD", value: <int>}...]} ]`.
 - **`value` is the CUMULATIVE total stream count, not daily streams.** Daily

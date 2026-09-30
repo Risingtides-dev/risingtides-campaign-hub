@@ -15,22 +15,24 @@ export function ScrapeProgress({ enabled, onComplete }: ScrapeProgressProps) {
   const queryClient = useQueryClient()
   const { data: status } = useInternalScrapeStatus(enabled)
   const completedRef = useRef(false)
-  const [showSummary, setShowSummary] = useState(false)
   const [fadingOut, setFadingOut] = useState(false)
+  const [summaryDismissed, setSummaryDismissed] = useState(false)
 
   useEffect(() => {
     // Reset the guard when a new scrape starts
     if (enabled && status?.running) {
       completedRef.current = false
-      setShowSummary(false)
-      setFadingOut(false)
+      const resetTimer = setTimeout(() => {
+        setFadingOut(false)
+        setSummaryDismissed(false)
+      }, 0)
+      return () => clearTimeout(resetTimer)
     }
   }, [enabled, status?.running])
 
   useEffect(() => {
-    if (status && status.done && !status.running && !completedRef.current) {
+    if (status?.done && !status.running && !completedRef.current) {
       completedRef.current = true
-      setShowSummary(true)
       // Scrape finished -- refetch results + creators
       queryClient.invalidateQueries({ queryKey: keys.internalResults })
       queryClient.invalidateQueries({ queryKey: keys.internalCreators })
@@ -38,7 +40,7 @@ export function ScrapeProgress({ enabled, onComplete }: ScrapeProgressProps) {
       // Fade out after 5 seconds
       const fadeTimer = setTimeout(() => setFadingOut(true), 5000)
       const hideTimer = setTimeout(() => {
-        setShowSummary(false)
+        setSummaryDismissed(true)
         onComplete()
       }, 5500)
 
@@ -50,6 +52,7 @@ export function ScrapeProgress({ enabled, onComplete }: ScrapeProgressProps) {
   }, [status, queryClient, onComplete])
 
   // Don't render anything if not active
+  const showSummary = Boolean(status?.done && !status.running && !summaryDismissed)
   if (!enabled && !showSummary) return null
   if (!status) return null
 

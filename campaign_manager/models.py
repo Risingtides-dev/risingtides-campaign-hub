@@ -93,6 +93,7 @@ class Campaign(Base):
     # Chartmetric link for Spotify popularity ("pop score") tracking.
     chartmetric_track_id = Column(BigInteger, nullable=True)
     chartmetric_link = Column(Text, default="")
+    chartmetric_autolink_checked_at = Column(DateTime, nullable=True)
     attribution_overrides = Column(JSONB, default=dict, nullable=False)
 
     creators = relationship("Creator", back_populates="campaign", cascade="all, delete-orphan")

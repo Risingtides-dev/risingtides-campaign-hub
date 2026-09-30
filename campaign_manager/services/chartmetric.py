@@ -16,6 +16,7 @@ import os
 import re
 import threading
 import time
+import unicodedata
 from dataclasses import dataclass
 from datetime import date
 from typing import Dict, List, Optional, Tuple
@@ -98,7 +99,8 @@ class ChartmetricClient:
             timeout=timeout,
         )
         if res.status_code != 200:
-            log.error("Chartmetric token exchange failed: %s %s", res.status_code, res.text[:200])
+            # Avoid logging response bodies from an authentication endpoint.
+            log.error("Chartmetric token exchange failed: %s", res.status_code)
             raise ChartmetricError("Chartmetric login failed — the refresh token may be expired.")
         body = res.json()
         self._access_token = body["token"]
@@ -158,13 +160,68 @@ class ChartmetricClient:
         if res.status_code == 404:
             raise ChartmetricError("Chartmetric couldn't find that track.")
         if res.status_code != 200:
-            log.error("Chartmetric GET %s failed: %s %s", path, res.status_code, res.text[:200])
+            # Response bodies can contain credentials returned by misconfigured proxies.
+            log.error("Chartmetric GET %s failed: %s", path, res.status_code)
             raise ChartmetricError(f"Chartmetric request failed ({res.status_code}).")
         obj = res.json().get("obj")
         self._cache[cache_key] = (time.time(), obj)
         return obj
 
     # ── public API ──────────────────────────────────────────────────
+    def search_track(self, song: str, artist: str, deadline=None) -> Optional[int]:
+        """Resolve an exact title through exact-name artist profiles and their tracks."""
+        from campaign_manager.services.matching import _is_generic_song_title
+
+        if not song or not song.strip() or not artist or not artist.strip() or _is_generic_song_title(song):
+            return None
+
+        def norm(value):
+            value = unicodedata.normalize("NFKD", value or "").casefold()
+            return " ".join("".join(ch if ch.isalnum() else " " for ch in value).split())
+
+        target_song, target_artist = norm(song), norm(artist)
+        obj = self._get("/search", {"q": artist, "type": "artists", "limit": 10}, deadline=deadline) or {}
+        rows = obj.get("artists", []) if isinstance(obj, dict) else []
+        artist_ids = []
+        for row in rows:
+            if isinstance(row, dict) and norm(row.get("name")) == target_artist:
+                try:
+                    artist_ids.append(int(row["id"]))
+                except (KeyError, TypeError, ValueError):
+                    continue
+        candidates = {}
+        for artist_id in artist_ids:
+            for page in range(15):
+                tracks = self._get(f"/artist/{artist_id}/tracks", {"limit": 100, "offset": page * 100}, deadline=deadline)
+                tracks = tracks if isinstance(tracks, list) else []
+                for row in tracks:
+                    if not isinstance(row, dict) or norm(row.get("name")) != target_song:
+                        continue
+                    names = row.get("artist_names") or []
+                    if target_artist not in {norm(name) for name in names}:
+                        continue
+                    try:
+                        track_id = int(row["id"])
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    stats = row.get("cm_statistics") or {}
+                    streams = stats.get("sp_streams")
+                    popularity = stats.get("sp_popularity")
+                    candidates[track_id] = (
+                        int(streams) if streams is not None else None,
+                        float(popularity) if popularity is not None else None,
+                    )
+                if len(tracks) < 100:
+                    break
+        if not candidates:
+            return None
+        # Missing metrics rank below known metrics; id is the deterministic tie-break.
+        return min(candidates, key=lambda track_id: (
+            -(candidates[track_id][0] if candidates[track_id][0] is not None else -1),
+            -(candidates[track_id][1] if candidates[track_id][1] is not None else -1),
+            track_id,
+        ))
+
     def resolve_track_id(self, ref: TrackRef, deadline=None) -> int:
         if ref.kind == "chartmetric":
             return int(ref.value)

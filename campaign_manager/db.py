@@ -100,6 +100,7 @@ def _self_heal_chartmetric_columns():
             statements = (
                 "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS chartmetric_track_id BIGINT NULL",
                 "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS chartmetric_link TEXT DEFAULT ''",
+                "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS chartmetric_autolink_checked_at TIMESTAMP NULL",
                 "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS end_date VARCHAR(20) DEFAULT ''",
                 "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS end_date_auto BOOLEAN DEFAULT FALSE",
                 "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS attribution_overrides JSONB DEFAULT '{}'::jsonb",

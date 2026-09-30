@@ -330,6 +330,21 @@ def init_scheduler(database_url: str, hour: int = 6, minute: int = 0):
         misfire_grace_time=300,
     )
 
+    # Conservative Chartmetric campaign linking. Delayed on boot and omitted
+    # entirely when credentials are unavailable.
+    if os.environ.get("CHARTMETRIC_REFRESH_TOKEN"):
+        from campaign_manager.services.chartmetric_autolink import (
+            autolink_campaigns, get_autolink_interval_minutes,
+        )
+        from datetime import datetime as _datetime
+        cm_interval = get_autolink_interval_minutes()
+        _scheduler.add_job(
+            autolink_campaigns, "interval", minutes=cm_interval,
+            next_run_time=_datetime.now(EST) + timedelta(minutes=10),
+            id="chartmetric_autolink", replace_existing=True,
+            coalesce=True, max_instances=1, misfire_grace_time=300,
+        )
+
     # Preserve CRM-declared niche demand for the D1 playlist consumer.
     from campaign_manager.services.notion import request_campaign_niche_refresh
     _scheduler.add_job(
