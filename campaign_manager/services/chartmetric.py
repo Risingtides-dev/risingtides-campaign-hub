@@ -88,13 +88,14 @@ class ChartmetricClient:
         self._cache: Dict[str, Tuple[float, object]] = {}
 
     # ── plumbing ────────────────────────────────────────────────────
-    def _token(self) -> str:
+    def _token(self, deadline=None) -> str:
         if self._access_token and time.time() < self._token_expires_at - TOKEN_REFRESH_MARGIN_S:
             return self._access_token
+        timeout = self._request_timeout(deadline)
         res = self._http.post(
             f"{BASE_URL}/token",
             json={"refreshtoken": self._refresh_token},
-            timeout=REQUEST_TIMEOUT_S,
+            timeout=timeout,
         )
         if res.status_code != 200:
             log.error("Chartmetric token exchange failed: %s %s", res.status_code, res.text[:200])
@@ -104,34 +105,55 @@ class ChartmetricClient:
         self._token_expires_at = time.time() + float(body.get("expires_in", 3600))
         return self._access_token
 
-    def _throttle(self) -> None:
+    def _throttle(self, deadline=None) -> None:
         wait = MIN_REQUEST_INTERVAL_S - (time.time() - self._last_request_at)
         if wait > 0:
+            if deadline is not None and time.monotonic() + wait >= deadline:
+                raise TimeoutError("Chartmetric request deadline exceeded")
             time.sleep(wait)
         self._last_request_at = time.time()
 
-    def _get(self, path: str, params: Optional[dict] = None):
+    @staticmethod
+    def _request_timeout(deadline):
+        remaining = REQUEST_TIMEOUT_S if deadline is None else deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Chartmetric request deadline exceeded")
+        return min(REQUEST_TIMEOUT_S, remaining)
+
+    def _get(self, path: str, params: Optional[dict] = None, deadline=None):
         cache_key = f"{path}?{sorted((params or {}).items())}"
         hit = self._cache.get(cache_key)
         if hit and time.time() - hit[0] < RESPONSE_CACHE_TTL_S:
             return hit[1]
 
-        with self._lock:
+        remaining = None if deadline is None else deadline - time.monotonic()
+        if remaining is not None and remaining <= 0:
+            raise TimeoutError("Chartmetric request deadline exceeded")
+        acquired = self._lock.acquire() if remaining is None else self._lock.acquire(timeout=remaining)
+        if not acquired:
+            raise TimeoutError("Chartmetric request deadline exceeded")
+        try:
             for attempt in range(2):
-                self._throttle()
+                self._throttle(deadline)
                 res = self._http.get(
                     f"{BASE_URL}{path}",
                     params=params,
-                    headers={"Authorization": f"Bearer {self._token()}"},
-                    timeout=REQUEST_TIMEOUT_S,
+                    headers={"Authorization": f"Bearer {self._token(deadline)}"},
+                    timeout=self._request_timeout(deadline),
                 )
                 if res.status_code == 429 and attempt == 0:
+                    if deadline is not None and time.monotonic() + 2.0 + MIN_REQUEST_INTERVAL_S >= deadline:
+                        break
                     time.sleep(2.0)
                     continue
                 if res.status_code == 401 and attempt == 0:
+                    if deadline is not None and time.monotonic() + MIN_REQUEST_INTERVAL_S >= deadline:
+                        break
                     self._access_token = ""  # force re-auth once
                     continue
                 break
+        finally:
+            self._lock.release()
 
         if res.status_code == 404:
             raise ChartmetricError("Chartmetric couldn't find that track.")
@@ -143,18 +165,18 @@ class ChartmetricClient:
         return obj
 
     # ── public API ──────────────────────────────────────────────────
-    def resolve_track_id(self, ref: TrackRef) -> int:
+    def resolve_track_id(self, ref: TrackRef, deadline=None) -> int:
         if ref.kind == "chartmetric":
             return int(ref.value)
-        rows = self._get(f"/track/{ref.kind}/{ref.value}/get-ids") or []
+        rows = self._get(f"/track/{ref.kind}/{ref.value}/get-ids", deadline=deadline) or []
         for row in rows:
             ids = row.get("chartmetric_ids") or []
             if ids:
                 return int(ids[0])
         raise ChartmetricError("Chartmetric doesn't have that track yet.")
 
-    def track_snapshot(self, chartmetric_id: int) -> TrackSnapshot:
-        obj = self._get(f"/track/{int(chartmetric_id)}") or {}
+    def track_snapshot(self, chartmetric_id: int, deadline=None) -> TrackSnapshot:
+        obj = self._get(f"/track/{int(chartmetric_id)}", deadline=deadline) or {}
         stats = obj.get("cm_statistics") or {}
         pop = stats.get("sp_popularity")
         return TrackSnapshot(
@@ -167,7 +189,7 @@ class ChartmetricClient:
             image_url=obj.get("image_url") or "",
         )
 
-    def popularity_history(self, chartmetric_id: int, since: Optional[date] = None) -> List[dict]:
+    def popularity_history(self, chartmetric_id: int, since: Optional[date] = None, deadline=None) -> List[dict]:
         """Daily Spotify popularity as [{"date": "YYYY-MM-DD", "value": int}].
 
         A song often has several Spotify IDs (single, album, deluxe); the
@@ -175,7 +197,7 @@ class ChartmetricClient:
         """
         series_list = self._get(
             f"/track/{int(chartmetric_id)}/spotify/stats/most-history",
-            {"type": "popularity", **({"since": since.isoformat()} if since else {})},
+            {"type": "popularity", **({"since": since.isoformat()} if since else {})}, deadline=deadline,
         ) or []
         best = _pick_primary_series(series_list)
         points = _clean_points(best)
@@ -184,18 +206,18 @@ class ChartmetricClient:
             points = [p for p in points if p["date"] >= cutoff]
         return sorted(points, key=lambda p: p["date"])
 
-    def popularity_track_domain_id(self, chartmetric_id: int, since: Optional[date] = None):
+    def popularity_track_domain_id(self, chartmetric_id: int, since: Optional[date] = None, deadline=None):
         series_list = self._get(
             f"/track/{int(chartmetric_id)}/spotify/stats/most-history",
-            {"type": "popularity", **({"since": since.isoformat()} if since else {})},
+            {"type": "popularity", **({"since": since.isoformat()} if since else {})}, deadline=deadline,
         ) or []
         return _pick_primary_object(series_list).get("track_domain_id")
 
-    def streams_history(self, chartmetric_id: int, since: Optional[date] = None, track_domain_id=None) -> List[dict]:
+    def streams_history(self, chartmetric_id: int, since: Optional[date] = None, track_domain_id=None, deadline=None) -> List[dict]:
         """Cumulative Spotify streams as sorted date/value readings."""
         series_list = self._get(
             f"/track/{int(chartmetric_id)}/spotify/stats/most-history",
-            {"type": "streams", **({"since": since.isoformat()} if since else {})},
+            {"type": "streams", **({"since": since.isoformat()} if since else {})}, deadline=deadline,
         ) or []
         preferred = [s for s in series_list if s.get("track_domain_id") == track_domain_id] if track_domain_id is not None else []
         best = (max(preferred, key=lambda s: _latest(s)[1]) if preferred else _pick_primary_object(series_list))
@@ -206,10 +228,10 @@ class ChartmetricClient:
             points = [p for p in points if p["date"] >= cutoff]
         return sorted(points, key=lambda p: p["date"])
 
-    def tiktok_posts_history(self, chartmetric_id: int, since: Optional[date] = None) -> List[dict]:
+    def tiktok_posts_history(self, chartmetric_id: int, since: Optional[date] = None, deadline=None) -> List[dict]:
         """Cumulative TikTok videos using a track, as sorted readings."""
         rows = self._get(f"/track/{int(chartmetric_id)}/tiktok/stats/most-history",
-                         {"type": "posts", **({"since": since.isoformat()} if since else {})}) or []
+                         {"type": "posts", **({"since": since.isoformat()} if since else {})}, deadline=deadline) or []
         best = _pick_primary_object(rows)
         points = _clean_points(best.get("data") or [])
         if since is not None:

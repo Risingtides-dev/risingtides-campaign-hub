@@ -66,6 +66,7 @@ Existing fields stay exactly as they are (`linked`, `link`, `chartmetric_track_i
 ```jsonc
 {
   "end_date": "2026-09-01",         // "" when not set
+  "end_date_auto": false,            // true when the end date was set by completion status
   "followup_days": 28,
   "followup_end": "2026-09-29",     // end_date + 28 days; "" when end_date is ""
   "phase": "live",                  // "not_started" | "live" | "followup" | "complete" | "no_start" | "finished_no_end"
@@ -99,6 +100,7 @@ Existing fields stay exactly as they are (`linked`, `link`, `chartmetric_track_i
     {"date": "2026-08-02", "total": 1005000, "daily": 5000}
   ],
   "followup_day": 8,                // only in follow-up; today - end_date, clamped 1..28
+  "end_date_auto": false,           // true when the campaign end date was set automatically
   "streams_error": null,            // present with user-facing text if streams fetch failed
   "ugc": {                          // same cumulative fields and semantics as streams
     "start_total": 100, "end_total": 140, "followup_total": 165,

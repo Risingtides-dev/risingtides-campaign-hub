@@ -6,10 +6,14 @@ import { chartAxisProps as componentChartAxisProps, formatTrendTooltip } from '@
 import { chartAxisProps, chartTooltipProps, formatChartDateLabel, localTickDate } from '@/components/campaigns/chartDate'
 import { useEditCampaign, usePopScore, useSetPopScoreTrack } from '@/lib/queries'
 import type { PopScore } from '@/lib/types'
+import espressoWalk from './fixtures/popscore_espresso_walk.json'
+import blindingLightsWalk from './fixtures/popscore_blinding_lights_walk.json'
+
+const containerWidth = vi.hoisted(() => ({ value: 600 }))
 
 vi.mock('recharts', async (importOriginal) => {
   const actual = await importOriginal<typeof import('recharts')>()
-  return { ...actual, ResponsiveContainer: ({ children }: { children: React.ReactElement }) => <div style={{ width: 600, height: 240 }}>{cloneElement(children as React.ReactElement<{ width?: number; height?: number }>, { width: 600, height: 240 })}</div> }
+  return { ...actual, ResponsiveContainer: ({ children }: { children: React.ReactElement }) => <div style={{ width: containerWidth.value, height: 240 }}>{cloneElement(children as React.ReactElement<{ width?: number; height?: number }>, { width: containerWidth.value, height: 240 })}</div> }
 })
 
 vi.mock('@/lib/queries', () => ({
@@ -39,6 +43,44 @@ function setup(data: PopScore = payload) {
 
 describe('<PopScoreCard /> attribution', () => {
   beforeEach(() => vi.clearAllMocks())
+
+  it('keeps real espresso daily bars and only plotted recount marks; stream mode has no recount circles', () => {
+    const real = { ...espressoWalk, end_date_auto: false } as unknown as PopScore
+    setup(real)
+    fireEvent.click(screen.getByRole('button', { name: 'Show trend' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Daily new videos' }))
+    expect(document.querySelectorAll('.recharts-bar-rectangle')).toHaveLength(real.ugc_history!.filter(point => point.daily != null).length)
+    expect(document.querySelectorAll('circle[fill="none"][stroke="#909098"]')).toHaveLength(2)
+    fireEvent.click(screen.getByRole('button', { name: 'Daily streams' }))
+    expect(document.querySelectorAll('circle[fill="none"][stroke="#909098"]')).toHaveLength(0)
+  })
+
+  it('keeps bars and popularity line when plotted creator events are present', () => {
+    const real = { ...blindingLightsWalk, end_date_auto: false, post_events: [{ date: blindingLightsWalk.streams_history[10].date, count: 1 }] } as unknown as PopScore
+    setup(real)
+    fireEvent.click(screen.getByRole('button', { name: 'Show trend' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Daily streams' }))
+    expect(document.querySelectorAll('.recharts-bar-rectangle')).toHaveLength(real.streams_history!.filter(point => point.daily != null).length)
+    expect(document.querySelectorAll('.creator-post-tick')).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Popularity' }))
+    expect(document.querySelectorAll('.recharts-line-curve').length).toBeGreaterThan(0)
+  })
+
+  it('uses full reference labels at desktop width and short labels below 480px', () => {
+    containerWidth.value = 600
+    const real = { ...espressoWalk, end_date_auto: false, followup_end: '2026-09-29', streams_history: [...espressoWalk.streams_history, { date: '2026-09-29', total: 3_200_000_000, daily: 1_000_000 }] } as unknown as PopScore
+    const desktop = setup(real)
+    fireEvent.click(screen.getByRole('button', { name: 'Show trend' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Daily streams' }))
+    expect([...document.querySelectorAll('.recharts-label tspan')].map(node => node.textContent)).toEqual(expect.arrayContaining(['Start', 'End', '+28 days']))
+    desktop.unmount()
+    containerWidth.value = 375
+    setup(real)
+    fireEvent.click(screen.getByRole('button', { name: 'Show trend' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Daily streams' }))
+    expect([...document.querySelectorAll('.recharts-label tspan')].map(node => node.textContent)).toEqual(expect.arrayContaining(['S', 'E', '+28']))
+    containerWidth.value = 600
+  })
 
   it('renders values from the full attribution payload', () => {
     setup()
@@ -102,8 +144,8 @@ describe('<PopScoreCard /> attribution', () => {
     expect(popularity).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByRole('img', { name: /Popularity trend chart/ })).toBeInTheDocument()
     const plotLabels = [...document.querySelectorAll('.recharts-label tspan')].map(node => node.textContent)
-    expect(plotLabels).toContain('S')
-    expect(plotLabels).toContain('E')
+    expect(plotLabels).toContain('Start')
+    expect(plotLabels).toContain('End')
     expect([...document.querySelectorAll('.recharts-cartesian-axis-tick-value')].some(t => Number(t.textContent) < 61)).toBe(true)
     fireEvent.click(streams)
     expect(screen.getByRole('img', { name: /Daily streams trend chart/ })).toBeInTheDocument()
@@ -139,11 +181,20 @@ describe('<PopScoreCard /> attribution', () => {
 
 
   it('shows recount copy and a hollow recount marker without changing adjusted bars', () => {
-    setup({ ...payload, ugc: { ...payload.ugc!, recounts: [{ date: '2026-08-15', change: 543000 }] } })
-    expect(screen.getByText(/Chartmetric recount on Aug 15, 2026 \(\+543K TikTok videos\) not counted/)).toBeInTheDocument()
+    setup({ ...payload, ugc: { ...payload.ugc!, recounts: [{ date: '2026-08-10', change: 543000 }] } })
+    expect(screen.getByText(/Chartmetric recount on Aug 10, 2026 \(±543K TikTok videos\) not counted/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Show trend' }))
     fireEvent.click(screen.getByRole('button', { name: 'Daily new videos' }))
     expect(document.querySelector('circle[fill="none"][stroke="#909098"]')).toBeInTheDocument()
+  })
+
+  it('shows stream recounts with muted copy, a hollow mark, and recount tooltip wording', () => {
+    setup({ ...payload, streams: { ...payload.streams!, recounts: [{ date: '2026-08-10', change: -543000 }] } })
+    expect(screen.getByText(/Chartmetric recount on Aug 10, 2026 \(±543K streams\) not counted/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Show trend' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Daily streams' }))
+    expect(document.querySelectorAll('circle[fill="none"][stroke="#909098"]')).toHaveLength(1)
+    expect(formatTrendTooltip({ date: '2026-08-10', recount: true }, 'streams').value).toBe('recount (not counted)')
   })
 
   it('dims smoothed bars with a lighter dim fill and labels the estimate', () => {
@@ -160,6 +211,8 @@ describe('<PopScoreCard /> attribution', () => {
   it('formats rendered chart tooltip rows as dates, series values, estimates, and creator posts', () => {
     expect(formatTrendTooltip({ date: '2026-08-10', value: 992, smoothed: true, count: 3 }, 'streams')).toEqual({ date: 'Aug 10, 2026', value: '992', label: 'Daily streams', estimated: true, posts: 3 })
     expect(formatTrendTooltip({ date: '2026-08-10', value: 69 }, 'popularity')).toEqual({ date: 'Aug 10, 2026', value: '69', label: 'Popularity', estimated: false, posts: undefined })
+    expect(formatTrendTooltip({ date: '2026-08-10', value: 592.5 }, 'streams').value).toBe('593')
+    expect(formatTrendTooltip({ date: '2026-08-10', value: 1200 }, 'streams').value).toBe('1.2K')
   })
 
   it('disables Clear while the end-date mutation is pending and indicates refresh work', () => {
@@ -181,11 +234,11 @@ describe('<PopScoreCard /> attribution', () => {
     expect(screen.getAllByText(/since end/).length).toBeGreaterThan(0)
   })
 
-  it('adds to-date headline copy, formats small daily rates as integers, and shows automatic end-date provenance', () => {
-    setup({ ...payload, phase: 'finished_no_end', end_date_auto: true, streams: { ...payload.streams!, baseline_daily: 871.1, campaign_daily: 992.7 } })
+  it('adds to-date headline copy, formats small daily rates as integers, and shows auto-end provenance in any phase', () => {
+    setup({ ...payload, phase: 'live', end_date: '2026-08-20', end_date_auto: true, streams: { ...payload.streams!, baseline_daily: 871.1, campaign_daily: 992.7 } })
     expect(screen.getByText(/\(to date\)/)).toBeInTheDocument()
     expect(screen.getByText(/Daily streams 871 → 993 during/)).toBeInTheDocument()
-    expect(screen.getByText(/set when finished/)).toBeInTheDocument()
+    expect(screen.getByText('End Aug 20, 2026 · set when finished')).toBeInTheDocument()
   })
 
   it('saves, changes, clears an end date and shows edit errors', () => {

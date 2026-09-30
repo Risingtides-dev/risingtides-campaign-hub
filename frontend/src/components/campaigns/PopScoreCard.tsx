@@ -37,9 +37,9 @@ const rate = (v: number | null | undefined) => v == null ? "—" : Math.abs(v) <
 const date = (v?: string) => v ? new Date(`${v}T00:00:00`).toLocaleDateString("en", { month: "short", day: "numeric", year: "numeric" }) : "—"
 
 // eslint-disable-next-line react-refresh/only-export-components
-export function formatTrendTooltip(point: { date: string; value?: number | null; smoothed?: boolean; count?: number }, mode: TrendMode) {
+export function formatTrendTooltip(point: { date: string; value?: number | null; smoothed?: boolean; count?: number; recount?: boolean }, mode: TrendMode) {
   const label = mode === "popularity" ? "Popularity" : mode === "streams" ? "Daily streams" : "Daily new videos"
-  return { date: date(point.date), value: point.value == null ? undefined : mode === "popularity" ? num(point.value) : compact(point.value), label, estimated: !!point.smoothed, posts: point.count }
+  return { date: date(point.date), value: point.recount ? "recount (not counted)" : point.value == null ? undefined : mode === "popularity" ? num(point.value) : rate(point.value), label, estimated: !!point.smoothed, posts: point.count }
 }
 
 function phaseText(data: PopScore) {
@@ -51,12 +51,14 @@ function phaseText(data: PopScore) {
 
 function PopScoreChart({ data }: { data: PopScore }) {
   const [mode, setMode] = useState<TrendMode>("popularity")
+  const [containerWidth, setContainerWidth] = useState(600)
   const prepared = prepareTrendData(data, mode)
+  const chartData = prepared.points
   const points = prepared.points.filter(p => p.value != null)
   const min = points.length ? Math.min(...points.map(p => p.time)) : 0
   const max = points.length ? Math.max(...points.map(p => p.time)) : 0
   const sameBounds = !!data.start_date && data.start_date === data.end_date
-  const lines = [data.start_date, sameBounds ? "" : data.end_date, data.followup_end].map((d, i) => ({ date: d, label: [sameBounds ? "Start/End" : "Start", "End", "Follow-up"][i] })).filter((p): p is {date: string; label: string} => !!p.date).filter(p => new Date(`${p.date}T00:00:00`).getTime() >= min && new Date(`${p.date}T00:00:00`).getTime() <= max)
+  const lines = [data.start_date, sameBounds ? "" : data.end_date, data.followup_end].map((d, i) => ({ date: d, label: [sameBounds ? "Start/End" : "Start", "End", "+28 days"][i] })).filter((p): p is {date: string; label: string} => !!p.date).filter(p => new Date(`${p.date}T00:00:00`).getTime() >= min && new Date(`${p.date}T00:00:00`).getTime() <= max)
   const chartLabel = mode === "popularity" ? "Popularity" : mode === "streams" ? "Daily streams" : "Daily new videos"
   const recounts = mode === "streams" ? data.streams?.recounts ?? [] : mode === "ugc" ? data.ugc?.recounts ?? [] : []
   const events = prepared.events
@@ -65,33 +67,34 @@ function PopScoreChart({ data }: { data: PopScore }) {
     const row = payload.map(item => item.payload ?? {}).find(item => typeof item.date === "string")
     if (!row) return null
     const event = events.find(item => item.date === row.date)
-    const formatted = formatTrendTooltip({ date: String(row.date), value: typeof row.value === "number" ? row.value : undefined, smoothed: row.smoothed === true, count: event?.count ?? (typeof row.count === "number" ? row.count : undefined) }, mode)
-    return <div className="rounded border border-white/15 bg-rt-bg-card px-2 py-1 text-xs shadow"><div>{formatted.date}</div><div>{formatted.value ?? "—"} {formatted.label}{formatted.estimated ? " · estimated" : ""}</div>{formatted.posts != null && <div>{formatted.posts} creator posts</div>}</div>
+    const isRecount = row.recountY != null && row.value == null
+    const formatted = formatTrendTooltip({ date: String(row.date), value: typeof row.value === "number" ? row.value : undefined, smoothed: row.smoothed === true, count: event?.count ?? (typeof row.count === "number" ? row.count : undefined), recount: isRecount }, mode)
+    return <div className="rounded border border-white/15 bg-rt-bg-card px-2 py-1 text-xs shadow"><div>{formatted.date}</div><div>{formatted.value ?? "—"}{!isRecount && ` ${formatted.label}${formatted.estimated ? " · estimated" : ""}`}</div>{formatted.posts != null && <div>{formatted.posts} creator posts</div>}</div>
   }
-  const recountMarks = recounts.map(r => ({ time: new Date(`${r.date}T00:00:00`).getTime(), value: 0 }))
+  const labels = lines.map(({ label }) => containerWidth < 480 ? (label === "Start/End" ? "S/E" : label === "Start" ? "S" : label === "End" ? "E" : "+28") : label)
   return <div className="space-y-2">
     <div className="flex gap-1" role="group" aria-label="Chart metric">
       <button type="button" aria-pressed={mode === "popularity"} onClick={() => setMode("popularity")} className={`rounded px-2 py-1 text-xs ${mode === "popularity" ? "bg-white/10 text-rt-fg" : "text-rt-fg-tertiary"}`}>Popularity</button>
       <button type="button" aria-pressed={mode === "streams"} onClick={() => setMode("streams")} className={`rounded px-2 py-1 text-xs ${mode === "streams" ? "bg-white/10 text-rt-fg" : "text-rt-fg-tertiary"}`}>Daily streams</button>
       <button type="button" aria-pressed={mode === "ugc"} onClick={() => setMode("ugc")} className={`rounded px-2 py-1 text-xs ${mode === "ugc" ? "bg-white/10 text-rt-fg" : "text-rt-fg-tertiary"}`}>Daily new videos</button>
     </div>
-    {points.length < 2 ? <p className="text-rt-fg-tertiary text-[13px]">Not enough history yet to chart.</p> : <div role="img" aria-label={`${chartLabel} trend chart for ${data.track?.name ?? "linked song"}`} className="h-36 w-full">
+    {points.length < 2 ? <p className="text-rt-fg-tertiary text-[13px]">Not enough history yet to chart.</p> : <div role="img" aria-label={`${chartLabel} trend chart for ${data.track?.name ?? "linked song"}`} className="h-36 w-full" ref={el => { if (el) { const measured = el.clientWidth || Number.parseFloat(el.style.width) || Number.parseFloat(el.firstElementChild instanceof HTMLElement ? el.firstElementChild.style.width : "") || 600; setContainerWidth(measured) } }}>
       <ResponsiveContainer width="100%" height="100%">
-        {mode === "popularity" ? <LineChart data={points} margin={{ top: 6, right: 8, bottom: 0, left: 0 }}>
+        {mode === "popularity" ? <LineChart data={chartData} margin={{ top: 6, right: 8, bottom: 0, left: 0 }}>
           <XAxis type="number" dataKey="time" domain={["dataMin", "dataMax"]} tick={{ fill: AXIS, fontSize: 10 }} {...chartAxisProps} axisLine={false} tickLine={false} minTickGap={24} />
           <YAxis width={STREAMS_AXIS_WIDTH} domain={prepared.domain} tick={{ fill: AXIS, fontSize: 10 }} axisLine={false} tickLine={false} />
           <RTooltip {...chartTooltipProps} content={(props) => tooltipContent(props as { active?: boolean; payload?: ReadonlyArray<{ payload?: Record<string, unknown> }> })} /><Line type="stepAfter" dataKey="value" stroke={ACCENT} strokeWidth={2} dot={(props) => { const point = props.payload as { smoothed?: boolean }; return <circle cx={props.cx} cy={props.cy} r={2} fill={point.smoothed ? "#f08be0" : ACCENT} /> }} />
-          <Scatter data={events.map(e => ({ time: e.time, y: prepared.domain![1], date: e.date, count: e.count }))} dataKey="y" name="creator posts" fill={AXIS} shape={(props) => props.cx == null || props.cy == null ? null : <line x1={props.cx} x2={props.cx} y1={props.cy} y2={props.cy + 5} stroke={AXIS} />} />
-          {lines.map(({date: d, label}) => <ReferenceLine key={`${label}-${d}`} x={new Date(`${d}T00:00:00`).getTime()} stroke={AXIS} strokeDasharray="3 3" label={{ value: label === "Start/End" ? "S/E" : label === "Start" ? "S" : label === "End" ? "E" : "+28", fill: AXIS, fontSize: 9, position: "insideTop" }} />)}
-        </LineChart> : <ComposedChart data={points} margin={{ top: 6, right: 8, bottom: 0, left: 0 }}>
+          {events.length > 0 && <Scatter dataKey="postY" name="creator posts" fill={AXIS} shape={(props) => props.cx == null || props.cy == null || props.payload?.postY == null ? null : <line className="creator-post-tick" x1={props.cx} x2={props.cx} y1={props.cy} y2={props.cy + 5} stroke={AXIS} />} />}
+          {lines.map(({date: d, label}, i) => <ReferenceLine key={`${label}-${d}`} x={new Date(`${d}T00:00:00`).getTime()} stroke={AXIS} strokeDasharray="3 3" label={{ value: labels[i], fill: AXIS, fontSize: 9, position: "insideTopLeft", offset: 8 }} />)}
+        </LineChart> : <ComposedChart data={chartData} margin={{ top: 6, right: 8, bottom: 0, left: 0 }}>
           <XAxis type="number" dataKey="time" domain={["dataMin", "dataMax"]} tick={{ fill: AXIS, fontSize: 10 }} {...chartAxisProps} axisLine={false} tickLine={false} minTickGap={24} />
           <YAxis width={STREAMS_AXIS_WIDTH} tickFormatter={(v: number) => Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(v)} tick={{ fill: AXIS, fontSize: 10 }} axisLine={false} tickLine={false} />
           <ReferenceLine y={mode === "streams" ? data.streams?.baseline_daily ?? undefined : data.ugc?.baseline_daily ?? undefined} stroke={AXIS} strokeDasharray="4 3" label={{ value: "before", fill: AXIS, fontSize: 9, position: "insideTopLeft" }} />
           <RTooltip {...chartTooltipProps} content={(props) => tooltipContent(props as { active?: boolean; payload?: ReadonlyArray<{ payload?: Record<string, unknown> }> })} />
-          <Bar dataKey="value" name={chartLabel} maxBarSize={5} isAnimationActive={false} radius={[1, 1, 0, 0]}>{points.map((point, index) => <Cell key={index} fill={point.belowBaseline ? (point.smoothed ? `${ACCENT}33` : `${ACCENT}55`) : (point.smoothed ? "#f08be0" : ACCENT)} />)}</Bar>
-          <Scatter data={events.map(e => ({ time: e.time, y: Math.max(...points.map(p => p.value ?? 0)), date: e.date, count: e.count }))} dataKey="y" name="creator posts" fill={AXIS} shape={(props) => props.cx == null || props.cy == null ? null : <line x1={props.cx} x2={props.cx} y1={props.cy} y2={props.cy + 5} stroke={AXIS} />} />
-          <Scatter data={recountMarks} dataKey="value" name="recount" fill="none" shape={(props) => props.cx == null || props.cy == null ? null : <circle cx={props.cx} cy={props.cy} r={3} fill="none" stroke={AXIS} />} />
-          {lines.map(({date: d, label}) => <ReferenceLine key={`${label}-${d}`} x={new Date(`${d}T00:00:00`).getTime()} stroke={AXIS} strokeDasharray="3 3" label={{ value: label === "Start/End" ? "S/E" : label === "Start" ? "S" : label === "End" ? "E" : "+28", fill: AXIS, fontSize: 9, position: "insideTop" }} />)}
+          <Bar dataKey="value" name={chartLabel} maxBarSize={5} isAnimationActive={false} radius={[1, 1, 0, 0]}>{chartData.map((point, index) => <Cell key={index} fill={point.belowBaseline ? (point.smoothed ? `${ACCENT}33` : `${ACCENT}55`) : (point.smoothed ? "#f08be0" : ACCENT)} />)}</Bar>
+          {events.length > 0 && <Scatter dataKey="postY" name="creator posts" fill={AXIS} shape={(props) => props.cx == null || props.cy == null || props.payload?.postY == null ? null : <line className="creator-post-tick" x1={props.cx} x2={props.cx} y1={props.cy} y2={props.cy + 5} stroke={AXIS} />} />}
+          {recounts.length > 0 && <Scatter dataKey="recountY" name="recount" fill="none" shape={(props) => props.cx == null || props.cy == null || props.payload?.recountY == null ? null : <circle cx={props.cx} cy={props.cy} r={3} fill="none" stroke={AXIS} />}/>}
+          {lines.map(({date: d, label}, i) => <ReferenceLine key={`${label}-${d}`} x={new Date(`${d}T00:00:00`).getTime()} stroke={AXIS} strokeDasharray="3 3" label={{ value: labels[i], fill: AXIS, fontSize: 9, position: "insideTopLeft", offset: 8 }} />)}
         </ComposedChart>}
       </ResponsiveContainer>
     </div>}
@@ -145,7 +148,7 @@ export function PopScoreCard({ slug, tracker_url }: { slug: string; tracker_url?
         {editingEndDate && <><Input aria-label="End date" type="date" min={data.start_date} value={endDateDraft} className="h-8 w-auto" disabled={editCampaign.isPending} onChange={(e) => setEndDateDraft(e.target.value)} /><Button size="sm" disabled={editCampaign.isPending || !endDateDraft} onClick={() => editCampaign.mutate({ end_date: endDateDraft }, { onSuccess: () => setEditingEndDate(false) })}>Save</Button><button type="button" onClick={() => { editCampaign.reset(); setEditingEndDate(false) }}>Cancel</button></>}
         <span>→</span><span>Follow-up ends {data.followup_end ? date(data.followup_end) : "—"}</span>
         {editCampaign.isPending && <span className="text-[11px] text-rt-fg-tertiary">Updating…</span>}
-        {data.phase === "finished_no_end" && data.end_date_auto && <span className="text-[11px] text-rt-fg-tertiary">End {date(data.end_date)} (set when finished)</span>}
+        {data.end_date_auto && data.end_date && <span className="text-[11px] text-rt-fg-tertiary">End {date(data.end_date)} · set when finished</span>}
         {editCampaign.isError && <span role="alert" className="text-red-400">{editCampaign.error?.message}</span>}
       </div>
       {headline(data) && <p className="text-[12px] text-rt-fg-tertiary">{headline(data)}</p>}
@@ -169,7 +172,7 @@ export function PopScoreCard({ slug, tracker_url }: { slug: string; tracker_url?
       </tbody></table></div>
       {!data.streams_error && <p className="text-[11px] text-rt-fg-tertiary">Daily streams {rate(streams?.baseline_daily)} → {rate(streams?.campaign_daily)} during ({pct(streams?.lift_pct_campaign)}){streams?.followup_daily != null ? ` → ${rate(streams.followup_daily)} after` : ""}</p>}
       {!data.ugc_error && <p className="text-[11px] text-rt-fg-tertiary">New TikTok videos/day {rate(data.ugc?.baseline_daily)} → {rate(data.ugc?.campaign_daily)} during ({pct(data.ugc?.lift_pct_campaign)}){data.ugc?.followup_daily != null ? ` → ${rate(data.ugc.followup_daily)} after` : ""}{data.ugc?.gained_campaign != null ? ` · ${compact(data.ugc.gained_campaign)} new during the campaign` : ""}</p>}
-      {(data.ugc?.recounts ?? []).map(r => <p key={`${r.date}-${r.change}`} className="text-[10px] text-rt-fg-tertiary">Chartmetric recount on {date(r.date)} ({r.change > 0 ? "+" : ""}{compact(r.change)} TikTok videos) not counted</p>)}
+      {[...(data.streams?.recounts ?? []).map(r => ({...r, unit: "streams"})), ...(data.ugc?.recounts ?? []).map(r => ({...r, unit: "TikTok videos"}))].map(r => <p key={`${r.unit}-${r.date}-${r.change}`} className="text-[10px] text-rt-fg-tertiary">Chartmetric recount on {date(r.date)} (±{compact(Math.abs(r.change))} {r.unit}) not counted</p>)}
       <div><button type="button" aria-expanded={showTrend} aria-controls={`attribution-trend-${slug}`} className="text-[12px] text-rt-fg-tertiary hover:text-rt-fg" onClick={() => setShowTrend(v => !v)}>{showTrend ? "Hide trend" : "Show trend"}</button><div id={`attribution-trend-${slug}`} hidden={!showTrend} className="mt-2">{showTrend && <PopScoreChart data={data} />}</div></div>
       <div className="flex flex-wrap items-center justify-between gap-2 border-t border-white/8 pt-3 text-[12px] text-rt-fg-tertiary"><span>Shows what happened to the song around the campaign — not proof the campaign caused all of it.</span>{tracker_url && <a href={tracker_url} target="_blank" rel="noopener noreferrer" className="whitespace-nowrap text-rt-magenta hover:underline">Open Tides Tracker ↗</a>}</div>
     </>}

@@ -1,5 +1,7 @@
 from datetime import date
 
+import pytest
+
 from campaign_manager.utils.attribution import calculate_attribution
 
 
@@ -12,7 +14,7 @@ def test_missing_baseline_and_gaps_and_negative_delta():
     assert result["popularity"]["start"] is None
     assert result["streams"]["baseline_daily"] is None
     assert result["streams"]["growth_pct_campaign"] is None
-    assert result["streams_history"][1]["daily"] == -4.5
+    assert result["streams_history"][1]["daily"] is None
     assert result["popularity"]["end_is_to_date"] is True
     assert result["popularity"]["followup"] is None
 
@@ -90,11 +92,9 @@ def test_series_flags_follow_each_series_and_exact_followup_values():
     assert res["streams"]["end_is_to_date"] is False
     assert res["popularity"]["followup_is_to_date"] is True
     assert res["streams"]["followup_is_to_date"] is True
-    assert res["streams"]["gained_campaign"] == -10
+    assert res["streams"]["gained_campaign"] == 0
     assert res["streams"]["gained_followup"] == 20
-    assert res["streams"]["growth_pct_campaign"] == -10.0
-    assert res["streams"]["lift_pct_campaign"] == -119.7
-    assert res["streams"]["lift_pct_followup"] == -71.8
+    assert res["streams"]["growth_pct_campaign"] == 0.0
     assert calculate_attribution(pop, streams, "2026-01-01", "2026-01-10", date(2026, 2, 7))["phase"] == "followup"
     assert calculate_attribution(pop, streams, "2026-01-01", "2026-01-10", date(2026, 2, 8))["phase"] == "complete"
 
@@ -140,9 +140,11 @@ def test_change_point_smoothing_covers_stalls_without_fake_leading_or_tail_rates
     def run(values):
         h = [{"date": f"2026-01-{i:02d}", "value": v} for i, v in enumerate(values, 1)]
         return calculate_attribution([], h, "2026-01-01", today=date(2026, 1, len(values)))['streams_history']
-    for values in ([100, 110, 110, 120, 120, 130], [100, 110, 110, 105, 105, 120]):
-        points = run(values)
-        assert sum(p["daily"] or 0 for p in points) == values[-1] - values[0]
+    points = run([100, 110, 110, 120, 120, 130])
+    assert sum(p["daily"] or 0 for p in points) == 30
+    reset = run([100, 110, 110, 105, 105, 120])
+    assert reset[3]["daily"] is None
+    assert "smoothed" not in reset[2] and "smoothed" not in reset[4]
     leading = run([100, 100, 110, 120])
     assert [p["daily"] for p in leading] == [None, 5.0, 5.0, 10.0]
     tail = run([100, 110, 110, 110])
@@ -203,7 +205,7 @@ def test_ugc_calculations_use_ugc_series_for_campaign_and_followup():
 
 
 def test_recount_steps_adjust_cumulative_history_but_keep_raw_headlines():
-    h = [{"date": f"2026-09-{d:02}", "value": 100000 + 1000*(d-20)} for d in range(20, 23)]
+    h = [{"date": f"2026-09-{d:02}", "value": 100000 + 1000*(d-20)} for d in range(14, 23)]
     h += [{"date": "2026-09-23", "value": 645105}]
     h += [{"date": f"2026-09-{d:02}", "value": 648105 + 1000*(d-24)} for d in range(24, 27)]
     result = calculate_attribution([], h, "2026-09-20", "2026-09-26", date(2026, 9, 26), ugc=h)
@@ -257,3 +259,44 @@ def test_both_histories_empty_are_safe_and_to_date_popularity_flag_boundaries():
     assert at_end["popularity"]["followup_is_to_date"] is True
     at_followup_close = calculate_attribution(h + [{"date": "2026-02-07", "value": 3}], h, "2026-01-01", "2026-01-10", date(2026, 2, 8))
     assert at_followup_close["popularity"]["followup_is_to_date"] is False
+
+@pytest.mark.parametrize("surge_days", [3, 5, 8])
+def test_sustained_live_edge_surge_is_counted_in_full(surge_days):
+    h = [{"date": f"2026-06-{d:02}", "value": 5000 + 10 * (d - 1)} for d in range(1, 8)]
+    total = h[-1]["value"]
+    for d in range(8, 8 + surge_days):
+        total += 200
+        h.append({"date": f"2026-06-{d:02}", "value": total})
+    result = calculate_attribution([], [], "2026-06-01", today=date(2026, 6, 8 + surge_days - 1), ugc=h)
+    assert result["ugc"]["recounts"] == []
+    assert result["ugc"]["gained_campaign"] == total - 5000
+
+
+def test_positive_recount_candidate_needs_three_later_readings_and_suppresses_neighbor_smoothing():
+    vals = [100_000 + 1000 * i for i in range(7)]
+    vals += [vals[-1] + 100_000, vals[-1] + 110_000, vals[-1] + 120_000, vals[-1] + 130_000]
+    h = [{"date": f"2026-07-{i+1:02}", "value": v} for i, v in enumerate(vals)]
+    result = calculate_attribution([], [], "2026-07-01", today=date(2026, 7, len(h)), ugc=h)
+    assert result["ugc"]["recounts"] == []
+
+
+def test_positive_recount_step_is_null_daily_and_not_smoothed():
+    vals = [100_000 + 1000 * i for i in range(7)]
+    vals += [vals[-1] + 100_000, vals[-1] + 101_000, vals[-1] + 102_000, vals[-1] + 103_000, vals[-1] + 104_000]
+    # Three tiny following increments confirm a one-time recount.
+    vals += [vals[-1] + 1000, vals[-1] + 1000, vals[-1] + 1000]
+    h = [{"date": f"2026-07-{i+1:02}", "value": v} for i, v in enumerate(vals)]
+    result = calculate_attribution([], [], "2026-07-01", today=date(2026, 7, len(h)), ugc=h)
+    assert result["ugc"]["recounts"] == [{"date": "2026-07-08", "change": 100000}]
+    points = result["ugc_history"]
+    assert points[7]["daily"] is None and "smoothed" not in points[7]
+    assert "smoothed" not in points[6] and "smoothed" not in points[8]
+
+
+def test_candidate_with_only_two_later_readings_is_counted():
+    vals = [100_000 + 1000 * i for i in range(7)]
+    vals += [vals[-1] + 100_000, vals[-1] + 101_000, vals[-1] + 102_000]
+    h = [{"date": f"2026-07-{i+1:02}", "value": v} for i, v in enumerate(vals)]
+    result = calculate_attribution([], [], "2026-07-01", today=date(2026, 7, len(h)), ugc=h)
+    assert result["ugc"]["recounts"] == []
+    assert result["ugc"]["now"] == vals[-1]

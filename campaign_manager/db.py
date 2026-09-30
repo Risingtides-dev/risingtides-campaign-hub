@@ -303,6 +303,12 @@ def init(database_url: Optional[str] = None):
             s.execute(sa.text(
                 "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS end_date_auto BOOLEAN DEFAULT FALSE"
             ))
+            s.execute(sa.text(
+                "UPDATE campaigns SET end_date_auto = FALSE WHERE end_date_auto IS NULL"
+            ))
+            s.execute(sa.text(
+                "ALTER TABLE campaigns ALTER COLUMN end_date_auto SET DEFAULT FALSE"
+            ))
             s.commit()
     except Exception:
         pass

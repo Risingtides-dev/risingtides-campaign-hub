@@ -51,6 +51,7 @@ def _load(slug: str):
             "link": c.chartmetric_link or "",
             "start_date": c.start_date or "",
             "end_date": c.end_date or "",
+            "end_date_auto": bool(c.end_date_auto),
             "completion_status": c.completion_status or "none",
         }
 
@@ -67,12 +68,13 @@ def get_pop_score(slug: str):
 
     budget_started = time.monotonic()
     budget_seconds = 75
+    deadline = budget_started + budget_seconds
     def too_slow():
-        return time.monotonic() - budget_started >= budget_seconds
+        return time.monotonic() >= deadline
     try:
         client = chartmetric.get_client()
-        snap = client.track_snapshot(row["track_id"])
-        history = client.popularity_history(row["track_id"], since=_history_start(row["start_date"]))
+        snap = client.track_snapshot(row["track_id"], deadline=deadline)
+        history = client.popularity_history(row["track_id"], since=_history_start(row["start_date"]), deadline=deadline)
     except chartmetric.ChartmetricError as e:
         return jsonify({"linked": True, "link": row["link"], "error": str(e)}), 502
     except Exception:
@@ -86,17 +88,17 @@ def get_pop_score(slug: str):
     try:
         if too_slow():
             raise TimeoutError
-        pop_track_domain_id = client.popularity_track_domain_id(row["track_id"], since=_history_start(row["start_date"]))
+        pop_track_domain_id = client.popularity_track_domain_id(row["track_id"], since=_history_start(row["start_date"]), deadline=deadline)
         if too_slow():
             raise TimeoutError
-        streams = client.streams_history(row["track_id"], since=_history_start(row["start_date"]), track_domain_id=pop_track_domain_id)
+        streams = client.streams_history(row["track_id"], since=_history_start(row["start_date"]), track_domain_id=pop_track_domain_id, deadline=deadline)
     except Exception as e:
         log.exception("streams history fetch failed for %s", slug)
         streams, streams_error = [], "Chartmetric is slow — try again shortly" if isinstance(e, TimeoutError) else "Streams history is temporarily unavailable."
     try:
         if too_slow():
             raise TimeoutError
-        ugc = client.tiktok_posts_history(row["track_id"], since=_history_start(row["start_date"]))
+        ugc = client.tiktok_posts_history(row["track_id"], since=_history_start(row["start_date"]), deadline=deadline)
     except Exception as e:
         log.exception("TikTok posts history fetch failed for %s", slug)
         ugc, ugc_error = [], "Chartmetric is slow — try again shortly" if isinstance(e, TimeoutError) else "TikTok video history is temporarily unavailable."
@@ -116,6 +118,7 @@ def get_pop_score(slug: str):
         "baseline": baseline,
         "change_since_start": (current - baseline) if (current is not None and baseline is not None) else None,
         "start_date": row["start_date"],
+        "end_date_auto": row["end_date_auto"],
         "history": history,
         **attribution,
     }

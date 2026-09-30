@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
@@ -73,6 +73,15 @@ class TestParseTrackLink:
     def test_rejects_unknown(self, raw):
         with pytest.raises(cm.ChartmetricError):
             cm.parse_track_link(raw)
+
+def test_deadline_clamps_request_timeout_and_expired_deadline_skips_http():
+    client, http = _client_with({"/track/12": _resp(200, {"obj": TRACK_OBJ})})
+    now = cm.time.monotonic()
+    client.track_snapshot(12, deadline=now + 0.25)
+    assert http.get.call_args.kwargs["timeout"] <= 0.25
+    with pytest.raises(TimeoutError):
+        client.track_snapshot(13, deadline=cm.time.monotonic() - 1)
+    assert http.get.call_count == 1
 
 
 class TestClient:
@@ -239,6 +248,7 @@ class TestPopScoreEndpoints:
         assert body["change_since_start"] == 5
         assert len(body["history"]) == 3
         assert body["end_date"] == ""
+        assert body["end_date_auto"] is False
         assert body["followup_days"] == 28
         assert body["phase"] == "live"
         assert body["streams"]["start_total"] == 170
@@ -253,8 +263,8 @@ class TestPopScoreEndpoints:
             client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403305"})
             body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
         expected_since = date(2026, 8, 11)
-        fake.popularity_history.assert_called_once_with(118981138, since=expected_since)
-        fake.streams_history.assert_called_once_with(118981138, since=expected_since, track_domain_id="main")
+        fake.popularity_history.assert_called_once_with(118981138, since=expected_since, deadline=ANY)
+        fake.streams_history.assert_called_once_with(118981138, since=expected_since, track_domain_id="main", deadline=ANY)
         assert body["streams"]["baseline_daily"] == 10.0
 
     def test_calculation_exception_is_json_502(self, client):
@@ -349,7 +359,7 @@ class TestPopScoreEndpoints:
         with patch.object(cm, "get_client", return_value=fake):
             client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403305"})
             body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
-        fake.tiktok_posts_history.assert_called_once_with(118981138, since=date(2026, 8, 11))
+        fake.tiktok_posts_history.assert_called_once_with(118981138, since=date(2026, 8, 11), deadline=ANY)
         assert body.get("ugc_error") == "TikTok video history is temporarily unavailable."
 
     def test_series_fetches_are_skipped_after_overall_latency_budget(self, client):
@@ -376,7 +386,7 @@ class TestPopScoreEndpoints:
             {"url": "https://tiktok/today", "upload_date": today_et},
             {"url": "https://tiktok/blank", "upload_date": ""},
             {"url": "https://tiktok/old", "upload_date": "2026-08-01"},
-            {"url": "https://tiktok/future", "upload_date": (date.today() + timedelta(days=1)).isoformat()},
+            {"url": "https://tiktok/future", "upload_date": (datetime.now(db.EST).date() + timedelta(days=1)).isoformat()},
         ])
         db.save_matched_videos(second, [{"url": "https://tiktok/other", "upload_date": "2026-09-01"}])
         fake = self._fake()
@@ -594,6 +604,10 @@ class TestPopScoreEndpoints:
         meta = client.get(f"/api/campaign/{slug}").get_json()["meta"]
         assert meta["end_date_auto"] is False
         assert meta["end_date"] == "2026-09-20"
+        detail = client.get(f"/api/campaign/{slug}").get_json()
+        assert detail["end_date_auto"] is False
+        summary = next(row for row in client.get("/api/campaigns").get_json() if row["slug"] == slug)
+        assert summary["end_date_auto"] is False
 
     def test_sound_refresh_interleaving_preserves_new_completion_fields(self, client):
         from campaign_manager import db
@@ -609,6 +623,16 @@ class TestPopScoreEndpoints:
         assert current["meta"]["end_date"] == finished["meta"]["end_date"]
         assert current["meta"]["end_date_auto"] is True
 
+    def test_discovery_does_not_resurrect_sound_removed_after_snapshot(self, client):
+        from campaign_manager import db
+        from campaign_manager.services.scheduler import _save_discovered_sounds
+        slug = self._campaign(client, start="2026-09-01")
+        db.update_campaign_fields(slug, {"additional_sounds": ["removed"]})
+        snapshot = db.get_campaign(slug)
+        db.update_campaign_fields(slug, {"additional_sounds": []})
+        _save_discovered_sounds(slug, snapshot, ["removed", "new"])
+        assert client.get(f"/api/campaign/{slug}").get_json()["meta"]["additional_sounds"] == ["new"]
+
     @pytest.mark.parametrize("legacy_start", ["", "not-a-date", "2026-09-01T00:00:00"])
     def test_finish_with_blank_or_unparseable_legacy_start_succeeds(self, client, legacy_start):
         slug = self._campaign(client)
@@ -619,7 +643,7 @@ class TestPopScoreEndpoints:
              patch.object(campaigns_bp._db, "save_campaign") as save:
             response = client.post(f"/api/campaign/{slug}/edit", json={"completion_status": "completed"})
         assert response.status_code == 200
-        assert save.call_args.args[1]["end_date"] == date.today().isoformat()
+        assert save.call_args.args[1]["end_date"] == datetime.now(campaigns_bp._db.EST).date().isoformat()
 
     def test_legacy_edit_shape_pins(self, client):
         from campaign_manager.blueprints import campaigns as campaigns_bp

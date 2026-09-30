@@ -383,6 +383,7 @@ def _campaign_summary(c: Dict) -> Dict:
         "song": c["meta"].get("song", ""),
         "start_date": c["meta"].get("start_date", ""),
         "end_date": c["meta"].get("end_date", ""),
+        "end_date_auto": bool(c["meta"].get("end_date_auto", False)),
         # The sound a campaign runs on. Already searchable via ?search= but
         # never returned, so downstream boards could not tell which TikTok
         # sound a campaign meant — the ShipStream queue went stale because
@@ -793,6 +794,7 @@ def campaign_detail(slug: str):
         "cobrand_upload_url": meta.get("cobrand_upload_url", ""),
         "start_date": meta.get("start_date", ""),
         "end_date": meta.get("end_date", ""),
+        "end_date_auto": bool(meta.get("end_date_auto", False)),
         "budget": budget,
         "stats": stats,
         "platform": meta.get("platform", "tiktok"),
@@ -1109,7 +1111,14 @@ def _refresh_stats_inner(slug: str):
     stats["total_likes"] = total_likes
     stats["last_scrape"] = datetime.now().isoformat()
     meta["stats"] = stats
-    _save_meta(slug, meta, campaign_dir)
+    if _db.is_active():
+        _db.update_campaign_fields(slug, {
+            "total_views": total_views,
+            "total_likes": total_likes,
+            "last_scrape": datetime.fromisoformat(stats["last_scrape"]),
+        })
+    else:
+        _save_meta(slug, meta, campaign_dir)
 
     # Update creator post counts using shared logic
     if _db.is_active():

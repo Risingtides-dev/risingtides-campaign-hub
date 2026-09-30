@@ -81,20 +81,26 @@ def calculate_attribution(popularity, streams, start_date, end_date="", today=No
         ordered = _dedupe(history)
         increments = [ordered[i]["value"] - ordered[i-1]["value"] for i in range(1, len(ordered))]
         offsets = [0] * len(ordered)
-        found = []
+        recount_indices, found = set(), []
         for i, inc in enumerate(increments, 1):
-            d = _day(ordered[i]["date"])
-            peers = [abs(other) for j, other in enumerate(increments, 1) if j != i and abs((_day(ordered[j]["date"]) - d).days) <= 14]
-            med = median(peers) if peers else 0
             previous = ordered[i-1]["value"]
-            if med and abs(inc) > 10 * med and abs(inc) > abs(previous) * .01:
+            if abs(inc) <= abs(previous) * .01:
+                continue
+            is_recount = inc < 0
+            if inc > 0:
+                prior = [abs(x) for x in increments[max(0, i - 15):i - 1]]
+                later = increments[i:i + 3]
+                candidate = len(prior) >= 5 and median(prior) > 0 and inc > 20 * median(prior)
+                is_recount = candidate and len(later) == 3 and median(later) < inc / 20
+            if is_recount:
+                recount_indices.add(i)
                 for k in range(i, len(ordered)):
                     offsets[k] += inc
                 found.append({"date": ordered[i]["date"], "change": inc})
         adjusted = [{**p, "value": p["value"] - offsets[i]} for i, p in enumerate(ordered)]
-        return adjusted, found
-    streams_adj, streams_recounts = adjust_recounts(streams)
-    ugc_adj, ugc_recounts = adjust_recounts(ugc)
+        return adjusted, found, recount_indices
+    streams_adj, streams_recounts, streams_recount_indices = adjust_recounts(streams)
+    ugc_adj, ugc_recounts, ugc_recount_indices = adjust_recounts(ugc)
     baseline_daily = _avg(streams_adj, start - timedelta(days=14), start) if start else None
     campaign_daily = _avg(streams_adj, start, end_target) if start else None
     follow_daily = _avg(streams_adj, end, follow_target) if end and follow_target else None
@@ -108,20 +114,25 @@ def calculate_attribution(popularity, streams, start_date, end_date="", today=No
         baseline_daily = campaign_daily = follow_daily = None
         pop_end_to_date = stream_end_to_date = False
         pop_follow_to_date = stream_follow_to_date = False
-    def metric_history(history):
+    def metric_history(history, recount_indices):
         ordered = _dedupe(history)
         anchors = [0] + [i for i in range(1, len(ordered)) if ordered[i]["value"] != ordered[i - 1]["value"]]
         out = [{"date": p["date"], "total": p["value"], "daily": None} for p in ordered]
+        anchors = sorted(set(anchors) | recount_indices)
+        for index in recount_indices:
+            out[index]["daily"] = None
         for a, b in zip(anchors, anchors[1:]):
+            if b in recount_indices:
+                continue
             gap = (_day(ordered[b]["date"]) - _day(ordered[a]["date"])).days
             rate = round((ordered[b]["value"] - ordered[a]["value"]) / gap, 1) if gap else None
             for i in range(a + 1, b + 1):
                 out[i]["daily"] = rate
-                if b - a > 1:
+                if b - a > 1 and i not in recount_indices and i - 1 not in recount_indices and i + 1 not in recount_indices:
                     out[i]["smoothed"] = True
         return out
-    stream_history = metric_history(streams_adj)
-    ugc_history = metric_history(ugc_adj)
+    stream_history = metric_history(streams_adj, streams_recount_indices)
+    ugc_history = metric_history(ugc_adj, ugc_recount_indices)
     def block(history, start_value, end_value, follow_value, end_to_date, follow_to_date):
         latest = history[-1] if history else None
         start_reading = reading(history, start) if start else None

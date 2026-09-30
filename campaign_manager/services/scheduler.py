@@ -67,10 +67,12 @@ DEFAULT_VIDEO_LIMIT = 50
 
 
 def _save_discovered_sounds(slug: str, meta: dict, discovered_sound_ids: list[str]) -> None:
-    """Persist only scheduler-owned sound additions from its refresh snapshot."""
-    additional = list(meta.get("additional_sounds") or [])
+    """Union newly discovered sounds with the campaign's current sound list."""
+    current = _db.get_campaign(slug) or {}
+    additional = list(current.get("additional_sounds") or [])
+    snapshot = set(meta.get("additional_sounds") or [])
     for sound_id in discovered_sound_ids:
-        if sound_id not in additional:
+        if sound_id not in snapshot and sound_id not in additional:
             additional.append(sound_id)
     _db.update_campaign_fields(slug, {"additional_sounds": additional})
 

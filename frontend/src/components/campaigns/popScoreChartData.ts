@@ -1,7 +1,7 @@
 import type { PopScore } from "@/lib/types"
 
 export type TrendMode = "popularity" | "streams" | "ugc"
-export type TrendPoint = { date: string; time: number; value: number | null; smoothed?: boolean; belowBaseline?: boolean; postCount?: number }
+export type TrendPoint = { date: string; time: number; value: number | null; smoothed?: boolean; belowBaseline?: boolean; postCount?: number; postY?: number | null; recountY?: number | null }
 
 const dayTime = (date: string) => new Date(`${date}T00:00:00`).getTime()
 
@@ -26,5 +26,8 @@ export function prepareTrendData(data: PopScore, mode: TrendMode) {
   const points = selectTrendSeries(data, mode)
   const events = trendEventTicks(data)
   const counts = new Map(events.map(event => [event.date, event.count]))
-  return { points: points.map(point => ({ ...point, postCount: counts.get(point.date) })), events, domain: mode === "popularity" ? zoomedPopularityDomain(points) : undefined }
+  const recounts = new Set((mode === "streams" ? data.streams?.recounts : mode === "ugc" ? data.ugc?.recounts : [])?.map(r => r.date) ?? [])
+  const domain = mode === "popularity" ? zoomedPopularityDomain(points) : undefined
+  const postY = mode === "popularity" ? domain?.[1] : Math.max(0, ...points.flatMap(p => p.value == null ? [] : [p.value]))
+  return { points: points.map(point => ({ ...point, postCount: counts.get(point.date), postY: counts.has(point.date) ? postY : null, recountY: recounts.has(point.date) ? 0 : null })), events, domain }
 }
