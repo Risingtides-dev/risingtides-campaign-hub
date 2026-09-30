@@ -511,6 +511,58 @@ def list_campaign_captions():
 
 
 # -------------------------------------------------------------------
+# 1c. PUT /api/campaign/<slug>/internal-captions  -- write captions back
+# -------------------------------------------------------------------
+@campaigns_bp.put("/api/campaign/<slug>/internal-captions")
+def write_internal_captions(slug: str):
+    """Save one campaign's CRM captions, from the posting control plane.
+
+    The CRM row is the source of truth, so the text goes to the campaign's
+    CRM page first and is stored here only once that write went through.
+    The caller sends `expected`, the value it last saw (null when it saw
+    none); a stored value that differs answers 409 with the current value,
+    so a stale edit never overwrites a newer one. When HUB_WRITE_KEY is set,
+    the X-Hub-Write-Key header must match it.
+    """
+    from campaign_manager.services.notion import (
+        MAX_INTERNAL_CAPTIONS,
+        write_page_internal_captions,
+    )
+
+    write_key = (os.environ.get("HUB_WRITE_KEY") or "").strip()
+    if write_key and request.headers.get("X-Hub-Write-Key", "") != write_key:
+        return jsonify({"error": "X-Hub-Write-Key does not match"}), 401
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or "expected" not in data:
+        return jsonify({"error": "Send internal_captions and expected (the value you last saw, or null)."}), 400
+    value = data.get("internal_captions")
+    expected = data.get("expected")
+    if not isinstance(value, str) or len(value) > MAX_INTERNAL_CAPTIONS:
+        return jsonify({"error": f"internal_captions must be text of at most {MAX_INTERNAL_CAPTIONS} characters"}), 400
+    if expected is not None and not isinstance(expected, str):
+        return jsonify({"error": "expected must be text or null"}), 400
+
+    if not _db.is_active():
+        return jsonify({"error": "Database not configured"}), 500
+    meta = _db.get_campaign(slug)
+    if not meta:
+        return jsonify({"error": "Campaign not found"}), 404
+    current = meta.get("internal_captions")
+    if current != expected:
+        return jsonify({"error": "internal_captions changed since you read them",
+                        "internal_captions": current}), 409
+
+    page_id = meta.get("notion_page_id") or ""
+    if page_id:
+        reason = write_page_internal_captions(page_id, value)
+        if reason:
+            return jsonify({"error": f"CRM update failed: {reason}", "internal_captions": current}), 502
+    _db.update_campaign_fields(slug, {"internal_captions": value})
+    return jsonify({"slug": slug, "internal_captions": value, "crm": "updated" if page_id else "none"})
+
+
+# -------------------------------------------------------------------
 # 2. POST /api/campaign/create  -- create a new campaign
 # -------------------------------------------------------------------
 @campaigns_bp.post("/api/campaign/create")

@@ -283,3 +283,96 @@ def test_a_save_that_loaded_before_the_first_crm_read_does_not_blank_the_caption
     with patch.object(notion, 'request_campaign_niche_refresh', return_value=False):
         listed = client.get('/api/campaigns/captions').get_json()
     assert [row['slug'] for row in listed] == ['active']
+
+
+def _put(client, slug, body, headers=None):
+    return client.put(f'/api/campaign/{slug}/internal-captions', json=body, headers=headers or {})
+
+
+def test_captions_written_back_go_to_the_crm_page_first_and_are_then_stored(db, client, monkeypatch):
+    monkeypatch.setenv('NOTION_API_KEY', 'test-only')
+    monkeypatch.delenv('HUB_WRITE_KEY', raising=False)
+    db.save_campaign('active', {'title': 'Active', 'notion_page_id': 'crm-active',
+                                'internal_captions': 'old line'})
+    response = Mock(status_code=200)
+    response.json.return_value = {'id': 'crm-active'}
+    with patch.object(notion.requests, 'patch', return_value=response) as patched:
+        reply = _put(client, 'active', {'internal_captions': 'new line\nsecond', 'expected': 'old line'})
+    assert reply.status_code == 200
+    assert reply.get_json() == {'slug': 'active', 'internal_captions': 'new line\nsecond', 'crm': 'updated'}
+    assert db.get_campaign('active')['internal_captions'] == 'new line\nsecond'
+    assert patched.call_args.args[0].endswith('/pages/crm-active')
+    assert patched.call_args.kwargs['json'] == {'properties': {'Internal Captions': {
+        'rich_text': [{'type': 'text', 'text': {'content': 'new line\nsecond'}}]}}}
+
+
+def test_a_stale_write_back_is_refused_with_the_current_captions(db, client, monkeypatch):
+    monkeypatch.setenv('NOTION_API_KEY', 'test-only')
+    db.save_campaign('active', {'title': 'Active', 'notion_page_id': 'crm-active',
+                                'internal_captions': 'newer line'})
+    with patch.object(notion.requests, 'patch') as patched:
+        reply = _put(client, 'active', {'internal_captions': 'mine', 'expected': 'old line'})
+        never_read = _put(client, 'active', {'internal_captions': 'mine', 'expected': None})
+    assert reply.status_code == 409
+    assert reply.get_json()['internal_captions'] == 'newer line'
+    assert never_read.status_code == 409
+    patched.assert_not_called()
+    assert db.get_campaign('active')['internal_captions'] == 'newer line'
+
+
+def test_a_write_back_the_crm_refuses_is_not_stored_here_either(db, client, monkeypatch):
+    monkeypatch.setenv('NOTION_API_KEY', 'test-only')
+    db.save_campaign('active', {'title': 'Active', 'notion_page_id': 'crm-active',
+                                'internal_captions': 'old line'})
+    refused = Mock(status_code=400, text='{}')
+    refused.json.return_value = {'message': 'Internal Captions is not a property that exists.'}
+    with patch.object(notion.requests, 'patch', return_value=refused):
+        reply = _put(client, 'active', {'internal_captions': 'new line', 'expected': 'old line'})
+    assert reply.status_code == 502
+    assert reply.get_json() == {'error': 'CRM update failed: CRM answered 400: Internal Captions is not a property that exists.',
+                                'internal_captions': 'old line'}
+    assert db.get_campaign('active')['internal_captions'] == 'old line'
+
+    monkeypatch.delenv('NOTION_API_KEY')
+    with patch.object(notion.requests, 'patch') as patched:
+        reply = _put(client, 'active', {'internal_captions': 'new line', 'expected': 'old line'})
+    assert reply.status_code == 502
+    assert 'not configured' in reply.get_json()['error']
+    patched.assert_not_called()
+
+
+def test_a_campaign_without_a_crm_page_keeps_its_captions_here_only(db, client, monkeypatch):
+    monkeypatch.delenv('NOTION_API_KEY', raising=False)
+    db.save_campaign('manual', {'title': 'Manual'})
+    with patch.object(notion.requests, 'patch') as patched:
+        reply = _put(client, 'manual', {'internal_captions': 'typed in Sounds', 'expected': None})
+    assert reply.status_code == 200
+    assert reply.get_json()['crm'] == 'none'
+    assert db.get_campaign('manual')['internal_captions'] == 'typed in Sounds'
+    patched.assert_not_called()
+
+
+def test_the_write_back_checks_its_key_when_one_is_set(db, client, monkeypatch):
+    monkeypatch.setenv('HUB_WRITE_KEY', 'shared-secret')
+    db.save_campaign('manual', {'title': 'Manual'})
+    assert _put(client, 'manual', {'internal_captions': 'x', 'expected': None}).status_code == 401
+    assert _put(client, 'manual', {'internal_captions': 'x', 'expected': None},
+                {'X-Hub-Write-Key': 'wrong'}).status_code == 401
+    assert _put(client, 'manual', {'internal_captions': 'x', 'expected': None},
+                {'X-Hub-Write-Key': 'shared-secret'}).status_code == 200
+
+
+def test_the_write_back_refuses_bad_bodies_by_name(db, client, monkeypatch):
+    monkeypatch.delenv('HUB_WRITE_KEY', raising=False)
+    db.save_campaign('manual', {'title': 'Manual'})
+    assert _put(client, 'manual', {'internal_captions': 'x'}).status_code == 400
+    assert _put(client, 'manual', {'internal_captions': 5, 'expected': None}).status_code == 400
+    assert _put(client, 'manual', {'internal_captions': 'x' * 100_001, 'expected': None}).status_code == 400
+    assert _put(client, 'manual', {'internal_captions': 'x', 'expected': 5}).status_code == 400
+    assert _put(client, 'missing', {'internal_captions': 'x', 'expected': None}).status_code == 404
+
+
+def test_long_captions_reach_notion_in_pieces_it_accepts():
+    pieces = notion._rich_text_pieces('a' * 4500)
+    assert [len(piece['text']['content']) for piece in pieces] == [2000, 2000, 500]
+    assert notion._rich_text_pieces('') == []
