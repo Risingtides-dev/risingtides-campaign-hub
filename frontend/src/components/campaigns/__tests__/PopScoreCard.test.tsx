@@ -95,13 +95,15 @@ describe('<PopScoreCard /> attribution', () => {
     expect((screen.getByRole('textbox', { name: 'Song link for pop score' }) as HTMLInputElement).value).toBe('')
   })
 
-  it('shows campaign total growth in the headline when available and omits null growth', () => {
+  it('shows campaign growth in the headline, starred only when recounts were left out', () => {
     setup({ ...payload,
-      streams: { ...payload.streams!, baseline_daily: 1_600_000, campaign_daily: 1_400_000, lift_pct_campaign: -10.1, growth_pct_campaign: 1.4 },
-      ugc: { ...payload.ugc!, baseline_daily: 871, campaign_daily: 1100, growth_pct_campaign: 2.6, gained_campaign: 35_300 },
+      streams: { ...payload.streams!, baseline_daily: 1_600_000, campaign_daily: 1_400_000, lift_pct_campaign: -10.1, growth_pct_campaign: 1.4, adjusted: false },
+      ugc: { ...payload.ugc!, baseline_daily: 871, campaign_daily: 1100, growth_pct_campaign: 2.6, gained_campaign: 35_300, adjusted: true },
     })
-    expect(screen.getByText(/streams 1\.6M → 1\.4M\/day \(−10\.1%\), \+1\.4% total/)).toBeInTheDocument()
-    expect(screen.getByText(/TikTok videos 871 → 1\.1K\/day, \+2\.6% total, 35\.3K new during the campaign/)).toBeInTheDocument()
+    const headline = screen.getByText(/^Popularity .*·/).textContent ?? ''
+    expect(headline).toMatch(/streams 1\.6M → 1\.4M\/day \(−10\.1%\), \+1\.4% growth(?!\*)/)
+    expect(headline).toMatch(/TikTok videos 871 → 1\.1K\/day, \+2\.6% growth\*, 35\.3K new during the campaign/)
+    expect(headline).not.toMatch(/total/)
   })
 
   it('omits null campaign total growth percentages from the headline', () => {
@@ -109,8 +111,10 @@ describe('<PopScoreCard /> attribution', () => {
       streams: { ...payload.streams!, growth_pct_campaign: null },
       ugc: { ...payload.ugc!, growth_pct_campaign: null },
     })
-    expect(screen.getByText(/streams 5K → 14\.3K\/day \(\+185\.7%\)/)).toBeInTheDocument()
-    expect(screen.getByText(/TikTok videos 120 → 480\/day, 3\.6K new during the campaign/)).toBeInTheDocument()
+    const headline = screen.getByText(/^Popularity .*·/).textContent ?? ''
+    expect(headline).toMatch(/streams 5K → 14\.3K\/day \(\+185\.7%\)(?! ?,)/)
+    expect(headline).toMatch(/TikTok videos 120 → 480\/day, 3\.6K new during the campaign/)
+    expect(headline).not.toMatch(/growth|N\/A/)
   })
 
   it('resets either displayed leg of a counted pair through the choice date', () => {

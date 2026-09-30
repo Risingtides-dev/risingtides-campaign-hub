@@ -704,3 +704,32 @@ def test_streams_v3_adjusted_fields_keep_raw_totals_and_history_shape():
     clean = _history([20_000] * 18, initial=100_000_000)
     clean_result = calculate_attribution([], clean, clean[14]["date"], clean[-1]["date"], today=date(2026, 1, 19))
     assert clean_result["streams"]["adjusted"] is False
+
+
+def _series_with_prestart_drop(base, per_day, drop, drop_day=10, days=40):
+    """Daily cumulative readings from 2026-01-01 with one large drop before the campaign."""
+    points, total = [], base
+    for i in range(days):
+        if i:
+            total += per_day
+        if i == drop_day:
+            total += drop
+        points.append({"date": date(2026, 1, 1 + i).isoformat() if i < 31 else date(2026, 2, i - 30).isoformat(), "value": total})
+    return points
+
+
+def test_growth_pct_divides_by_reported_start_total_when_a_recount_precedes_the_campaign():
+    # A -2M (ugc) / -200M (streams) Chartmetric restatement on Jan 11 is excluded as a
+    # recount. Growth during the campaign must be measured against the Start total the
+    # table shows (as reported), not against the recount-adjusted series.
+    ugc = _series_with_prestart_drop(4_000_000, 1_000, -2_000_000)
+    streams = _series_with_prestart_drop(400_000_000, 100_000, -200_000_000)
+    result = calculate_attribution([], streams, "2026-01-21", "2026-01-31", today=date(2026, 2, 9), ugc=ugc)
+
+    u, s = result["ugc"], result["streams"]
+    assert [r["date"] for r in u["recounts"]] == ["2026-01-11"]
+    assert [r["date"] for r in s["recounts"]] == ["2026-01-11"]
+    assert u["start_total"] == 2_020_000 and u["gained_campaign"] == 10_000
+    assert u["growth_pct_campaign"] == 0.5  # 10,000 / 2,020,000; the adjusted base would give 0.2
+    assert s["start_total"] == 202_000_000 and s["gained_campaign"] == 1_000_000
+    assert s["growth_pct_campaign"] == 0.5  # 1M / 202M; the adjusted base would give 0.2

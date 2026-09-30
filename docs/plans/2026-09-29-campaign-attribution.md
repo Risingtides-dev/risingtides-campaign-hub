@@ -89,7 +89,7 @@ Existing fields stay exactly as they are (`linked`, `link`, `chartmetric_track_i
     "followup_is_to_date": false,
     "gained_campaign": 400000,      // end_total - start_total
     "gained_followup": 250000,      // followup_total - end_total
-    "growth_pct_campaign": 40.0,    // (end_total - start_total) / start_total * 100; null if start_total null or 0
+    "growth_pct_campaign": 40.0,    // gained_campaign (recount-adjusted) / start_total (as reported) * 100; null if start_total null or 0. Headline shows it as "+X% growth", starred when the block is adjusted.
     "baseline_daily": 5000.0,       // avg daily streams over the 14 days before start_date
     "campaign_daily": 14285.7,      // avg daily streams start_date -> end (or -> latest)
     "followup_daily": 8928.6,       // avg daily streams end_date -> followup_end (or -> latest); null when no follow-up yet

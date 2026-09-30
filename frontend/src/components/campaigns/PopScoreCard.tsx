@@ -162,9 +162,9 @@ function headline(data: PopScore) {
   const parts: string[] = []
   if (data.popularity?.start != null && data.popularity.end != null) parts.push(`Popularity ${data.popularity.start} → ${data.popularity.end}`)
   const s = data.streams
-  if (s?.baseline_daily != null && s.campaign_daily != null) parts.push(`streams ${rate(s.baseline_daily)} → ${rate(s.campaign_daily)}/day (${headlinePct(s.lift_pct_campaign)})${s.growth_pct_campaign == null ? "" : `, ${headlinePct(s.growth_pct_campaign)} total`}`)
+  if (s?.baseline_daily != null && s.campaign_daily != null) parts.push(`streams ${rate(s.baseline_daily)} → ${rate(s.campaign_daily)}/day (${headlinePct(s.lift_pct_campaign)})${s.growth_pct_campaign == null ? "" : `, ${headlinePct(s.growth_pct_campaign)} growth${s.adjusted ? "*" : ""}`}`)
   const u = data.ugc
-  if (u?.baseline_daily != null && u.campaign_daily != null) parts.push(`TikTok videos ${rate(u.baseline_daily)} → ${rate(u.campaign_daily)}/day${u.growth_pct_campaign == null ? "" : `, ${headlinePct(u.growth_pct_campaign)} total`}${u.gained_campaign == null ? "" : `, ${compact(u.gained_campaign)} new during the campaign`}`)
+  if (u?.baseline_daily != null && u.campaign_daily != null) parts.push(`TikTok videos ${rate(u.baseline_daily)} → ${rate(u.campaign_daily)}/day${u.growth_pct_campaign == null ? "" : `, ${headlinePct(u.growth_pct_campaign)} growth${u.adjusted ? "*" : ""}`}${u.gained_campaign == null ? "" : `, ${compact(u.gained_campaign)} new during the campaign`}`)
   const toDate = ["live", "finished_no_end", "followup"].includes(data.phase ?? "") ? " (to date)" : ""
   return parts.length ? `${parts.join(" · ")}${toDate}` : ""
 }
