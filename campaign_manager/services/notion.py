@@ -172,14 +172,145 @@ def _parse_platform_split(tiktok_pct: List[str], insta_pct: List[str]) -> Dict:
     return split
 
 
-def fetch_page_content_types(notion_page_id: str) -> Optional[List[str]]:
-    """Fetch one CRM page's Content Niche Targets by page id.
+# The CRM text property that holds a campaign's text-on-screen lines. Staff
+# type into it and the intake forms write to it; the wording is kept verbatim.
+CAPTIONS_PROPERTY = "Internal Captions"
+
+# A page read returns at most 25 rich-text items inline. A longer value is
+# read through the paginated property endpoint instead of being cut short.
+_INLINE_RICH_TEXT_LIMIT = 25
+_MAX_RICH_TEXT_PAGES = 40
+
+
+def _parse_content_types(props: Dict) -> Optional[List[str]]:
+    """Content Niche Targets from a page's properties, or None if unreadable."""
+    target = props.get("Content Niche Targets")
+    if not isinstance(target, dict) or not isinstance(target.get("multi_select"), list):
+        return None
+    options = target["multi_select"]
+    if any(not isinstance(option, dict) or not isinstance(option.get("name"), str)
+           or not option["name"].strip() for option in options):
+        return None
+    return [option["name"] for option in options]
+
+
+def _fetch_full_rich_text(notion_page_id: str, property_id: str) -> Optional[str]:
+    """Read a whole rich-text property, page by page. None on any failure."""
+    url = f"{NOTION_API_BASE}/pages/{notion_page_id}/properties/{property_id}"
+    parts: List[str] = []
+    cursor = None
+    for _ in range(_MAX_RICH_TEXT_PAGES):
+        params = {"page_size": 100}
+        if cursor:
+            params["start_cursor"] = cursor
+        try:
+            resp = requests.get(url, headers=_headers(), params=params, timeout=15)
+        except Exception as e:
+            logger.warning("CRM property fetch failed for %s: %s", notion_page_id, e)
+            return None
+        if resp.status_code != 200:
+            logger.warning("CRM property fetch %s -> %s", notion_page_id, resp.status_code)
+            return None
+        try:
+            body = resp.json()
+            results = body.get("results")
+            if not isinstance(results, list):
+                return None
+            for item in results:
+                rich = item.get("rich_text") if isinstance(item, dict) else None
+                if not isinstance(rich, dict) or not isinstance(rich.get("plain_text"), str):
+                    return None
+                parts.append(rich["plain_text"])
+            if not body.get("has_more"):
+                return "".join(parts)
+            cursor = body.get("next_cursor")
+        except (ValueError, AttributeError):
+            return None
+        if not cursor:
+            return None
+    logger.warning("CRM property for %s is longer than this sync reads", notion_page_id)
+    return None
+
+
+def _parse_internal_captions(notion_page_id: str, props: Dict) -> Optional[str]:
+    """Internal Captions text from a page's properties, or None if unreadable.
+
+    An empty property is an explicit "no captions" and returns "". A missing
+    or malformed property returns None so stored captions are preserved.
+    """
+    target = props.get(CAPTIONS_PROPERTY)
+    if not isinstance(target, dict) or not isinstance(target.get("rich_text"), list):
+        return None
+    parts = target["rich_text"]
+    if any(not isinstance(part, dict) or not isinstance(part.get("plain_text"), str)
+           for part in parts):
+        return None
+    if len(parts) >= _INLINE_RICH_TEXT_LIMIT:
+        property_id = target.get("id")
+        if not isinstance(property_id, str) or not property_id:
+            return None
+        return _fetch_full_rich_text(notion_page_id, property_id)
+    return "".join(part["plain_text"] for part in parts)
+
+
+# Notion takes rich text in pieces of at most 2,000 characters, and at most
+# 100 pieces per property.
+_RICH_TEXT_PIECE = 2000
+MAX_INTERNAL_CAPTIONS = 100_000
+
+
+def _rich_text_pieces(text: str) -> List[Dict]:
+    """Text as Notion takes it. Python slices by code point, so no emoji is cut."""
+    pieces = []
+    start = 0
+    while start < len(text):
+        end = min(start + _RICH_TEXT_PIECE, len(text))
+        pieces.append({"type": "text", "text": {"content": text[start:end]}})
+        start = end
+    return pieces
+
+
+def write_page_internal_captions(notion_page_id: str, text: str) -> Optional[str]:
+    """Write a campaign's Internal Captions back to its CRM page.
+
+    Returns None when the write went through, or the reason it did not, in
+    plain words for the caller's response. The CRM is the source of truth
+    for captions, so a caller that gets a reason must not store the value
+    locally either.
+    """
+    api_key = _get_api_key()
+    if not api_key:
+        return "CRM writes are not configured (NOTION_API_KEY)"
+    if not notion_page_id:
+        return "campaign has no CRM page"
+    url = f"{NOTION_API_BASE}/pages/{notion_page_id}"
+    payload = {"properties": {CAPTIONS_PROPERTY: {"rich_text": _rich_text_pieces(text)}}}
+    try:
+        resp = requests.patch(url, headers=_headers(), json=payload, timeout=15)
+    except Exception as e:
+        logger.warning("CRM caption write failed for %s: %s", notion_page_id, e)
+        return "CRM could not be reached"
+    if resp.status_code != 200:
+        logger.warning("CRM caption write %s -> %s: %s", notion_page_id, resp.status_code, resp.text[:300])
+        detail = ""
+        try:
+            detail = (resp.json() or {}).get("message", "") or ""
+        except ValueError:
+            pass
+        return f"CRM answered {resp.status_code}" + (f": {detail[:200]}" if detail else "")
+    return None
+
+
+def fetch_page_campaign_fields(notion_page_id: str) -> Optional[Dict]:
+    """Fetch the CRM fields an existing campaign keeps tracking, by page id.
 
     Used to refresh EXISTING campaigns: the client-import funnel filters on
-    Pipeline Status = 'Client', but a campaign's niche targets must keep
-    syncing after the row leaves that status (782 of 783 CRM rows are
-    'Lead', and campaigns keep their niche targets there). Returns None on
-    any fetch failure — a page we cannot read is skipped, never emptied.
+    Pipeline Status = 'Client', but a campaign's niche targets and captions
+    must keep syncing after the row leaves that status (782 of 783 CRM rows
+    are 'Lead', and campaigns keep their niche targets there). Returns None
+    on any fetch failure — a page we cannot read is skipped, never emptied.
+    Each field is None when its own property is missing or unreadable, so one
+    bad property never blanks the other.
     """
     api_key = _get_api_key()
     if not api_key or not notion_page_id:
@@ -195,16 +326,20 @@ def fetch_page_content_types(notion_page_id: str) -> Optional[List[str]]:
         return None
     try:
         props = resp.json().get("properties", {}) or {}
-        target = props.get("Content Niche Targets")
-        if not isinstance(target, dict) or not isinstance(target.get("multi_select"), list):
+        if not isinstance(props, dict):
             return None
-        options = target["multi_select"]
-        if any(not isinstance(option, dict) or not isinstance(option.get("name"), str)
-               or not option["name"].strip() for option in options):
-            return None
-        return [option["name"] for option in options]
+        return {
+            "content_types": _parse_content_types(props),
+            "internal_captions": _parse_internal_captions(notion_page_id, props),
+        }
     except (ValueError, AttributeError):
         return None
+
+
+def fetch_page_content_types(notion_page_id: str) -> Optional[List[str]]:
+    """Fetch one CRM page's Content Niche Targets by page id."""
+    fields = fetch_page_campaign_fields(notion_page_id)
+    return fields["content_types"] if fields else None
 
 
 def query_new_clients(synced_page_ids: Set[str]) -> List[Dict]:
@@ -277,6 +412,7 @@ def query_new_clients(synced_page_ids: Set[str]) -> List[Dict]:
                          or _get_multi_select(props.get("Types of Content Creators", {})))
         tiktok_pct = _get_multi_select(props.get("TikTok", {}))
         insta_pct = _get_multi_select(props.get("Instagram", {}))
+        internal_captions = _parse_internal_captions(page_id, props)
 
         platform_split = _parse_platform_split(tiktok_pct, insta_pct)
 
@@ -315,6 +451,7 @@ def query_new_clients(synced_page_ids: Set[str]) -> List[Dict]:
             "project_lead": lead,
             "client_email": email,
             "content_types": content_types,
+            "internal_captions": internal_captions,
             "platform_split": platform_split,
             "source": "notion",
         })
@@ -328,8 +465,10 @@ _niche_refresh_after = ""
 def refresh_campaign_niche_targets():
     """Refresh up to 50 existing active campaigns from their exact CRM links.
 
-    No campaign creation, inferred categories, or notifications. The cursor
-    walks slugs so a larger roster advances across ticks, including failures.
+    Keeps each campaign's niche targets and captions in step with its CRM
+    row. No campaign creation, inferred categories, or notifications. The
+    cursor walks slugs so a larger roster advances across ticks, including
+    failures.
     """
     global _niche_refresh_after
     from campaign_manager import db
@@ -344,11 +483,18 @@ def refresh_campaign_niche_targets():
     for link in selected:
         counts["checked"] += 1
         try:
-            fresh = fetch_page_content_types(link["notion_page_id"])
+            fields = fetch_page_campaign_fields(link["notion_page_id"]) or {}
+            fresh = fields.get("content_types")
+            captions = fields.get("internal_captions")
+            changes = {}
             if fresh is None:
                 counts["unavailable"] += 1
             elif sorted(fresh) != sorted(link["content_types"]):
-                db.update_campaign_fields(link["slug"], {"content_types": fresh})
+                changes["content_types"] = fresh
+            if captions is not None and captions != link.get("internal_captions"):
+                changes["internal_captions"] = captions
+            if changes:
+                db.update_campaign_fields(link["slug"], changes)
                 counts["updated"] += 1
         except Exception:
             counts["unavailable"] += 1

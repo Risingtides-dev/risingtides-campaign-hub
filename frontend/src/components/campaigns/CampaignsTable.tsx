@@ -115,8 +115,8 @@ function buildColumns(
     ),
     cell: ({ row }) => (
       <div>
-        <div className="font-semibold text-[14px]">{row.original.title}</div>
-        <div className="text-rt-fg-tertiary text-[13px]">{row.original.song || ""}</div>
+        <div className="min-w-0 truncate font-semibold text-[14px]">{row.original.title}</div>
+        <div className="min-w-0 truncate text-rt-fg-tertiary text-[13px]">{row.original.song || ""}</div>
       </div>
     ),
   },
@@ -332,6 +332,8 @@ export function CampaignsTable({ data }: CampaignsTableProps) {
         .then(() => {
           // Background reconcile — the UI is already correct.
           qc.invalidateQueries({ queryKey: ["campaigns"] })
+          qc.invalidateQueries({ queryKey: ["campaign", slug] })
+          qc.invalidateQueries({ queryKey: ["popScore", slug] })
         })
         .catch(() => {
           for (const [k, data] of snapshot) qc.setQueryData(k, data)
@@ -387,7 +389,7 @@ export function CampaignsTable({ data }: CampaignsTableProps) {
               {headerGroup.headers.map((header) => (
                 <TableHead
                   key={header.id}
-                  className="text-rt-fg-tertiary text-xs font-semibold uppercase tracking-[0.3px] px-4 py-3 border-b-2 border-white/8"
+                  className={`text-rt-fg-tertiary text-xs font-semibold uppercase tracking-[0.3px] px-4 py-3 border-b-2 border-white/8 ${header.column.id === "completion" ? "sticky left-0 z-20 bg-rt-bg-card" : ""}`}
                   style={header.column.id === "completion" ? { width: 40, minWidth: 40, maxWidth: 40 } : undefined}
                 >
                   {header.isPlaceholder
@@ -424,7 +426,7 @@ export function CampaignsTable({ data }: CampaignsTableProps) {
                 {row.getVisibleCells().map((cell) => (
                   <TableCell
                     key={cell.id}
-                    className="px-4 py-1.5 text-[14px] border-b border-white/5 align-middle"
+                    className={`px-4 py-1.5 text-[14px] border-b border-white/5 align-middle ${cell.column.id === "completion" ? "sticky left-0 z-10 bg-rt-bg-card" : ""}`}
                   >
                     {flexRender(cell.column.columnDef.cell, cell.getContext())}
                   </TableCell>

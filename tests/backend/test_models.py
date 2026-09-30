@@ -42,6 +42,11 @@ class TestCampaignToMetaDict:
         assert meta["project_lead"] == []
         assert meta["platform_split"] == {}
         assert meta["content_types"] == []
+        assert meta["attribution_overrides"] == {}
+
+    def test_serializes_campaign_attribution_overrides(self):
+        c = Campaign(slug="x", title="T", attribution_overrides={"ugc": {"2026-01-01": "exclude"}})
+        assert c.to_meta_dict()["attribution_overrides"] == {"ugc": {"2026-01-01": "exclude"}}
 
     def test_serializes_datetimes_iso(self):
         c = Campaign(

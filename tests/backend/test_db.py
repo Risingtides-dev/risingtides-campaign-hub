@@ -23,6 +23,24 @@ def _make_campaign(db, slug="my_campaign", title="My Campaign", **extra):
 
 
 class TestCampaignCrud:
+    def test_init_runs_chartmetric_column_self_heal(self, monkeypatch):
+        from campaign_manager import db as db_module
+        monkeypatch.setattr(db_module, "_engine", db_module._engine)
+        monkeypatch.setattr(db_module, "_SessionLocal", db_module._SessionLocal)
+        class Session:
+            def __enter__(self): return self
+            def __exit__(self, *_): pass
+            def execute(self, *_): pass
+            def commit(self): pass
+        monkeypatch.setattr(db_module, "create_engine", lambda *a, **k: object())
+        monkeypatch.setattr(db_module, "sessionmaker", lambda **k: Session)
+        monkeypatch.setattr(db_module.Base.metadata, "create_all", lambda *_: None)
+        monkeypatch.setattr(db_module, "_sync_columns", lambda: None)
+        healed = []
+        monkeypatch.setattr(db_module, "_self_heal_chartmetric_columns", lambda: healed.append(True))
+        assert db_module.init("postgresql://example.invalid/campaigns") is True
+        assert healed == [True]
+
     def test_save_and_fetch_campaign(self, db):
         _make_campaign(db)
         meta = db.get_campaign("my_campaign")
@@ -49,10 +67,34 @@ class TestCampaignCrud:
         _make_campaign(db, title="Updated")
         assert db.get_campaign("my_campaign")["title"] == "Updated"
 
+    def test_partial_save_preserves_end_date_and_auto_flag(self, db):
+        _make_campaign(db, end_date="2026-05-01", end_date_auto=True)
+        db.save_campaign("my_campaign", {"title": "Updated"})
+        saved = db.get_campaign("my_campaign")
+        assert saved["end_date"] == "2026-05-01"
+        assert saved["end_date_auto"] is True
+
     def test_update_campaign_fields(self, db):
         _make_campaign(db)
         db.update_campaign_fields("my_campaign", {"completion_status": "completed"})
         assert db.get_campaign("my_campaign")["completion_status"] == "completed"
+
+    def test_chartmetric_self_heal_issues_end_date_auto_statements(self, monkeypatch):
+        from campaign_manager import db as db_module
+        executed = []
+        class Session:
+            def __enter__(self): return self
+            def __exit__(self, *_): pass
+            def execute(self, statement): executed.append(str(statement))
+            def commit(self): pass
+        monkeypatch.setattr(db_module, "_SessionLocal", lambda: Session())
+        db_module._self_heal_chartmetric_columns()
+        assert any("ADD COLUMN IF NOT EXISTS end_date_auto BOOLEAN DEFAULT FALSE" in sql for sql in executed)
+        assert any("UPDATE campaigns SET end_date_auto = FALSE WHERE end_date_auto IS NULL" in sql for sql in executed)
+        assert any("ALTER COLUMN end_date_auto SET DEFAULT FALSE" in sql for sql in executed)
+        assert any("ADD COLUMN IF NOT EXISTS attribution_overrides JSONB DEFAULT '{}'::jsonb" in sql for sql in executed)
+        assert any("UPDATE campaigns SET attribution_overrides = '{}'::jsonb WHERE attribution_overrides IS NULL" in sql for sql in executed)
+        assert any("ALTER COLUMN attribution_overrides SET DEFAULT '{}'::jsonb" in sql for sql in executed)
 
     def test_update_campaign_stats(self, db):
         _make_campaign(db)

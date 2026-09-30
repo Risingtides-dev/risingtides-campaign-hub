@@ -66,6 +66,17 @@ DEFAULT_MAX_WORKERS = 2
 DEFAULT_VIDEO_LIMIT = 50
 
 
+def _save_discovered_sounds(slug: str, meta: dict, discovered_sound_ids: list[str]) -> None:
+    """Union newly discovered sounds with the campaign's current sound list."""
+    current = _db.get_campaign(slug) or {}
+    additional = list(current.get("additional_sounds") or [])
+    snapshot = set(meta.get("additional_sounds") or [])
+    for sound_id in discovered_sound_ids:
+        if sound_id not in snapshot and sound_id not in additional:
+            additional.append(sound_id)
+    _db.update_campaign_fields(slug, {"additional_sounds": additional})
+
+
 # A native subprocess crash (SIGABRT etc.) kills one creator's yt-dlp, not the
 # fleet. Only a widespread crash rate means the environment itself is broken.
 NATIVE_CRASH_PREFIX = "native subprocess crash: "
@@ -318,6 +329,21 @@ def init_scheduler(database_url: str, hour: int = 6, minute: int = 0):
         max_instances=1,
         misfire_grace_time=300,
     )
+
+    # Conservative Chartmetric campaign linking. Delayed on boot and omitted
+    # entirely when credentials are unavailable.
+    if os.environ.get("CHARTMETRIC_REFRESH_TOKEN"):
+        from campaign_manager.services.chartmetric_autolink import (
+            autolink_campaigns, get_autolink_interval_minutes,
+        )
+        from datetime import datetime as _datetime
+        cm_interval = get_autolink_interval_minutes()
+        _scheduler.add_job(
+            autolink_campaigns, "interval", minutes=cm_interval,
+            next_run_time=_datetime.now(EST) + timedelta(minutes=10),
+            id="chartmetric_autolink", replace_existing=True,
+            coalesce=True, max_instances=1, misfire_grace_time=300,
+        )
 
     # Preserve CRM-declared niche demand for the D1 playlist consumer.
     from campaign_manager.services.notion import request_campaign_niche_refresh
@@ -811,13 +837,7 @@ def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None) 
 
     # Auto-add discovered sounds to campaign (only happens in fuzzy mode now)
     if discovered_sound_ids:
-        current_additional = list(meta.get("additional_sounds") or [])
-        for sid in discovered_sound_ids:
-            if sid not in current_additional:
-                current_additional.append(sid)
-        updated_meta = dict(meta)
-        updated_meta["additional_sounds"] = current_additional
-        _db.save_campaign(slug, updated_meta)
+        _save_discovered_sounds(slug, meta, discovered_sound_ids)
 
     # Cobrand cross-check — for every tracker that covers any of this
     # campaign's sound IDs, fetch its submitted-videos list and pre-mark

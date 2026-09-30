@@ -97,9 +97,12 @@ export function useEditCampaign(slug: string) {
   return useMutation({
     mutationFn: (data: Record<string, unknown>) =>
       api.editCampaign(slug, data),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: keys.campaign(slug) })
-      qc.invalidateQueries({ queryKey: keys.campaigns })
+    onSuccess: async () => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: keys.campaign(slug) }),
+        qc.invalidateQueries({ queryKey: keys.campaigns }),
+      ])
+      void qc.invalidateQueries({ queryKey: ["popScore", slug] })
     },
   })
 }
@@ -362,6 +365,14 @@ export function useSetPopScoreTrack(slug: string) {
   return useMutation({
     mutationFn: (link: string) => api.setPopScoreTrack(slug, link),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["popScore", slug] }),
+  })
+}
+
+export function useOverridePopScore(slug: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: { metric: "streams" | "ugc"; date: string; action: "include" | "exclude" | "auto" }) => api.overridePopScore(slug, body),
+    onSuccess: async () => { await qc.invalidateQueries({ queryKey: ["popScore", slug] }) },
   })
 }
 

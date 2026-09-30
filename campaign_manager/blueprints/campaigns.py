@@ -244,6 +244,14 @@ def _save_meta(slug: str, meta: Dict, campaign_dir=None):
         save_json(campaign_dir / "campaign.json", meta)
 
 
+def _save_resolved_campaign_field(slug: str, meta: Dict, field: str, campaign_dir=None):
+    """Persist one resolved field; file mode falls back to ``_save_meta``."""
+    if _db.is_active():
+        _db.update_campaign_fields(slug, {field: meta[field]})
+    else:
+        _save_meta(slug, meta, campaign_dir)
+
+
 def get_campaigns(completion: Optional[str] = None) -> List[Dict]:
     """Return campaigns with budget/stats attached.
 
@@ -382,6 +390,8 @@ def _campaign_summary(c: Dict) -> Dict:
         "artist": c["meta"].get("artist", ""),
         "song": c["meta"].get("song", ""),
         "start_date": c["meta"].get("start_date", ""),
+        "end_date": c["meta"].get("end_date", ""),
+        "end_date_auto": bool(c["meta"].get("end_date_auto", False)),
         # The sound a campaign runs on. Already searchable via ?search= but
         # never returned, so downstream boards could not tell which TikTok
         # sound a campaign meant — the ShipStream queue went stale because
@@ -474,6 +484,95 @@ def list_campaigns():
 
 
 # -------------------------------------------------------------------
+# 1b. GET /api/campaigns/captions  -- CRM captions per campaign sound
+# -------------------------------------------------------------------
+@campaigns_bp.get("/api/campaigns/captions")
+def list_campaign_captions():
+    """CRM "Internal Captions" for every active campaign that has had them read.
+
+    The posting control plane reads this to keep each campaign sound's
+    caption rows in step with the CRM. `internal_captions` is the CRM text
+    verbatim; an empty string means the CRM explicitly holds none. Finished
+    campaigns, and campaigns whose CRM row has never been read, are left
+    out. Kept off the campaign list so that payload stays small for every
+    other reader.
+    """
+    from campaign_manager.services.notion import request_campaign_niche_refresh
+    request_campaign_niche_refresh()
+
+    if _db.is_active():
+        return jsonify(_db.list_campaign_captions())
+
+    ensure_dirs()
+    rows = []
+    for d in sorted(ACTIVE_DIR.iterdir()) if ACTIVE_DIR.exists() else []:
+        meta = load_json(d / "campaign.json") if d.is_dir() else None
+        if not meta or not isinstance(meta.get("internal_captions"), str):
+            continue
+        if meta.get("completion_status", "none") == "completed":
+            continue
+        rows.append({
+            "slug": d.name,
+            "sound_id": meta.get("sound_id", ""),
+            "official_sound": meta.get("official_sound", ""),
+            "internal_captions": meta["internal_captions"],
+        })
+    return jsonify(rows)
+
+
+# -------------------------------------------------------------------
+# 1c. PUT /api/campaign/<slug>/internal-captions  -- write captions back
+# -------------------------------------------------------------------
+@campaigns_bp.put("/api/campaign/<slug>/internal-captions")
+def write_internal_captions(slug: str):
+    """Save one campaign's CRM captions, from the posting control plane.
+
+    The CRM row is the source of truth, so the text goes to the campaign's
+    CRM page first and is stored here only once that write went through.
+    The caller sends `expected`, the value it last saw (null when it saw
+    none); a stored value that differs answers 409 with the current value,
+    so a stale edit never overwrites a newer one. When HUB_WRITE_KEY is set,
+    the X-Hub-Write-Key header must match it.
+    """
+    from campaign_manager.services.notion import (
+        MAX_INTERNAL_CAPTIONS,
+        write_page_internal_captions,
+    )
+
+    write_key = (os.environ.get("HUB_WRITE_KEY") or "").strip()
+    if write_key and request.headers.get("X-Hub-Write-Key", "") != write_key:
+        return jsonify({"error": "X-Hub-Write-Key does not match"}), 401
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or "expected" not in data:
+        return jsonify({"error": "Send internal_captions and expected (the value you last saw, or null)."}), 400
+    value = data.get("internal_captions")
+    expected = data.get("expected")
+    if not isinstance(value, str) or len(value) > MAX_INTERNAL_CAPTIONS:
+        return jsonify({"error": f"internal_captions must be text of at most {MAX_INTERNAL_CAPTIONS} characters"}), 400
+    if expected is not None and not isinstance(expected, str):
+        return jsonify({"error": "expected must be text or null"}), 400
+
+    if not _db.is_active():
+        return jsonify({"error": "Database not configured"}), 500
+    meta = _db.get_campaign(slug)
+    if not meta:
+        return jsonify({"error": "Campaign not found"}), 404
+    current = meta.get("internal_captions")
+    if current != expected:
+        return jsonify({"error": "internal_captions changed since you read them",
+                        "internal_captions": current}), 409
+
+    page_id = meta.get("notion_page_id") or ""
+    if page_id:
+        reason = write_page_internal_captions(page_id, value)
+        if reason:
+            return jsonify({"error": f"CRM update failed: {reason}", "internal_captions": current}), 502
+    _db.update_campaign_fields(slug, {"internal_captions": value})
+    return jsonify({"slug": slug, "internal_captions": value, "crm": "updated" if page_id else "none"})
+
+
+# -------------------------------------------------------------------
 # 2. POST /api/campaign/create  -- create a new campaign
 # -------------------------------------------------------------------
 @campaigns_bp.post("/api/campaign/create")
@@ -482,7 +581,7 @@ def create_campaign():
 
     title = (data.get("title") or "").strip()
     official_sound = (data.get("official_sound") or "").strip()
-    start_date = (data.get("start_date") or "").strip() or str(date.today())
+    start_date = (data.get("start_date") or "").strip() or datetime.now(_db.EST).date().isoformat()
     budget_raw = (data.get("budget") or "0")
 
     if not title:
@@ -496,6 +595,8 @@ def create_campaign():
     artist, song = "", ""
     if " - " in title:
         artist, song = [x.strip() for x in title.split(" - ", 1)]
+    artist = (data.get("artist") or artist).strip()
+    song = (data.get("song") or song).strip()
 
     slug = slugify(title)
 
@@ -524,6 +625,8 @@ def create_campaign():
         save_json(campaign_dir / "campaign.json", meta)
         save_creators(campaign_dir, [])
 
+    from campaign_manager.services.chartmetric_autolink import request_immediate_resolve
+    request_immediate_resolve(slug)
     return jsonify({"ok": True, "slug": slug, "message": f"Created campaign: {title}"}), 201
 
 
@@ -544,11 +647,58 @@ def edit_campaign(slug: str):
     if not meta:
         return jsonify({"error": "Campaign not found."}), 404
 
+    prior_completion_status = meta.get("completion_status", "none")
+    old_song_fields = {key: meta.get(key, "") for key in ("song", "artist", "sound_id", "tt_artist_label", "tt_track_name")}
     data = request.get_json(silent=True) or {}
 
     title = (data.get("title") or "").strip()
     sound_id_raw = (data.get("sound_id") or "").strip()
-    start_date = (data.get("start_date") or "").strip()
+    start_raw = data.get("start_date", "")
+    if "start_date" in data and not isinstance(start_raw, str):
+        return jsonify({"error": "start_date must be YYYY-MM-DD."}), 400
+    start_date = start_raw.strip() if isinstance(start_raw, str) else ""
+    stored_start = meta.get("start_date", "")
+    effective_start = start_date if "start_date" in data else stored_start
+    effective_end = data.get("end_date", meta.get("end_date", ""))
+    start_changed = "start_date" in data and start_date != stored_start
+    if start_changed and start_date:
+        try:
+            parsed_start = datetime.strptime(start_date, "%Y-%m-%d").date()
+            if parsed_start.isoformat() != start_date:
+                raise ValueError
+        except (TypeError, ValueError):
+            return jsonify({"error": "start_date must be YYYY-MM-DD."}), 400
+    end_changed = "end_date" in data and data.get("end_date") != meta.get("end_date", "")
+    end_involved = end_changed or (start_changed and bool(effective_end))
+    if end_involved and effective_end is None:
+        return jsonify({"error": "end_date must be YYYY-MM-DD or blank."}), 400
+    if end_involved and effective_end and effective_start:
+        try:
+            parsed_start = datetime.strptime(effective_start, "%Y-%m-%d").date()
+            parsed_end = datetime.strptime(effective_end, "%Y-%m-%d").date()
+            if parsed_start.isoformat() != effective_start or parsed_end.isoformat() != effective_end:
+                raise ValueError
+        except (TypeError, ValueError):
+            return jsonify({"error": "start_date and end_date must be valid YYYY-MM-DD dates."}), 400
+        if parsed_end < parsed_start:
+            return jsonify({"error": "end_date must be on or after start_date."}), 400
+    if "end_date" in data:
+        end_date = data.get("end_date")
+        if not isinstance(end_date, str):
+            return jsonify({"error": "end_date must be YYYY-MM-DD or blank."}), 400
+        end_date = end_date.strip()
+        if end_date and end_changed:
+            try:
+                parsed_end = datetime.strptime(end_date, "%Y-%m-%d").date()
+                if parsed_end.isoformat() != end_date:
+                    raise ValueError
+                effective_start = start_date or meta.get("start_date", "")
+                parsed_start = datetime.strptime(effective_start, "%Y-%m-%d").date()
+            except (TypeError, ValueError):
+                return jsonify({"error": "end_date must be YYYY-MM-DD and requires a valid start_date."}), 400
+            if parsed_end < parsed_start:
+                return jsonify({"error": "end_date must be on or after start_date."}), 400
+        meta["end_date"] = end_date
     budget_raw = (data.get("budget") or "").strip() if isinstance(data.get("budget"), str) else data.get("budget")
 
     if title:
@@ -558,14 +708,17 @@ def edit_campaign(slug: str):
             artist, song = [x.strip() for x in title.split(" - ", 1)]
             meta["artist"] = artist
             meta["song"] = song
+    for key in ("song", "artist", "tt_artist_label", "tt_track_name"):
+        if key in data and isinstance(data[key], str):
+            meta[key] = data[key].strip()
 
-    if sound_id_raw:
+    if "sound_id" in data:
         meta["official_sound"] = sound_id_raw
-        meta["sound_id"] = extract_sound_id(sound_id_raw)
+        meta["sound_id"] = extract_sound_id(sound_id_raw) if sound_id_raw else ""
 
     # Save additional sounds
-    additional = data.get("additional_sounds", [])
-    if isinstance(additional, list):
+    additional = data.get("additional_sounds")
+    if "additional_sounds" in data and isinstance(additional, list):
         meta["additional_sounds"] = [s.strip() for s in additional if s and s.strip()]
 
     if start_date:
@@ -586,6 +739,23 @@ def edit_campaign(slug: str):
             "error": f"Invalid completion_status: {completion_status!r}",
             "valid": ["none", "booked", "completed"],
         }), 400
+    today_et = datetime.now(_db.EST).date()
+    if "end_date" in data:
+        meta["end_date_auto"] = False
+    if prior_completion_status != "completed" and completion_status == "completed" and "end_date" not in data and not meta.get("end_date"):
+        try:
+            parsed_start = datetime.strptime(meta.get("start_date", ""), "%Y-%m-%d").date()
+            if today_et < parsed_start:
+                logger.warning("Finishing campaign %s with future start date %s", slug, meta.get("start_date"))
+            else:
+                meta["end_date"] = today_et.isoformat()
+                meta["end_date_auto"] = True
+        except (TypeError, ValueError):
+            meta["end_date"] = today_et.isoformat()
+            meta["end_date_auto"] = True
+    elif prior_completion_status == "completed" and completion_status in ("none", "booked") and meta.get("end_date_auto"):
+        meta["end_date"] = ""
+        meta["end_date_auto"] = False
 
     # Match strategy — controls whether fuzzy fallback is allowed.
     # "strict" = sound_id only (use for original sound campaigns)
@@ -600,8 +770,9 @@ def edit_campaign(slug: str):
                 "valid": ["fuzzy", "strict"],
             }), 400
 
-    cobrand_link = (data.get("cobrand_link") or "").strip()
-    meta["cobrand_link"] = cobrand_link
+    if "cobrand_link" in data:
+        cobrand_link = (data.get("cobrand_link") or "").strip()
+        meta["cobrand_link"] = cobrand_link
 
     if _db.is_active():
         _db.save_campaign(slug, meta)
@@ -621,6 +792,11 @@ def edit_campaign(slug: str):
         set_tracker_status(
             meta["tracker_campaign_id"], tracker_status_for(completion_status)
         )
+
+    new_song_fields = {key: meta.get(key, "") for key in old_song_fields}
+    if old_song_fields != new_song_fields:
+        from campaign_manager.services.chartmetric_autolink import request_immediate_resolve
+        request_immediate_resolve(slug)
 
     return jsonify({"ok": True, "slug": slug, "message": "Campaign updated."})
 
@@ -690,6 +866,8 @@ def campaign_detail(slug: str):
         "cobrand_share_url": meta.get("cobrand_share_url", ""),
         "cobrand_upload_url": meta.get("cobrand_upload_url", ""),
         "start_date": meta.get("start_date", ""),
+        "end_date": meta.get("end_date", ""),
+        "end_date_auto": bool(meta.get("end_date_auto", False)),
         "budget": budget,
         "stats": stats,
         "platform": meta.get("platform", "tiktok"),
@@ -734,6 +912,7 @@ def campaign_detail(slug: str):
         "client_email": meta.get("client_email", ""),
         "platform_split": meta.get("platform_split", {}),
         "content_types": meta.get("content_types", []),
+        "internal_captions": meta.get("internal_captions"),
     })
 
 
@@ -790,13 +969,13 @@ def _refresh_stats_inner(slug: str):
         if html_id and html_id != sound_id_raw:
             sound_id_raw = html_id
             meta["sound_id"] = html_id
-            _save_meta(slug, meta, campaign_dir)
+            _save_resolved_campaign_field(slug, meta, "sound_id", campaign_dir)
         # Auto-populate artist/song from HTML title if empty
         if not artist or not song:
             if html_title and not song:
                 song = html_title
                 meta["song"] = song
-                _save_meta(slug, meta, campaign_dir)
+                _save_resolved_campaign_field(slug, meta, "song", campaign_dir)
 
     # Resolve the sound ID -- if it's a URL, extract the real numeric ID
     sound_id = sound_id_raw
@@ -806,7 +985,7 @@ def _refresh_stats_inner(slug: str):
         if resolved_id and resolved_id != sound_id_raw:
             sound_id = resolved_id
             meta["sound_id"] = resolved_id
-            _save_meta(slug, meta, campaign_dir)
+            _save_resolved_campaign_field(slug, meta, "sound_id", campaign_dir)
 
     # If sound_id is still a URL (couldn't resolve), try HTML extraction
     if sound_id and "tiktok.com/" in sound_id:
@@ -819,7 +998,7 @@ def _refresh_stats_inner(slug: str):
                 sound_id = html_id
                 ref_song_title = html_title
                 meta["sound_id"] = html_id
-                _save_meta(slug, meta, campaign_dir)
+                _save_resolved_campaign_field(slug, meta, "sound_id", campaign_dir)
 
     # Resolve additional sounds
     additional_sounds = meta.get("additional_sounds", [])
@@ -1005,7 +1184,14 @@ def _refresh_stats_inner(slug: str):
     stats["total_likes"] = total_likes
     stats["last_scrape"] = datetime.now().isoformat()
     meta["stats"] = stats
-    _save_meta(slug, meta, campaign_dir)
+    if _db.is_active():
+        _db.update_campaign_fields(slug, {
+            "total_views": total_views,
+            "total_likes": total_likes,
+            "last_scrape": datetime.fromisoformat(stats["last_scrape"]),
+        })
+    else:
+        _save_meta(slug, meta, campaign_dir)
 
     # Update creator post counts using shared logic
     if _db.is_active():

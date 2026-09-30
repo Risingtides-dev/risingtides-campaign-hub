@@ -52,10 +52,23 @@ class TestBuildSoundSets:
         _, keys, _ = build_sound_sets({
             "song": "Fever Dream",
             "artist": "Sam Barber",
+            "tt_track_name": "Fever Dream (Sped Up)",
+            "tt_artist_label": "Music for the Soul",
+        })
+        assert "fever dream (sped up) - music for the soul" in keys
+        assert "fever dream - sam barber" in keys
+
+    def test_generic_tt_track_name_is_not_a_sound_key(self):
+        # #140: a generic TikTok title like "Original Sound" would match every
+        # original-sound video on TikTok, so it must never become a key.
+        _, keys, _ = build_sound_sets({
+            "song": "Fever Dream",
+            "artist": "Sam Barber",
             "tt_track_name": "Original Sound",
             "tt_artist_label": "Music for the Soul",
         })
-        assert "original sound - music for the soul" in keys
+        assert "original sound - music for the soul" not in keys
+        assert keys == {"fever dream - sam barber"}
 
     def test_core_song_words_drops_short_tokens(self):
         _, _, words = build_sound_sets({"song": "I Am In Love"})

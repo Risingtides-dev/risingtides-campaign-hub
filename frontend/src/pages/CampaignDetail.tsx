@@ -20,6 +20,7 @@ import { AddCreatorForm } from "@/components/campaigns/AddCreatorForm"
 import { CreatorsTable } from "@/components/campaigns/CreatorsTable"
 import { PopScoreCard } from "@/components/campaigns/PopScoreCard"
 import { ChevronRight, Loader2 } from "lucide-react"
+import { campaignEditWiring } from "./campaignEditWiring"
 
 export default function CampaignDetail() {
   const { slug } = useParams<{ slug: string }>()
@@ -78,9 +79,8 @@ export default function CampaignDetail() {
       {/* Campaign Header */}
       <CampaignHeader
         campaign={campaign}
-        onEdit={(data) => editCampaign.mutate(data)}
+        {...campaignEditWiring(editCampaign)}
         onRefresh={() => refreshStats.mutate()}
-        isEditing={editCampaign.isPending}
         isRefreshing={refreshStats.isPending}
         onToggleCobrand={() => {
           setCobrandVisible((v) => !v)
@@ -142,7 +142,7 @@ export default function CampaignDetail() {
       )}
 
       {/* Pop Score (Spotify popularity via Chartmetric) */}
-      <PopScoreCard slug={slug!} />
+      <PopScoreCard key={slug} slug={slug!} tracker_url={campaign.tracker_url} />
 
       {/* Share with Client */}
       <ShareTokenSection slug={slug!} />

@@ -52,12 +52,12 @@ export default function ScrapeTasks() {
     if (s === "done") {
       toast.success("Scrape finished — queue refreshed.")
       queryClient.invalidateQueries({ queryKey: ["scrape-tasks"] })
-      setActiveJobId(null)
+      setTimeout(() => setActiveJobId(null), 0)
     } else if (s === "error") {
       toast.error(`Scrape failed: ${jobQ.data?.error ?? "unknown error"}`)
-      setActiveJobId(null)
+      setTimeout(() => setActiveJobId(null), 0)
     }
-  }, [jobQ.data?.state])
+  }, [jobQ.data?.state, jobQ.data?.error, queryClient])
 
   function runScrape(body: { all_active?: boolean; campaign_id?: string }) {
     setRunningSlug(body.campaign_id ?? "__all__")
@@ -282,17 +282,10 @@ function CampaignBlock({
     () => new Set(camp.videos.map((v) => v.id)),
     [camp.videos]
   )
-  useEffect(() => {
-    setLocallyTicked((prev) => {
-      let changed = false
-      const next = new Set<number>()
-      for (const id of prev) {
-        if (videoIdSet.has(id)) next.add(id)
-        else changed = true
-      }
-      return changed ? next : prev
-    })
-  }, [videoIdSet])
+  const visibleLocallyTicked = useMemo(
+    () => new Set([...locallyTicked].filter((id) => videoIdSet.has(id))),
+    [locallyTicked, videoIdSet]
+  )
 
   const addToTicked = (ids: number[]) =>
     setLocallyTicked((prev) => {
@@ -510,7 +503,7 @@ function CampaignBlock({
                   onDismissOne={(reason) => onDismiss([v.id], reason)}
                   isMarking={isMarking}
                   isDismissing={isDismissing}
-                  isLocallyTicked={locallyTicked.has(v.id)}
+                  isLocallyTicked={visibleLocallyTicked.has(v.id)}
                 />
               ))}
             </tbody>

@@ -29,6 +29,8 @@ class Campaign(Base):
     additional_sounds = Column(JSONB, default=list)
     cobrand_link = Column(Text, default="")
     start_date = Column(String(20), default="")
+    end_date = Column(String(20), default="")
+    end_date_auto = Column(Boolean, default=False, nullable=False)
     budget = Column(Float, default=0.0)
     platform = Column(String(20), default="tiktok")
     total_views = Column(Integer, default=0)
@@ -82,10 +84,19 @@ class Campaign(Base):
     client_email = Column(String(255), default="")
     platform_split = Column(JSONB, default=dict)
     content_types = Column(JSONB, default=list)
+    # CRM "Internal Captions": the text-on-screen lines for this campaign's
+    # sound, exactly as typed in the CRM or submitted on an intake form.
+    # NULL means the CRM property has never been read for this campaign; an
+    # empty string means the CRM explicitly holds no captions.
+    internal_captions = Column(Text, nullable=True)
 
     # Chartmetric link for Spotify popularity ("pop score") tracking.
     chartmetric_track_id = Column(BigInteger, nullable=True)
     chartmetric_link = Column(Text, default="")
+    chartmetric_autolink_checked_at = Column(DateTime, nullable=True)
+    chartmetric_link_status = Column(String(32), default="", nullable=False)
+    chartmetric_link_detail = Column(Text, default="", nullable=False)
+    attribution_overrides = Column(JSONB, default=dict, nullable=False)
 
     creators = relationship("Creator", back_populates="campaign", cascade="all, delete-orphan")
     matched_videos = relationship("MatchedVideo", back_populates="campaign", cascade="all, delete-orphan")
@@ -104,6 +115,9 @@ class Campaign(Base):
             "additional_sounds": self.additional_sounds or [],
             "cobrand_link": self.cobrand_link or "",
             "start_date": self.start_date or "",
+            "end_date": self.end_date or "",
+            "end_date_auto": bool(self.end_date_auto),
+            "attribution_overrides": self.attribution_overrides or {},
             "budget": self.budget or 0.0,
             "platform": self.platform or "tiktok",
             "created_at": self.created_at.isoformat() if self.created_at else "",
@@ -135,8 +149,11 @@ class Campaign(Base):
             "client_email": self.client_email or "",
             "platform_split": self.platform_split or {},
             "content_types": self.content_types or [],
+            "internal_captions": self.internal_captions,
             "chartmetric_track_id": self.chartmetric_track_id,
             "chartmetric_link": self.chartmetric_link or "",
+            "chartmetric_link_status": self.chartmetric_link_status or "",
+            "chartmetric_link_detail": self.chartmetric_link_detail or "",
         }
 
 

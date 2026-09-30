@@ -60,7 +60,9 @@ def migrate_campaign_full():
         campaign_meta["name"] = campaign_meta.get("title", slug)
 
     try:
-        # Save campaign metadata
+        # Save campaign metadata. With ?overwrite=1 this replaces the stored
+        # metadata, except that an import omitting end_date / end_date_auto
+        # keeps the stored end date and its auto flag.
         _db.save_campaign(slug, campaign_meta)
 
         # Save creators

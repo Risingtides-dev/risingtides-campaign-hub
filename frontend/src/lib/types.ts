@@ -35,6 +35,8 @@ export interface CampaignSummary {
   artist: string
   song: string
   start_date: string
+  end_date: string
+  end_date_auto?: boolean
   completion_status: "none" | "booked" | "completed"
   budget: CampaignBudget
   stats: CampaignStats
@@ -72,6 +74,8 @@ export interface CampaignDetail {
   cobrand_share_url: string
   cobrand_upload_url: string
   start_date: string
+  end_date: string
+  end_date_auto?: boolean
   budget: CampaignBudget
   stats: CampaignStats
   creators: Creator[]
@@ -922,10 +926,26 @@ export interface CreatorRef {
 export interface PopScorePoint {
   date: string
   value: number
+  smoothed?: boolean
 }
+
+export interface AttributionStreamsPoint {
+  date: string
+  total: number
+  daily: number | null
+  smoothed?: boolean
+}
+export interface AttributionRecount { date: string; change: number; source: "auto" | "manual"; with?: string; choice_date?: string }
+export interface AttributionUnusual { date: string; change: number; source: "auto" | "manual"; with?: string; choice_date?: string }
+export interface AttributionStaleOverride { metric: "streams" | "ugc"; date: string; action: "include" | "exclude" }
+
+export type AttributionPhase = "not_started" | "live" | "followup" | "complete" | "no_start" | "finished_no_end"
 
 export interface PopScore {
   linked: boolean
+  link_status?: "linked_auto" | "manual" | "pending" | "not_released" | "artist_not_found" | "ambiguous" | "generic_title" | "no_song_info" | ""
+  link_detail?: string
+  next_check?: string | null
   link?: string
   error?: string
   chartmetric_track_id?: number
@@ -936,5 +956,58 @@ export interface PopScore {
   baseline?: number | null
   change_since_start?: number | null
   start_date?: string
+  end_date?: string
+  end_date_auto?: boolean
+  followup_days?: number
+  followup_end?: string
+  followup_day?: number | null
+  streams_error?: string
+  ugc_error?: string
+  ugc?: {
+    start?: number | null; end?: number | null; followup?: number | null
+    start_total: number | null; end_total: number | null; followup_total: number | null
+    now: number | null; now_date: string | null; change_since_start: number | null; change_since_end: number | null
+    baseline_daily: number | null; campaign_daily: number | null; followup_daily: number | null
+    gained_campaign: number | null; gained_followup: number | null; growth_pct_campaign?: number | null; lift_pct_campaign: number | null; lift_pct_followup?: number | null
+    end_is_to_date: boolean; followup_is_to_date: boolean
+    recounts?: AttributionRecount[]
+    unusual?: AttributionUnusual[]
+    adjusted?: boolean
+  }
+  phase?: AttributionPhase
+  popularity?: {
+    start: number | null
+    end: number | null
+    end_is_to_date: boolean
+    followup: number | null
+    followup_is_to_date: boolean
+    change_campaign: number | null
+    change_followup: number | null
+    now?: number | null; now_date?: string | null; change_since_start?: number | null; change_since_end?: number | null
+  }
+  streams?: {
+    start_total: number | null
+    end_total: number | null
+    end_is_to_date: boolean
+    followup_total: number | null
+    followup_is_to_date: boolean
+    gained_campaign: number | null
+    gained_followup: number | null
+    growth_pct_campaign: number | null
+    baseline_daily: number | null
+    campaign_daily: number | null
+    followup_daily: number | null
+    lift_pct_campaign: number | null
+    lift_pct_followup: number | null
+    recounts?: AttributionRecount[]
+    unusual?: AttributionUnusual[]
+    adjusted?: boolean
+    now?: number | null; now_date?: string | null; change_since_start?: number | null; change_since_end?: number | null
+  }
+  streams_history?: AttributionStreamsPoint[]
+  ugc_history?: AttributionStreamsPoint[]
+  data_as_of?: string
   history?: PopScorePoint[]
+  post_events?: { date: string; count: number }[]
+  stale_overrides?: AttributionStaleOverride[]
 }

@@ -1,5 +1,11 @@
-import { describe, expect, it } from 'vitest'
-import { keys } from '@/lib/queries'
+import { describe, expect, it, vi } from 'vitest'
+import { act, renderHook, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import React from 'react'
+import { keys, useEditCampaign, useOverridePopScore } from '@/lib/queries'
+import { api } from '@/lib/api'
+
+vi.mock('@/lib/api', () => ({ api: { editCampaign: vi.fn(), overridePopScore: vi.fn() } }))
 
 describe('query key factory', () => {
   it('static keys are stable arrays', () => {
@@ -45,4 +51,44 @@ describe('query key factory', () => {
   it('internalGroup keys are distinct from internalGroupStats', () => {
     expect(keys.internalGroup('g')).not.toEqual(keys.internalGroupStats('g', 30))
   })
+})
+
+it('awaits campaign invalidations but resolves without waiting for pop score refresh', async () => {
+  const qc = new QueryClient()
+  let release!: () => void
+  const pending = new Promise<void>((resolve) => { release = resolve })
+  vi.spyOn(qc, 'invalidateQueries').mockReturnValue(pending as never)
+  vi.mocked(api.editCampaign).mockResolvedValue({} as never)
+  const wrapper = ({ children }: { children: React.ReactNode }) => React.createElement(QueryClientProvider, { client: qc }, children)
+  const { result } = renderHook(() => useEditCampaign('song'), { wrapper })
+  let settled = false
+  let mutation!: Promise<unknown>
+  act(() => { mutation = result.current.mutateAsync({ title: 'fresh' }).then((v) => { settled = true; return v }) })
+  await waitFor(() => expect(qc.invalidateQueries).toHaveBeenCalledTimes(2))
+  expect(qc.invalidateQueries).toHaveBeenCalledWith({ queryKey: keys.campaign('song') })
+  expect(qc.invalidateQueries).toHaveBeenCalledWith({ queryKey: keys.campaigns })
+  expect(settled).toBe(false)
+  release()
+  await mutation
+  expect(settled).toBe(true)
+  expect(qc.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['popScore', 'song'] })
+})
+
+
+it('waits for the pop score refresh after an override before mutation settles', async () => {
+  const qc = new QueryClient()
+  let release!: () => void
+  const pending = new Promise<void>(resolve => { release = resolve })
+  vi.spyOn(qc, 'invalidateQueries').mockReturnValue(pending as never)
+  vi.mocked(api.overridePopScore).mockResolvedValue({} as never)
+  const wrapper = ({ children }: { children: React.ReactNode }) => React.createElement(QueryClientProvider, { client: qc }, children)
+  const { result } = renderHook(() => useOverridePopScore('song'), { wrapper })
+  let settled = false
+  let mutation!: Promise<unknown>
+  act(() => { mutation = result.current.mutateAsync({ metric: 'ugc', date: '2026-08-12', action: 'exclude' }).then(value => { settled = true; return value }) })
+  await waitFor(() => expect(qc.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['popScore', 'song'] }))
+  expect(settled).toBe(false)
+  release()
+  await mutation
+  expect(settled).toBe(true)
 })

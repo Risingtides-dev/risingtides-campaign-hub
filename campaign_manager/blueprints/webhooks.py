@@ -95,6 +95,8 @@ def notion_webhook():
         "project_lead": data.get("project_lead", []),
         "client_email": data.get("client_email", ""),
         "content_types": data.get("content_types", []),
+        "internal_captions": data["internal_captions"]
+            if isinstance(data.get("internal_captions"), str) else None,
         "platform_split": data.get("platform_split", {}),
     }
 
@@ -139,9 +141,19 @@ def notion_sync():
             entry_types = sorted(entry.get("content_types") or [])
             existing = _db.get_campaign(slug) or {}
             existing_types = sorted(existing.get("content_types") or [])
+            changes = {}
             if entry_types != existing_types:
-                _db.update_campaign_fields(slug, {"content_types": entry.get("content_types") or []})
-                refreshed.append({"slug": slug, "content_types": entry.get("content_types") or []})
+                changes["content_types"] = entry.get("content_types") or []
+            # Captions follow the CRM row this campaign was imported from; a
+            # same-titled row that is not its row never overwrites them.
+            entry_captions = entry.get("internal_captions")
+            if (entry_captions is not None
+                    and existing.get("notion_page_id") == entry["notion_page_id"]
+                    and entry_captions != existing.get("internal_captions")):
+                changes["internal_captions"] = entry_captions
+            if changes:
+                _db.update_campaign_fields(slug, changes)
+                refreshed.append({"slug": slug, **changes})
             else:
                 skipped.append({"slug": slug, "reason": "already exists"})
             continue
@@ -171,6 +183,7 @@ def notion_sync():
             "project_lead": entry.get("project_lead", []),
             "client_email": entry.get("client_email", ""),
             "content_types": entry.get("content_types", []),
+            "internal_captions": entry.get("internal_captions"),
             "platform_split": entry.get("platform_split", {}),
         }
 
@@ -184,15 +197,22 @@ def notion_sync():
     # campaign's niche targets must keep syncing wherever the row lives.
     # A page we cannot read is skipped (never emptied); only actual changes
     # are written.
-    from campaign_manager.services.notion import fetch_page_content_types
+    from campaign_manager.services.notion import fetch_page_campaign_fields
 
     for link in _db.get_campaign_notion_links():
-        fresh = fetch_page_content_types(link["notion_page_id"])
-        if fresh is None:
+        fields = fetch_page_campaign_fields(link["notion_page_id"])
+        if fields is None:
             continue
-        if sorted(fresh) != sorted(link["content_types"]):
-            _db.update_campaign_fields(link["slug"], {"content_types": fresh})
-            refreshed.append({"slug": link["slug"], "content_types": fresh})
+        changes = {}
+        fresh = fields["content_types"]
+        if fresh is not None and sorted(fresh) != sorted(link["content_types"]):
+            changes["content_types"] = fresh
+        captions = fields["internal_captions"]
+        if captions is not None and captions != link["internal_captions"]:
+            changes["internal_captions"] = captions
+        if changes:
+            _db.update_campaign_fields(link["slug"], changes)
+            refreshed.append({"slug": link["slug"], **changes})
 
     return jsonify({
         "ok": True,

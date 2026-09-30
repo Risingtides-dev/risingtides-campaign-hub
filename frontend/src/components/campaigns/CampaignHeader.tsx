@@ -7,7 +7,9 @@ import type { CampaignDetail } from "@/lib/types"
 
 interface CampaignHeaderProps {
   campaign: CampaignDetail
-  onEdit: (data: Record<string, unknown>) => void
+  onEdit: (data: Record<string, unknown>) => void | Promise<unknown>
+  editError?: string
+  onResetEdit?: () => void
   onRefresh: () => void
   isEditing: boolean
   isRefreshing: boolean
@@ -19,6 +21,8 @@ interface CampaignHeaderProps {
 export function CampaignHeader({
   campaign,
   onEdit,
+  editError,
+  onResetEdit,
   onRefresh,
   isEditing: editPending,
   isRefreshing,
@@ -37,8 +41,10 @@ export function CampaignHeader({
     campaign.additional_sounds || []
   )
   const [startDate, setStartDate] = useState(campaign.start_date || "")
+  const [endDate, setEndDate] = useState(campaign.end_date || "")
   const [budget, setBudget] = useState(campaign.budget?.total?.toString() || "0")
   const [cobrandLink, setCobrandLink] = useState(campaign.cobrand_link || "")
+  const [editEndDateOriginal, setEditEndDateOriginal] = useState(campaign.end_date || "")
 
   const soundCount =
     (campaign.sound_id || campaign.official_sound ? 1 : 0) +
@@ -46,9 +52,9 @@ export function CampaignHeader({
 
   const budgetPct = campaign.budget?.pct ?? 0
 
-  function handleSave(e: React.FormEvent) {
+  async function handleSave(e: React.FormEvent) {
     e.preventDefault()
-    onEdit({
+    const payload: Record<string, unknown> = {
       title,
       sound_id: soundId,
       tt_artist_label: ttArtistLabel,
@@ -57,11 +63,31 @@ export function CampaignHeader({
       start_date: startDate,
       budget: parseFloat(budget),
       cobrand_link: cobrandLink,
-    })
-    setIsEditing(false)
+    }
+    if (endDate !== editEndDateOriginal) payload.end_date = endDate
+    try {
+      await onEdit(payload)
+      setIsEditing(false)
+    } catch { /* The parent exposes the mutation error and the form stays open. */ }
+  }
+
+  function openEdit() {
+    onResetEdit?.()
+    setTitle(campaign.title || "")
+    setSoundId(campaign.sound_id || campaign.official_sound || "")
+    setTtArtistLabel(campaign.tt_artist_label || "")
+    setTtTrackName(campaign.tt_track_name || "")
+    setAdditionalSounds(campaign.additional_sounds || [])
+    setStartDate(campaign.start_date || "")
+    setEndDate(campaign.end_date || "")
+    setEditEndDateOriginal(campaign.end_date || "")
+    setBudget(campaign.budget?.total?.toString() || "0")
+    setCobrandLink(campaign.cobrand_link || "")
+    setIsEditing(true)
   }
 
   function handleCancel() {
+    onResetEdit?.()
     // Reset form state to current campaign values
     setTitle(campaign.title || "")
     setSoundId(campaign.sound_id || campaign.official_sound || "")
@@ -69,6 +95,7 @@ export function CampaignHeader({
     setTtTrackName(campaign.tt_track_name || "")
     setAdditionalSounds(campaign.additional_sounds || [])
     setStartDate(campaign.start_date || "")
+    setEndDate(campaign.end_date || "")
     setBudget(campaign.budget?.total?.toString() || "0")
     setCobrandLink(campaign.cobrand_link || "")
     setIsEditing(false)
@@ -92,6 +119,7 @@ export function CampaignHeader({
     return (
       <div className="rounded-[10px] p-5 text-white" style={{ background: "#1a1a2e" }}>
         <form onSubmit={handleSave}>
+          {editError && <div role="alert" className="mb-3 text-sm text-red-300">{editError}</div>}
           <div className="flex flex-wrap items-end gap-3">
             <div className="w-full sm:w-auto">
               <label className="block text-xs opacity-60 mb-1">Title</label>
@@ -165,6 +193,10 @@ export function CampaignHeader({
               />
             </div>
             <div className="w-full sm:w-auto">
+              <label className="block text-xs opacity-60 mb-1">End Date</label>
+              <Input type="date" min={startDate} value={endDate} onChange={(e) => setEndDate(e.target.value)} className="w-full sm:w-[150px] bg-white/10 border-white/30 text-white" />
+            </div>
+            <div className="w-full sm:w-auto">
               <label className="block text-xs opacity-60 mb-1">Budget ($)</label>
               <Input
                 type="number"
@@ -192,6 +224,7 @@ export function CampaignHeader({
             </Button>
             <Button
               type="button"
+              disabled={editPending}
               onClick={handleCancel}
               className="bg-white/15 hover:bg-white/25 text-white border border-white/30"
             >
@@ -249,7 +282,7 @@ export function CampaignHeader({
 
           {/* Action buttons */}
           <Button
-            onClick={() => setIsEditing(true)}
+            onClick={openEdit}
             className="bg-white/15 hover:bg-white/25 text-white border border-white/30"
           >
             <Pencil className="size-3.5" />

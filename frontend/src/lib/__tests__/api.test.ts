@@ -42,6 +42,12 @@ describe('api client', () => {
       })
     })
 
+    it('keeps the JSON error body on ApiError', async () => {
+      const body = { error: 'Chartmetric down', link: 'https://open.spotify.com/track/2qSkIjg1o9h3YT9RAgYN75' }
+      mockFetchError(502, body)
+      await expect(api.getCampaigns()).rejects.toMatchObject({ body })
+    })
+
     it('falls back to statusText when body is not JSON', async () => {
       globalThis.fetch = vi.fn().mockResolvedValue({
         ok: false,
@@ -134,6 +140,15 @@ describe('api client', () => {
         '/api/trackers?include_archived=true',
       )
     })
+  })
+
+  it('posts a pop score override with metric, date, and action', async () => {
+    const fetchMock = mockFetchOk({ ok: true })
+    await api.overridePopScore('my-campaign', { metric: 'ugc', date: '2026-09-03', action: 'exclude' })
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toContain('/api/campaign/my-campaign/pop-score/override')
+    expect(init?.method).toBe('POST')
+    expect(JSON.parse(String(init?.body))).toEqual({ metric: 'ugc', date: '2026-09-03', action: 'exclude' })
   })
 
   describe('POST/PUT/DELETE endpoints', () => {
