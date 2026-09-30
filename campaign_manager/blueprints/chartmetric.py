@@ -208,9 +208,10 @@ def set_pop_score_track(slug: str):
         c = s.query(Campaign).filter_by(slug=slug).first()
         if c is None:
             return jsonify({"error": "Campaign not found."}), 404
+        if not link or c.chartmetric_track_id != track_id:
+            c.attribution_overrides = {}
         c.chartmetric_track_id = track_id
         c.chartmetric_link = link
-        c.attribution_overrides = {}
         s.commit()
 
     return jsonify({"ok": True, "chartmetric_track_id": track_id, "link": link})

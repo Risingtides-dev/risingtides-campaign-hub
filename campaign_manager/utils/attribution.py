@@ -97,9 +97,12 @@ def calculate_attribution(popularity, streams, start_date, end_date="", today=No
         gaps = [(_day(collapsed[i]["date"]) - _day(collapsed[i-1]["last_date"])).days for i in range(1, len(collapsed))]
         offsets = [0] * len(ordered)
         recount_indices, found, unusual = set(), [], []
+        manually_included_pair_dates = set()
         overrides = overrides or {}
         for j, inc in enumerate(increments):
             raw_i = collapsed[j+1]["raw_index"]
+            if collapsed[j+1]["date"] in manually_included_pair_dates:
+                continue
             step_rate = abs(inc) / gaps[j] if gaps[j] else 0
             prior_rates = [abs(increments[k]) / gaps[k] for k in range(max(0, j-14), j)
                            if collapsed[k+1]["raw_index"] not in recount_indices and gaps[k] > 0]
@@ -122,11 +125,17 @@ def calculate_attribution(popularity, streams, start_date, end_date="", today=No
             paired = (j+1 < len(increments) and inc * increments[j+1] < 0
                       and abs(abs(inc)-abs(increments[j+1])) <= max(100, abs(inc)*.05))
             pair_action = overrides.get(collapsed[j+2]["date"], "auto") if j+1 < len(increments) else "auto"
-            if action == "auto" and pair_action == "auto" and not auto_recount and paired and pace is not None and step_rate >= 50*pace and abs(inc) >= absolute_floor:
+            if action in ("auto", "include") and pair_action in ("auto", "include") and not auto_recount and paired and pace is not None and step_rate >= 50*pace and abs(inc) >= absolute_floor:
                 post = list(range(j+2, min(len(increments), j+5)))
                 if len(post)==3 and sum(gaps[k] for k in post):
                     quiet = sum(abs(increments[k]) for k in post)/sum(gaps[k] for k in post) < step_rate/40
                     if quiet and abs(increments[j+1]) >= absolute_floor:
+                        if action == "include" or pair_action == "include":
+                            pair_raw = collapsed[j+2]["raw_index"]
+                            unusual.extend(({"date": ordered[raw_i]["date"], "change": inc, "source": "manual", "with": ordered[pair_raw]["date"]},
+                                            {"date": ordered[pair_raw]["date"], "change": increments[j+1], "source": "manual", "with": ordered[raw_i]["date"]}))
+                            manually_included_pair_dates.add(ordered[pair_raw]["date"])
+                            continue
                         auto_recount = True
                         pair_raw = collapsed[j+2]["raw_index"]
                         recount_indices.update((raw_i, pair_raw))

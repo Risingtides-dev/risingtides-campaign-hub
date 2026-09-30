@@ -233,12 +233,23 @@ describe('<PopScoreCard /> attribution', () => {
 
   it('renders stale choices with reset mapped to auto and TikTok overrides use ugc', () => {
     setup({ ...payload, stale_overrides: [{ metric: 'ugc', date: '2026-08-13', action: 'exclude' }], ugc: { ...payload.ugc!, unusual: [{ date: '2026-08-14', change: 3000, source: 'auto' }] } })
-    expect(screen.getByText("1 saved choice no longer matches Chartmetric's data")).toBeInTheDocument()
+    expect(screen.getByText((_, element) => element?.textContent === "1 saved choice no longer matches Chartmetric's data")).toBeInTheDocument()
+    expect(screen.getByText('Aug 13, 2026 · TikTok videos · not counted')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Reset stale ugc choice for Aug 13, 2026' }))
     expect(overrideMutate).toHaveBeenCalledWith({ metric: 'ugc', date: '2026-08-13', action: 'auto' })
     fireEvent.click(screen.getByRole('button', { name: /TikTok videos: 1 unusual jump/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Leave it out — Aug 14, 2026, TikTok videos' }))
     expect(overrideMutate).toHaveBeenCalledWith({ metric: 'ugc', date: '2026-08-14', action: 'exclude' })
+  })
+
+  it('shows the partner date for a manually included rollback leg', () => {
+    setup({ ...payload, ugc: { ...payload.ugc!, unusual: [
+      { date: '2026-08-16', change: 20000, source: 'manual', with: '2026-08-17' },
+      { date: '2026-08-17', change: -20000, source: 'manual', with: '2026-08-16' },
+    ] } })
+    fireEvent.click(screen.getByRole('button', { name: /TikTok videos: 2 unusual jumps counted/ }))
+    expect(screen.getByText(/Aug 16, 2026.*with Aug 17, 2026/)).toBeInTheDocument()
+    expect(screen.getByText(/Aug 17, 2026.*with Aug 16, 2026/)).toBeInTheDocument()
   })
 
   it('shows both now changes since start and since end', () => {

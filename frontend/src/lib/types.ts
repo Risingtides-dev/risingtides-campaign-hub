@@ -935,8 +935,8 @@ export interface AttributionStreamsPoint {
   daily: number | null
   smoothed?: boolean
 }
-export interface AttributionRecount { date: string; change: number; source: "auto" | "manual" }
-export interface AttributionUnusual { date: string; change: number; source: "auto" | "manual" }
+export interface AttributionRecount { date: string; change: number; source: "auto" | "manual"; with?: string }
+export interface AttributionUnusual { date: string; change: number; source: "auto" | "manual"; with?: string }
 export interface AttributionStaleOverride { metric: "streams" | "ugc"; date: string; action: "include" | "exclude" }
 
 export type AttributionPhase = "not_started" | "live" | "followup" | "complete" | "no_start" | "finished_no_end"

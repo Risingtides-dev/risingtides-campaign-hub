@@ -710,13 +710,27 @@ class TestPopScoreEndpoints:
         with patch.object(cm, "get_client", return_value=self._fake()):
             client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403305"})
         db.update_campaign_fields(slug, {"attribution_overrides": {"ugc": {"2026-09-20": "exclude"}}})
-        with patch.object(cm, "get_client", return_value=self._fake()):
+        changed_song = self._fake()
+        changed_song.resolve_track_id.return_value = 998877
+        with patch.object(cm, "get_client", return_value=changed_song):
             client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403306"})
         assert db.get_campaign(slug)["attribution_overrides"] == {}
         db.update_campaign_fields(slug, {"attribution_overrides": {"ugc": {"2026-09-20": "exclude"}}})
         client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": ""})
         assert db.get_campaign(slug)["attribution_overrides"] == {}
         assert client.get(f"/api/campaign/{slug}/pop-score").get_json() == {"linked": False}
+
+    def test_resaving_same_resolved_track_by_link_or_isrc_preserves_choices(self, client):
+        from campaign_manager import db
+        slug = self._campaign(client)
+        fake = self._fake()
+        with patch.object(cm, "get_client", return_value=fake):
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "https://open.spotify.com/track/2qSkIjg1o9h3YT9RAgYN75"})
+            for link in ("https://open.spotify.com/track/2qSkIjg1o9h3YT9RAgYN75", "USUM72403305"):
+                db.update_campaign_fields(slug, {"attribution_overrides": {"ugc": {"2026-09-20": "include"}}})
+                client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": link})
+                assert db.get_campaign(slug)["attribution_overrides"] == {"ugc": {"2026-09-20": "include"}}
+            assert db.get_campaign(slug)["attribution_overrides"] == {"ugc": {"2026-09-20": "include"}}
 
     def test_chartmetric_outage_returns_502_with_message(self, client):
         slug = self._campaign(client)

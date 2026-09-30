@@ -365,3 +365,16 @@ Chartmetric recount from a real one-day jump. The design therefore is:
    action `include` | `exclude` | `auto` (auto removes the override). The endpoint
    locks the campaign row while updating the JSON so posts for separate dates persist.
 3. **Now column** shows change since start AND since end.
+
+## Addendum 2026-09-30 (round 13)
+
+Manual attribution choices survive saving the same resolved Chartmetric track
+again, including through an alternate link such as an ISRC. Changing to a
+resolving track ID clears choices; unlinking clears them as well. For an
+automatically detected rollback pair, including either leg accepts both raw
+Chartmetric readings and counts both changes. The partner is shown as manually
+counted with a cross-reference to the other date; excluding one leg remains a
+single-leg decision. Stale choices show their date, metric, and saved decision,
+with a pending reset disabled and reset failures reported beside the list.
+Reference labels near the chart's right edge are anchored inward so their text
+remains visible.

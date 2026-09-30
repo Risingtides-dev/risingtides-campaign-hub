@@ -165,6 +165,19 @@ def test_v6_rollback_pairs_both_directions_use_rate_based_confirmation():
     assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == [{"date": "2026-01-16", "change": -1_500_000}, {"date": "2026-01-17", "change": 1_500_000}]
 
 
+def test_including_either_leg_of_rollback_pair_counts_both_as_reported():
+    h = _history([300] * 14 + [20_000, -20_000, 300, 300, 300, 300], initial=200_000)
+    first, second = h[15]["date"], h[16]["date"]
+    expected = h[-1]["value"] - h[0]["value"]
+    for chosen in (first, second):
+        result = calculate_attribution([], [], h[0]["date"], h[-1]["date"], date(2026, 3, 1), ugc=h,
+                                       overrides={"ugc": {chosen: "include"}})["ugc"]
+        assert result["gained_campaign"] == expected == 5_400
+        for day, partner in ((first, second), (second, first)):
+            assert {"date": day, "change": h[15 if day == first else 16]["value"] - h[14 if day == first else 15]["value"],
+                    "source": "manual", "with": partner} in result["unusual"]
+
+
 def test_pair_thresholds_and_recount_dates_are_exact():
     # Pair legs must be within 5%, and the second leg must meet its own floor.
     h = _history([100] * 14 + [10_000, -9_500, 100, 100, 100], initial=3_300_000)
@@ -611,7 +624,7 @@ def test_override_constraints_disable_pairing_and_keep_steps_single_classificati
         result = calculate_attribution([], [], "2026-01-01", today=date(2026, 2, 1), ugc=h,
             overrides={"ugc": {day: "include"}})["ugc"]
         assert all(x["date"] != day for x in result["recounts"])
-        assert {"date": day, "change": h[index]["value"] - h[index - 1]["value"], "source": "manual"} in result["unusual"]
+        assert any(x["date"] == day and x["change"] == h[index]["value"] - h[index - 1]["value"] and x["source"] == "manual" for x in result["unusual"])
         assert len({x["date"] for x in result["recounts"] + result["unusual"]}) == len(result["recounts"] + result["unusual"])
     single = _history([300] * 14 + [20_000, 300, 300, 300], initial=200_000)
     day = single[15]["date"]
