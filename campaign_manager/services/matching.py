@@ -90,6 +90,21 @@ def build_sound_sets(meta: dict) -> Tuple[Set[str], Set[str], Set[str]]:
     return sound_ids, sound_keys, core_song_words
 
 
+# Splits multi-artist credits ("Wynne, Conductor Williams", "A & B",
+# "A feat. B", "A x B") so a campaign artist matches when it's any one of them.
+# " and " is deliberately NOT a separator — it's part of many band names.
+_ARTIST_SEPARATORS = re.compile(r"\s*(?:,|&|\+|\bx\b|\bfeat\.?|\bft\.?|\bfeaturing\b|\bwith\b)\s*", re.IGNORECASE)
+
+
+def artist_names(raw: str) -> Set[str]:
+    """Lowercased full credit plus each individual credited artist."""
+    full = (raw or "").lower().strip()
+    if not full:
+        return set()
+    parts = {p.strip() for p in _ARTIST_SEPARATORS.split(full) if p and p.strip()}
+    return {full} | parts
+
+
 def match_videos(
     all_videos: List[Dict],
     sound_ids: Set[str],
@@ -147,11 +162,11 @@ def match_videos(
 
         # Strategy 3: fuzzy word overlap + artist match (LAST RESORT)
         v_song = video.get("song", "") or ""
-        v_artist = (video.get("artist", "") or "").lower().strip()
+        v_artists = artist_names(video.get("artist", ""))
         if core_song_words and v_song:
             v_words = set(core_song_name(v_song).split())
             overlap = core_song_words & v_words
-            if overlap and artist_variants and v_artist in artist_variants:
+            if overlap and artist_variants and v_artists & artist_variants:
                 v = dict(video)
                 v["match_strategy"] = "fuzzy_word_overlap"
                 matched.append(v)
