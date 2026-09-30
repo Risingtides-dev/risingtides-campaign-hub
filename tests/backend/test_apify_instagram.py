@@ -1,6 +1,6 @@
 """Tests for Instagram Reels scraping via Apify and its cron/dedupe wiring."""
-from datetime import datetime
-from unittest.mock import MagicMock, patch
+from datetime import datetime, timedelta
+from unittest.mock import MagicMock, call, patch
 
 from campaign_manager.services import apify_instagram as ig
 from campaign_manager.services import scheduler
@@ -61,7 +61,11 @@ class TestCleanUsername:
 
 def _fake_client(items):
     client = MagicMock()
-    client.actor.return_value.call.return_value = {"defaultDatasetId": "ds1"}
+    run = {
+        "id": "run1", "status": "SUCCEEDED", "defaultDatasetId": "ds1"
+    }
+    client.actor.return_value.start.return_value = run
+    client.run.return_value.wait_for_finish.return_value = run
     client.dataset.return_value.list_items.return_value.items = items
     return client
 
@@ -73,10 +77,12 @@ class TestScrapeInstagramReels:
             res = ig.scrape_instagram_reels(
                 ["@SomeCreator", "quiet_one"], start_date=datetime(2026, 9, 1)
             )
-        run_input = client.actor.return_value.call.call_args.kwargs["run_input"]
+        run_input = client.actor.return_value.start.call_args.kwargs["run_input"]
         assert run_input["username"] == ["quiet_one", "somecreator"]
         assert run_input["onlyPostsNewerThan"] == "2026-09-01"
-        assert client.actor.return_value.call.call_count == 1
+        wait = client.run.return_value.wait_for_finish.call_args.kwargs["wait_duration"]
+        assert wait <= timedelta(seconds=75)
+        assert client.actor.return_value.start.call_count == 1
         assert len(res.videos) == 1
         assert res.outcomes["somecreator"]["status"] == "ok"
         assert res.outcomes["quiet_one"]["status"] == "empty"
@@ -89,12 +95,44 @@ class TestScrapeInstagramReels:
 
     def test_actor_failure_marks_all_error_without_raising(self):
         client = MagicMock()
-        client.actor.return_value.call.side_effect = RuntimeError("boom")
+        client.actor.return_value.start.side_effect = RuntimeError("boom")
         with patch.object(ig, "_get_client", return_value=client):
             res = ig.scrape_instagram_reels(["a", "b"])
         assert res.videos == []
         assert {o["status"] for o in res.outcomes.values()} == {"error"}
         assert res.errors
+
+    def test_slow_actor_is_aborted_and_returns_documented_creator_errors(self):
+        client = MagicMock()
+        run = {
+            "id": "slow-run", "status": "RUNNING", "defaultDatasetId": "ds1"
+        }
+        client.actor.return_value.start.return_value = run
+        client.run.return_value.wait_for_finish.return_value = run
+        with patch.object(ig, "_get_client", return_value=client):
+            res = ig.scrape_instagram_reels(["a", "b"])
+
+        expected = (
+            "Instagram scrape still running on Apify — skipped this refresh; "
+            "the nightly refresh will include it"
+        )
+        assert res.videos == []
+        assert res.errors == [expected]
+        assert {o["error"] for o in res.outcomes.values()} == {expected}
+        assert client.run.call_args_list == [call("slow-run"), call("slow-run")]
+        client.run.return_value.abort.assert_called_once()
+        client.dataset.assert_not_called()
+
+    def test_fast_actor_still_loads_and_normalizes_dataset(self):
+        client = _fake_client([LICENSED_REEL])
+        with patch.object(ig, "_get_client", return_value=client):
+            res = ig.scrape_instagram_reels(["somecreator"], wait_budget_secs=12)
+
+        assert [video["shortcode"] for video in res.videos] == ["Ddug0K2ggYm"]
+        call = client.actor.return_value.start.call_args.kwargs
+        assert call["run_timeout"] == timedelta(seconds=12)
+        assert client.run.return_value.wait_for_finish.call_args.kwargs["wait_duration"] <= timedelta(seconds=12)
+        assert client.dataset.return_value.list_items.call_args.kwargs["timeout"] <= timedelta(seconds=12)
 
     def test_missing_token_does_not_raise(self):
         with patch.object(ig, "_get_client", side_effect=RuntimeError("APIFY_API_TOKEN is not set")):
@@ -111,7 +149,8 @@ class TestScrapeInstagramReels:
         client = _fake_client([LICENSED_REEL])
         run = MagicMock(spec=["default_dataset_id"])
         run.default_dataset_id = "ds9"
-        client.actor.return_value.call.return_value = run
+        client.actor.return_value.start.return_value = run
+        client.run.return_value.wait_for_finish.return_value = run
         with patch.object(ig, "_get_client", return_value=client):
             ig.scrape_instagram_reels(["somecreator"])
         client.dataset.assert_called_with("ds9")
@@ -121,6 +160,11 @@ class TestSharedKey:
     def test_instagram_is_namespaced_tiktok_is_bare(self):
         assert scheduler._shared_key("tiktok", "@Foo") == "foo"
         assert scheduler._shared_key("instagram", "@Foo") == "instagram:foo"
+
+    def test_scheduler_uses_long_apify_budget(self):
+        with patch.object(ig, "scrape_instagram_reels", return_value=ig.InstagramScrapeResult()) as scrape:
+            scheduler._scrape_instagram(["somecreator"], datetime(2026, 9, 1))
+        assert scrape.call_args.kwargs["wait_budget_secs"] == 600
 
 
 class TestRefreshSingleCampaignInstagram:
@@ -146,6 +190,43 @@ class TestRefreshSingleCampaignInstagram:
         assert result["new_matches"] == 1
         # The TikTok with the same handle must not leak into an IG-only booking.
         assert result["videos_checked"] == 1
+
+    def test_manual_refresh_saves_tiktok_when_instagram_times_out(self, client, db, monkeypatch):
+        from src.scrapers import master_tracker
+
+        slug = client.post("/api/campaign/create", json={
+            "title": "Artist - Song",
+            "sound_id": "1234567890123",
+            "start_date": "2026-09-01",
+        }).get_json()["slug"]
+        db.save_creators(slug, [
+            {"username": "tik_tok", "platform": "tiktok", "status": "active"},
+            {"username": "insta", "platform": "instagram", "status": "active"},
+        ])
+        tiktok_video = {
+            "url": "https://www.tiktok.com/@tik_tok/video/777",
+            "account": "@tik_tok",
+            "music_id": "1234567890123",
+            "song": "Song",
+            "artist": "Artist",
+            "timestamp": "2026-09-20T00:00:00+00:00",
+            "platform": "tiktok",
+            "views": 42,
+            "likes": 3,
+        }
+        monkeypatch.setattr(master_tracker, "scrape_tiktok_account", lambda *a, **k: [tiktok_video])
+        monkeypatch.setattr(master_tracker, "match_video_to_sounds", lambda *a, **k: True)
+        timeout_result = ig._timeout_result(["insta"])
+        monkeypatch.setattr(ig, "scrape_instagram_reels", lambda *a, **k: timeout_result)
+
+        response = client.post(f"/api/campaign/{slug}/refresh")
+
+        assert response.status_code == 200
+        body = response.get_json()
+        assert body["new_matches"] == 1
+        assert body["errors"] == timeout_result.errors
+        assert [video["url"] for video in db.get_matched_videos(slug)] == [tiktok_video["url"]]
+        assert db.get_scrape_log(slug)["videos_checked"] == 1
 
 
 class TestExtractPostId:
