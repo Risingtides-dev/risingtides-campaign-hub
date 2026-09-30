@@ -222,6 +222,174 @@ class ChartmetricClient:
             track_id,
         ))
 
+    @staticmethod
+    def normalize_autolink_title(value: str, allow_variant_suffix: bool = False) -> str:
+        """Normalize Unicode and punctuation without discarding song identity."""
+        value = (value or "").replace("ø", "o").replace("Ø", "O").replace("æ", "ae").replace("Æ", "AE").replace("ß", "ss")
+        value = unicodedata.normalize("NFKD", value).casefold()
+        value = "".join(ch for ch in value if not unicodedata.combining(ch))
+        # Historical callers use this option for a safe, known suffix cleanup.
+        if allow_variant_suffix:
+            value = re.sub(r"\s*\(\s*(?:feat(?:uring)?|ft)\.?\s+[^)]*\)\s*$", "", value, flags=re.I)
+            value = re.sub(r"\s*[-–—]\s*(?:radio\s+edit|club\s+mix)$", "", value, flags=re.I)
+        value = value.replace("&", " and ")
+        return " ".join("".join(ch if ch.isalnum() else " " for ch in value).split())
+
+    @staticmethod
+    def _clean_campaign_title(value, round_value=""):
+        """Remove only terminal Rising Tides round labels and report feat fallback."""
+        title = str(value or "").strip()
+        round_number = re.search(r"\b(?:round|r|rd)\s*(\d{1,2})\b", str(round_value or ""), re.I)
+        patterns = [r"\s*\(\s*round\s*(?:[1-9]|1\d|20)\s*\)\s*$",
+                    r"\s*[-–—]?\s*round\s*(?:[1-9]|1\d|20)\s*$",
+                    r"\s*\(\s*r\s*(?:[1-9]|1\d|20)\s*\)\s*$",
+                    r"\s+r\s*(?:[1-9]|1\d|20)\s*$",
+                    r"\s*\(\s*rd\s*(?:[1-9]|1\d|20)\s*\)\s*$",
+                    r"\s+rd\s*(?:[1-9]|1\d|20)\s*$"]
+        for pat in patterns:
+            title = re.sub(pat, "", title, flags=re.I)
+        if round_number and 1 <= int(round_number.group(1)) <= 20:
+            n = round_number.group(1)
+            title = re.sub(rf"\s*\(\s*(?:round\s*{n}|r\s*{n}|rd\s*{n})\s*\)\s*$", "", title, flags=re.I)
+            title = re.sub(rf"\s+(?:round\s*{n}|r\s*{n}|rd\s*{n})\s*$", "", title, flags=re.I)
+        feat = re.sub(r"\s*\(\s*(?:feat(?:uring)?|ft)\.?\s+[^)]*\)\s*$", "", title, flags=re.I)
+        feat = re.sub(r"\s+(?:feat(?:uring)?|ft)\.?\s+.*$", "", feat, flags=re.I)
+        return title, feat if feat != title else None
+
+    @staticmethod
+    def split_artist_names(value: str) -> List[str]:
+        """Split common collaboration syntax while preserving names like X."""
+        value = re.sub(r"\b(?:feat(?:uring)?|ft)\.?\s+", ",", value or "", flags=re.I)
+        value = re.sub(r"\s+(?:&|and|x|×)\s+", ",", value, flags=re.I)
+        return [part.strip() for part in value.split(",") if part.strip()]
+
+    def resolve_tiktok_sound(self, sound_id: str, deadline=None) -> List[int]:
+        rows = self._get(f"/track/tiktok/{sound_id}/get-ids", deadline=deadline) or []
+        ids = []
+        for row in rows:
+            for value in (row.get("chartmetric_ids") or []) if isinstance(row, dict) else []:
+                try: ids.append(int(value))
+                except (TypeError, ValueError): pass
+        return list(dict.fromkeys(ids))
+
+    def resolve_campaign(self, campaign: dict, deadline=None) -> dict:
+        """Resolve with sound-id first, then exact credited artist/title matching."""
+        from campaign_manager.services.matching import _is_generic_song_title
+        sound_id = str(campaign.get("sound_id") or "").strip()
+        sound_ambiguous = False
+        if sound_id:
+            ids = self.resolve_tiktok_sound(sound_id, deadline=deadline)
+            if len(ids) == 1:
+                return {"track_id": ids[0], "method": "tiktok_sound", "status": "linked_auto", "detail": "Matched TikTok sound ID."}
+            if len(ids) > 1:
+                sound_ambiguous = True
+        titles = [str(campaign.get(k) or "").strip() for k in ("song", "tt_track_name")]
+        titles = list(dict.fromkeys(t for t in titles if t))
+        artist_fields = [str(campaign.get(k) or "") for k in ("artist", "tt_artist_label")]
+        artists = list(dict.fromkeys(a for raw in artist_fields for a in self.split_artist_names(raw)))
+        if not titles:
+            if sound_ambiguous:
+                return {"status": "ambiguous", "detail": "TikTok sound resolves to multiple Chartmetric tracks and song details are missing."}
+            return {"status": "no_song_info", "detail": "Song title is missing."}
+        if any(re.search(r"\s/\s", t) for t in titles):
+            return {"status": "ambiguous", "detail": "campaign lists more than one song"}
+        title_options = []
+        explicit_version = False
+        for title in titles:
+            cleaned, feat_fallback = self._clean_campaign_title(title, campaign.get("round"))
+            title_options.append(cleaned)
+            if feat_fallback:
+                title_options.append(feat_fallback)
+            # Parentheticals other than round/feat are explicit versions/qualifiers.
+            non_feat = re.sub(r"\s*\(\s*(?:feat(?:uring)?|ft)\.?\s+[^)]*\)\s*$", "", cleaned, flags=re.I)
+            if re.search(r"\([^)]*\)\s*$", non_feat) or re.search(r"\b(?:remix|mix|edit|version|sped\s+up|slowed|acoustic|live|instrumental|extended)\b\s*$", non_feat, re.I):
+                explicit_version = True
+        titles = [t for t in title_options if not _is_generic_song_title(t)]
+        if not titles:
+            if sound_ambiguous:
+                return {"status": "ambiguous", "detail": "TikTok sound resolves to multiple Chartmetric tracks."}
+            return {"status": "generic_title", "detail": "Song title is too generic to match safely."}
+        if not artists:
+            return {"status": "artist_not_found", "detail": "Artist name is missing."}
+        norm_artists = {self.normalize_autolink_title(a) for a in artists}
+        title_keys = {self.normalize_autolink_title(t) for t in titles}
+        # A bare campaign title may map to a catalogue title with a descriptive
+        # subtitle. Keep this deliberately narrow: explicit campaign versions
+        # continue to require their exact title.
+        version_words = re.compile(r"\b(?:remix|mix|edit|version|sped\s+up|slowed|acoustic|live|instrumental|extended|radio\s+edit|club\s+mix|demo|cover|karaoke|reprise|remaster(?:ed)?)\b", re.I)
+        allow_subtitle = any(not re.search(r"\([^)]*\)", t) for t in titles)
+        artist_ids = set()
+        for artist in artists:
+            obj = self._get("/search", {"q": artist, "type": "artists", "limit": 10}, deadline=deadline) or {}
+            for row in (obj.get("artists", []) if isinstance(obj, dict) else []):
+                if isinstance(row, dict) and self.normalize_autolink_title(row.get("name")) in norm_artists:
+                    try: artist_ids.add(int(row["id"]))
+                    except (KeyError, TypeError, ValueError): pass
+        if not artist_ids:
+            if sound_ambiguous:
+                return {"status": "ambiguous", "detail": "TikTok sound resolves to multiple Chartmetric tracks."}
+            return {"status": "artist_not_found",
+                    "detail": "Artist was not found in Chartmetric."}
+        candidates = {}
+        subtitle_candidates = {}
+        for artist_id in artist_ids:
+            offset = 0
+            while True:
+                page = self._get(f"/artist/{artist_id}/tracks", {"limit": 100, "offset": offset}, deadline=deadline)
+                page = page if isinstance(page, list) else []
+                for row in page:
+                    if not isinstance(row, dict): continue
+                    credited = {self.normalize_autolink_title(a) for a in row.get("artist_names") or []}
+                    if not (credited & norm_artists): continue
+                    raw_track_title = str(row.get("name") or "")
+                    track_title = self._clean_campaign_title(raw_track_title)[0]
+                    exact = self.normalize_autolink_title(track_title) in title_keys
+                    subtitle = None
+                    if not exact and allow_subtitle:
+                        for title in titles:
+                            escaped = re.escape(title.strip())
+                            match = re.fullmatch(rf"\s*{escaped}\s*(?:\(([^()]*)\)|[-–—]\s*(.+))\s*", raw_track_title, re.I)
+                            if match:
+                                subtitle = (match.group(1) or match.group(2) or "").strip()
+                                if subtitle and not version_words.search(subtitle):
+                                    break
+                                subtitle = None
+                    if not exact and subtitle is None: continue
+                    try: track_id = int(row["id"])
+                    except (KeyError, TypeError, ValueError): continue
+                    stats = row.get("cm_statistics") or {}
+                    candidate = (row, int(stats["sp_streams"]) if stats.get("sp_streams") is not None else None,
+                                 float(stats["sp_popularity"]) if stats.get("sp_popularity") is not None else None)
+                    if exact:
+                        candidates[track_id] = candidate
+                    if not exact:
+                        subtitle_candidates[track_id] = (*candidate, subtitle)
+                if len(page) < 100: break
+                offset += 100
+        using_subtitles = not candidates and bool(subtitle_candidates)
+        if using_subtitles:
+            candidates = {tid: item[:3] for tid, item in subtitle_candidates.items()}
+        if not candidates:
+            if sound_ambiguous:
+                return {"status": "ambiguous", "detail": "TikTok sound resolves to multiple Chartmetric tracks."}
+            if explicit_version:
+                return {"status": "ambiguous", "detail": "version not found in Chartmetric catalogue"}
+            return {"status": "not_released", "detail": "Artist found, but the song is not in the artist's Chartmetric catalogue."}
+        # Collapse versions/releases of the same normalized title and credited artist set.
+        songs = {}
+        for tid, (row, streams, popularity) in candidates.items():
+            names = tuple(sorted(self.normalize_autolink_title(a) for a in row.get("artist_names") or []
+                                 if self.normalize_autolink_title(a) in norm_artists))
+            base = (self.normalize_autolink_title(subtitle_candidates[tid][3])
+                    if using_subtitles
+                    else self.normalize_autolink_title(self._clean_campaign_title(row.get("name"))[0]))
+            songs.setdefault((base, names), []).append((tid, row, streams, popularity))
+        if len(songs) != 1:
+            return {"status": "ambiguous", "detail": "Several distinct songs match this title and artist."}
+        versions = next(iter(songs.values()))
+        tid, _, _, _ = min(versions, key=lambda item: (-(item[2] if item[2] is not None else -1), -(item[3] if item[3] is not None else -1), item[0]))
+        return {"track_id": tid, "method": "artist_tracks", "status": "linked_auto", "detail": "Matched campaign title and credited artist."}
+
     def resolve_track_id(self, ref: TrackRef, deadline=None) -> int:
         if ref.kind == "chartmetric":
             return int(ref.value)

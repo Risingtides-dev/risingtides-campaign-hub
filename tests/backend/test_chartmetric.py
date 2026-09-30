@@ -337,7 +337,10 @@ class TestPopScoreEndpoints:
 
     def test_unlinked_campaign(self, client):
         slug = self._campaign(client)
-        assert client.get(f"/api/campaign/{slug}/pop-score").get_json() == {"linked": False}
+        body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
+        assert body["linked"] is False
+        assert body["link_status"] == "no_song_info"
+        assert "link_detail" in body and "next_check" in body
 
     def test_pop_score_endpoint_skips_malformed_history_objects(self, client):
         from campaign_manager import db
@@ -735,6 +738,7 @@ class TestPopScoreEndpoints:
         slug = self._campaign(client)
         with patch.object(cm, "get_client", return_value=self._fake()):
             client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403305"})
+        assert db.get_campaign(slug)["chartmetric_link_status"] == "manual"
         db.update_campaign_fields(slug, {"attribution_overrides": {"ugc": {"2026-09-20": "exclude"}}})
         changed_song = self._fake()
         changed_song.resolve_track_id.return_value = 998877
@@ -744,7 +748,9 @@ class TestPopScoreEndpoints:
         db.update_campaign_fields(slug, {"attribution_overrides": {"ugc": {"2026-09-20": "exclude"}}})
         client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": ""})
         assert db.get_campaign(slug)["attribution_overrides"] == {}
-        assert client.get(f"/api/campaign/{slug}/pop-score").get_json() == {"linked": False}
+        body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
+        assert body["linked"] is False and body["link_status"] == "no_song_info"
+        assert db.get_campaign(slug)["chartmetric_link_status"] == ""
 
     def test_resaving_same_resolved_track_by_link_or_isrc_preserves_choices(self, client):
         from campaign_manager import db

@@ -94,6 +94,8 @@ class Campaign(Base):
     chartmetric_track_id = Column(BigInteger, nullable=True)
     chartmetric_link = Column(Text, default="")
     chartmetric_autolink_checked_at = Column(DateTime, nullable=True)
+    chartmetric_link_status = Column(String(32), default="", nullable=False)
+    chartmetric_link_detail = Column(Text, default="", nullable=False)
     attribution_overrides = Column(JSONB, default=dict, nullable=False)
 
     creators = relationship("Creator", back_populates="campaign", cascade="all, delete-orphan")
@@ -150,6 +152,8 @@ class Campaign(Base):
             "internal_captions": self.internal_captions,
             "chartmetric_track_id": self.chartmetric_track_id,
             "chartmetric_link": self.chartmetric_link or "",
+            "chartmetric_link_status": self.chartmetric_link_status or "",
+            "chartmetric_link_detail": self.chartmetric_link_detail or "",
         }
 
 

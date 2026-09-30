@@ -23,26 +23,43 @@ view.
 
 ## Auto-linking
 
-Campaigns with neither `chartmetric_track_id` nor `chartmetric_link` are checked
-by a scheduled job every six hours (first run ten minutes after boot). The
-interval is configurable with `CHARTMETRIC_AUTOLINK_INTERVAL_MINUTES` (30–1440)
-and the job is disabled when `CHARTMETRIC_REFRESH_TOKEN` is unset. Each run
-checks at most 15 newest campaigns and has a five-minute budget. A no-match or
-ambiguous match is retried after seven days; API authentication failure stops
-the run. Updates are field-only, preserving unrelated campaign edits.
+Campaigns without a Chartmetric track/link receive a persisted link status and
+short detail. Checks run every two hours (first run ten minutes after boot),
+with up to 25 newest campaigns and an eight-minute overall budget. The interval
+is configurable with `CHARTMETRIC_AUTOLINK_INTERVAL_MINUTES` (30–1440); the job
+is disabled when `CHARTMETRIC_REFRESH_TOKEN` is unset. A campaign created or
+edited in song, artist, sound ID, or TikTok sound labels is checked immediately
+in a background thread. Linked and manually linked campaigns are not checked
+again. `not_released` is retried daily; `ambiguous` and `artist_not_found`
+every three days; other unresolved states weekly. Authentication failures and
+rate limiting stop the current run.
 
-Resolution uses `GET /api/search?q=<artist>&type=artists&limit=10`; only exact
-normalized artist-name matches are considered. For every matching artist
-profile, tracks are read from `GET /api/artist/<id>/tracks?limit=100&offset=N`,
-up to 15 pages (stopping at an empty or short page). Track titles and
-`artist_names` must exactly match after casefolding and punctuation/spacing
-normalization. When several versions match, the one with the most Spotify
-streams in `cm_statistics.sp_streams` wins; missing stream counts fall back to
-`sp_popularity`, then the lowest Chartmetric ID. This avoids relying on the
-poorly ranked `/api/search?...type=tracks` results. The acceptance probe at
-`scripts/chartmetric_autolink_probe.py` checks Espresso / Sabrina Carpenter
-(118981138) and Blinding Lights / The Weeknd (27552418), and verifies each
-against its main Spotify track using
+Resolution is ordered and conservative. First, the TikTok sound ID is sent to
+`GET /api/track/tiktok/<sound_id>/get-ids`; a single Chartmetric ID links
+directly, while multiple IDs are ambiguous. Otherwise the resolver looks up
+every artist declared by the campaign (including `&`, `feat.`, `ft.`, `x`,
+comma, and `and` separated names) plus `tt_artist_label`, then pages each
+artist's tracks through `GET /api/artist/<id>/tracks?limit=100&offset=N` until
+a short page. It compares normalized `song` and `tt_track_name` with normalized
+track titles and requires at least one declared artist in `artist_names`.
+Punctuation/case and `&`/`and` are normalized. A candidate version suffix may
+be ignored only when the campaign title does not specify a version; specified
+versions must match. Several releases of one normalized song count as one song;
+distinct matches are marked ambiguous. Among versions, most Spotify streams
+(`cm_statistics.sp_streams`) wins, then popularity, then lowest Chartmetric ID.
+The poor-ranked track search endpoint is not used.
+
+Persisted `chartmetric_link_status` values are `linked_auto`, `manual`,
+`not_released`, `artist_not_found`, `ambiguous`, `generic_title`, and
+`no_song_info`. A missing song from a found artist's catalogue, or a campaign
+starting in the future / within 30 days, is treated as likely pre-release.
+User linking marks the campaign manual; unlink clears its status. Unlinked
+`GET /api/campaign/<slug>/pop-score` returns status, detail, and next check.
+The card explains these states and identifies automatic links.
+
+The acceptance probe at `scripts/chartmetric_autolink_probe.py` checks Espresso
+/ Sabrina Carpenter (118981138) and Blinding Lights / The Weeknd (27552418),
+and verifies each against its main Spotify track using
 `GET /api/track/spotify/<spotify_id>/get-ids`.
 
 - `GET /api/track/<cm_id>/spotify/stats/most-history?type=streams` returns

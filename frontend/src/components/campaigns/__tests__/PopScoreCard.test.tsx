@@ -47,6 +47,23 @@ function setup(data: PopScore = payload) {
 describe('<PopScoreCard /> attribution', () => {
   beforeEach(() => vi.clearAllMocks())
 
+  it.each([
+    ['not_released', "Song not out yet — we'll link it automatically when it's released (checked daily)"],
+    ['artist_not_found', "Artist not found on Chartmetric yet. We'll keep checking."],
+    ['ambiguous', 'Several songs match these details. Add a direct track link to choose the right one.'],
+    ['generic_title', 'This title is too general to match safely. Add a direct track link to choose the right song.'],
+    ['no_song_info', 'Add a song title and artist so we can look for the track.'],
+  ] as const)('explains the %s unlinked state and keeps manual linking available', (status, message) => {
+    setup({ linked: false, link_status: status, link_detail: 'diagnostic detail' })
+    expect(screen.getByText(message)).toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Song link for pop score' })).toBeInTheDocument()
+  })
+
+  it('labels automatically linked tracks quietly', () => {
+    setup({ ...payload, link_status: 'linked_auto' })
+    expect(screen.getByText('Linked automatically')).toHaveClass('text-rt-fg-tertiary')
+  })
+
   it('prefills an outage link, disables empty Save, and confirms unlink separately', () => {
     vi.mocked(usePopScore).mockReturnValue({ data: undefined, isLoading: false, isError: true, error: Object.assign(new Error('Chartmetric down'), { body: { linked: true, link: 'https://open.spotify.com/track/2qSkIjg1o9h3YT9RAgYN75' } }) } as unknown as ReturnType<typeof usePopScore>)
     vi.mocked(useSetPopScoreTrack).mockReturnValue({ mutate, isPending: false, isError: false } as unknown as ReturnType<typeof useSetPopScoreTrack>)
