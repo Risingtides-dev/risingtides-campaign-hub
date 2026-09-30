@@ -103,7 +103,11 @@ class TestClient:
         assert hist == [{"date": "2026-09-01", "value": 82}, {"date": "2026-09-20", "value": 87}]
         assert client._http.get.call_args.kwargs["params"] == {"type": "streams", "since": "2026-08-25"}
 
-    def test_streams_drops_repeated_cumulative_points_and_skips_invalid_values(self):
+    def test_popularity_track_domain_id_uses_real_client_series_selection(self):
+        client, _ = _client_with({"most-history": _resp(200, {"obj": HISTORY_OBJ})})
+        assert client.popularity_track_domain_id(1) == "main"
+
+    def test_streams_keeps_repeated_cumulative_points_and_skips_invalid_values(self):
         series = [{"track_domain_id": "x", "data": [
             {"timestp": "2026-08-07", "value": "3126151554"},
             {"timestp": "2026-08-08", "value": "3126151554.0"},
@@ -112,9 +116,9 @@ class TestClient:
             {"timestp": "2026-08-10", "value": "oops"},
         ]}]
         client, _ = _client_with({"most-history": _resp(200, {"obj": series})})
-        assert client.streams_history(1) == [{"date": "2026-08-09", "value": 3129082729}]
+        assert client.streams_history(1) == [{"date": "2026-08-07", "value": 3126151554}, {"date": "2026-08-08", "value": 3126151554}, {"date": "2026-08-09", "value": 3129082729}]
 
-    def test_streams_drops_entire_repeat_runs_and_keeps_first_tail_reading(self):
+    def test_streams_keeps_entire_repeat_runs(self):
         rows = [{"track_domain_id": "x", "data": [
             {"timestp": "2026-09-24", "value": 3191203786},
             {"timestp": "2026-09-25", "value": 3193825920},
@@ -122,15 +126,16 @@ class TestClient:
             {"timestp": "2026-09-27", "value": 3195168217},
         ]}]
         client, _ = _client_with({"most-history": _resp(200, {"obj": rows})})
-        assert client.streams_history(1) == [rows[0]["data"][0:1][0], rows[0]["data"][3]] if False else [
-            {"date": "2026-09-24", "value": 3191203786}, {"date": "2026-09-27", "value": 3195168217}]
+        assert client.streams_history(1) == [
+            {"date": "2026-09-24", "value": 3191203786}, {"date": "2026-09-25", "value": 3193825920},
+            {"date": "2026-09-26", "value": 3193825920}, {"date": "2026-09-27", "value": 3195168217}]
 
-    def test_streams_tail_repeat_run_keeps_only_its_first_reading(self):
+    def test_streams_tail_repeat_run_keeps_every_reading(self):
         rows = [{"track_domain_id": "x", "data": [
             {"timestp": "2026-09-24", "value": 10}, {"timestp": "2026-09-25", "value": 12},
             {"timestp": "2026-09-26", "value": 12}, {"timestp": "2026-09-27", "value": 12}]}]
         client, _ = _client_with({"most-history": _resp(200, {"obj": rows})})
-        assert client.streams_history(1) == [{"date": "2026-09-24", "value": 10}, {"date": "2026-09-25", "value": 12}]
+        assert client.streams_history(1) == [{"date": "2026-09-24", "value": 10}, {"date": "2026-09-25", "value": 12}, {"date": "2026-09-26", "value": 12}, {"date": "2026-09-27", "value": 12}]
 
     def test_series_selection_tolerates_one_day_gap_and_streams_follow_popularity_release(self):
         rows = [
@@ -242,7 +247,26 @@ class TestPopScoreEndpoints:
             client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403305"})
             response = client.get(f"/api/campaign/{slug}/pop-score")
         assert response.status_code == 502
-        assert response.is_json
+        assert response.get_json() == {"linked": True, "link": "USUM72403305", "error": "Couldn't calculate song attribution."}
+
+    def test_real_client_streams_follow_the_popularity_release_end_to_end(self, client):
+        slug = self._campaign(client)
+        series = [
+            {"track_domain_id": "old", "data": [{"timestp": "2026-09-01", "value": 1}]},
+            {"track_domain_id": "main", "data": [{"timestp": "2026-09-01", "value": 80}]},
+        ]
+        http_routes = {
+            "/track/118981138/spotify/stats/most-history": _resp(200, {"obj": series}),
+            "/track/118981138": _resp(200, {"obj": TRACK_OBJ}),
+        }
+        real, http = _client_with(http_routes)
+        with patch.object(cm, "get_client", return_value=real):
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "https://app.chartmetric.com/track/118981138"})
+            body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
+        stream_calls = [call for call in http.get.call_args_list if (call.kwargs.get("params") or {}).get("type") == "streams"]
+        assert stream_calls and stream_calls[-1].kwargs["params"] == {"type": "streams", "since": "2026-08-11"}
+        assert body["linked"] is True
+        assert body["streams"]["start_total"] == 80
 
     def test_end_date_endpoint_returns_followup_lift_and_gains(self, client):
         slug = self._campaign(client)
@@ -303,6 +327,27 @@ class TestPopScoreEndpoints:
         assert client.post(f"/api/campaign/{slug}/edit", json={"end_date": ""}).status_code == 200
         for value in ("2026-9-30", "2026-08-31"):
             assert client.post(f"/api/campaign/{slug}/edit", json={"end_date": value}).status_code == 400
+
+    def test_edit_header_payload_and_bad_start_date_shapes(self, client):
+        slug = self._campaign(client)
+        from campaign_manager.blueprints import campaigns as campaigns_bp
+        legacy = {"title": "Old", "name": "Old", "start_date": "2026-09-01T00:00:00", "end_date": "2026-09-20", "budget": 10}
+        with patch.object(campaigns_bp._db, "is_active", return_value=True), \
+             patch.object(campaigns_bp._db, "get_campaign", return_value=legacy), \
+             patch.object(campaigns_bp._db, "save_campaign"):
+            unchanged = client.post(f"/api/campaign/{slug}/edit", json={"title": "Old", "start_date": legacy["start_date"], "end_date": legacy["end_date"], "additional_sounds": []})
+            assert unchanged.status_code == 200
+        for value in (None, 123):
+            response = client.post(f"/api/campaign/{slug}/edit", json={"start_date": value})
+            assert response.status_code == 400
+        assert client.post(f"/api/campaign/{slug}/edit", json={"start_date": ""}).status_code == 200
+        with patch.object(campaigns_bp._db, "is_active", return_value=True), \
+             patch.object(campaigns_bp._db, "get_campaign", return_value={"title": "No start", "start_date": "", "end_date": ""}), \
+             patch.object(campaigns_bp._db, "save_campaign"):
+            missing_start = client.post(f"/api/campaign/{slug}/edit", json={"end_date": "2026-09-20"})
+        assert missing_start.status_code == 400
+        assert "start_date" in missing_start.get_json()["error"]
+        assert client.post(f"/api/campaign/{slug}/edit", json={"additional_sounds": "not a list"}).status_code == 200
 
     def test_unknown_campaign_404(self, client):
         assert client.get("/api/campaign/nope/pop-score").status_code == 404

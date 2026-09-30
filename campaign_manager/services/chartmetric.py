@@ -201,19 +201,6 @@ class ChartmetricClient:
         best = (max(preferred, key=lambda s: _latest(s)[1]) if preferred else _pick_primary_object(series_list))
         points = _clean_points(best.get("data") or [])
         points.sort(key=lambda p: p["date"])
-        keep = [True] * len(points)
-        i = 0
-        while i < len(points):
-            j = i + 1
-            while j < len(points) and points[j]["value"] == points[i]["value"]:
-                j += 1
-            if j - i >= 2:
-                for k in range(i, j):
-                    keep[k] = False
-                if j == len(points):
-                    keep[i] = True
-            i = j
-        points = [p for p, include in zip(points, keep) if include]
         if since is not None:
             cutoff = since.isoformat()
             points = [p for p in points if p["date"] >= cutoff]

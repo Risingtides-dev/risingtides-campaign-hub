@@ -1,5 +1,11 @@
-import { describe, expect, it } from 'vitest'
-import { keys } from '@/lib/queries'
+import { describe, expect, it, vi } from 'vitest'
+import { act, renderHook, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import React from 'react'
+import { keys, useEditCampaign } from '@/lib/queries'
+import { api } from '@/lib/api'
+
+vi.mock('@/lib/api', () => ({ api: { editCampaign: vi.fn() } }))
 
 describe('query key factory', () => {
   it('static keys are stable arrays', () => {
@@ -45,4 +51,22 @@ describe('query key factory', () => {
   it('internalGroup keys are distinct from internalGroupStats', () => {
     expect(keys.internalGroup('g')).not.toEqual(keys.internalGroupStats('g', 30))
   })
+})
+
+it('waits for campaign invalidations before edit mutateAsync resolves', async () => {
+  const qc = new QueryClient()
+  let release!: () => void
+  const pending = new Promise<void>((resolve) => { release = resolve })
+  vi.spyOn(qc, 'invalidateQueries').mockReturnValue(pending as never)
+  vi.mocked(api.editCampaign).mockResolvedValue({} as never)
+  const wrapper = ({ children }: { children: React.ReactNode }) => React.createElement(QueryClientProvider, { client: qc }, children)
+  const { result } = renderHook(() => useEditCampaign('song'), { wrapper })
+  let settled = false
+  let mutation!: Promise<unknown>
+  act(() => { mutation = result.current.mutateAsync({ title: 'fresh' }).then((v) => { settled = true; return v }) })
+  await waitFor(() => expect(qc.invalidateQueries).toHaveBeenCalledTimes(3))
+  expect(settled).toBe(false)
+  release()
+  await mutation
+  expect(settled).toBe(true)
 })

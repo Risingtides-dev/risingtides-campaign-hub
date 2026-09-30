@@ -88,7 +88,7 @@ def test_series_flags_follow_each_series_and_exact_followup_values():
     assert res["popularity"]["end_is_to_date"] is True
     assert res["streams"]["end_is_to_date"] is False
     assert res["popularity"]["followup_is_to_date"] is True
-    assert res["streams"]["followup_is_to_date"] is False
+    assert res["streams"]["followup_is_to_date"] is True
     assert res["streams"]["gained_campaign"] == -10
     assert res["streams"]["gained_followup"] == 20
     assert res["streams"]["growth_pct_campaign"] == -10.0
@@ -108,3 +108,36 @@ def test_to_date_flags_are_series_specific_and_not_started_values_null():
     future = calculate_attribution(pop, streams, "2026-02-01", "2026-02-10", date(2026, 1, 15))
     assert future["phase"] == "not_started"
     assert future["popularity"]["start"] is None and future["streams"]["start_total"] is None
+
+
+def test_daily_smooths_repeat_runs_but_boundaries_keep_raw_totals():
+    h = [{"date": "2026-09-24", "value": 3191203786}, {"date": "2026-09-25", "value": 3193825920},
+         {"date": "2026-09-26", "value": 3193825920}, {"date": "2026-09-27", "value": 3195168217}]
+    r = calculate_attribution([], h, "2026-09-25", "2026-09-26", date(2026, 9, 27))
+    assert [p["daily"] for p in r["streams_history"]] == [None, 1321477.0, 1321477.0, 1321477.0]
+    assert r["streams"]["start_total"] == 3193825920
+    assert r["streams"]["end_total"] == 3193825920
+    flat = [{"date": f"2026-09-0{i}", "value": v} for i, v in enumerate([90, 100, 100, 100, 110], 1)]
+    assert calculate_attribution([], flat, "2026-09-03", "2026-09-05", date(2026, 9, 5))["streams"]["gained_campaign"] == 10
+
+
+def test_tail_repeat_daily_and_duplicate_dates_and_missing_baseline_followup():
+    h = [{"date": "2026-01-01", "value": 90}, {"date": "2026-01-02", "value": 100},
+         {"date": "2026-01-03", "value": 100}, {"date": "2026-01-04", "value": 100}]
+    r = calculate_attribution(h, h, "2026-01-01", "2026-01-02", date(2026, 1, 3))
+    assert r["streams_history"][0]["daily"] is None
+    assert [p["daily"] for p in r["streams_history"]] == [None, 10.0, None, None]
+    dup = [{"date": "2026-01-01", "value": 10}, {"date": "2026-01-01", "value": 20}]
+    assert calculate_attribution(dup, dup, "2026-01-01", today=date(2026, 1, 1))["streams"]["start_total"] == 20
+    no_base = calculate_attribution([], [{"date": "2026-01-01", "value": 10}], "2025-12-01", "2025-12-02", date(2026, 1, 1))
+    assert no_base["streams"]["lift_pct_followup"] is None
+
+
+def test_followup_to_date_flags_open_window_and_exact_close_boundary():
+    h = [{"date": "2026-01-01", "value": 10}, {"date": "2026-01-10", "value": 20}]
+    assert calculate_attribution(h, h, "2026-01-01", "2026-01-10", date(2026, 2, 7))["streams"]["followup_is_to_date"] is True
+    exact = [{"date": "2026-02-07", "value": 30}]
+    assert calculate_attribution(exact, exact, "2026-01-01", "2026-01-10", date(2026, 3, 1))["streams"]["followup_is_to_date"] is False
+    assert calculate_attribution(h, h, "2026-01-01", "2026-01-10", date(2026, 1, 10))["streams"]["followup_total"] is None
+    assert calculate_attribution(h, h, "2026-01-01", "2026-01-10", date(2026, 1, 11))["followup_day"] == 1
+    assert calculate_attribution(h, h, "2026-01-01", "2026-01-10", date(2026, 1, 11))["end_date"] == "2026-01-10"

@@ -20,6 +20,7 @@ import { AddCreatorForm } from "@/components/campaigns/AddCreatorForm"
 import { CreatorsTable } from "@/components/campaigns/CreatorsTable"
 import { PopScoreCard } from "@/components/campaigns/PopScoreCard"
 import { ChevronRight, Loader2 } from "lucide-react"
+import { campaignEditWiring } from "./campaignEditWiring"
 
 export default function CampaignDetail() {
   const { slug } = useParams<{ slug: string }>()
@@ -78,10 +79,8 @@ export default function CampaignDetail() {
       {/* Campaign Header */}
       <CampaignHeader
         campaign={campaign}
-        onEdit={(data) => editCampaign.mutateAsync(data)}
-        editError={editCampaign.isError ? (editCampaign.error?.message || "Failed to save campaign") : undefined}
+        {...campaignEditWiring(editCampaign)}
         onRefresh={() => refreshStats.mutate()}
-        isEditing={editCampaign.isPending}
         isRefreshing={refreshStats.isPending}
         onToggleCobrand={() => {
           setCobrandVisible((v) => !v)

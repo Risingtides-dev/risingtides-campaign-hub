@@ -34,9 +34,10 @@ view.
 - A song can have several Spotify IDs (series). Popularity selects the highest
   latest value among series whose latest reading is within 3 days of the newest
   series. Streams receives popularity's selected `track_domain_id` explicitly,
-  then uses that same recency-tolerant rule. Runs of two or more consecutive
-  equal cumulative totals are dropped before daily differences; a repeated run
-  at the history tail retains its first reading to preserve the newest date.
+  then uses that same recency-tolerant rule. Raw cumulative readings are kept
+  for campaign boundary totals. Daily history smooths an interior repeated
+  run by spreading the total change from the reading before the run through
+  the first changed reading; extra readings in a tail run have null daily.
 
 ## Data model
 

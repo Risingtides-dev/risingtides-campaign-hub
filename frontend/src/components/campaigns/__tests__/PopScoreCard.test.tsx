@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { PopScoreCard } from '@/components/campaigns/PopScoreCard'
-import { formatChartDateLabel } from '@/components/campaigns/chartDate'
+import { chartAxisProps, chartTooltipProps, formatChartDateLabel, localTickDate } from '@/components/campaigns/chartDate'
 import { useEditCampaign, usePopScore, useSetPopScoreTrack } from '@/lib/queries'
 import type { PopScore } from '@/lib/types'
 
@@ -69,11 +69,11 @@ describe('<PopScoreCard /> attribution', () => {
     const popularity = screen.getByRole('button', { name: 'Popularity' })
     const streams = screen.getByRole('button', { name: 'Daily streams' })
     expect(popularity).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByTestId('attribution-chart')).toHaveAttribute('data-y-axis-width', '54')
+    expect(screen.getByTestId('attribution-chart')).not.toHaveAttribute('data-y-axis-width')
     fireEvent.click(streams)
     expect(screen.getByTestId('attribution-chart')).toHaveAttribute('aria-label', 'Daily streams chart')
     expect(screen.getByTestId('attribution-chart')).toHaveAttribute('data-plotted-values', '20000,20000')
-    expect(screen.getByTestId('attribution-chart')).toHaveAttribute('data-y-axis-width', '70')
+    expect(screen.getByTestId('attribution-chart')).not.toHaveAttribute('data-y-axis-width')
     expect(streams).toHaveAttribute('aria-pressed', 'true')
     expect(popularity).toHaveAttribute('aria-pressed', 'false')
   })
@@ -115,5 +115,20 @@ describe('<PopScoreCard /> attribution', () => {
     const timestamp = new Date('2026-08-20T00:00:00').getTime()
     expect(formatChartDateLabel(timestamp)).toMatch(/Aug 20, 2026/)
     expect(formatChartDateLabel(timestamp)).not.toMatch(/^\d{13}$/)
+  })
+
+  it('uses the exported chart tick and tooltip formatter functions', () => {
+    setup()
+    expect(chartAxisProps.tickFormatter).toBe(localTickDate)
+    expect(chartTooltipProps.labelFormatter).toBe(formatChartDateLabel)
+  })
+
+  it('formats ticks using local calendar fields in a UTC+ timezone', () => {
+    vi.stubEnv('TZ', 'Pacific/Auckland')
+    try {
+      expect(localTickDate(new Date('2026-08-20T00:00:00Z').getTime())).toBe('08-20')
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 })

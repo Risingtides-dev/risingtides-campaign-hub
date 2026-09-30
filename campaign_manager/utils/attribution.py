@@ -12,6 +12,7 @@ def _day(value):
 
 
 def reading(history, day):
+    history = _dedupe(history)
     points = sorted(
         (p for p in history if _day(p.get("date")) and _day(p["date"]) <= day),
         key=lambda p: p["date"],
@@ -22,6 +23,14 @@ def reading(history, day):
 def _value(history, day):
     point = reading(history, day)
     return point["value"] if point else None
+
+
+def _dedupe(history):
+    by_date = {}
+    for point in history:
+        if _day(point.get("date")):
+            by_date[point["date"]] = point
+    return [by_date[k] for k in sorted(by_date)]
 
 
 def _avg(history, a, b):
@@ -49,8 +58,8 @@ def calculate_attribution(popularity, streams, start_date, end_date="", today=No
     end_target = end if end and end <= today else today
     pop_end = _value(popularity, end_target)
     stream_end = _value(streams, end_target)
-    dates = [_day(p.get("date")) for h in (popularity, streams) for p in h if _day(p.get("date"))]
-    data_as_of_day = max(dates) if dates else None
+    popularity, streams = _dedupe(popularity), _dedupe(streams)
+    dates = [_day(p.get("date")) for h in (popularity, streams) for p in h]
     def latest_day(history):
         found = [_day(p.get("date")) for p in history if _day(p.get("date"))]
         return max(found) if found else None
@@ -61,8 +70,9 @@ def calculate_attribution(popularity, streams, start_date, end_date="", today=No
     follow_target = min(follow_end, today) if follow_ready else None
     pop_follow = _value(popularity, follow_target) if follow_target else None
     stream_follow = _value(streams, follow_target) if follow_target else None
-    pop_follow_to_date = bool(pop_follow is not None and pop_latest is not None and pop_latest < follow_target)
-    stream_follow_to_date = bool(stream_follow is not None and stream_latest is not None and stream_latest < follow_target)
+    in_followup = phase == "followup"
+    pop_follow_to_date = bool(in_followup or (follow_target and (pop_latest is None or pop_latest < follow_target)))
+    stream_follow_to_date = bool(in_followup or (follow_target and (stream_latest is None or stream_latest < follow_target)))
     baseline_daily = _avg(streams, start - timedelta(days=14), start) if start else None
     campaign_daily = _avg(streams, start, end_target) if start else None
     follow_daily = _avg(streams, end, follow_target) if end and follow_target else None
@@ -76,7 +86,7 @@ def calculate_attribution(popularity, streams, start_date, end_date="", today=No
         baseline_daily = campaign_daily = follow_daily = None
         pop_end_to_date = stream_end_to_date = False
         pop_follow_to_date = stream_follow_to_date = False
-    ordered_streams = sorted(streams, key=lambda p: p["date"])
+    ordered_streams = streams
     stream_history = []
     for index, point in enumerate(ordered_streams):
         daily = None
@@ -86,6 +96,25 @@ def calculate_attribution(popularity, streams, start_date, end_date="", today=No
             if gap:
                 daily = round((point["value"] - previous["value"]) / gap, 1)
         stream_history.append({"date": point["date"], "total": point["value"], "daily": daily})
+    i = 1
+    while i + 1 < len(ordered_streams):
+        if ordered_streams[i]["value"] != ordered_streams[i + 1]["value"]:
+            i += 1
+            continue
+        start = i
+        j = i + 1
+        while j + 1 < len(ordered_streams) and ordered_streams[j + 1]["value"] == ordered_streams[start]["value"]:
+            j += 1
+        if j + 1 < len(ordered_streams):
+            left, right = ordered_streams[start - 1], ordered_streams[j + 1]
+            span = (_day(right["date"]) - _day(left["date"])).days
+            rate = round((right["value"] - left["value"]) / span, 1) if span else None
+            for k in range(start, j + 2):
+                stream_history[k]["daily"] = rate
+        else:
+            for k in range(start + 1, j + 1):
+                stream_history[k]["daily"] = None
+        i = j + 1
     return {
         "end_date": end_date or "", "followup_days": FOLLOWUP_DAYS,
         "followup_end": follow_end.isoformat() if end else "", "phase": phase,

@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useEditCampaign, usePopScore, useSetPopScoreTrack } from "@/lib/queries"
 import type { PopScore } from "@/lib/types"
-import { formatChartDateLabel } from "./chartDate"
+import { chartAxisProps, chartTooltipProps } from "./chartDate"
 
 const ACCENT = "#E100C3"
 const AXIS = "#909098"
@@ -32,7 +32,6 @@ const num = (v: number | null | undefined) => v == null ? "—" : v.toLocaleStri
 const pct = (v: number | null | undefined) => v == null ? "N/A" : `${v > 0 ? "+" : ""}${v.toFixed(1)}%`
 const compact = (v: number | null | undefined) => v == null ? "—" : Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(v)
 const signedCompact = (v: number | null | undefined) => v == null ? "—" : `${v > 0 ? "+" : v < 0 ? "−" : ""}${compact(Math.abs(v))}`
-const localTickDate = (v: number) => { const d = new Date(v); return `${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}` }
 const date = (v?: string) => v ? new Date(`${v}T00:00:00`).toLocaleDateString("en", { month: "short", day: "numeric", year: "numeric" }) : "—"
 
 function phaseText(data: PopScore) {
@@ -54,17 +53,17 @@ function PopScoreChart({ data }: { data: PopScore }) {
       <button type="button" aria-pressed={mode === "popularity"} onClick={() => setMode("popularity")} className={`rounded px-2 py-1 text-xs ${mode === "popularity" ? "bg-white/10 text-rt-fg" : "text-rt-fg-tertiary"}`}>Popularity</button>
       <button type="button" aria-pressed={mode === "streams"} onClick={() => setMode("streams")} className={`rounded px-2 py-1 text-xs ${mode === "streams" ? "bg-white/10 text-rt-fg" : "text-rt-fg-tertiary"}`}>Daily streams</button>
     </div>
-    {points.length < 2 ? <p className="text-rt-fg-tertiary text-[13px]">Not enough history yet to chart.</p> : <div className="h-36 w-full" data-testid="attribution-chart" data-plotted-values={points.map(p => p.value).join(",")} data-y-axis-width={mode === "popularity" ? POPULARITY_AXIS_WIDTH : STREAMS_AXIS_WIDTH} data-reference-labels={lines.map(line => line.label).join(",")} aria-label={mode === "popularity" ? "Popularity chart" : "Daily streams chart"}>
+    {points.length < 2 ? <p className="text-rt-fg-tertiary text-[13px]">Not enough history yet to chart.</p> : <div className="h-36 w-full" data-testid="attribution-chart" data-plotted-values={points.map(p => p.value).join(",")} data-reference-labels={lines.map(line => line.label).join(",")} aria-label={mode === "popularity" ? "Popularity chart" : "Daily streams chart"}>
       <ResponsiveContainer width="100%" height="100%">
         {mode === "popularity" ? <LineChart data={points} margin={{ top: 6, right: 8, bottom: 0, left: 0 }}>
-          <XAxis type="number" dataKey="time" domain={["dataMin", "dataMax"]} tick={{ fill: AXIS, fontSize: 10 }} tickFormatter={localTickDate} axisLine={false} tickLine={false} minTickGap={24} />
+          <XAxis type="number" dataKey="time" domain={["dataMin", "dataMax"]} tick={{ fill: AXIS, fontSize: 10 }} {...chartAxisProps} axisLine={false} tickLine={false} minTickGap={24} />
           <YAxis width={POPULARITY_AXIS_WIDTH} domain={[0, 100]} tick={{ fill: AXIS, fontSize: 10 }} axisLine={false} tickLine={false} />
-          <RTooltip labelFormatter={formatChartDateLabel} /><Line type="stepAfter" dataKey="value" stroke={ACCENT} strokeWidth={2} dot={false} />
+          <RTooltip {...chartTooltipProps} /><Line type="stepAfter" dataKey="value" stroke={ACCENT} strokeWidth={2} dot={false} />
           {lines.map(({date: d, label}) => <ReferenceLine key={`${label}-${d}`} x={new Date(`${d}T00:00:00`).getTime()} stroke={AXIS} strokeDasharray="3 3" label={{ value: label, fill: AXIS, fontSize: 10 }} />)}
         </LineChart> : <AreaChart data={points} margin={{ top: 6, right: 8, bottom: 0, left: 0 }}>
-          <XAxis type="number" dataKey="time" domain={["dataMin", "dataMax"]} tick={{ fill: AXIS, fontSize: 10 }} tickFormatter={localTickDate} axisLine={false} tickLine={false} minTickGap={24} />
+          <XAxis type="number" dataKey="time" domain={["dataMin", "dataMax"]} tick={{ fill: AXIS, fontSize: 10 }} {...chartAxisProps} axisLine={false} tickLine={false} minTickGap={24} />
           <YAxis width={STREAMS_AXIS_WIDTH} tickFormatter={(v: number) => Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(v)} tick={{ fill: AXIS, fontSize: 10 }} axisLine={false} tickLine={false} />
-          <RTooltip labelFormatter={formatChartDateLabel} /><Area type="monotone" dataKey="value" stroke={ACCENT} fill={ACCENT} fillOpacity={0.18} connectNulls />
+          <RTooltip {...chartTooltipProps} /><Area type="monotone" dataKey="value" stroke={ACCENT} fill={ACCENT} fillOpacity={0.18} connectNulls />
           {lines.map(({date: d, label}) => <ReferenceLine key={`${label}-${d}`} x={new Date(`${d}T00:00:00`).getTime()} stroke={AXIS} strokeDasharray="3 3" label={{ value: label, fill: AXIS, fontSize: 10 }} />)}
         </AreaChart>}
       </ResponsiveContainer>

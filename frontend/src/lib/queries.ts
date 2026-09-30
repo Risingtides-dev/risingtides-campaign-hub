@@ -97,10 +97,12 @@ export function useEditCampaign(slug: string) {
   return useMutation({
     mutationFn: (data: Record<string, unknown>) =>
       api.editCampaign(slug, data),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: keys.campaign(slug) })
-      qc.invalidateQueries({ queryKey: ["popScore", slug] })
-      qc.invalidateQueries({ queryKey: keys.campaigns })
+    onSuccess: async () => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: keys.campaign(slug) }),
+        qc.invalidateQueries({ queryKey: ["popScore", slug] }),
+        qc.invalidateQueries({ queryKey: keys.campaigns }),
+      ])
     },
   })
 }

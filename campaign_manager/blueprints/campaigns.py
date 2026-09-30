@@ -601,7 +601,8 @@ def edit_campaign(slug: str):
                 raise ValueError
         except (TypeError, ValueError):
             return jsonify({"error": "start_date must be YYYY-MM-DD."}), 400
-    end_involved = "end_date" in data or (start_changed and bool(effective_end))
+    end_changed = "end_date" in data and data.get("end_date") != meta.get("end_date", "")
+    end_involved = end_changed or (start_changed and bool(effective_end))
     if end_involved and effective_end is None:
         return jsonify({"error": "end_date must be YYYY-MM-DD or blank."}), 400
     if end_involved and effective_end and effective_start:
@@ -619,7 +620,7 @@ def edit_campaign(slug: str):
         if not isinstance(end_date, str):
             return jsonify({"error": "end_date must be YYYY-MM-DD or blank."}), 400
         end_date = end_date.strip()
-        if end_date:
+        if end_date and end_changed:
             try:
                 parsed_end = datetime.strptime(end_date, "%Y-%m-%d").date()
                 if parsed_end.isoformat() != end_date:

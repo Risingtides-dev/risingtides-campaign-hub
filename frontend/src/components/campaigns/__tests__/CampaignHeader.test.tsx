@@ -44,4 +44,15 @@ describe('<CampaignHeader />', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('save failed')
     expect(document.querySelector('input[type=number]')!).toBeInTheDocument()
   })
+
+  it('resets the edit mutation when opening and cancelling the form', () => {
+    const reset = vi.fn()
+    const campaign = { slug: 'song', title: 'Artist - Song', start_date: '2026-08-01', end_date: '', budget: { total: 0, booked: 0, paid: 0, left: 0 }, creators: [], matched_videos: [] } as unknown as CampaignDetail
+    render(<MemoryRouter><CampaignHeader campaign={campaign} onEdit={vi.fn()} onResetEdit={reset} onRefresh={vi.fn()} isEditing={false} isRefreshing={false} editError="stale" /></MemoryRouter>)
+    fireEvent.click(screen.getByRole('button', { name: /Edit/ }))
+    expect(reset).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('alert')).toHaveTextContent('stale')
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(reset).toHaveBeenCalledTimes(2)
+  })
 })

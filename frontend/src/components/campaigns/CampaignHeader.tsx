@@ -9,6 +9,7 @@ interface CampaignHeaderProps {
   campaign: CampaignDetail
   onEdit: (data: Record<string, unknown>) => void | Promise<unknown>
   editError?: string
+  onResetEdit?: () => void
   onRefresh: () => void
   isEditing: boolean
   isRefreshing: boolean
@@ -21,6 +22,7 @@ export function CampaignHeader({
   campaign,
   onEdit,
   editError,
+  onResetEdit,
   onRefresh,
   isEditing: editPending,
   isRefreshing,
@@ -70,6 +72,7 @@ export function CampaignHeader({
   }
 
   function openEdit() {
+    onResetEdit?.()
     setTitle(campaign.title || "")
     setSoundId(campaign.sound_id || campaign.official_sound || "")
     setTtArtistLabel(campaign.tt_artist_label || "")
@@ -84,6 +87,7 @@ export function CampaignHeader({
   }
 
   function handleCancel() {
+    onResetEdit?.()
     // Reset form state to current campaign values
     setTitle(campaign.title || "")
     setSoundId(campaign.sound_id || campaign.official_sound || "")
