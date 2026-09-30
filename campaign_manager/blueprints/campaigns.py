@@ -595,6 +595,8 @@ def create_campaign():
     artist, song = "", ""
     if " - " in title:
         artist, song = [x.strip() for x in title.split(" - ", 1)]
+    artist = (data.get("artist") or artist).strip()
+    song = (data.get("song") or song).strip()
 
     slug = slugify(title)
 
@@ -623,6 +625,8 @@ def create_campaign():
         save_json(campaign_dir / "campaign.json", meta)
         save_creators(campaign_dir, [])
 
+    from campaign_manager.services.chartmetric_autolink import request_immediate_resolve
+    request_immediate_resolve(slug)
     return jsonify({"ok": True, "slug": slug, "message": f"Created campaign: {title}"}), 201
 
 
@@ -644,6 +648,7 @@ def edit_campaign(slug: str):
         return jsonify({"error": "Campaign not found."}), 404
 
     prior_completion_status = meta.get("completion_status", "none")
+    old_song_fields = {key: meta.get(key, "") for key in ("song", "artist", "sound_id", "tt_artist_label", "tt_track_name")}
     data = request.get_json(silent=True) or {}
 
     title = (data.get("title") or "").strip()
@@ -703,10 +708,13 @@ def edit_campaign(slug: str):
             artist, song = [x.strip() for x in title.split(" - ", 1)]
             meta["artist"] = artist
             meta["song"] = song
+    for key in ("song", "artist", "tt_artist_label", "tt_track_name"):
+        if key in data and isinstance(data[key], str):
+            meta[key] = data[key].strip()
 
-    if sound_id_raw:
+    if "sound_id" in data:
         meta["official_sound"] = sound_id_raw
-        meta["sound_id"] = extract_sound_id(sound_id_raw)
+        meta["sound_id"] = extract_sound_id(sound_id_raw) if sound_id_raw else ""
 
     # Save additional sounds
     additional = data.get("additional_sounds")
@@ -784,6 +792,11 @@ def edit_campaign(slug: str):
         set_tracker_status(
             meta["tracker_campaign_id"], tracker_status_for(completion_status)
         )
+
+    new_song_fields = {key: meta.get(key, "") for key in old_song_fields}
+    if old_song_fields != new_song_fields:
+        from campaign_manager.services.chartmetric_autolink import request_immediate_resolve
+        request_immediate_resolve(slug)
 
     return jsonify({"ok": True, "slug": slug, "message": "Campaign updated."})
 

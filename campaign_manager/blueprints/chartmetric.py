@@ -56,6 +56,10 @@ def _load(slug: str):
             "end_date_auto": bool(c.end_date_auto),
             "completion_status": c.completion_status or "none",
             "attribution_overrides": c.attribution_overrides or {},
+            "link_status": c.chartmetric_link_status or "",
+            "link_detail": c.chartmetric_link_detail or "",
+            "link_status": c.chartmetric_link_status or "",
+            "checked_at": c.chartmetric_autolink_checked_at,
         }
 
 
@@ -67,7 +71,12 @@ def get_pop_score(slug: str):
     if row is None:
         return jsonify({"error": "Campaign not found."}), 404
     if not row["track_id"]:
-        return jsonify({"linked": False})
+        from campaign_manager.services.chartmetric_autolink import retry_days
+        checked = row["checked_at"]
+        next_check = (checked + timedelta(days=retry_days(row["link_status"]))).isoformat() if checked else None
+        return jsonify({"linked": False, "link_status": row["link_status"] or "no_song_info",
+                        "link_detail": row["link_detail"] or "Song match has not been checked yet.",
+                        "next_check": next_check})
 
     budget_started = time.monotonic()
     budget_seconds = 75
@@ -114,6 +123,7 @@ def get_pop_score(slug: str):
         "linked": True,
         "link": row["link"],
         "chartmetric_track_id": snap.chartmetric_id,
+        "link_status": row["link_status"],
         "track": {"name": snap.name, "artists": list(snap.artists), "image_url": snap.image_url},
         "spotify_popularity": current,
         "chartmetric_score": snap.chartmetric_score,
@@ -212,6 +222,9 @@ def set_pop_score_track(slug: str):
             c.attribution_overrides = {}
         c.chartmetric_track_id = track_id
         c.chartmetric_link = link
+        c.chartmetric_link_status = "manual" if link else ""
+        c.chartmetric_link_detail = "Linked by a user." if link else ""
+        c.chartmetric_autolink_checked_at = None if not link else c.chartmetric_autolink_checked_at
         s.commit()
 
     return jsonify({"ok": True, "chartmetric_track_id": track_id, "link": link})
