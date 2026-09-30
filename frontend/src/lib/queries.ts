@@ -356,6 +356,8 @@ export function usePopScore(slug: string) {
     queryFn: () => api.getPopScore(slug),
     enabled: !!slug,
     staleTime: 30 * 60 * 1000, // Chartmetric updates popularity daily
+    refetchInterval: 30 * 60 * 1000,
+    refetchIntervalInBackground: false,
     retry: false,
   })
 }

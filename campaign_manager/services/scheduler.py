@@ -52,8 +52,15 @@ def _shared_key(platform: str, username: str) -> str:
 
 
 def _scrape_instagram(usernames, start_date=None):
-    from campaign_manager.services.apify_instagram import scrape_instagram_reels
-    return scrape_instagram_reels(usernames, start_date=start_date)
+    from campaign_manager.services.apify_instagram import (
+        SCHEDULER_WAIT_BUDGET_SECS,
+        scrape_instagram_reels,
+    )
+    return scrape_instagram_reels(
+        usernames,
+        start_date=start_date,
+        wait_budget_secs=SCHEDULER_WAIT_BUDGET_SECS,
+    )
 
 
 # Concurrency caps — kept low to avoid burst-rate-limit from TikTok.

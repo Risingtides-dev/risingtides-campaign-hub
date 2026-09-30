@@ -13,14 +13,23 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Iterable, List, Optional
 
 log = logging.getLogger(__name__)
 
 ACTOR_ID = "apify/instagram-reel-scraper"
 DEFAULT_RESULTS_LIMIT = 50
+# Keep request-triggered refreshes comfortably inside gunicorn --timeout 120.
+REQUEST_WAIT_BUDGET_SECS = 75
+SCHEDULER_WAIT_BUDGET_SECS = 600
+_RUNNING_STATUSES = {"READY", "RUNNING"}
+_TIMEOUT_ERROR = (
+    "Instagram scrape still running on Apify — skipped this refresh; "
+    "the nightly refresh will include it"
+)
 
 
 @dataclass(frozen=True)
@@ -56,6 +65,31 @@ def _dataset_id(run) -> str:
     if isinstance(run, dict):
         return run.get("defaultDatasetId", "")
     return getattr(run, "default_dataset_id", "") or ""
+
+
+def _run_value(run, dict_key: str, attr: str) -> str:
+    value = run.get(dict_key, "") if isinstance(run, dict) else getattr(run, attr, "")
+    return str(getattr(value, "value", value) or "")
+
+
+def _timeout_result(names: List[str]) -> InstagramScrapeResult:
+    return InstagramScrapeResult(
+        outcomes={
+            u: {"status": "error", "video_count": 0, "error": _TIMEOUT_ERROR}
+            for u in names
+        },
+        errors=[_TIMEOUT_ERROR],
+    )
+
+
+def _abort_run(client, run) -> None:
+    run_id = _run_value(run, "id", "id")
+    if not run_id or not hasattr(client, "run"):
+        return
+    try:
+        client.run(run_id).abort(timeout=timedelta(seconds=1))
+    except Exception as exc:
+        log.warning("Apify IG: could not abort timed-out run %s: %s", run_id, exc)
 
 
 def _as_dict(item) -> dict:
@@ -126,6 +160,7 @@ def scrape_instagram_reels(
     usernames: Iterable[str],
     start_date: Optional[datetime] = None,
     results_limit: int = DEFAULT_RESULTS_LIMIT,
+    wait_budget_secs: float = REQUEST_WAIT_BUDGET_SECS,
 ) -> InstagramScrapeResult:
     """Scrape recent reels for IG creators in a single Apify actor run.
 
@@ -143,10 +178,58 @@ def scrape_instagram_reels(
     try:
         client = _get_client()
         log.info("Apify IG: scraping %d creators (limit %d each)", len(names), results_limit)
-        run = client.actor(ACTOR_ID).call(run_input=run_input)
+        started_at = time.monotonic()
+        budget = max(float(wait_budget_secs), 0.001)
+        actor = client.actor(ACTOR_ID)
+        try:
+            run = actor.start(
+                run_input=run_input,
+                run_timeout=timedelta(seconds=budget),
+                timeout=timedelta(seconds=budget),
+            )
+        except Exception as exc:
+            if "timeout" in type(exc).__name__.lower():
+                return _timeout_result(names)
+            raise
         if not run:
-            raise RuntimeError("actor call returned no run")
-        items = client.dataset(_dataset_id(run)).list_items().items
+            raise RuntimeError("actor start returned no run")
+        remaining = budget - (time.monotonic() - started_at)
+        if remaining <= 0:
+            _abort_run(client, run)
+            return _timeout_result(names)
+        run_client = client.run(_run_value(run, "id", "id"))
+        try:
+            run = run_client.wait_for_finish(
+                wait_duration=timedelta(seconds=remaining),
+                timeout=timedelta(seconds=remaining),
+            )
+        except Exception as exc:
+            if "timeout" in type(exc).__name__.lower():
+                _abort_run(client, run)
+                return _timeout_result(names)
+            raise
+        if not run:
+            raise RuntimeError("actor wait returned no run")
+        status = _run_value(run, "status", "status").upper()
+        if status in _RUNNING_STATUSES:
+            _abort_run(client, run)
+            log.warning("Apify IG: run exceeded %.1fs budget", budget)
+            return _timeout_result(names)
+        if status and status != "SUCCEEDED":
+            raise RuntimeError(f"actor run ended with status {status}")
+
+        remaining = budget - (time.monotonic() - started_at)
+        if remaining <= 0:
+            return _timeout_result(names)
+        try:
+            items = client.dataset(_dataset_id(run)).list_items(
+                timeout=timedelta(seconds=remaining)
+            ).items
+        except Exception as exc:
+            if "timeout" in type(exc).__name__.lower():
+                log.warning("Apify IG: dataset read exceeded %.1fs total budget", budget)
+                return _timeout_result(names)
+            raise
     except Exception as e:
         log.error("Apify IG scrape failed: %s", e)
         err = f"instagram scrape failed: {e}"
