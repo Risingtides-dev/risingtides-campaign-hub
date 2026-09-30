@@ -78,7 +78,8 @@ export default function CampaignDetail() {
       {/* Campaign Header */}
       <CampaignHeader
         campaign={campaign}
-        onEdit={(data) => editCampaign.mutate(data)}
+        onEdit={(data) => editCampaign.mutateAsync(data)}
+        editError={editCampaign.isError ? (editCampaign.error?.message || "Failed to save campaign") : undefined}
         onRefresh={() => refreshStats.mutate()}
         isEditing={editCampaign.isPending}
         isRefreshing={refreshStats.isPending}

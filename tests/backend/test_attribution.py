@@ -53,6 +53,10 @@ def test_not_started_has_no_attribution_values_and_nonpositive_baseline_pct_is_n
     res = calculate_attribution(hist, hist, "2026-01-03", "2026-01-10", date(2026, 1, 2))
     assert all(v is None for k, v in res["popularity"].items() if k.startswith("change_") or k in ("start", "end", "followup"))
     assert all(v is None for k, v in res["streams"].items() if k not in ("end_is_to_date", "followup_is_to_date"))
+    assert res["popularity"]["end_is_to_date"] is False
+    assert res["popularity"]["followup_is_to_date"] is False
+    assert res["streams"]["end_is_to_date"] is False
+    assert res["streams"]["followup_is_to_date"] is False
     from campaign_manager.utils.attribution import _pct
     assert _pct(10, 0) is None and _pct(10, -2) is None
 
@@ -74,3 +78,33 @@ def test_same_reading_changes_are_null():
     assert res["popularity"]["change_campaign"] is None
     assert res["streams"]["gained_campaign"] is None
     assert res["streams"]["gained_followup"] is None
+
+
+def test_series_flags_follow_each_series_and_exact_followup_values():
+    pop = [{"date": "2026-01-01", "value": 10}, {"date": "2026-01-08", "value": 15}]
+    streams = [{"date": "2025-12-18", "value": 0}, {"date": "2026-01-01", "value": 100}, {"date": "2026-01-08", "value": 90}, {"date": "2026-01-18", "value": 110}]
+    res = calculate_attribution(pop, streams, "2026-01-01", "2026-01-10", date(2026, 1, 18))
+    assert res["phase"] == "followup" and res["followup_day"] == 8
+    assert res["popularity"]["end_is_to_date"] is True
+    assert res["streams"]["end_is_to_date"] is False
+    assert res["popularity"]["followup_is_to_date"] is True
+    assert res["streams"]["followup_is_to_date"] is False
+    assert res["streams"]["gained_campaign"] == -10
+    assert res["streams"]["gained_followup"] == 20
+    assert res["streams"]["growth_pct_campaign"] == -10.0
+    assert res["streams"]["lift_pct_campaign"] == -119.7
+    assert res["streams"]["lift_pct_followup"] == -71.8
+    assert calculate_attribution(pop, streams, "2026-01-01", "2026-01-10", date(2026, 2, 7))["phase"] == "followup"
+    assert calculate_attribution(pop, streams, "2026-01-01", "2026-01-10", date(2026, 2, 8))["phase"] == "complete"
+
+
+def test_to_date_flags_are_series_specific_and_not_started_values_null():
+    pop = [{"date": "2026-01-09", "value": 15}]
+    streams = [{"date": "2026-01-08", "value": 120}]
+    res = calculate_attribution(pop, streams, "2026-01-01", "2026-01-10", date(2026, 1, 15))
+    assert res["data_as_of"] == "2026-01-09"
+    assert res["popularity"]["end_is_to_date"] is True
+    assert res["streams"]["end_is_to_date"] is True
+    future = calculate_attribution(pop, streams, "2026-02-01", "2026-02-10", date(2026, 1, 15))
+    assert future["phase"] == "not_started"
+    assert future["popularity"]["start"] is None and future["streams"]["start_total"] is None

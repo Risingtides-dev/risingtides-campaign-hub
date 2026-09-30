@@ -76,7 +76,8 @@ def get_pop_score(slug: str):
     current = snap.spotify_popularity
     streams_error = None
     try:
-        streams = client.streams_history(row["track_id"], since=_history_start(row["start_date"]))
+        pop_track_domain_id = client.popularity_track_domain_id(row["track_id"], since=_history_start(row["start_date"]))
+        streams = client.streams_history(row["track_id"], since=_history_start(row["start_date"]), track_domain_id=pop_track_domain_id)
     except Exception as e:
         log.exception("streams history fetch failed for %s", slug)
         streams, streams_error = [], "Streams history is temporarily unavailable."

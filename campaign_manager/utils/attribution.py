@@ -51,12 +51,18 @@ def calculate_attribution(popularity, streams, start_date, end_date="", today=No
     stream_end = _value(streams, end_target)
     dates = [_day(p.get("date")) for h in (popularity, streams) for p in h if _day(p.get("date"))]
     data_as_of_day = max(dates) if dates else None
-    end_to_date = not end or (data_as_of_day is not None and data_as_of_day < end)
+    def latest_day(history):
+        found = [_day(p.get("date")) for p in history if _day(p.get("date"))]
+        return max(found) if found else None
+    pop_latest, stream_latest = latest_day(popularity), latest_day(streams)
+    pop_end_to_date = not end or end > today or (pop_latest is not None and pop_latest < end_target)
+    stream_end_to_date = not end or end > today or (stream_latest is not None and stream_latest < end_target)
     follow_ready = bool(end and today > end)
     follow_target = min(follow_end, today) if follow_ready else None
     pop_follow = _value(popularity, follow_target) if follow_target else None
     stream_follow = _value(streams, follow_target) if follow_target else None
-    follow_to_date = bool(stream_follow is not None or pop_follow is not None) and data_as_of_day is not None and data_as_of_day < follow_end
+    pop_follow_to_date = bool(pop_follow is not None and pop_latest is not None and pop_latest < follow_target)
+    stream_follow_to_date = bool(stream_follow is not None and stream_latest is not None and stream_latest < follow_target)
     baseline_daily = _avg(streams, start - timedelta(days=14), start) if start else None
     campaign_daily = _avg(streams, start, end_target) if start else None
     follow_daily = _avg(streams, end, follow_target) if end and follow_target else None
@@ -68,8 +74,8 @@ def calculate_attribution(popularity, streams, start_date, end_date="", today=No
     if phase == "not_started":
         pop_start = stream_start = pop_end = stream_end = pop_follow = stream_follow = None
         baseline_daily = campaign_daily = follow_daily = None
-        end_to_date = False
-        follow_to_date = False
+        pop_end_to_date = stream_end_to_date = False
+        pop_follow_to_date = stream_follow_to_date = False
     ordered_streams = sorted(streams, key=lambda p: p["date"])
     stream_history = []
     for index, point in enumerate(ordered_streams):
@@ -83,12 +89,12 @@ def calculate_attribution(popularity, streams, start_date, end_date="", today=No
     return {
         "end_date": end_date or "", "followup_days": FOLLOWUP_DAYS,
         "followup_end": follow_end.isoformat() if end else "", "phase": phase,
-        "popularity": {"start": pop_start, "end": pop_end, "end_is_to_date": end_to_date,
-            "followup": pop_follow, "followup_is_to_date": follow_to_date,
+        "popularity": {"start": pop_start, "end": pop_end, "end_is_to_date": pop_end_to_date,
+            "followup": pop_follow, "followup_is_to_date": pop_follow_to_date,
             "change_campaign": pop_end - pop_start if pop_end is not None and pop_start is not None and not same_campaign_reading else None,
             "change_followup": pop_follow - pop_end if pop_follow is not None and pop_end is not None and not same_follow_reading else None},
-        "streams": {"start_total": stream_start, "end_total": stream_end, "end_is_to_date": end_to_date,
-            "followup_total": stream_follow, "followup_is_to_date": follow_to_date,
+        "streams": {"start_total": stream_start, "end_total": stream_end, "end_is_to_date": stream_end_to_date,
+            "followup_total": stream_follow, "followup_is_to_date": stream_follow_to_date,
             "gained_campaign": stream_end - stream_start if stream_end is not None and stream_start is not None and not same_stream_campaign else None,
             "gained_followup": stream_follow - stream_end if stream_follow is not None and stream_end is not None and not same_stream_follow else None,
             "growth_pct_campaign": _pct(stream_end - stream_start, stream_start) if stream_end is not None and stream_start is not None and not same_stream_campaign else None,

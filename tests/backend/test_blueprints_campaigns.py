@@ -174,6 +174,23 @@ class TestEditCampaign:
         assert client.post(f"/api/campaign/{slug}/edit", json={"start_date": "2026-9-02"}).status_code == 400
         assert client.post(f"/api/campaign/{slug}/edit", json={"start_date": "2026-09-02"}).status_code == 200
 
+    def test_header_body_preserves_legacy_start_date_and_validates_changed_dates(self, client):
+        _create(client)
+        slug = "sam_barber_fever_dream"
+        from campaign_manager import db
+        meta = db.get_campaign(slug)
+        meta["start_date"] = "2026-03-12T10:00:00.000-05:00"
+        db.save_campaign(slug, meta)
+        body = {"title": "Sam Barber - Fever Dream", "sound_id": "", "tt_artist_label": "", "tt_track_name": "", "additional_sounds": [], "start_date": meta["start_date"], "budget": 1200, "cobrand_link": ""}
+        assert client.post(f"/api/campaign/{slug}/edit", json=body).status_code == 200
+        assert client.post(f"/api/campaign/{slug}/edit", json={"start_date": "bad-date"}).status_code == 400
+        assert client.post(f"/api/campaign/{slug}/edit", json={"start_date": 7}).status_code == 400
+        assert client.post(f"/api/campaign/{slug}/edit", json={"end_date": "2026-03-12"}).status_code == 400
+        meta["start_date"] = "2026-03-12"
+        db.save_campaign(slug, meta)
+        assert client.post(f"/api/campaign/{slug}/edit", json={"end_date": "2026-03-12"}).status_code == 200
+        assert client.post(f"/api/campaign/{slug}/edit", json={"end_date": None}).status_code == 400
+
     def test_rejects_bad_match_strategy(self, client):
         _create(client)
         resp = client.post(

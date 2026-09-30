@@ -33,9 +33,10 @@ view.
 - Some readings carry extra keys (`monthly_diff`, ...). Ignore them.
 - A song can have several Spotify IDs (series). Popularity selects the highest
   latest value among series whose latest reading is within 3 days of the newest
-  series. Streams prefers popularity's `track_domain_id`, then uses that same
-  recency-tolerant rule. Repeated consecutive cumulative stream totals are
-  dropped before daily differences are calculated.
+  series. Streams receives popularity's selected `track_domain_id` explicitly,
+  then uses that same recency-tolerant rule. Runs of two or more consecutive
+  equal cumulative totals are dropped before daily differences; a repeated run
+  at the history tail retains its first reading to preserve the newest date.
 
 ## Data model
 
@@ -46,6 +47,9 @@ view.
 - `POST /api/campaign/<slug>/edit` accepts `end_date`. Semantics: key absent →
   unchanged; `""` → cleared; otherwise must parse as `YYYY-MM-DD` and be on or
   after `start_date` (400 with a plain message if not).
+  Full header saves may echo an unchanged legacy timestamp in `start_date`;
+  format validation applies when that value changes. Date comparisons require
+  valid dates when an end date is involved.
 - Follow-up length is a module constant `FOLLOWUP_DAYS = 28` (not per campaign yet).
 
 ## API contract — `GET /api/campaign/<slug>/pop-score`
@@ -124,6 +128,9 @@ Keep the component file and the track-link form. Card title: **"Song attribution
 2. Dates row: `Start <date> → End <date or "not set" + inline date input to set it> → Follow-up ends <date>`.
    Setting the end date calls the existing campaign edit endpoint with `{end_date}`
    and refreshes the campaign + pop-score queries.
+   The campaign header refreshes its edit fields whenever Edit opens and only
+   sends `end_date` when that field changed in the current edit session; failed
+   saves leave the form open and display the error.
 3. Two metric rows, each with three cells (Start / End / Follow-up) and change chips:
    - **Popularity** — values 0–100, change in points (`+7 pts`).
    - **Streams** — cumulative totals in compact form (`1.4M`), gained counts, and
@@ -133,7 +140,9 @@ Keep the component file and the track-link form. Card title: **"Song attribution
 4. **Impact** row: `Avg daily streams — before 5.0K · during 14.3K (+185.7%) · after 8.9K (+78.6% vs before)`.
 5. Chart with a toggle `Popularity | Daily streams`. Vertical reference lines at
    start, end, follow-up end (only those that exist). Popularity = line (0–100 axis);
-   daily streams = line/area of `daily`.
+   daily streams = line/area of `daily`. Chart dates and tooltip labels use the
+   same local calendar date basis; coincident campaign start/end uses one
+   `Start/End` marker.
 6. Footer: plain-language caveat "Shows what happened to the song around the
    campaign — not proof the campaign caused all of it." plus "Open Tides Tracker ↗"
    when the campaign has a `tracker_url`.

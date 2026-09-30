@@ -586,24 +586,32 @@ def edit_campaign(slug: str):
 
     title = (data.get("title") or "").strip()
     sound_id_raw = (data.get("sound_id") or "").strip()
-    start_date = (data.get("start_date") or "").strip()
-    effective_start = start_date if "start_date" in data else meta.get("start_date", "")
+    start_raw = data.get("start_date", "")
+    if "start_date" in data and not isinstance(start_raw, str):
+        return jsonify({"error": "start_date must be YYYY-MM-DD."}), 400
+    start_date = start_raw.strip() if isinstance(start_raw, str) else ""
+    stored_start = meta.get("start_date", "")
+    effective_start = start_date if "start_date" in data else stored_start
     effective_end = data.get("end_date", meta.get("end_date", ""))
-    if "start_date" in data and start_date:
+    start_changed = "start_date" in data and start_date != stored_start
+    if start_changed and start_date:
         try:
             parsed_start = datetime.strptime(start_date, "%Y-%m-%d").date()
             if parsed_start.isoformat() != start_date:
                 raise ValueError
         except (TypeError, ValueError):
             return jsonify({"error": "start_date must be YYYY-MM-DD."}), 400
-    if effective_end and effective_start:
+    end_involved = "end_date" in data or (start_changed and bool(effective_end))
+    if end_involved and effective_end is None:
+        return jsonify({"error": "end_date must be YYYY-MM-DD or blank."}), 400
+    if end_involved and effective_end and effective_start:
         try:
             parsed_start = datetime.strptime(effective_start, "%Y-%m-%d").date()
             parsed_end = datetime.strptime(effective_end, "%Y-%m-%d").date()
             if parsed_start.isoformat() != effective_start or parsed_end.isoformat() != effective_end:
                 raise ValueError
         except (TypeError, ValueError):
-            return jsonify({"error": "Dates must be YYYY-MM-DD."}), 400
+            return jsonify({"error": "start_date and end_date must be valid YYYY-MM-DD dates."}), 400
         if parsed_end < parsed_start:
             return jsonify({"error": "end_date must be on or after start_date."}), 400
     if "end_date" in data:

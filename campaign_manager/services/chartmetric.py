@@ -178,25 +178,42 @@ class ChartmetricClient:
             {"type": "popularity", **({"since": since.isoformat()} if since else {})},
         ) or []
         best = _pick_primary_series(series_list)
-        self._preferred_track_domain_id = _pick_primary_object(series_list).get("track_domain_id")
         points = _clean_points(best)
         if since is not None:
             cutoff = since.isoformat()
             points = [p for p in points if p["date"] >= cutoff]
         return sorted(points, key=lambda p: p["date"])
 
-    def streams_history(self, chartmetric_id: int, since: Optional[date] = None) -> List[dict]:
+    def popularity_track_domain_id(self, chartmetric_id: int, since: Optional[date] = None):
+        series_list = self._get(
+            f"/track/{int(chartmetric_id)}/spotify/stats/most-history",
+            {"type": "popularity", **({"since": since.isoformat()} if since else {})},
+        ) or []
+        return _pick_primary_object(series_list).get("track_domain_id")
+
+    def streams_history(self, chartmetric_id: int, since: Optional[date] = None, track_domain_id=None) -> List[dict]:
         """Cumulative Spotify streams as sorted date/value readings."""
         series_list = self._get(
             f"/track/{int(chartmetric_id)}/spotify/stats/most-history",
             {"type": "streams", **({"since": since.isoformat()} if since else {})},
         ) or []
-        pop_id = getattr(self, "_preferred_track_domain_id", None)
-        preferred = [s for s in series_list if s.get("track_domain_id") == pop_id] if pop_id is not None else []
+        preferred = [s for s in series_list if s.get("track_domain_id") == track_domain_id] if track_domain_id is not None else []
         best = (max(preferred, key=lambda s: _latest(s)[1]) if preferred else _pick_primary_object(series_list))
         points = _clean_points(best.get("data") or [])
         points.sort(key=lambda p: p["date"])
-        points = [p for i, p in enumerate(points) if i == 0 or p["value"] != points[i-1]["value"]]
+        keep = [True] * len(points)
+        i = 0
+        while i < len(points):
+            j = i + 1
+            while j < len(points) and points[j]["value"] == points[i]["value"]:
+                j += 1
+            if j - i >= 2:
+                for k in range(i, j):
+                    keep[k] = False
+                if j == len(points):
+                    keep[i] = True
+            i = j
+        points = [p for p, include in zip(points, keep) if include]
         if since is not None:
             cutoff = since.isoformat()
             points = [p for p in points if p["date"] >= cutoff]

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { PopScoreCard } from '@/components/campaigns/PopScoreCard'
+import { formatChartDateLabel } from '@/components/campaigns/chartDate'
 import { useEditCampaign, usePopScore, useSetPopScoreTrack } from '@/lib/queries'
 import type { PopScore } from '@/lib/types'
 
@@ -68,8 +69,11 @@ describe('<PopScoreCard /> attribution', () => {
     const popularity = screen.getByRole('button', { name: 'Popularity' })
     const streams = screen.getByRole('button', { name: 'Daily streams' })
     expect(popularity).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByTestId('attribution-chart')).toHaveAttribute('data-y-axis-width', '54')
     fireEvent.click(streams)
     expect(screen.getByTestId('attribution-chart')).toHaveAttribute('aria-label', 'Daily streams chart')
+    expect(screen.getByTestId('attribution-chart')).toHaveAttribute('data-plotted-values', '20000,20000')
+    expect(screen.getByTestId('attribution-chart')).toHaveAttribute('data-y-axis-width', '70')
     expect(streams).toHaveAttribute('aria-pressed', 'true')
     expect(popularity).toHaveAttribute('aria-pressed', 'false')
   })
@@ -78,6 +82,7 @@ describe('<PopScoreCard /> attribution', () => {
     const { rerender } = setup()
     fireEvent.click(screen.getByRole('button', { name: 'Change' }))
     fireEvent.change(screen.getByLabelText('End date'), { target: { value: '2026-08-22' } })
+    expect(mutate).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     expect(mutate).toHaveBeenCalledWith({ end_date: '2026-08-22' }, expect.any(Object))
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
@@ -92,6 +97,23 @@ describe('<PopScoreCard /> attribution', () => {
     setup({ ...payload, streams_error: 'Streams history is temporarily unavailable.' })
     expect(screen.getAllByText('Popularity').length).toBeGreaterThan(0)
     expect(screen.getByRole('status')).toHaveTextContent('Streams history is temporarily unavailable.')
+    expect(screen.queryByText('Streams', { exact: true })).not.toBeInTheDocument()
     expect(screen.queryByText('Growth during campaign: +40.0%')).not.toBeInTheDocument()
+  })
+
+  it('formats stream gains with proper signs and null placeholders', () => {
+    setup({ ...payload, streams: { ...payload.streams!, gained_campaign: -45, gained_followup: null } })
+    expect(screen.getByText(/−45 during · — after/)).toBeInTheDocument()
+  })
+
+  it('labels a shared start and end marker once', () => {
+    setup({ ...payload, start_date: '2026-08-20', end_date: '2026-08-20', followup_end: '' })
+    expect(screen.getByTestId('attribution-chart')).toHaveAttribute('data-reference-labels', 'Start/End')
+  })
+
+  it('formats the tooltip timestamp as a local calendar date', () => {
+    const timestamp = new Date('2026-08-20T00:00:00').getTime()
+    expect(formatChartDateLabel(timestamp)).toMatch(/Aug 20, 2026/)
+    expect(formatChartDateLabel(timestamp)).not.toMatch(/^\d{13}$/)
   })
 })

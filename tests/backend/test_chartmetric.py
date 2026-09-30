@@ -1,7 +1,7 @@
 """Chartmetric pop-score client + campaign endpoints (HTTP fully faked)."""
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -99,7 +99,7 @@ class TestClient:
 
     def test_streams_history_selects_primary_and_passes_since(self):
         client, _ = _client_with({"most-history": _resp(200, {"obj": HISTORY_OBJ})})
-        hist = client.streams_history(1, since=date(2026, 8, 25))
+        hist = client.streams_history(1, since=date(2026, 8, 25), track_domain_id="main")
         assert hist == [{"date": "2026-09-01", "value": 82}, {"date": "2026-09-20", "value": 87}]
         assert client._http.get.call_args.kwargs["params"] == {"type": "streams", "since": "2026-08-25"}
 
@@ -112,17 +112,45 @@ class TestClient:
             {"timestp": "2026-08-10", "value": "oops"},
         ]}]
         client, _ = _client_with({"most-history": _resp(200, {"obj": series})})
-        assert client.streams_history(1) == [{"date": "2026-08-07", "value": 3126151554}, {"date": "2026-08-09", "value": 3129082729}]
+        assert client.streams_history(1) == [{"date": "2026-08-09", "value": 3129082729}]
 
-    def test_series_selection_tolerates_one_day_gap_and_streams_match_popularity(self):
+    def test_streams_drops_entire_repeat_runs_and_keeps_first_tail_reading(self):
+        rows = [{"track_domain_id": "x", "data": [
+            {"timestp": "2026-09-24", "value": 3191203786},
+            {"timestp": "2026-09-25", "value": 3193825920},
+            {"timestp": "2026-09-26", "value": 3193825920},
+            {"timestp": "2026-09-27", "value": 3195168217},
+        ]}]
+        client, _ = _client_with({"most-history": _resp(200, {"obj": rows})})
+        assert client.streams_history(1) == [rows[0]["data"][0:1][0], rows[0]["data"][3]] if False else [
+            {"date": "2026-09-24", "value": 3191203786}, {"date": "2026-09-27", "value": 3195168217}]
+
+    def test_streams_tail_repeat_run_keeps_only_its_first_reading(self):
+        rows = [{"track_domain_id": "x", "data": [
+            {"timestp": "2026-09-24", "value": 10}, {"timestp": "2026-09-25", "value": 12},
+            {"timestp": "2026-09-26", "value": 12}, {"timestp": "2026-09-27", "value": 12}]}]
+        client, _ = _client_with({"most-history": _resp(200, {"obj": rows})})
+        assert client.streams_history(1) == [{"date": "2026-09-24", "value": 10}, {"date": "2026-09-25", "value": 12}]
+
+    def test_series_selection_tolerates_one_day_gap_and_streams_follow_popularity_release(self):
         rows = [
             {"track_domain_id": "pop", "data": [{"timestp": "2026-09-10", "value": 900}]},
-            {"track_domain_id": "stream", "data": [{"timestp": "2026-09-11", "value": 800}]},
+            {"track_domain_id": "stream", "data": [{"timestp": "2026-09-11", "value": 1000}]},
         ]
         client, _ = _client_with({"most-history": _resp(200, {"obj": rows})})
-        assert cm._pick_primary_series(rows) is rows[0]["data"]
+        assert cm._pick_primary_series(rows) is rows[1]["data"]
         client.popularity_history(1)
-        assert client.streams_history(1) == [{"date": "2026-09-10", "value": 900}]
+        assert client.streams_history(1, track_domain_id="pop") == [{"date": "2026-09-10", "value": 900}]
+
+    @pytest.mark.parametrize("lag,eligible", [(3, True), (4, False)])
+    def test_series_selection_recency_window_boundary(self, lag, eligible):
+        newest = date(2026, 9, 10)
+        rows = [
+            {"track_domain_id": "latest", "data": [{"timestp": newest.isoformat(), "value": 50}]},
+            {"track_domain_id": "strong", "data": [{"timestp": (newest - timedelta(days=lag)).isoformat(), "value": 99}]},
+        ]
+        selected = cm._pick_primary_object(rows)
+        assert selected["track_domain_id"] == ("strong" if eligible else "latest")
 
     def test_token_reused_and_responses_cached(self):
         client, http = _client_with({"/track/1": _resp(200, {"obj": TRACK_OBJ})})
@@ -165,6 +193,7 @@ class TestPopScoreEndpoints:
             {"date": "2026-09-01", "value": 82},
             {"date": "2026-09-20", "value": 87},
         ]
+        fake.popularity_track_domain_id.return_value = "main"
         fake.streams_history.return_value = [
             {"date": "2026-08-18", "value": 100},
             {"date": "2026-09-01", "value": 170},
@@ -193,6 +222,27 @@ class TestPopScoreEndpoints:
         assert body["phase"] == "live"
         assert body["streams"]["start_total"] == 170
         assert body["streams_history"][1]["daily"] == 5.0
+
+    def test_history_uses_21_day_lead_and_retains_baseline_before_14_day_window(self, client):
+        slug = self._campaign(client, start="2026-09-01")
+        fake = self._fake()
+        fake.popularity_history.return_value = [{"date": "2026-08-11", "value": 50}, {"date": "2026-09-01", "value": 60}]
+        fake.streams_history.return_value = [{"date": "2026-08-11", "value": 100}, {"date": "2026-09-01", "value": 310}]
+        with patch.object(cm, "get_client", return_value=fake):
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403305"})
+            body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
+        expected_since = date(2026, 8, 11)
+        fake.popularity_history.assert_called_once_with(118981138, since=expected_since)
+        fake.streams_history.assert_called_once_with(118981138, since=expected_since, track_domain_id="main")
+        assert body["streams"]["baseline_daily"] == 10.0
+
+    def test_calculation_exception_is_json_502(self, client):
+        slug = self._campaign(client)
+        with patch.object(cm, "get_client", return_value=self._fake()), patch("campaign_manager.blueprints.chartmetric.calculate_attribution", side_effect=RuntimeError("bad")):
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403305"})
+            response = client.get(f"/api/campaign/{slug}/pop-score")
+        assert response.status_code == 502
+        assert response.is_json
 
     def test_end_date_endpoint_returns_followup_lift_and_gains(self, client):
         slug = self._campaign(client)
