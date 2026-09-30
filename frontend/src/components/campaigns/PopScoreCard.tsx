@@ -36,8 +36,8 @@ function TrackLinkForm({ initial, onSave, onUnlink, onCancel, isPending, error }
 }
 
 const num = (v: number | null | undefined) => v == null ? "—" : v.toLocaleString()
-const pct = (v: number | null | undefined) => v == null ? "N/A" : `${v > 0 ? "+" : ""}${v.toFixed(1)}%`
-const headlinePct = (v: number | null | undefined) => v == null ? "N/A" : `${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(v).toFixed(1)}%`
+const pct = (v: number | null | undefined) => v == null ? "N/A" : `${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(v).toFixed(1)}%`
+const headlinePct = pct
 const compact = (v: number | null | undefined) => v == null ? "—" : Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(v)
 const rate = (v: number | null | undefined) => v == null ? "—" : Math.abs(v) < 1000 ? Math.round(v).toLocaleString("en") : compact(v)
 const date = (v?: string) => v ? new Date(`${v}T00:00:00`).toLocaleDateString("en", { month: "short", day: "numeric", year: "numeric" }) : "—"
@@ -162,9 +162,18 @@ function headline(data: PopScore) {
   const parts: string[] = []
   if (data.popularity?.start != null && data.popularity.end != null) parts.push(`Popularity ${data.popularity.start} → ${data.popularity.end}`)
   const s = data.streams
-  if (s?.baseline_daily != null && s.campaign_daily != null) parts.push(`streams ${rate(s.baseline_daily)} → ${rate(s.campaign_daily)}/day (${headlinePct(s.lift_pct_campaign)})${s.growth_pct_campaign == null ? "" : `, ${headlinePct(s.growth_pct_campaign)} growth${s.adjusted ? "*" : ""}`}`)
+  const streamBits = [
+    s?.baseline_daily != null && s.campaign_daily != null ? `${rate(s.baseline_daily)} → ${rate(s.campaign_daily)}/day (${headlinePct(s.lift_pct_campaign)})` : "",
+    s?.growth_pct_campaign != null ? `${headlinePct(s.growth_pct_campaign)} growth${s.adjusted ? "*" : ""}` : "",
+  ].filter(Boolean)
+  if (streamBits.length) parts.push(`streams ${streamBits.join(", ")}`)
   const u = data.ugc
-  if (u?.baseline_daily != null && u.campaign_daily != null) parts.push(`TikTok videos ${rate(u.baseline_daily)} → ${rate(u.campaign_daily)}/day${u.growth_pct_campaign == null ? "" : `, ${headlinePct(u.growth_pct_campaign)} growth${u.adjusted ? "*" : ""}`}${u.gained_campaign == null ? "" : `, ${compact(u.gained_campaign)} new during the campaign`}`)
+  const ugcBits = [
+    u?.baseline_daily != null && u.campaign_daily != null ? `${rate(u.baseline_daily)} → ${rate(u.campaign_daily)}/day` : "",
+    u?.growth_pct_campaign != null ? `${headlinePct(u.growth_pct_campaign)} growth${u.adjusted ? "*" : ""}` : "",
+    u?.gained_campaign != null ? `${compact(u.gained_campaign)} new during the campaign` : "",
+  ].filter(Boolean)
+  if (ugcBits.length) parts.push(`TikTok videos ${ugcBits.join(", ")}`)
   const toDate = ["live", "finished_no_end", "followup"].includes(data.phase ?? "") ? " (to date)" : ""
   return parts.length ? `${parts.join(" · ")}${toDate}` : ""
 }
@@ -233,8 +242,8 @@ export function PopScoreCard({ slug, tracker_url }: { slug: string; tracker_url?
         })}</tr>})}
       </tbody></table></div>
       {data.phase !== "not_started" && data.phase !== "no_start" && (streams?.adjusted || data.ugc?.adjusted) && <p className="text-[10px] text-rt-fg-tertiary">* Totals are as reported; changes leave out Chartmetric recounts.</p>}
-      {!data.streams_error && <p className="text-[11px] text-rt-fg-tertiary">Daily streams {rate(streams?.baseline_daily)} → {rate(streams?.campaign_daily)} during ({pct(streams?.lift_pct_campaign)}){streams?.followup_daily != null ? ` → ${rate(streams.followup_daily)} after` : ""}</p>}
-      {!data.ugc_error && <p className="text-[11px] text-rt-fg-tertiary">New TikTok videos/day {rate(data.ugc?.baseline_daily)} → {rate(data.ugc?.campaign_daily)} during ({pct(data.ugc?.lift_pct_campaign)}){data.ugc?.followup_daily != null ? ` → ${rate(data.ugc.followup_daily)} after` : ""}{data.ugc?.gained_campaign != null ? ` · ${compact(data.ugc.gained_campaign)} new during the campaign` : ""}</p>}
+      {!data.streams_error && <p className="text-[11px] text-rt-fg-tertiary">Daily streams {rate(streams?.baseline_daily)} → {rate(streams?.campaign_daily)} during ({pct(streams?.lift_pct_campaign)}){streams?.followup_daily != null ? ` → ${rate(streams.followup_daily)} after${streams.lift_pct_followup != null ? ` (${pct(streams.lift_pct_followup)} vs before)` : ""}` : ""}</p>}
+      {!data.ugc_error && <p className="text-[11px] text-rt-fg-tertiary">New TikTok videos/day {rate(data.ugc?.baseline_daily)} → {rate(data.ugc?.campaign_daily)} during ({pct(data.ugc?.lift_pct_campaign)}){data.ugc?.followup_daily != null ? ` → ${rate(data.ugc.followup_daily)} after${data.ugc.lift_pct_followup != null ? ` (${pct(data.ugc.lift_pct_followup)} vs before)` : ""}` : ""}{data.ugc?.gained_campaign != null ? ` · ${compact(data.ugc.gained_campaign)} new during the campaign` : ""}</p>}
       {data.stale_overrides?.length ? <div className="flex flex-wrap items-center gap-2 text-[10px] text-rt-fg-tertiary"><span>{data.stale_overrides.length} saved choice{data.stale_overrides.length === 1 ? "" : "s"} no longer {data.stale_overrides.length === 1 ? "matches" : "match"} Chartmetric's data</span>{data.stale_overrides.map(item => { const pending = override.isPending && override.variables?.metric === item.metric && override.variables?.date === item.date; return <span key={`${item.metric}-${item.date}`} className="inline-flex items-center gap-1"><span>{shortDate(item.date)} · {item.metric === "streams" ? "Streams" : "TikTok videos"} · {item.action === "include" ? "counted" : "not counted"}</span><button type="button" aria-label={`Reset stale ${item.metric} choice for ${shortDate(item.date)}`} disabled={pending} className="text-rt-magenta disabled:opacity-40" onClick={() => override.mutate({ metric: item.metric, date: item.date, action: "auto" })}>Reset</button></span> })}{override.isError && data.stale_overrides.some(item => item.metric === override.variables?.metric && item.date === override.variables?.date) && <span role="alert" className="text-red-400">{override.error?.message || "Couldn't reset saved choice."}</span>}</div> : null}
       {data.phase !== "not_started" && data.phase !== "no_start" && <><AnomalyNotes metric="streams" data={data} pending={override.isPending} pendingDate={override.isPending && override.variables?.metric === "streams" ? override.variables?.date : undefined} error={override.isError ? override.error?.message : undefined} failedDate={override.isError && override.variables?.metric === "streams" ? override.variables?.date : undefined} onOverride={body => override.mutate(body)} /><AnomalyNotes metric="ugc" data={data} pending={override.isPending} pendingDate={override.isPending && override.variables?.metric === "ugc" ? override.variables?.date : undefined} error={override.isError ? override.error?.message : undefined} failedDate={override.isError && override.variables?.metric === "ugc" ? override.variables?.date : undefined} onOverride={body => override.mutate(body)} /></>}
       <div><button type="button" aria-expanded={showTrend} aria-controls={`attribution-trend-${slug}`} className="text-[12px] text-rt-fg-tertiary hover:text-rt-fg" onClick={() => setShowTrend(v => !v)}>{showTrend ? "Hide trend" : "Show trend"}</button><div id={`attribution-trend-${slug}`} hidden={!showTrend} className="mt-2">{showTrend && <PopScoreChart data={data} />}</div></div>

@@ -733,3 +733,16 @@ def test_growth_pct_divides_by_reported_start_total_when_a_recount_precedes_the_
     assert u["growth_pct_campaign"] == 0.5  # 10,000 / 2,020,000; the adjusted base would give 0.2
     assert s["start_total"] == 202_000_000 and s["gained_campaign"] == 1_000_000
     assert s["growth_pct_campaign"] == 0.5  # 1M / 202M; the adjusted base would give 0.2
+
+
+def test_growth_pct_leaves_out_a_recount_inside_the_campaign():
+    # A +2M TikTok restatement on Jan 25 falls inside the Jan 21–31 campaign. Growth
+    # must use the recount-adjusted gain, not raw End − Start (2,010,000). The whole
+    # recount day is left out (documented rule), so the gain is 9 normal days = 9,000.
+    ugc = _series_with_prestart_drop(4_000_000, 1_000, 2_000_000, drop_day=24)
+    result = calculate_attribution([], [], "2026-01-21", "2026-01-31", today=date(2026, 2, 9), ugc=ugc)
+    u = result["ugc"]
+    assert [r["date"] for r in u["recounts"]] == ["2026-01-25"]
+    assert u["start_total"] == 4_020_000 and u["end_total"] == 6_030_000
+    assert u["gained_campaign"] == 9_000
+    assert u["growth_pct_campaign"] == 0.2  # 9,000 / 4,020,000; raw would be 50.0

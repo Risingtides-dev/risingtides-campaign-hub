@@ -169,7 +169,29 @@ describe('<PopScoreCard /> attribution', () => {
     expect(screen.getByRole('columnheader', { name: '+28 days' })).toBeInTheDocument()
     expect(screen.getByText('Open Tides Tracker ↗')).toBeInTheDocument()
     expect(screen.getByText(/\+400K during campaign/)).toBeInTheDocument()
-    expect(screen.getByText(/New TikTok videos\/day 120 → 480 during \(\+300.0%\) → 210 after · 3.6K new during the campaign/)).toBeInTheDocument()
+    expect(screen.getByText(/New TikTok videos\/day 120 → 480 during \(\+300.0%\) → 210 after \(\+75\.0% vs before\) · 3.6K new during the campaign/)).toBeInTheDocument()
+    expect(screen.getByText(/Daily streams 5K → 14\.3K during \(\+185\.7%\) → 8\.9K after \(\+78\.6% vs before\)/)).toBeInTheDocument()
+  })
+
+  it('shows the follow-up rate of impact only when it exists, with a true minus sign', () => {
+    setup({ ...payload,
+      streams: { ...payload.streams!, lift_pct_followup: -18.2 },
+      ugc: { ...payload.ugc!, lift_pct_followup: null },
+    })
+    expect(screen.getByText(/→ 8\.9K after \(−18\.2% vs before\)/)).toBeInTheDocument()
+    const ugcLine = screen.getByText(/^New TikTok videos\/day/).textContent ?? ''
+    expect(ugcLine).toMatch(/→ 210 after · 3\.6K new/)
+    expect(ugcLine).not.toMatch(/vs before/)
+  })
+
+  it('shows growth in the headline even without a pre-campaign daily rate', () => {
+    setup({ ...payload,
+      streams: { ...payload.streams!, baseline_daily: null, growth_pct_campaign: 40, adjusted: false },
+      ugc: { ...payload.ugc!, baseline_daily: null, growth_pct_campaign: 12.5, adjusted: true },
+    })
+    const headline = screen.getByText(/^Popularity .*·/).textContent ?? ''
+    expect(headline).toMatch(/streams \+40\.0% growth(?!\*)/)
+    expect(headline).toMatch(/TikTok videos \+12\.5% growth\*, 3\.6K new during the campaign/)
   })
 
   it('shows four snapshot columns, muted changes, to-date markers, and same for equal readings', () => {
