@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import type { PopScore } from "@/lib/types"
 import { prepareTrendData, selectTrendSeries, trendEventTicks, zoomedPopularityDomain } from "../popScoreChartData"
 
@@ -25,6 +25,17 @@ describe("pop score trend preparation", () => {
   it("keeps post event ticks by date, including gap days without a reading", () => {
     expect(trendEventTicks(payload).map(event => event.date)).toEqual(["2026-01-02", "2026-01-05"])
     expect(prepareTrendData(payload, "ugc").points[1].postCount).toBe(4)
+  })
+  it("filters future post dates using the local calendar date", () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date("2026-09-30T23:30:00Z")) // Pacific evening; Oct 1 is still future
+    try {
+      const data = { ...payload, post_events: [{ date: "2026-09-30", count: 1 }, { date: "2026-10-01", count: 8 }] }
+      expect(trendEventTicks(data).map(event => event.date)).toEqual(["2026-09-30"])
+      expect(prepareTrendData(data, "popularity").events.map(event => event.date)).toEqual(["2026-09-30"])
+    } finally {
+      vi.useRealTimers()
+    }
   })
   it("keeps an empty popularity series on the finite default domain", () => {
     const empty = { ...payload, history: [], post_events: [{ date: "2026-01-05", count: 2 }] }

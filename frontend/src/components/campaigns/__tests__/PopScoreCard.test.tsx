@@ -181,6 +181,29 @@ describe('<PopScoreCard /> attribution', () => {
     expect(formatTrendTooltip({ date: '2026-08-10', recount: true }, 'streams').value).toBe('recount (not counted)')
   })
 
+  it('collapses recounts and unusual jumps at two, reports largest absolute signed change and keeps hover details', () => {
+    setup({ ...payload,
+      streams: { ...payload.streams!, adjusted: true, recounts: [{ date: '2026-05-20', change: 1_200_000 }, { date: '2026-05-23', change: -2_800_000 }], unusual: [{ date: '2026-05-24', change: -4_000 }, { date: '2026-05-25', change: 3_000 }] },
+      ugc: { ...payload.ugc!, adjusted: false, recounts: [], unusual: [{ date: '2026-05-21', change: 20_000 }, { date: '2026-05-22', change: -30_000 }] },
+    })
+    const recount = screen.getByText(/Streams: 2 Chartmetric recounts not counted · largest −2.8M on May 23, 2026/)
+    expect(recount).toHaveAttribute('title', expect.stringContaining('May 20, 2026 (+1.2M streams)'))
+    expect(screen.getByText(/Streams: 2 unusual jumps counted · largest −4K on May 24, 2026/)).toBeInTheDocument()
+    expect(screen.getByText(/TikTok videos: 2 unusual jumps counted · largest −30K on May 22, 2026/)).toBeInTheDocument()
+  })
+
+  it('shows recount footnote only with adjusted metrics, marks only those rows, and omits footnote before start', () => {
+    const { container, rerender } = setup({ ...payload, streams: { ...payload.streams!, adjusted: true }, ugc: { ...payload.ugc!, adjusted: false } })
+    const rows = [...container.querySelectorAll('tbody tr')]
+    expect(rows[1].querySelector('sup')).toHaveTextContent('*')
+    expect(rows[2].querySelector('sup')).toBeNull()
+    expect(screen.getByText('* Totals are as reported; changes leave out Chartmetric recounts.')).toBeInTheDocument()
+    vi.mocked(usePopScore).mockReturnValue({ data: { ...payload, phase: 'not_started', streams: { ...payload.streams!, adjusted: true }, ugc: { ...payload.ugc!, adjusted: false } }, isLoading: false, isError: false } as ReturnType<typeof usePopScore>)
+    rerender(<PopScoreCard slug="example" />)
+    expect(screen.queryByText('* Totals are as reported; changes leave out Chartmetric recounts.')).not.toBeInTheDocument()
+    expect(screen.getAllByText('Not started')).toHaveLength(1)
+  })
+
   it('dims smoothed bars with a lighter dim fill and labels the estimate', () => {
     setup({ ...payload, streams_history: [{ date: '2026-08-01', total: 1000, daily: 800, smoothed: false }, { date: '2026-08-10', total: 9000, daily: 900, smoothed: true }, { date: '2026-08-20', total: 20000, daily: 1100 }] })
     fireEvent.click(screen.getByRole('button', { name: 'Show trend' }))

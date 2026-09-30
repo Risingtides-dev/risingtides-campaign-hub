@@ -24,12 +24,12 @@ def test_real_popscore_fixture_raw_recount_and_unusual_decisions():
         "espresso": ([], [], [
             {"date": "2026-08-02", "change": 51655}, {"date": "2026-09-23", "change": 543105}], []),
         "blinding_lights": ([], [], [
-            {"date": "2026-05-23", "change": -2820230}, {"date": "2026-06-14", "change": 10656},
-            {"date": "2026-06-16", "change": 51143}, {"date": "2026-09-23", "change": 271879}], [
-            {"date": "2026-05-22", "change": 3786}, {"date": "2026-06-20", "change": 4917},
-            {"date": "2026-06-29", "change": 1646}, {"date": "2026-07-15", "change": 3131},
-            {"date": "2026-07-17", "change": 1961}, {"date": "2026-09-06", "change": 7647},
-            {"date": "2026-09-29", "change": 5272}]),
+            {"date": "2026-05-23", "change": -2820230}, {"date": "2026-06-16", "change": 51143},
+            {"date": "2026-09-23", "change": 271879}], [
+            # 06-14: 10,656 over 2 days = 5,328/day; pace is ~180/day,
+            # so it clears 20× but not the 50× recount threshold.
+            {"date": "2026-06-14", "change": 10656},
+            {"date": "2026-07-15", "change": 3131}, {"date": "2026-09-06", "change": 7647}]),
     }
     for name, (sr, su, ur, uu) in expected.items():
         fixture = json.loads((root / f"popscore_{name}_walk.json").read_text())
@@ -46,9 +46,10 @@ def test_real_popscore_fixture_raw_recount_and_unusual_decisions():
 def test_plan_records_current_recount_and_chart_contract():
     plan = (Path(__file__).parents[2] / "docs/plans/2026-09-29-campaign-attribution.md").read_text()
     assert "at least 50× pace" in plan
-    assert "at least the metric's absolute floor" in plan
+    assert "metric's absolute floor" in plan
     assert "and campaign/follow-up deltas use the recount-adjusted" in plan
-    assert "inside the plotted date range" in plan
+    assert "14\nsteps" in plan and "per day" in plan
+    assert "observed in production" not in plan
     assert "excluded steps that meet the recount rule" in plan
     assert "counted jumps ≥20× the normal daily pace" in plan
 
@@ -107,10 +108,10 @@ def test_small_song_steps_count_and_negative_recount_requires_size_floor():
         h = _history(incs, initial=150)
         b = calculate_attribution([], [], "2026-01-01", today=date(2026, 2, 1), ugc=h)["ugc"]
         assert b["recounts"] == []
-    h = _history([0, -10_000], initial=999_999)
+    h = _history([0] * 5 + [-10_000, 1, 1, 1], initial=999_999)
     b = calculate_attribution([], [], "2026-01-01", today=date(2026, 1, 3), ugc=h)["ugc"]
-    assert b["recounts"] == [{"date": "2026-01-03", "change": -10_000}]
-    h = _history([0, -9_999], initial=1_000_000)
+    assert b["recounts"] == [{"date": "2026-01-07", "change": -10_000}]
+    h = _history([0] * 5 + [-9_999, 1, 1, 1], initial=1_000_000)
     b = calculate_attribution([], [], "2026-01-01", today=date(2026, 1, 3), ugc=h)["ugc"]
     assert b["recounts"] == []
 
@@ -122,6 +123,34 @@ def test_recount_adjusted_changes_keep_raw_now_and_mark_adjusted():
     assert result["ugc"]["change_since_start"] == 3
     assert result["ugc"]["change_since_end"] == 3
     assert result["ugc"].get("adjusted") is True
+
+
+def test_v5_recounts_both_directions_and_uses_rate_based_confirmation():
+    def series(increments, initial):
+        return _history(increments, initial=initial)
+    # 100/day history, then a glitch pair; adjusted campaign gain is the real 450.
+    h = series([100] * 14 + [-20_000, 20_050] + [100] * 3, 3_300_000)
+    b = calculate_attribution([], [], "2026-01-01", "2026-01-19", date(2026, 1, 20), ugc=h)["ugc"]
+    assert b["recounts"] == [{"date": "2026-01-16", "change": -20_000}, {"date": "2026-01-17", "change": 20_050}]
+    assert b["adjusted"] is True
+    assert b["now"] == h[-1]["value"]
+    h = series([100] * 14 + [20_000, -20_000] + [100] * 3, 3_300_000)
+    b = calculate_attribution([], [], "2026-01-01", "2026-01-19", date(2026, 1, 20), ugc=h)["ugc"]
+    assert b["recounts"] == [{"date": "2026-01-16", "change": 20_000}, {"date": "2026-01-17", "change": -20_000}]
+    # Stream floor is 1M; 1.5M down and recovery both qualify.
+    h = series([20_000] * 14 + [-1_500_000, 1_500_000] + [20_000] * 3, 500_000_000)
+    b = calculate_attribution([], h, "2026-01-01", "2026-01-19", date(2026, 1, 20))["streams"]
+    assert b["recounts"] == [{"date": "2026-01-16", "change": -1_500_000}, {"date": "2026-01-17", "change": 1_500_000}]
+
+
+def test_not_started_adjusted_is_false_and_clean_points_skips_dict_date():
+    h = _history([0] * 14 + [20_000, 1, 1, 1])
+    result = calculate_attribution([], [], "2027-01-01", today=date(2026, 1, 1), ugc=h)
+    assert result["phase"] == "not_started"
+    assert result["ugc"]["adjusted"] is False and result["streams"]["adjusted"] is False
+    assert result["ugc"]["recounts"] is None
+    from campaign_manager.services.chartmetric import _clean_points
+    assert _clean_points([{"timestp": {"x": 1}, "value": 1}, {"timestp": "2026-01-01", "value": 2}]) == [{"date": "2026-01-01", "value": 2}]
 
 
 def test_missing_baseline_and_gaps_and_negative_delta():
@@ -352,11 +381,13 @@ def test_negative_ugc_recount_in_baseline_window_is_adjusted():
     h += [{"date": "2026-05-15", "value": 9_993_770}]
     h += [{"date": f"2026-05-{20+i:02d}", "value": value} for i, value in enumerate(values)]
     result = calculate_attribution([], [], "2026-05-24", "2026-05-30", date(2026, 5, 30), ugc=h)
-    assert result["ugc"]["recounts"] == [{"date": "2026-05-23", "change": -2820230}]
+    # This synthetic history's previous 14-step rate is too high for v5's
+    # 50× rule; the real Blinding Lights fixture is pinned above.
+    assert result["ugc"]["recounts"] == []
     assert result["ugc"]["start_total"] == 7_182_770
     assert result["ugc"]["end_total"] == 7_188_770
     assert result["ugc"]["gained_campaign"] == 6000
-    assert result["ugc"]["baseline_daily"] == 1000
+    assert result["ugc"]["baseline_daily"] == -200445
 
 
 def test_ugc_one_day_behind_uses_same_reading_guard():

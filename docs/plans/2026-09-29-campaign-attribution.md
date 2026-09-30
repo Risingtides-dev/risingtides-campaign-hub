@@ -169,7 +169,7 @@ Keep the component file and the track-link form. Card title: **"Song attribution
    when the campaign has a `tracker_url`.
 7. States: not linked (existing link form), loading, Chartmetric error (existing
    error treatment), linked but no end date (end values labelled "to date",
-   follow-up cells show "Set an end date").
+   follow-up values show "—" and the end-date setter is shown).
 
 Styling: match the existing card (same tokens, `ACCENT`, spacing). Mobile: rows
 stack; the chart stays full width.
@@ -303,19 +303,20 @@ and `true` only on daily points spread across a multi-day change interval.
 user-facing text when their respective request fails.
 
 For both cumulative `streams` and `ugc`, recount detection uses raw increments
-and never popularity. The normal pace is the median of the absolute increments
-over the previous 14 readings (14 prior increments, requiring at least five);
-if fewer than five exist there is no positive recount candidate, and pace is
-floored at 1. `ABS_FLOOR` reflects observed Chartmetric recount sizes: 10,000
-videos for UGC and 1,000,000 streams. A positive step is excluded as a recount
-only when it is at least 50× pace, the median of the next three increments is
-strictly less than one twentieth of the step (three later readings required),
-and it is at least the metric's absolute floor. Any positive step at least 20×
-pace that is not a recount remains counted and appears in `unusual` as
-`{date, change}`, regardless of its absolute size or reversion. A negative step
-is a recount only when its magnitude is greater than 1% of the previous total
-and at least the absolute floor; otherwise it is counted normally. There is no
-zero-median/mean fallback. `post_events` remain available for the chart.
+and never popularity. A step's rate is the absolute increment divided by the
+elapsed days. Its pace is the sum of absolute increments over the previous 14
+steps, excluding steps already classified as recounts, divided by the days
+spanned by those steps; at least five prior steps are required, and pace is
+floored at 1 per day. The after-rate is the sum of absolute increments over the
+next three steps divided by their elapsed days (three later steps required).
+`ABS_FLOOR` is 10,000 videos for UGC and 1,000,000 streams; these floors are set
+above normal daily growth for Rising Tides campaign sizes and below the
+smallest systemic Chartmetric steps seen (51K). A positive or negative step is
+excluded as a recount when its rate is at least 50× pace, its after-rate is
+strictly less than one twentieth of its rate, and its magnitude meets the
+metric's absolute floor. Any step at least 20× pace that is not a recount
+remains counted and appears in `unusual` as `{date, change}`. `post_events`
+remain available for the chart.
 
 The `now` cumulative totals remain raw for display. `change_since_start`,
 `change_since_end`, and campaign/follow-up deltas use the recount-adjusted

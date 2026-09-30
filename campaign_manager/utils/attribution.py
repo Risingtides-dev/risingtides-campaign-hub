@@ -1,10 +1,9 @@
 """Pure campaign attribution calculations for Chartmetric histories."""
 from datetime import date, datetime, timedelta
-from statistics import median
 from zoneinfo import ZoneInfo
 
 FOLLOWUP_DAYS = 28
-# Chartmetric recount sizes observed in production histories.
+# Thresholds distinguish systemic steps from normal growth at campaign scale.
 UGC_RECOUNT_ABS_FLOOR = 10_000
 STREAMS_RECOUNT_ABS_FLOOR = 1_000_000
 
@@ -83,24 +82,54 @@ def calculate_attribution(popularity, streams, start_date, end_date="", today=No
     def adjust_recounts(history, absolute_floor):
         ordered = _dedupe(history)
         increments = [ordered[i]["value"] - ordered[i-1]["value"] for i in range(1, len(ordered))]
+        gaps = [(_day(ordered[i]["date"]) - _day(ordered[i-1]["date"])).days for i in range(1, len(ordered))]
         offsets = [0] * len(ordered)
         recount_indices, found, unusual = set(), [], []
         for i, inc in enumerate(increments, 1):
-            previous = ordered[i-1]["value"]
-            is_recount = inc < 0 and abs(inc) > previous * .01 and abs(inc) >= absolute_floor
-            candidate = False
-            if inc > 0:
-                prior = increments[max(0, i - 15):i - 1]
-                later = increments[i:i + 3]
-                pace = median(abs(value) for value in prior) if len(prior) >= 5 else None
-                if pace is not None:
-                    pace = max(1, pace)
-                candidate = pace is not None and inc >= 20 * pace
-                is_recount = (pace is not None and inc >= 50 * pace and inc >= absolute_floor
-                    and len(later) == 3 and median(later) < inc / 20)
-                if candidate and not is_recount:
-                    unusual.append({"date": ordered[i]["date"], "change": inc})
-            if is_recount:
+            if i in recount_indices:
+                continue
+            step_rate = abs(inc) / gaps[i - 1] if gaps[i - 1] else 0
+            prior_indices = [j for j in range(max(0, i - 15), i - 1) if j + 1 not in recount_indices]
+            pace = None
+            if len(prior_indices) >= 5:
+                days = sum(gaps[j] for j in prior_indices)
+                if days:
+                    pace = max(1, sum(abs(increments[j]) for j in prior_indices) / days)
+            later_indices = range(i, min(len(increments), i + 3))
+            later_indices = list(later_indices)
+            after_rate = None
+            if len(later_indices) == 3:
+                days = sum(gaps[j] for j in later_indices)
+                if days:
+                    after_rate = sum(abs(increments[j]) for j in later_indices) / days
+            candidate = pace is not None and step_rate >= 20 * pace
+            is_recount = (pace is not None and after_rate is not None
+                and step_rate >= 50 * pace and after_rate < step_rate / 20
+                and abs(inc) >= absolute_floor)
+            # A one-step rollback pair is one Chartmetric glitch: assess its
+            # quiet period after both legs, then exclude both legs together.
+            paired = (i < len(increments) and inc * increments[i] < 0
+                and abs(abs(inc) - abs(increments[i])) <= max(100, abs(inc) * .05))
+            pair_handled = False
+            if not is_recount and paired and pace is not None and step_rate >= 50 * pace and abs(inc) >= absolute_floor:
+                post = list(range(i + 1, min(len(increments), i + 4)))
+                post_days = sum(gaps[j] for j in post)
+                if len(post) == 3 and post_days:
+                    post_rate = sum(abs(increments[j]) for j in post) / post_days
+                    if post_rate < step_rate / 20 and abs(increments[i]) >= absolute_floor:
+                        is_recount = True
+                        recount_indices.add(i)
+                        recount_indices.add(i + 1)
+                        for k in range(i, len(ordered)):
+                            offsets[k] += inc
+                        for k in range(i + 1, len(ordered)):
+                            offsets[k] += increments[i]
+                        found.append({"date": ordered[i]["date"], "change": inc})
+                        found.append({"date": ordered[i + 1]["date"], "change": increments[i]})
+                        pair_handled = True
+            if candidate and not is_recount:
+                unusual.append({"date": ordered[i]["date"], "change": inc})
+            if is_recount and not pair_handled:
                 recount_indices.add(i)
                 for k in range(i, len(ordered)):
                     offsets[k] += inc
@@ -174,7 +203,7 @@ def calculate_attribution(popularity, streams, start_date, end_date="", today=No
             "change_campaign": pop_end - pop_start if pop_end is not None and pop_start is not None and not same_campaign_reading else None,
             "change_followup": pop_follow - pop_end if pop_follow is not None and pop_end is not None and not same_follow_reading else None},
         "streams": {**block(streams_adj, _value(streams_adj, start) if start else None, _value(streams_adj, end_target), _value(streams_adj, follow_target) if follow_target else None, stream_end_to_date, stream_follow_to_date),
-            "adjusted": bool(streams_recounts),
+            "adjusted": phase != "not_started" and bool(streams_recounts),
             "start": stream_start, "end": stream_end, "followup": stream_follow,
             "now": None if phase == "not_started" else (_value(streams, stream_latest) if stream_latest else None),
             "start_total": stream_start, "end_total": stream_end, "end_is_to_date": stream_end_to_date,
@@ -189,7 +218,7 @@ def calculate_attribution(popularity, streams, start_date, end_date="", today=No
             "unusual": None if phase == "not_started" else streams_unusual},
         "streams_history": stream_history,
         "ugc": {**block(ugc_adj, _value(ugc_adj, start) if start else None, _value(ugc_adj, end_target), _value(ugc_adj, follow_target) if follow_target else None, ugc_end_td, ugc_follow_td),
-            "adjusted": bool(ugc_recounts),
+            "adjusted": phase != "not_started" and bool(ugc_recounts),
             "start": None if phase == "not_started" else ugc_start, "end": None if phase == "not_started" else ugc_end,
             "followup": None if phase == "not_started" else ugc_follow,
             "now": None if phase == "not_started" else (_value(ugc, ugc_latest) if ugc_latest else None),

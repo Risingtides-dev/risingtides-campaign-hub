@@ -4,6 +4,7 @@ export type TrendMode = "popularity" | "streams" | "ugc"
 export type TrendPoint = { date: string; time: number; value: number | null; smoothed?: boolean; belowBaseline?: boolean; postCount?: number; postY?: number | null; recountY?: number | null }
 
 const dayTime = (date: string) => new Date(`${date}T00:00:00`).getTime()
+const localDate = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`
 
 export function selectTrendSeries(data: PopScore, mode: TrendMode): TrendPoint[] {
   if (mode === "popularity") return (data.history ?? []).map(p => ({ date: p.date, time: dayTime(p.date), value: p.value }))
@@ -19,7 +20,8 @@ export function zoomedPopularityDomain(points: TrendPoint[]): [number, number] {
 }
 
 export function trendEventTicks(data: PopScore) {
-  return (data.post_events ?? []).filter(event => event.count > 0).map(event => ({ date: event.date, time: dayTime(event.date), count: event.count }))
+  const today = localDate(new Date())
+  return (data.post_events ?? []).filter(event => event.count > 0 && event.date <= today).map(event => ({ date: event.date, time: dayTime(event.date), count: event.count }))
 }
 
 export function prepareTrendData(data: PopScore, mode: TrendMode) {

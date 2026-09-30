@@ -278,7 +278,7 @@ def _clean_points(data):
             if date.fromisoformat(day).isoformat() != day:
                 continue
             value = int(float(p.get("value")))
-        except (TypeError, ValueError, OverflowError, AttributeError):
+        except Exception:
             continue
         points.append({"date": day, "value": value})
     return points

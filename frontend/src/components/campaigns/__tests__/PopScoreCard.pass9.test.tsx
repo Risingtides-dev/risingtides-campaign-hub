@@ -33,7 +33,7 @@ describe('pass 9 attribution notes and chart boundary', () => {
     const { container } = setup(data)
     const note = [...container.querySelectorAll('p')].find(p => p.textContent?.includes('7 unusual jumps counted'))
     expect(note).toBeTruthy()
-    expect(note?.textContent).toBe('7 unusual jumps counted · largest +51.1K on Jun 16')
+    expect(note?.textContent).toBe('TikTok videos: 7 unusual jumps counted · largest +51.1K on Jun 16, 2026')
     expect(note?.getAttribute('title')?.split(';')).toHaveLength(7)
     expect([...container.querySelectorAll('p')].filter(p => p.textContent?.includes('unusual jumps counted'))).toHaveLength(1)
   })
@@ -49,7 +49,7 @@ describe('pass 9 attribution notes and chart boundary', () => {
     expect([...container.querySelectorAll('th')].map(node => node.textContent)).toContain('Streams*')
     expect([...container.querySelectorAll('th')].map(node => node.textContent)).toContain('TikTok videos*')
     expect(screen.getByText('* Totals are as reported; changes leave out Chartmetric recounts.')).toBeInTheDocument()
-    expect(screen.getByText('3 Chartmetric recounts not counted · largest +543.1K on Sep 23')).toBeInTheDocument()
+    expect(screen.getByText('TikTok videos: 3 Chartmetric recounts not counted · largest −2.8M on May 23, 2026')).toBeInTheDocument()
     expect([...container.querySelectorAll('p')].filter(p => p.textContent?.includes('Chartmetric recounts not counted'))).toHaveLength(1)
   })
 
