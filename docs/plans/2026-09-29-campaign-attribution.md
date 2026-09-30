@@ -358,7 +358,9 @@ Chartmetric recount from a real one-day jump. The design therefore is:
    classification runs only over remaining steps, so a step appears in at most one list.
    A non-current override date is reported as `stale_overrides` and is not applied.
    Every step the rule flags (recount or unusual)
-   is listed on the card with a small "Count it" / "Leave it out" action. The choice is
+   is listed on the card with a small "Count it" / "Leave it out" action. A manually
+   counted rollback pair reports `with` as the partner date on each leg and
+   `choice_date` as the date holding the saved override, which Reset targets. The choice is
    stored on the campaign (`campaigns.attribution_overrides`, JSON:
    `{"streams": {"YYYY-MM-DD": "include"|"exclude"}, "ugc": {...}}`). Each listed step reports `source: "auto" | "manual"`.
    `POST /api/campaign/<slug>/pop-score/override {metric, date, action}` with

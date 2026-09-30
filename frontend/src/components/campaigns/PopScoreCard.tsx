@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import {
   Bar, Cell, ComposedChart, Line, LineChart, ReferenceLine, ResponsiveContainer, Scatter,
   Tooltip as RTooltip, XAxis, YAxis,
@@ -23,12 +23,14 @@ function TrackLinkForm({ initial, onSave, onUnlink, onCancel, isPending, error }
 }) {
   const [link, setLink] = useState(initial)
   const [confirmUnlink, setConfirmUnlink] = useState(false)
+  const keepSongRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => { if (confirmUnlink) keepSongRef.current?.focus() }, [confirmUnlink])
   return <form className="flex flex-wrap items-center gap-2" onSubmit={(e) => { e.preventDefault(); onSave(link.trim()) }}>
     <Input value={link} onChange={(e) => setLink(e.target.value)} placeholder="Spotify track link, Chartmetric link, or ISRC" aria-label="Song link for pop score" className="w-full sm:w-[380px] h-9 text-[13px]" />
     <Button type="submit" size="sm" disabled={isPending || !link.trim()}>{isPending ? <Loader2 className="size-4 animate-spin" /> : "Save"}</Button>
     {onCancel && <Button type="button" size="sm" variant="ghost" onClick={onCancel}>Cancel</Button>}
     {onUnlink && !confirmUnlink && <button type="button" disabled={isPending} onClick={() => setConfirmUnlink(true)} className="text-xs text-rt-fg-tertiary hover:text-rt-fg">Unlink song</button>}
-    {onUnlink && confirmUnlink && <span className="text-xs">Unlink — this also clears saved choices? <button type="button" disabled={isPending} onClick={onUnlink} className="text-rt-magenta">Yes</button> <button type="button" onClick={() => setConfirmUnlink(false)} className="text-rt-fg-tertiary">Cancel</button></span>}
+    {onUnlink && confirmUnlink && <span className="flex flex-wrap items-center gap-2 text-xs">Unlink — this also clears saved choices? <button type="button" disabled={isPending} onClick={onUnlink} className="min-h-6 px-1 text-rt-magenta">Yes, unlink</button> <button ref={keepSongRef} type="button" onClick={() => setConfirmUnlink(false)} className="min-h-6 px-1 text-rt-fg-tertiary">Keep song</button></span>}
     {error && <p className="w-full text-red-500 text-[13px]">{error}</p>}
   </form>
 }
@@ -58,7 +60,7 @@ function AnomalyNotes({ metric, data, pending, pendingDate, error, failedDate, o
       const counted = kind === "unusual"
       const action = item.source === "manual" ? "auto" : kind === "recount" ? "include" : "exclude"
       const actionText = item.source === "manual" ? "Reset" : kind === "recount" ? "Count it" : "Leave it out"
-      const targetDate = item.source === "manual" && item.with ? item.with : item.date
+      const targetDate = item.source === "manual" ? (item.choice_date ?? item.date) : item.date
       return <li key={`${item.date}-${item.change}`} className="flex flex-wrap items-center gap-x-1.5"><span>{shortDate(item.date)} ({signedCompact(item.change)} {unit}) · {counted ? "counted" : "not counted"}{item.source === "manual" ? ` · ${item.with ? `counted with ${shortDate(item.with)} · set by you` : "set by you"}` : ""}</span><button type="button" aria-label={`${actionText} — ${shortDate(item.date)}, ${metric === "streams" ? "Streams" : "TikTok videos"}`} disabled={pending && pendingDate === targetDate} onClick={() => onOverride({ metric, date: targetDate, action })} className="min-h-6 px-1 text-rt-magenta disabled:opacity-40">{actionText}</button></li>
     })}</ul>}</div>
   }
@@ -237,6 +239,6 @@ export function PopScoreCard({ slug, tracker_url }: { slug: string; tracker_url?
       <div><button type="button" aria-expanded={showTrend} aria-controls={`attribution-trend-${slug}`} className="text-[12px] text-rt-fg-tertiary hover:text-rt-fg" onClick={() => setShowTrend(v => !v)}>{showTrend ? "Hide trend" : "Show trend"}</button><div id={`attribution-trend-${slug}`} hidden={!showTrend} className="mt-2">{showTrend && <PopScoreChart data={data} />}</div></div>
       <div className="flex flex-wrap items-center justify-between gap-2 border-t border-white/8 pt-3 text-[12px] text-rt-fg-tertiary"><span>Shows what happened to the song around the campaign — not proof the campaign caused all of it.</span>{tracker_url && <a href={tracker_url} target="_blank" rel="noopener noreferrer" className="whitespace-nowrap text-rt-magenta hover:underline">Open Tides Tracker ↗</a>}</div>
     </>}
-    {showForm && <>{!data?.linked && !popScore.isError && <p className="text-rt-fg-tertiary text-[13px]">Link the song to track its Spotify popularity through this campaign.</p>}<TrackLinkForm initial={initialLink} onSave={save} onUnlink={linkedOnForm ? () => save("") : undefined} onCancel={editing ? () => setEditing(false) : undefined} isPending={setTrack.isPending} error={setTrack.isError ? setTrack.error?.message : undefined} /></>}
+    {showForm && <>{!data?.linked && !popScore.isError && <p className="text-rt-fg-tertiary text-[13px]">Link the song to track its Spotify popularity through this campaign.</p>}<TrackLinkForm key={initialLink} initial={initialLink} onSave={save} onUnlink={linkedOnForm ? () => save("") : undefined} onCancel={editing ? () => setEditing(false) : undefined} isPending={setTrack.isPending} error={setTrack.isError ? setTrack.error?.message : undefined} /></>}
   </div>
 }

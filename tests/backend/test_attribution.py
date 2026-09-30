@@ -175,7 +175,7 @@ def test_including_either_leg_of_rollback_pair_counts_both_as_reported():
         assert result["gained_campaign"] == expected == 5_400
         for day in (first, second):
             assert {"date": day, "change": h[15 if day == first else 16]["value"] - h[14 if day == first else 15]["value"],
-                    "source": "manual", "with": chosen} in result["unusual"]
+                    "source": "manual", "with": (second if day == first else first), "choice_date": chosen} in result["unusual"]
 
 
 def test_pair_thresholds_and_recount_dates_are_exact():

@@ -58,7 +58,7 @@ describe('<PopScoreCard /> attribution', () => {
     expect(screen.getByText('Chartmetric down')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Unlink song' }))
     expect(screen.getByText(/Unlink — this also clears saved choices\?/)).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Keep song' }))
     expect(mutate).not.toHaveBeenCalledWith('')
     fireEvent.change(input, { target: { value: '' } })
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
@@ -69,17 +69,30 @@ describe('<PopScoreCard /> attribution', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Unlink song' }))
     expect(screen.getByText(/Unlink — this also clears saved choices\?/)).toBeInTheDocument()
     expect(mutate).not.toHaveBeenCalledWith('')
-    fireEvent.click(screen.getByRole('button', { name: 'Yes' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, unlink' }))
     expect(mutate).toHaveBeenCalledWith('', expect.any(Object))
+  })
+
+  it('uses explicit unlink labels, 24px actions, spacing, and focuses Keep song', () => {
+    setup()
+    fireEvent.click(screen.getByRole('button', { name: 'Change song' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Unlink song' }))
+    const yes = screen.getByRole('button', { name: 'Yes, unlink' })
+    const keep = screen.getByRole('button', { name: 'Keep song' })
+    expect(yes).toHaveClass('min-h-6')
+    expect(keep).toHaveClass('min-h-6')
+    expect(yes.parentElement).toHaveClass('gap-2')
+    expect(keep).toHaveFocus()
   })
 
   it('resets either displayed leg of a counted pair through the choice date', () => {
     setup({ ...payload, phase: 'complete', ugc: { ...payload.ugc!, unusual: [
-      { date: '2026-01-16', change: 20_000, source: 'manual', with: '2026-01-17' },
-      { date: '2026-01-17', change: -20_000, source: 'manual', with: '2026-01-17' },
+      { date: '2026-01-16', change: 20_000, source: 'manual', with: '2026-01-17', choice_date: '2026-01-17' },
+      { date: '2026-01-17', change: -20_000, source: 'manual', with: '2026-01-16', choice_date: '2026-01-17' },
     ] } })
     fireEvent.click(screen.getByRole('button', { name: /TikTok videos: 2 unusual jumps/ }))
-    expect(screen.getAllByText(/counted with Jan 17, 2026 · set by you/)).toHaveLength(2)
+    expect(screen.getByText(/Jan 16, 2026.*counted with Jan 17, 2026 · set by you/)).toBeInTheDocument()
+    expect(screen.getByText(/Jan 17, 2026.*counted with Jan 16, 2026 · set by you/)).toBeInTheDocument()
     const resets = screen.getAllByRole('button', { name: /^Reset — / })
     fireEvent.click(resets[0])
     fireEvent.click(resets[1])
