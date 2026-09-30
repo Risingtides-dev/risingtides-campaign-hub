@@ -49,6 +49,7 @@ def _load(slug: str):
             "link": c.chartmetric_link or "",
             "start_date": c.start_date or "",
             "end_date": c.end_date or "",
+            "completion_status": c.completion_status or "none",
         }
 
 
@@ -75,6 +76,7 @@ def get_pop_score(slug: str):
     baseline = _baseline(history, row["start_date"])
     current = snap.spotify_popularity
     streams_error = None
+    ugc_error = None
     try:
         pop_track_domain_id = client.popularity_track_domain_id(row["track_id"], since=_history_start(row["start_date"]))
         streams = client.streams_history(row["track_id"], since=_history_start(row["start_date"]), track_domain_id=pop_track_domain_id)
@@ -82,7 +84,12 @@ def get_pop_score(slug: str):
         log.exception("streams history fetch failed for %s", slug)
         streams, streams_error = [], "Streams history is temporarily unavailable."
     try:
-        attribution = calculate_attribution(history, streams, row["start_date"], row["end_date"])
+        ugc = client.tiktok_posts_history(row["track_id"], since=_history_start(row["start_date"]))
+    except Exception:
+        log.exception("TikTok posts history fetch failed for %s", slug)
+        ugc, ugc_error = [], "TikTok video history is temporarily unavailable."
+    try:
+        attribution = calculate_attribution(history, streams, row["start_date"], row["end_date"], ugc=ugc, completion_status=row["completion_status"])
     except Exception:
         log.exception("attribution calculation failed for %s", slug)
         return jsonify({"linked": True, "link": row["link"], "error": "Couldn't calculate song attribution."}), 502
@@ -102,6 +109,23 @@ def get_pop_score(slug: str):
     }
     if streams_error:
         result["streams_error"] = streams_error
+    if ugc_error:
+        result["ugc_error"] = ugc_error
+    from campaign_manager.models import MatchedVideo
+    with _db.get_session() as s:
+        campaign = s.query(Campaign).filter_by(slug=slug).first()
+        events = {}
+        if campaign:
+            for upload_date, in s.query(MatchedVideo.upload_date).filter(MatchedVideo.campaign_id == campaign.id).all():
+                raw = (upload_date or "").strip()
+                day = raw[:4] + "-" + raw[4:6] + "-" + raw[6:8] if len(raw) == 8 and raw.isdigit() else raw[:10]
+                try:
+                    day = date.fromisoformat(day).isoformat()
+                except ValueError:
+                    continue
+                if day >= _history_start(row["start_date"]).isoformat():
+                    events[day] = events.get(day, 0) + 1
+    result["post_events"] = [{"date": d, "count": events[d]} for d in sorted(events)]
     return jsonify(result)
 
 

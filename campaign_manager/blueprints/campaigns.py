@@ -669,6 +669,15 @@ def edit_campaign(slug: str):
             "error": f"Invalid completion_status: {completion_status!r}",
             "valid": ["none", "booked", "completed"],
         }), 400
+    if completion_status == "completed" and not meta.get("end_date"):
+        auto_end = date.today().isoformat()
+        try:
+            parsed_start = datetime.strptime(meta.get("start_date", ""), "%Y-%m-%d").date()
+            if date.today() < parsed_start:
+                logger.warning("Finishing campaign %s with future start date %s", slug, meta.get("start_date"))
+        except (TypeError, ValueError):
+            logger.warning("Finishing campaign %s with missing or invalid start date", slug)
+        meta["end_date"] = auto_end
 
     # Match strategy — controls whether fuzzy fallback is allowed.
     # "strict" = sound_id only (use for original sound campaigns)

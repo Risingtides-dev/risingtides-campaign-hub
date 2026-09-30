@@ -932,7 +932,7 @@ export interface AttributionStreamsPoint {
   daily: number | null
 }
 
-export type AttributionPhase = "not_started" | "live" | "followup" | "complete" | "no_start"
+export type AttributionPhase = "not_started" | "live" | "followup" | "complete" | "no_start" | "finished_no_end"
 
 export interface PopScore {
   linked: boolean
@@ -951,6 +951,15 @@ export interface PopScore {
   followup_end?: string
   followup_day?: number | null
   streams_error?: string
+  ugc_error?: string
+  post_events?: { date: string; count: number }[]
+  ugc?: {
+    start_total: number | null; end_total: number | null; followup_total: number | null
+    now: number | null; now_date: string | null; change_since_start: number | null; change_since_end: number | null
+    baseline_daily: number | null; campaign_daily: number | null; followup_daily: number | null
+    gained_campaign: number | null; gained_followup: number | null; lift_pct_campaign: number | null
+    end_is_to_date: boolean; followup_is_to_date: boolean
+  }
   phase?: AttributionPhase
   popularity?: {
     start: number | null
@@ -960,6 +969,7 @@ export interface PopScore {
     followup_is_to_date: boolean
     change_campaign: number | null
     change_followup: number | null
+    now?: number | null; now_date?: string | null; change_since_start?: number | null; change_since_end?: number | null
   }
   streams?: {
     start_total: number | null
@@ -975,6 +985,7 @@ export interface PopScore {
     followup_daily: number | null
     lift_pct_campaign: number | null
     lift_pct_followup: number | null
+    now?: number | null; now_date?: string | null; change_since_start?: number | null; change_since_end?: number | null
   }
   streams_history?: AttributionStreamsPoint[]
   data_as_of?: string

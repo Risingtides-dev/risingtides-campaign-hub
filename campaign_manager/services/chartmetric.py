@@ -206,6 +206,16 @@ class ChartmetricClient:
             points = [p for p in points if p["date"] >= cutoff]
         return sorted(points, key=lambda p: p["date"])
 
+    def tiktok_posts_history(self, chartmetric_id: int, since: Optional[date] = None) -> List[dict]:
+        """Cumulative TikTok videos using a track, as sorted readings."""
+        rows = self._get(f"/track/{int(chartmetric_id)}/tiktok/stats/most-history",
+                         {"type": "posts", **({"since": since.isoformat()} if since else {})}) or []
+        best = _pick_primary_object(rows)
+        points = _clean_points(best.get("data") or [])
+        if since is not None:
+            points = [p for p in points if p["date"] >= since.isoformat()]
+        return sorted(points, key=lambda p: p["date"])
+
 
 def _pick_primary_series(series_list: List[dict]) -> List[dict]:
     return _pick_primary_object(series_list).get("data", [])

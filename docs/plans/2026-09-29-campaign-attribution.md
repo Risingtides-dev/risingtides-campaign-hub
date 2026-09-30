@@ -166,3 +166,42 @@ stack; the chart stays full width.
 Requires `CHARTMETRIC_REFRESH_TOKEN` on Railway (already required by the Pop Score
 card). The token pasted in chat on 2026-09-29 must be treated as exposed and rotated
 by the operator; it is not stored in this repo.
+
+## Addendum 2026-09-29 (EC): the client story — five talking points, auto end date, "now" snapshot
+
+Direction from EC after v1 review rounds:
+
+1. **End date = the day the campaign is moved to Finished.** When `completion_status`
+   changes to `"completed"` and the campaign has no `end_date`, the backend sets
+   `end_date` to today. A manually set end date is never overwritten. Moving a campaign
+   back out of Finished does not clear the date (use Clear on the card).
+   Old campaigns that were finished before this existed have no end date: the card
+   says "Finished · end date not set" and asks for one, instead of showing "Live".
+2. **Snapshots: Start → End → +28 days → Now.** Every metric block also reports the
+   latest reading (`now`) and its change since start and since end, so the story can be
+   told at any later date.
+3. **The three headline talking points** (in this order): Spotify popularity change;
+   streaming growth rate; **UGC growth rate** — how many new TikTok videos were made
+   to the song during the campaign. They complement the Tides numbers the page already
+   shows in its stat cards (**total views** and **CPM**) — the card does not repeat those.
+5. **Design stays subtle.** Supporting data, not the page's centrepiece: one muted
+   headline line, a compact Start · End · +28 days · Now table, and the trend chart
+   collapsed by default. Reuse the page's existing components and colors.
+4. **UGC data source:** Chartmetric `GET /api/track/<cm_id>/tiktok/stats/most-history?type=posts&since=…`
+   (verified live 2026-09-29: `obj[0].data[] = {timestp, value}`, `value` is the
+   CUMULATIVE number of TikTok videos using the track, `track_domain_id` is null).
+   Same rules as streams: raw readings for totals at dates, repeat runs smoothed only in
+   the daily series, own error isolation (`ugc_error`), own to-date flags.
+
+### Round 4 implementation contract updates
+
+- Moving a campaign to Finished fills an empty end date with today's ISO date;
+  existing dates are retained and reopening does not clear them. Legacy finished
+  campaigns without an end date use the `finished_no_end` phase.
+- Streams and TikTok cumulative history share the same change-point daily
+  calculation. A reading after a multi-day stall spreads the change over that
+  interval; a trailing unchanged run has null daily values.
+- Attribution blocks include the latest reading (`now`, `now_date`) and changes
+  since start and end. The endpoint also returns campaign-scoped post event counts.
+- The frontend presents a muted headline and compact Start / End / +28 days / Now
+  table. Its trend chart is collapsed by default.

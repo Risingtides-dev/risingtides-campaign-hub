@@ -114,7 +114,7 @@ def test_daily_smooths_repeat_runs_but_boundaries_keep_raw_totals():
     h = [{"date": "2026-09-24", "value": 3191203786}, {"date": "2026-09-25", "value": 3193825920},
          {"date": "2026-09-26", "value": 3193825920}, {"date": "2026-09-27", "value": 3195168217}]
     r = calculate_attribution([], h, "2026-09-25", "2026-09-26", date(2026, 9, 27))
-    assert [p["daily"] for p in r["streams_history"]] == [None, 1321477.0, 1321477.0, 1321477.0]
+    assert [p["daily"] for p in r["streams_history"]] == [None, 2622134.0, 671148.5, 671148.5]
     assert r["streams"]["start_total"] == 3193825920
     assert r["streams"]["end_total"] == 3193825920
     flat = [{"date": f"2026-09-0{i}", "value": v} for i, v in enumerate([90, 100, 100, 100, 110], 1)]
@@ -131,6 +131,21 @@ def test_tail_repeat_daily_and_duplicate_dates_and_missing_baseline_followup():
     assert calculate_attribution(dup, dup, "2026-01-01", today=date(2026, 1, 1))["streams"]["start_total"] == 20
     no_base = calculate_attribution([], [{"date": "2026-01-01", "value": 10}], "2025-12-01", "2025-12-02", date(2026, 1, 1))
     assert no_base["streams"]["lift_pct_followup"] is None
+
+
+def test_change_point_smoothing_covers_stalls_without_fake_leading_or_tail_rates():
+    def run(values):
+        h = [{"date": f"2026-01-{i:02d}", "value": v} for i, v in enumerate(values, 1)]
+        return calculate_attribution([], h, "2026-01-01", today=date(2026, 1, len(values)))['streams_history']
+    for values in ([100, 110, 110, 120, 120, 130], [100, 110, 110, 105, 105, 120]):
+        points = run(values)
+        assert sum(p["daily"] or 0 for p in points) == values[-1] - values[0]
+    leading = run([100, 100, 110, 120])
+    assert [p["daily"] for p in leading] == [None, 5.0, 5.0, 10.0]
+    tail = run([100, 110, 110, 110])
+    assert [p["daily"] for p in tail] == [None, 10.0, None, None]
+    ordinary = run([100, 170, 360, 400])
+    assert [p["daily"] for p in ordinary] == [None, 70.0, 190.0, 40.0]
 
 
 def test_followup_to_date_flags_open_window_and_exact_close_boundary():

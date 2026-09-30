@@ -100,9 +100,9 @@ export function useEditCampaign(slug: string) {
     onSuccess: async () => {
       await Promise.all([
         qc.invalidateQueries({ queryKey: keys.campaign(slug) }),
-        qc.invalidateQueries({ queryKey: ["popScore", slug] }),
         qc.invalidateQueries({ queryKey: keys.campaigns }),
       ])
+      void qc.invalidateQueries({ queryKey: ["popScore", slug] })
     },
   })
 }

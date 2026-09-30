@@ -9,6 +9,8 @@ import { Input } from "@/components/ui/input"
 import { useEditCampaign, usePopScore, useSetPopScoreTrack } from "@/lib/queries"
 import type { PopScore } from "@/lib/types"
 import { chartAxisProps, chartTooltipProps } from "./chartDate"
+// eslint-disable-next-line react-refresh/only-export-components
+export { chartAxisProps } from "./chartDate"
 
 const ACCENT = "#E100C3"
 const AXIS = "#909098"
@@ -31,14 +33,13 @@ function TrackLinkForm({ initial, onSave, onCancel, isPending, error }: {
 const num = (v: number | null | undefined) => v == null ? "—" : v.toLocaleString()
 const pct = (v: number | null | undefined) => v == null ? "N/A" : `${v > 0 ? "+" : ""}${v.toFixed(1)}%`
 const compact = (v: number | null | undefined) => v == null ? "—" : Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(v)
-const signedCompact = (v: number | null | undefined) => v == null ? "—" : `${v > 0 ? "+" : v < 0 ? "−" : ""}${compact(Math.abs(v))}`
 const date = (v?: string) => v ? new Date(`${v}T00:00:00`).toLocaleDateString("en", { month: "short", day: "numeric", year: "numeric" }) : "—"
 
 function phaseText(data: PopScore) {
   if (data.phase === "followup") {
     return data.followup_day == null ? undefined : `Follow-up (day ${data.followup_day} of ${data.followup_days ?? 28})`
   }
-  return ({ live: "Live", complete: "Complete", not_started: "Not started", no_start: "Not started" } as Record<string, string>)[data.phase ?? ""]
+  return ({ live: "Live", complete: "Complete", finished_no_end: "Finished · end date not set", not_started: "Not started", no_start: "Not started" } as Record<string, string>)[data.phase ?? ""]
 }
 
 function PopScoreChart({ data }: { data: PopScore }) {
@@ -71,18 +72,14 @@ function PopScoreChart({ data }: { data: PopScore }) {
   </div>
 }
 
-function MetricRow({ title, start, end, followup, change, endToDate, followupToDate, noEnd }: {
-  title: string; start: string; end: string; followup: string; change: string
-  endToDate?: boolean; followupToDate?: boolean; noEnd?: boolean
-}) {
-  const cells = [["Start", start, false], ["End", end, !!endToDate], ["Follow-up", followup, !!followupToDate]] as const
-  return <section className="space-y-2"><div className="flex flex-wrap items-center gap-2"><h4 className="text-[13px] font-medium">{title}</h4><span className="text-[11px] text-rt-fg-tertiary">{change}</span></div>
-    <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">{cells.map(([label, value, toDate]) => <div key={label} className="rounded-md bg-white/[0.03] px-3 py-2">
-      <div className="text-[11px] text-rt-fg-tertiary">{label}{toDate && <span className="ml-1">to date</span>}</div>
-      <div className="text-lg font-semibold tabular-nums">{value}</div>
-      {label === "Follow-up" && noEnd && <div className="text-[11px] text-rt-fg-tertiary">Set an end date</div>}
-    </div>)}</div>
-  </section>
+function headline(data: PopScore) {
+  const parts: string[] = []
+  if (data.popularity?.start != null && data.popularity.end != null) parts.push(`Popularity ${data.popularity.start} → ${data.popularity.end}`)
+  const s = data.streams
+  if (s?.baseline_daily != null && s.campaign_daily != null) parts.push(`streams ${compact(s.baseline_daily)} → ${compact(s.campaign_daily)}/day (${pct(s.lift_pct_campaign)})`)
+  const u = data.ugc
+  if (u?.baseline_daily != null && u.campaign_daily != null) parts.push(`TikTok videos ${compact(u.baseline_daily)} → ${compact(u.campaign_daily)}/day${u.gained_campaign == null ? "" : `, ${compact(u.gained_campaign)} new during the campaign`}`)
+  return parts.join(" · ")
 }
 
 export function PopScoreCard({ slug, tracker_url }: { slug: string; tracker_url?: string }) {
@@ -92,6 +89,7 @@ export function PopScoreCard({ slug, tracker_url }: { slug: string; tracker_url?
   const [editing, setEditing] = useState(false)
   const [endDateDraft, setEndDateDraft] = useState("")
   const [editingEndDate, setEditingEndDate] = useState(false)
+  const [showTrend, setShowTrend] = useState(false)
   const save = (link: string) => setTrack.mutate(link, { onSuccess: () => setEditing(false) })
   const data = popScore.data
   const header = <div className="flex items-center justify-between mb-3"><h3 className="text-[15px] font-semibold">Song attribution</h3>
@@ -104,6 +102,7 @@ export function PopScoreCard({ slug, tracker_url }: { slug: string; tracker_url?
     {header}
     {popScore.isError && <div className="flex items-center gap-2 text-red-500 text-sm"><AlertCircle className="size-4" />{popScore.error?.message || "Couldn't load pop score"}</div>}
     {!popScore.isError && data?.linked && !editing && <>
+      {data.streams_error && <div className="text-xs text-rt-fg-tertiary" role="status">{data.streams_error}</div>}
       <div className="flex flex-wrap items-center gap-3">
         {data.track?.image_url && <img src={data.track.image_url} alt="" className="size-12 rounded object-cover" />}
         <div className="min-w-0 flex-1"><div className="font-medium">{data.track?.name ?? "Linked track"}</div><div className="text-[13px] text-rt-fg-tertiary">{data.track?.artists?.join(", ")}</div></div>
@@ -112,16 +111,18 @@ export function PopScoreCard({ slug, tracker_url }: { slug: string; tracker_url?
       </div>
       <div className="flex flex-wrap items-center gap-1 text-[13px] text-rt-fg-tertiary">
         <span>Start {date(data.start_date)}</span><span>→</span><span>End {data.end_date ? date(data.end_date) : "not set"}</span>
-        {!editingEndDate && <><button type="button" className="text-rt-magenta" onClick={() => { setEndDateDraft(data.end_date || ""); setEditingEndDate(true) }}>{data.end_date ? "Change" : "Set an end date"}</button>{data.end_date && <button type="button" className="text-rt-magenta" onClick={() => editCampaign.mutate({ end_date: "" })}>Clear</button>}</>}
-        {editingEndDate && <><Input aria-label="End date" type="date" min={data.start_date} value={endDateDraft} className="h-8 w-auto" disabled={editCampaign.isPending} onChange={(e) => setEndDateDraft(e.target.value)} /><Button size="sm" disabled={editCampaign.isPending || !endDateDraft} onClick={() => editCampaign.mutate({ end_date: endDateDraft }, { onSuccess: () => setEditingEndDate(false) })}>Save</Button><button type="button" onClick={() => setEditingEndDate(false)}>Cancel</button></>}
+        {!editingEndDate && <><button type="button" className="text-rt-magenta" onClick={() => { editCampaign.reset(); setEndDateDraft(data.end_date || ""); setEditingEndDate(true) }}>{data.end_date ? "Change" : "Set an end date"}</button>{data.end_date && <button type="button" className="text-rt-magenta" onClick={() => editCampaign.mutate({ end_date: "" })}>Clear</button>}</>}
+        {editingEndDate && <><Input aria-label="End date" type="date" min={data.start_date} value={endDateDraft} className="h-8 w-auto" disabled={editCampaign.isPending} onChange={(e) => setEndDateDraft(e.target.value)} /><Button size="sm" disabled={editCampaign.isPending || !endDateDraft} onClick={() => editCampaign.mutate({ end_date: endDateDraft }, { onSuccess: () => setEditingEndDate(false) })}>Save</Button><button type="button" onClick={() => { editCampaign.reset(); setEditingEndDate(false) }}>Cancel</button></>}
         <span>→</span><span>Follow-up ends {data.followup_end ? date(data.followup_end) : "—"}</span>
         {editCampaign.isError && <span role="alert" className="text-red-400">{editCampaign.error?.message}</span>}
       </div>
-      <MetricRow title="Popularity" start={num(pop?.start)} end={num(pop?.end)} followup={data.end_date ? num(pop?.followup) : "—"} change={`${pop?.change_campaign == null ? "N/A" : `${pop.change_campaign > 0 ? "+" : ""}${pop.change_campaign} pts`} · follow-up ${pop?.change_followup == null ? "N/A" : `${pop.change_followup > 0 ? "+" : ""}${pop.change_followup} pts`}`} endToDate={pop?.end_is_to_date} followupToDate={pop?.followup_is_to_date} noEnd={!data.end_date} />
-      {data.streams_error ? <div className="text-xs text-rt-fg-tertiary" role="status">{data.streams_error}</div> : <><MetricRow title="Streams" start={compact(streams?.start_total)} end={compact(streams?.end_total)} followup={data.end_date ? compact(streams?.followup_total) : "—"} change={`${signedCompact(streams?.gained_campaign)} during · ${signedCompact(streams?.gained_followup)} after · Growth during campaign: ${pct(streams?.growth_pct_campaign)}`} endToDate={streams?.end_is_to_date} followupToDate={streams?.followup_is_to_date} noEnd={!data.end_date} />
-      <div className="rounded-md bg-white/[0.03] px-3 py-2 text-[13px]"><span className="font-medium">Impact</span><div className="mt-1 flex flex-col gap-1 text-rt-fg-tertiary sm:flex-row sm:flex-wrap sm:gap-2">
-        <span>Avg daily streams — before {compact(streams?.baseline_daily)} · during {compact(streams?.campaign_daily)} ({pct(streams?.lift_pct_campaign)}) · after {data.end_date ? `${compact(streams?.followup_daily)} (${pct(streams?.lift_pct_followup)} vs before)` : "Set an end date"}</span></div></div></>}
-      <PopScoreChart data={data} />
+      {headline(data) && <p className="text-[12px] text-rt-fg-tertiary">{headline(data)}</p>}
+      <div className="overflow-x-auto"><table className="w-full min-w-[520px] text-[12px]"><thead className="text-rt-fg-tertiary"><tr><th className="text-left font-normal">Metric</th>{["Start", "End", "+28 days", "Now"].map(x => <th className="text-right font-normal" key={x}>{x}</th>)}</tr></thead><tbody>
+        {([["Popularity", pop?.start, pop?.end, pop?.followup, pop?.now, pop?.end_is_to_date, pop?.followup_is_to_date], ["Streams", streams?.start_total, streams?.end_total, streams?.followup_total, streams?.now, streams?.end_is_to_date, false], ["TikTok videos", data.ugc?.start_total, data.ugc?.end_total, data.ugc?.followup_total, data.ugc?.now, data.ugc?.end_is_to_date, data.ugc?.followup_is_to_date]] as const).map(([label, a, b, c, d, endTd, followTd]) => <tr key={label} className="border-t border-white/8"><th className="py-1.5 text-left font-medium">{label}</th>{[a,b,c,d].map((value,i) => <td key={i} className="py-1.5 text-right tabular-nums">{value == null ? "—" : label === "Popularity" ? num(value) : compact(value)}{i === 1 && endTd && <span className="ml-1 text-[10px] text-rt-fg-tertiary">to date</span>}{i === 2 && followTd && <span className="ml-1 text-[10px] text-rt-fg-tertiary">to date</span>}{i === 3 && d != null && d === c && <span className="ml-1 text-[10px] text-rt-fg-tertiary">same</span>}</td>)}</tr>)}
+      </tbody></table></div>
+      {!data.streams_error && <p className="text-[11px] text-rt-fg-tertiary">Daily streams {compact(streams?.baseline_daily)} → {compact(streams?.campaign_daily)} during ({pct(streams?.lift_pct_campaign)}){streams?.followup_daily != null ? ` → ${compact(streams.followup_daily)} after` : ""}</p>}
+      {!data.ugc_error && <p className="text-[11px] text-rt-fg-tertiary">New TikTok videos/day {compact(data.ugc?.baseline_daily)} → {compact(data.ugc?.campaign_daily)} during ({pct(data.ugc?.lift_pct_campaign)}){data.ugc?.followup_daily != null ? ` → ${compact(data.ugc.followup_daily)} after` : ""}{data.ugc?.gained_campaign != null ? ` · ${compact(data.ugc.gained_campaign)} new during the campaign` : ""}</p>}
+      <div><button type="button" className="text-[12px] text-rt-fg-tertiary hover:text-rt-fg" onClick={() => setShowTrend(v => !v)}>{showTrend ? "Hide trend" : "Show trend"}</button>{showTrend && <div className="mt-2"><PopScoreChart data={data} /></div>}</div>
       <div className="flex flex-wrap items-center justify-between gap-2 border-t border-white/8 pt-3 text-[12px] text-rt-fg-tertiary"><span>Shows what happened to the song around the campaign — not proof the campaign caused all of it.</span>{tracker_url && <a href={tracker_url} target="_blank" rel="noopener noreferrer" className="whitespace-nowrap text-rt-magenta hover:underline">Open Tides Tracker ↗</a>}</div>
     </>}
     {showForm && <>{!data?.linked && !popScore.isError && <p className="text-rt-fg-tertiary text-[13px]">Link the song to track its Spotify popularity through this campaign.</p>}<TrackLinkForm initial={data?.link ?? ""} onSave={save} onCancel={editing ? () => setEditing(false) : undefined} isPending={setTrack.isPending} error={setTrack.isError ? setTrack.error?.message : undefined} /></>}

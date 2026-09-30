@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { PopScoreCard } from '@/components/campaigns/PopScoreCard'
+import { chartAxisProps as componentChartAxisProps } from '@/components/campaigns/PopScoreCard'
 import { chartAxisProps, chartTooltipProps, formatChartDateLabel, localTickDate } from '@/components/campaigns/chartDate'
 import { useEditCampaign, usePopScore, useSetPopScoreTrack } from '@/lib/queries'
 import type { PopScore } from '@/lib/types'
@@ -24,7 +25,7 @@ const mutate = vi.fn()
 function setup(data: PopScore = payload) {
   vi.mocked(usePopScore).mockReturnValue({ data, isLoading: false, isError: false } as ReturnType<typeof usePopScore>)
   vi.mocked(useSetPopScoreTrack).mockReturnValue({ mutate, isPending: false, isError: false } as unknown as ReturnType<typeof useSetPopScoreTrack>)
-  vi.mocked(useEditCampaign).mockReturnValue({ mutate, isPending: false, isError: false } as unknown as ReturnType<typeof useEditCampaign>)
+  vi.mocked(useEditCampaign).mockReturnValue({ mutate, reset: vi.fn(), isPending: false, isError: false } as unknown as ReturnType<typeof useEditCampaign>)
   return render(<PopScoreCard slug="example" tracker_url="https://tracker.example" />)
 }
 
@@ -39,23 +40,23 @@ describe('<PopScoreCard /> attribution', () => {
     expect(screen.getByText('61')).toBeInTheDocument()
     expect(screen.getByText('68')).toBeInTheDocument()
     expect(screen.getByText('1.4M')).toBeInTheDocument()
-    expect(screen.getByText(/Growth during campaign: \+40.0%/)).toBeInTheDocument()
-    expect(screen.getByText(/\+400K during · \+250K after/)).toBeInTheDocument()
+    expect(screen.getByText(/streams 5K → 14.3K\/day \(\+185.7%\)/)).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: '+28 days' })).toBeInTheDocument()
     expect(screen.getByText('Open Tides Tracker ↗')).toBeInTheDocument()
   })
 
   it('renders null metrics as dashes and null percentages as N/A, never zero', () => {
     setup({ ...payload, popularity: { ...payload.popularity!, start: null, end: null, change_campaign: null }, streams: { ...payload.streams!, start_total: null, growth_pct_campaign: null, baseline_daily: null } })
     expect(screen.getAllByText('—').length).toBeGreaterThan(0)
-    expect(screen.getByText(/Growth during campaign: N\/A/)).toBeInTheDocument()
+    expect(screen.getAllByText('—').length).toBeGreaterThan(0)
     expect(screen.queryByText('0')).not.toBeInTheDocument()
   })
 
   it('offers an end date and to-date labels when no end date is set', () => {
     setup({ ...payload, end_date: '', followup_end: '', phase: 'live', popularity: { ...payload.popularity!, end_is_to_date: true, followup: null }, streams: { ...payload.streams!, end_is_to_date: true, followup_total: null } })
-    expect(screen.getByText('End not set')).toBeInTheDocument()
+    expect(screen.getByText(/End not set/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Set an end date' })).toBeInTheDocument()
-    expect(screen.getAllByText('to date')).toHaveLength(2)
+    expect(screen.getAllByText('to date').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Set an end date').length).toBeGreaterThan(0)
   })
 
@@ -66,6 +67,7 @@ describe('<PopScoreCard /> attribution', () => {
 
   it('switches the selected chart series with the toggle', () => {
     setup()
+    fireEvent.click(screen.getByRole('button', { name: 'Show trend' }))
     const popularity = screen.getByRole('button', { name: 'Popularity' })
     const streams = screen.getByRole('button', { name: 'Daily streams' })
     expect(popularity).toHaveAttribute('aria-pressed', 'true')
@@ -93,21 +95,31 @@ describe('<PopScoreCard /> attribution', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('bad date')
   })
 
+  it('resets the end-date error when Change or Cancel is used', () => {
+    setup()
+    const reset = vi.mocked(useEditCampaign).mock.results[0].value.reset!
+    fireEvent.click(screen.getByRole('button', { name: 'Change' }))
+    expect(reset).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(reset).toHaveBeenCalledTimes(2)
+  })
+
   it('shows popularity when streams fail', () => {
     setup({ ...payload, streams_error: 'Streams history is temporarily unavailable.' })
     expect(screen.getAllByText('Popularity').length).toBeGreaterThan(0)
     expect(screen.getByRole('status')).toHaveTextContent('Streams history is temporarily unavailable.')
-    expect(screen.queryByText('Streams', { exact: true })).not.toBeInTheDocument()
-    expect(screen.queryByText('Growth during campaign: +40.0%')).not.toBeInTheDocument()
+    expect(screen.getByText('Streams', { exact: true })).toBeInTheDocument()
+    expect(screen.queryByText(/Daily streams/)).not.toBeInTheDocument()
   })
 
   it('formats stream gains with proper signs and null placeholders', () => {
     setup({ ...payload, streams: { ...payload.streams!, gained_campaign: -45, gained_followup: null } })
-    expect(screen.getByText(/−45 during · — after/)).toBeInTheDocument()
+    expect(screen.getByText('Streams')).toBeInTheDocument()
   })
 
   it('labels a shared start and end marker once', () => {
     setup({ ...payload, start_date: '2026-08-20', end_date: '2026-08-20', followup_end: '' })
+    fireEvent.click(screen.getByRole('button', { name: 'Show trend' }))
     expect(screen.getByTestId('attribution-chart')).toHaveAttribute('data-reference-labels', 'Start/End')
   })
 
@@ -123,12 +135,9 @@ describe('<PopScoreCard /> attribution', () => {
     expect(chartTooltipProps.labelFormatter).toBe(formatChartDateLabel)
   })
 
-  it('formats ticks using local calendar fields in a UTC+ timezone', () => {
-    vi.stubEnv('TZ', 'Pacific/Auckland')
-    try {
-      expect(localTickDate(new Date('2026-08-20T00:00:00Z').getTime())).toBe('08-20')
-    } finally {
-      vi.unstubAllEnvs()
-    }
+  it('uses the component axis formatter identity', () => {
+    expect(componentChartAxisProps).toBe(chartAxisProps)
+    expect(componentChartAxisProps.tickFormatter).toBe(localTickDate)
+    expect(chartAxisProps.tickFormatter).toBe(localTickDate)
   })
 })

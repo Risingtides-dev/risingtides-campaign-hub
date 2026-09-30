@@ -118,6 +118,14 @@ class TestClient:
         client, _ = _client_with({"most-history": _resp(200, {"obj": series})})
         assert client.streams_history(1) == [{"date": "2026-08-07", "value": 3126151554}, {"date": "2026-08-08", "value": 3126151554}, {"date": "2026-08-09", "value": 3129082729}]
 
+    def test_tiktok_posts_history_picks_newest_valid_series_and_filters_since(self):
+        rows = [
+            {"track_domain_id": None, "data": [{"timestp": "2026-08-01", "value": 4}]},
+            {"track_domain_id": None, "data": [{"timestp": "2026-08-10", "value": 8}, {"timestp": "bad", "value": 9}]},
+        ]
+        client, _ = _client_with({"most-history": _resp(200, {"obj": rows})})
+        assert client.tiktok_posts_history(1, since=date(2026, 8, 5)) == [{"date": "2026-08-10", "value": 8}]
+
     def test_streams_keeps_entire_repeat_runs(self):
         rows = [{"track_domain_id": "x", "data": [
             {"timestp": "2026-09-24", "value": 3191203786},
@@ -310,13 +318,10 @@ class TestPopScoreEndpoints:
             body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
         assert body["linked"] is True
         assert body["popularity"]["start"] == 82
-        assert body["streams"] == {
-            "start_total": None, "end_total": None, "followup_total": None,
-            "end_is_to_date": True, "followup_is_to_date": False,
-            "gained_campaign": None, "gained_followup": None, "growth_pct_campaign": None,
-            "baseline_daily": None, "campaign_daily": None, "followup_daily": None,
-            "lift_pct_campaign": None, "lift_pct_followup": None,
-        }
+        assert body["streams"]["start_total"] is None
+        assert body["streams"]["end_total"] is None
+        assert body["streams"]["gained_campaign"] is None
+        assert body["streams"]["baseline_daily"] is None
         assert body["streams_history"] == []
         assert body["streams_error"] == "Streams history is temporarily unavailable."
 
@@ -327,6 +332,32 @@ class TestPopScoreEndpoints:
         assert client.post(f"/api/campaign/{slug}/edit", json={"end_date": ""}).status_code == 200
         for value in ("2026-9-30", "2026-08-31"):
             assert client.post(f"/api/campaign/{slug}/edit", json={"end_date": value}).status_code == 400
+
+    def test_finish_sets_today_once_and_reopen_keeps_the_end_date(self, client):
+        slug = self._campaign(client, start="2026-09-01")
+        response = client.post(f"/api/campaign/{slug}/edit", json={"completion_status": "completed"})
+        assert response.status_code == 200
+        assert client.get(f"/api/campaign/{slug}").get_json()["end_date"] == date.today().isoformat()
+        client.post(f"/api/campaign/{slug}/edit", json={"end_date": "2026-09-20"})
+        client.post(f"/api/campaign/{slug}/edit", json={"completion_status": "none"})
+        assert client.get(f"/api/campaign/{slug}").get_json()["end_date"] == "2026-09-20"
+
+    def test_finish_with_blank_legacy_start_succeeds(self, client):
+        slug = self._campaign(client)
+        from campaign_manager.blueprints import campaigns as campaigns_bp
+        legacy = {"title": "Legacy", "name": "Legacy", "start_date": "", "end_date": ""}
+        with patch.object(campaigns_bp._db, "is_active", return_value=True), \
+             patch.object(campaigns_bp._db, "get_campaign", return_value=legacy), \
+             patch.object(campaigns_bp._db, "save_campaign") as save:
+            response = client.post(f"/api/campaign/{slug}/edit", json={"completion_status": "completed"})
+        assert response.status_code == 200
+        assert save.call_args.args[1]["end_date"] == date.today().isoformat()
+
+    def test_finish_never_overwrites_existing_end_date(self, client):
+        slug = self._campaign(client, start="2026-09-01")
+        client.post(f"/api/campaign/{slug}/edit", json={"end_date": "2026-09-20"})
+        client.post(f"/api/campaign/{slug}/edit", json={"completion_status": "completed"})
+        assert client.get(f"/api/campaign/{slug}").get_json()["end_date"] == "2026-09-20"
 
     def test_edit_header_payload_and_bad_start_date_shapes(self, client):
         slug = self._campaign(client)

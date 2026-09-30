@@ -5,6 +5,12 @@ import { MemoryRouter } from 'react-router-dom'
 import type { CampaignDetail } from '@/lib/types'
 
 describe('<CampaignHeader />', () => {
+  it('disables Cancel while a save is pending', () => {
+    const campaign = { slug: 'song', title: 'Song', start_date: '2026-08-01', budget: { total: 0, booked: 0, paid: 0, left: 0 }, creators: [], matched_videos: [] } as unknown as CampaignDetail
+    render(<MemoryRouter><CampaignHeader campaign={campaign} onEdit={vi.fn()} onRefresh={vi.fn()} isEditing isRefreshing={false} /></MemoryRouter>)
+    fireEvent.click(screen.getByRole('button', { name: /Edit/ }))
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled()
+  })
   it('includes end_date with start_date in the edit submission', () => {
     const onEdit = vi.fn()
     const campaign = {

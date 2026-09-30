@@ -224,6 +224,7 @@ export function CampaignHeader({
             </Button>
             <Button
               type="button"
+              disabled={editPending}
               onClick={handleCancel}
               className="bg-white/15 hover:bg-white/25 text-white border border-white/30"
             >

@@ -53,7 +53,7 @@ describe('query key factory', () => {
   })
 })
 
-it('waits for campaign invalidations before edit mutateAsync resolves', async () => {
+it('awaits campaign invalidations but resolves without waiting for pop score refresh', async () => {
   const qc = new QueryClient()
   let release!: () => void
   const pending = new Promise<void>((resolve) => { release = resolve })
@@ -64,9 +64,12 @@ it('waits for campaign invalidations before edit mutateAsync resolves', async ()
   let settled = false
   let mutation!: Promise<unknown>
   act(() => { mutation = result.current.mutateAsync({ title: 'fresh' }).then((v) => { settled = true; return v }) })
-  await waitFor(() => expect(qc.invalidateQueries).toHaveBeenCalledTimes(3))
+  await waitFor(() => expect(qc.invalidateQueries).toHaveBeenCalledTimes(2))
+  expect(qc.invalidateQueries).toHaveBeenCalledWith({ queryKey: keys.campaign('song') })
+  expect(qc.invalidateQueries).toHaveBeenCalledWith({ queryKey: keys.campaigns })
   expect(settled).toBe(false)
   release()
   await mutation
   expect(settled).toBe(true)
+  expect(qc.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['popScore', 'song'] })
 })
