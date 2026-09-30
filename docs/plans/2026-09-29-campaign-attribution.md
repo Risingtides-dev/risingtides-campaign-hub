@@ -322,7 +322,9 @@ The `now` cumulative totals remain raw for display. `change_since_start`,
 `change_since_end`, and campaign/follow-up deltas use the recount-adjusted
 series consistently. A cumulative block sets `adjusted: true` when an
 exclusion falls within the available history range from its first reading
-through `now`; it is false in `no_start` and when no adjustment applies.
+through `now`; it is false in both `not_started` and `no_start` phases and when
+no adjustment applies. A true flag means an exclusion affected adjusted
+totals or rates; raw `now` and displayed raw totals remain unchanged.
 This lets the UI footnote that displayed raw `now` and adjusted changes differ.
 
 `popularity` uses `change_campaign` and `change_followup`; cumulative blocks
@@ -343,6 +345,13 @@ Chartmetric recount from a real one-day jump. The design therefore is:
 1. **Automatic default (rule v6)** — described in the recount section; it runs on
    stall-collapsed steps (repeated totals merged into one longer step) and uses a
    median per-day pace, so irregular Chartmetric update cadence can't erase growth.
+   An opposite-sign adjacent glitch pair is additionally excluded when the first
+   leg meets the 50× pace and metric floor gates, the leg magnitudes differ by at
+   most `max(100, 5% of the first leg)`, and the next three collapsed steps have
+   a combined absolute rate strictly below one-fortieth of the first-leg rate.
+   The second leg must also meet the metric floor. Both legs are listed as
+   recounts; the adjusted series applies each leg's own offset from its event
+   date onward, preserving the pair's net change.
 2. **Manual override per campaign.** Every step the rule flags (recount or unusual)
    is listed on the card with a small "Count it" / "Leave it out" action. The choice is
    stored on the campaign (`campaigns.attribution_overrides`, JSON:

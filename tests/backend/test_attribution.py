@@ -26,9 +26,9 @@ def test_real_popscore_fixture_raw_recount_and_unusual_decisions():
         "blinding_lights": ([], [{"date": "2026-05-12", "change": 1286267}, {"date": "2026-05-13", "change": 1427594}, {"date": "2026-05-14", "change": 1493529}, {"date": "2026-05-15", "change": 1556964}, {"date": "2026-05-16", "change": 1558772}], [
             {"date": "2026-05-23", "change": -2820230}, {"date": "2026-06-16", "change": 51143},
             {"date": "2026-09-23", "change": 271879}], [
-            # 06-15: 10,656 over the collapsed 2-day gap = 5,328/day; v6
-            # computes the local 14-step median pace and after-rate on steps.
-            {"date": "2026-06-15", "change": 10656},
+            # 06-14: the changed reading date starts the collapsed step; the
+            # repeated 06-15 total extends the next step's starting anchor.
+            {"date": "2026-06-14", "change": 10656},
             {"date": "2026-06-20", "change": 4917}, {"date": "2026-07-15", "change": 3131},
             {"date": "2026-07-17", "change": 1961}, {"date": "2026-09-06", "change": 7647},
             {"date": "2026-09-29", "change": 5272}]),
@@ -79,7 +79,7 @@ def test_recount_decision_boundaries_and_metric_floors():
     b = block([300] * 14 + [14_999, 1, 1, 1])
     assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == [] and [{k:v for k,v in x.items() if k != "source"} for x in b["unusual"]] == [{"date": "2026-01-16", "change": 14_999}]
     # Next-three condition is strict, and floor equality is included.
-    b = block([10] * 14 + [10_000, 500, 500, 500])
+    b = block([10] * 14 + [10_000, 250, 250, 250])
     assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == []
     b = block([1] * 14 + [9_999, 1, 1, 1])
     assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == [] and [{k:v for k,v in x.items() if k != "source"} for x in b["unusual"]] == [{"date": "2026-01-16", "change": 9_999}]
@@ -95,12 +95,13 @@ def test_recount_decision_boundaries_and_metric_floors():
     assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == [] and [{k:v for k,v in x.items() if k != "source"} for x in b["unusual"]] == [{"date": "2026-01-06", "change": 10_000}]
     b = block([1] * 5 + [10_000, 1, 1, 1])
     assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == [{"date": "2026-01-07", "change": 10_000}]
-    # The collapsed-step lookback is capped at the immediately previous 14 steps.
+    # The 14-step window drops the oldest high step; the median over its
+    # remaining seven high and seven low rates is 150.5/day, so this recounts.
     b = block([300] * 8 + [1] * 7 + [10_000, 1, 1, 1])
-    assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == []
-    b = block([20_000] * 14 + [1_000_000, 1, 1, 1], "streams")
+    assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == [{"date": "2026-01-17", "change": 10_000}]
+    b = block([1_000] * 14 + [1_000_000, 1, 1, 1], "streams", initial=500_000_000)
     assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == [{"date": "2026-01-16", "change": 1_000_000}]
-    b = block([20_000] * 14 + [999_999, 1, 1, 1], "streams")
+    b = block([1_000] * 14 + [999_999, 1, 1, 1], "streams", initial=500_000_000)
     assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == []
 
 
@@ -147,10 +148,14 @@ def test_v6_rollback_pairs_both_directions_use_rate_based_confirmation():
 
 def test_not_started_adjusted_is_false_and_clean_points_skips_dict_date():
     h = _history([0] * 14 + [20_000, 1, 1, 1])
-    result = calculate_attribution([], [], "2027-01-01", today=date(2026, 1, 1), ugc=h)
+    result = calculate_attribution([], h, "2027-01-01", today=date(2026, 1, 1), ugc=h)
     assert result["phase"] == "not_started"
     assert result["ugc"]["adjusted"] is False and result["streams"]["adjusted"] is False
     assert result["ugc"]["recounts"] is None
+    streams_h = _history([20_000] * 14 + [1_000_000, 1, 1, 1], initial=500_000_000)
+    no_start = calculate_attribution([], streams_h, "", today=date(2026, 1, 1))
+    assert no_start["phase"] == "no_start"
+    assert no_start["streams"]["adjusted"] is False
     from campaign_manager.services.chartmetric import _clean_points
     assert _clean_points([{"timestp": {"x": 1}, "value": 1}, {"timestp": "2026-01-01", "value": 2}]) == [{"date": "2026-01-01", "value": 2}]
 
@@ -444,10 +449,157 @@ def test_positive_recount_step_is_null_daily_and_not_smoothed():
     assert "smoothed" not in points[6] and "smoothed" not in points[8]
 
 
-def test_candidate_with_only_two_later_readings_is_counted():
+def test_candidate_with_only_two_later_readings_is_not_a_recount():
     vals = [100_000 + 1000 * i for i in range(7)]
     vals += [vals[-1] + 100_000, vals[-1] + 101_000, vals[-1] + 102_000]
     h = [{"date": f"2026-07-{i+1:02}", "value": v} for i, v in enumerate(vals)]
     result = calculate_attribution([], [], "2026-07-01", today=date(2026, 7, len(h)), ugc=h)
     assert [{k:v for k,v in x.items() if k != "source"} for x in result["ugc"]["recounts"]] == []
     assert result["ugc"]["now"] == vals[-1]
+
+
+def test_v6_required_scenario_pins_from_pass11():
+    from datetime import timedelta
+
+    def series(increments, initial, gaps=None):
+        out = [{"date": "2026-01-01", "value": initial}]
+        value, day = initial, date(2026, 1, 1)
+        for i, inc in enumerate(increments):
+            value += inc
+            day += timedelta(days=(gaps[i] if gaps else 1))
+            out.append({"date": day.isoformat(), "value": value})
+        return out
+
+    def classify(h, metric="ugc"):
+        return calculate_attribution([], h if metric == "streams" else [], "2026-01-01",
+            today=date.fromisoformat(h[-1]["date"]), ugc=h if metric == "ugc" else [])[metric]
+
+    # Repeated daily totals are a cadence detail. The collapsed rates stay at
+    # 1.5K/2K/4K UGC per day and 200K streams per day.
+    for daily, cadence in ((1500, 7), (2000, 3), (4000, 3)):
+        increments = [daily if (i + 1) % cadence == 0 else 0 for i in range(70)]
+        h = series(increments, 1_000_000)
+        b = classify(h)
+        assert b["recounts"] == []
+        assert b["now"] - h[0]["value"] == sum(increments)
+    for daily, cadence in ((200_000, 7), (200_000, 3)):
+        increments = [daily if (i + 1) % cadence == 0 else 0 for i in range(70)]
+        h = series(increments, 100_000_000)
+        b = classify(h, "streams")
+        assert b["recounts"] == [] and b["now"] - h[0]["value"] == sum(increments)
+
+    # Viral but real growth remains counted despite a quiet three step tail.
+    h = series([300] * 14 + [20_000, 0, 2500, 0] + [1700] * 4, 200_000)
+    b = classify(h)
+    assert b["recounts"] == []
+    assert {"date": h[15]["date"], "change": 20_000, "source": "auto"} in b["unusual"]
+
+    # A week-long flat run makes catch-up growth ordinary per-day cadence.
+    h = series([300] * 7 + [0] * 7 + [10_500, 0, 1500, 0, 1500, 0], 200_000)
+    assert classify(h)["recounts"] == []
+    # The step immediately after a stalled run spans from the final flat
+    # reading, so a 10K catch-up is a 100x recount rather than an 8-day step.
+    h = series([100] * 5 + [0] * 7 + [10_000, 1, 1, 1], 200_000)
+    assert classify(h)["recounts"] == [{"date": h[13]["date"], "change": 10_000, "source": "auto"}]
+
+    # F3/F5 sequence pins that prior recounts are excluded from pace and both
+    # signs can be classified as recounts.
+    h = series([200] * 14 + [15_000] + [1000] * 4 + [51_655, 1000, 1000, 1000], 200_000)
+    assert classify(h)["recounts"] == [{"date": h[20]["date"], "change": 51_655, "source": "auto"}]
+    h = series([1000] * 4 + [-2_820_000] + [1000] * 4 + [50_000] + [1000] * 5, 10_000_000)
+    assert [(x["date"], x["change"]) for x in classify(h)["recounts"]] == [(h[5]["date"], -2_820_000), (h[10]["date"], 50_000)]
+
+    # The rollback pair is a flat offset in the adjusted series; raw now is intact.
+    base = [120, 80, 0, 150, 90, 110, 100, 0, 95, 105, 130, 70, 100, 100]
+    h = series(base + [-20_000, 20_050, 100, 100, 100, 100], 3_300_000)
+    b = classify(h)
+    assert b["gained_campaign"] == 1650
+    assert b["now"] == h[-1]["value"]
+    h = series(base + [20_000, -20_000, 100, 100, 100, 100], 3_300_000)
+    assert classify(h)["gained_campaign"] == 1650
+
+    # Large streams retain their 1M floor and suppress a matched dip/recovery.
+    h = series([20_000] * 14 + [-1_500_000, 1_520_000, 20_000, 20_000, 20_000], 500_000_000)
+    b = classify(h, "streams")
+    assert [x["change"] for x in b["recounts"]] == [-1_500_000, 1_520_000]
+    assert b["gained_campaign"] == sum([20_000] * 14 + [20_000, 20_000, 20_000])
+
+
+def test_manual_overrides_are_applied_after_auto_and_scoped_to_supplied_campaign():
+    h = _history([300] * 14 + [20_000, 300, 300, 300], initial=200_000)
+    day = h[15]["date"]
+    auto = calculate_attribution([], [], "2026-01-01", today=date(2026, 2, 1), ugc=h)
+    included = calculate_attribution([], [], "2026-01-01", today=date(2026, 2, 1), ugc=h,
+        overrides={"ugc": {day: "include"}})["ugc"]
+    assert included["recounts"] == []
+    assert {"date": day, "change": 20_000, "source": "manual"} in included["unusual"]
+    assert {"date": day, "change": 20_000, "source": "auto"} in auto["ugc"]["recounts"]
+    excluded = calculate_attribution([], [], "2026-01-01", today=date(2026, 2, 1), ugc=h,
+        overrides={"ugc": {day: "exclude"}})["ugc"]
+    assert {"date": day, "change": 20_000, "source": "manual"} in excluded["recounts"]
+    assert all(x["date"] != day for x in excluded["unusual"])
+    reset = calculate_attribution([], [], "2026-01-01", today=date(2026, 2, 1), ugc=h,
+        overrides={"ugc": {day: "auto"}})["ugc"]
+    assert reset["recounts"] == auto["ugc"]["recounts"]
+
+
+def test_excluded_steps_do_not_raise_the_later_pace_median():
+    increments = [1000] * 7 + [100_000] * 7 + [60_000, 1, 1, 1]
+    h = _history(increments, initial=10_000_000)
+    excluded_dates = {h[i]["date"]: "exclude" for i in range(8, 15)}
+    b = calculate_attribution([], [], "2026-01-01", today=date(2026, 2, 1), ugc=h,
+        overrides={"ugc": excluded_dates})["ugc"]
+    assert [x["date"] for x in b["recounts"]] == [h[i]["date"] for i in range(8, 16)]
+
+
+def test_seeded_small_song_monte_carlo_has_zero_false_recounts():
+    import math
+    import random
+
+    rng = random.Random(11)
+
+    def poisson(lam):
+        limit, product, count = math.exp(-lam), 1.0, 0
+        while product > limit:
+            product *= rng.random()
+            count += 1
+        return count - 1
+
+    cases = 0
+    for lam in (0.2, 0.5, 1, 2, 5):
+        for initial, spike in ((100, 10), (150, 20), (300, 25), (1000, 40), (5000, 400), (20000, 2000)):
+            for _ in range(10):
+                increments = [poisson(lam) for _ in range(14)] + [spike + poisson(lam)] + [poisson(lam) for _ in range(3)]
+                h = _history(increments, initial=initial)
+                result = calculate_attribution([], [], "2026-01-01", today=date(2026, 2, 1), ugc=h)
+                assert result["ugc"]["recounts"] == []
+                cases += 1
+    assert cases == 300
+
+
+def test_pace_uses_median_not_mean():
+    # Twelve 100/day steps and two 1,000/day steps have median 100 but mean
+    # 228.6. The exact 10K candidate clears 50x the median only.
+    h = _history([100] * 12 + [1000] * 2 + [10_000, 1, 1, 1], initial=100_000)
+    b = calculate_attribution([], [], "2026-01-01", today=date(2026, 2, 1), ugc=h)["ugc"]
+    assert b["recounts"] == [{"date": h[15]["date"], "change": 10_000, "source": "auto"}]
+
+
+def test_streams_v3_adjusted_fields_keep_raw_totals_and_history_shape():
+    h = _history([20_000] * 14 + [1_500_000, 20_000, 20_000, 20_000, 20_000], initial=100_000_000)
+    result = calculate_attribution([], h, h[14]["date"], h[-1]["date"], today=date(2026, 1, 20))
+    b = result["streams"]
+    assert b["adjusted"] is True
+    assert b["start_total"] == h[14]["value"] and b["end_total"] == h[-1]["value"]
+    assert b["now"] == h[-1]["value"]
+    assert b["gained_campaign"] == 80_000
+    assert b["growth_pct_campaign"] == pytest.approx(round(80_000 / h[14]["value"] * 100, 1))
+    assert b["baseline_daily"] == 20_000.0 and b["campaign_daily"] == 16_000.0
+    assert result["streams_history"][-1]["total"] == h[-1]["value"] - 1_500_000
+    baseline_h = _history([20_000] * 5 + [1_500_000] + [20_000] * 12, initial=100_000_000)
+    baseline_result = calculate_attribution([], baseline_h, baseline_h[14]["date"], baseline_h[-1]["date"],
+        today=date(2026, 1, 19))
+    assert baseline_result["streams"]["baseline_daily"] == 18_571.4
+    clean = _history([20_000] * 18, initial=100_000_000)
+    clean_result = calculate_attribution([], clean, clean[14]["date"], clean[-1]["date"], today=date(2026, 1, 19))
+    assert clean_result["streams"]["adjusted"] is False

@@ -85,6 +85,9 @@ class TestCampaignCrud:
         assert any("ADD COLUMN IF NOT EXISTS end_date_auto BOOLEAN DEFAULT FALSE" in sql for sql in executed)
         assert any("UPDATE campaigns SET end_date_auto = FALSE WHERE end_date_auto IS NULL" in sql for sql in executed)
         assert any("ALTER COLUMN end_date_auto SET DEFAULT FALSE" in sql for sql in executed)
+        assert any("ADD COLUMN IF NOT EXISTS attribution_overrides JSONB DEFAULT '{}'::jsonb" in sql for sql in executed)
+        assert any("UPDATE campaigns SET attribution_overrides = '{}'::jsonb WHERE attribution_overrides IS NULL" in sql for sql in executed)
+        assert any("ALTER COLUMN attribution_overrides SET DEFAULT '{}'::jsonb" in sql for sql in executed)
 
     def test_update_campaign_stats(self, db):
         _make_campaign(db)

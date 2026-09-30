@@ -203,6 +203,38 @@ class TestClient:
         assert http.post.call_count == 1
         assert http.get.call_count == 1
 
+
+def test_pop_score_override_endpoint_validates_and_persists_campaign_field(client, db, monkeypatch):
+    assert client.post("/api/campaign/create", json={"title": "Override Artist - Song"}).status_code == 201
+    assert client.post("/api/campaign/create", json={"title": "Other Artist - Song"}).status_code == 201
+    db.update_campaign_fields("override_artist_song", {"chartmetric_track_id": 12345})
+    db.update_campaign_fields("other_artist_song", {"chartmetric_track_id": 12345})
+    url = "/api/campaign/override_artist_song/pop-score/override"
+    missing = client.post("/api/campaign/missing/pop-score/override",
+        json={"metric": "ugc", "date": "2026-01-01", "action": "include"})
+    assert missing.status_code == 404
+    for body in ({}, {"metric": "popularity", "date": "2026-01-01", "action": "include"},
+                 {"metric": "ugc", "date": "2026-1-1", "action": "include"},
+                 {"metric": "streams", "date": "2026-01-01", "action": "ignore"}):
+        assert client.post(url, json=body).status_code == 400
+    updates = []
+    update = db.update_campaign_fields
+    def recording_update(slug, fields):
+        updates.append((slug, fields.copy()))
+        return update(slug, fields)
+    monkeypatch.setattr(db, "update_campaign_fields", recording_update)
+    resp = client.post(url, json={"metric": "ugc", "date": "2026-01-01", "action": "exclude"})
+    assert resp.status_code == 200
+    assert resp.get_json()["attribution_overrides"] == {"ugc": {"2026-01-01": "exclude"}}
+    assert db.get_campaign("override_artist_song")["attribution_overrides"] == {"ugc": {"2026-01-01": "exclude"}}
+    assert updates == [("override_artist_song", {"attribution_overrides": {"ugc": {"2026-01-01": "exclude"}}})]
+    other = client.post("/api/campaign/other_artist_song/pop-score/override",
+        json={"metric": "ugc", "date": "2026-01-01", "action": "include"})
+    assert other.get_json()["attribution_overrides"] == {"ugc": {"2026-01-01": "include"}}
+    assert db.get_campaign("override_artist_song")["attribution_overrides"] == {"ugc": {"2026-01-01": "exclude"}}
+    resp = client.post(url, json={"metric": "ugc", "date": "2026-01-01", "action": "auto"})
+    assert resp.get_json()["attribution_overrides"] == {"ugc": {}}
+
     @pytest.mark.parametrize("status", [401, 429])
     def test_retryable_status_retries_and_succeeds(self, status):
         client, http = _client_with({})

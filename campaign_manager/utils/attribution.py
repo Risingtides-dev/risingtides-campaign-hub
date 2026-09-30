@@ -1,5 +1,6 @@
 """Pure campaign attribution calculations for Chartmetric histories."""
 from datetime import date, datetime, timedelta
+from statistics import median
 from zoneinfo import ZoneInfo
 
 FOLLOWUP_DAYS = 28
@@ -86,11 +87,14 @@ def calculate_attribution(popularity, streams, start_date, end_date="", today=No
         collapsed = []
         for index, point in enumerate(ordered):
             if not collapsed or point["value"] != collapsed[-1]["value"]:
-                collapsed.append({**point, "raw_index": index})
+                collapsed.append({**point, "raw_index": index, "last_date": point["date"]})
             else:
-                collapsed[-1] = {**point, "raw_index": index}
+                # Keep the first date as the event date, but use the final
+                # repeated reading as the start of the following step.
+                collapsed[-1]["last_date"] = point["date"]
+                collapsed[-1]["last_raw_index"] = index
         increments = [collapsed[i]["value"] - collapsed[i-1]["value"] for i in range(1, len(collapsed))]
-        gaps = [(_day(collapsed[i]["date"]) - _day(collapsed[i-1]["date"])).days for i in range(1, len(collapsed))]
+        gaps = [(_day(collapsed[i]["date"]) - _day(collapsed[i-1]["last_date"])).days for i in range(1, len(collapsed))]
         offsets = [0] * len(ordered)
         recount_indices, found, unusual = set(), [], []
         overrides = overrides or {}
@@ -99,7 +103,7 @@ def calculate_attribution(popularity, streams, start_date, end_date="", today=No
             step_rate = abs(inc) / gaps[j] if gaps[j] else 0
             prior_rates = [abs(increments[k]) / gaps[k] for k in range(max(0, j-14), j)
                            if k+1 not in recount_indices and gaps[k] > 0]
-            pace = max(1, sorted(prior_rates)[len(prior_rates)//2]) if len(prior_rates) >= 5 else None
+            pace = max(1, median(prior_rates)) if len(prior_rates) >= 5 else None
             later = list(range(j+1, min(len(increments), j+4)))
             after_rate = (sum(abs(increments[k]) for k in later) / sum(gaps[k] for k in later)
                           if len(later) == 3 and sum(gaps[k] for k in later) else None)
