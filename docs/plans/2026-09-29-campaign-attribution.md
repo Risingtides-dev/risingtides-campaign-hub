@@ -31,8 +31,11 @@ view.
   `type=popularity`, otherwise campaigns older than ~6 months lose their
   baseline. The existing `popularity_history()` does not pass `since` — fix it.
 - Some readings carry extra keys (`monthly_diff`, ...). Ignore them.
-- A song can have several Spotify IDs (series). Use the existing
-  `_pick_primary_series` rule for both types.
+- A song can have several Spotify IDs (series). Popularity selects the highest
+  latest value among series whose latest reading is within 3 days of the newest
+  series. Streams prefers popularity's `track_domain_id`, then uses that same
+  recency-tolerant rule. Repeated consecutive cumulative stream totals are
+  dropped before daily differences are calculated.
 
 ## Data model
 
@@ -62,7 +65,7 @@ Existing fields stay exactly as they are (`linked`, `link`, `chartmetric_track_i
     "end": 68,                      // last reading on/before end_date; latest reading if end_date "" or in the future
     "end_is_to_date": false,        // true when "end" is the latest reading rather than a reading at end_date
     "followup": 66,                 // last reading on/before followup_end; latest if not reached. null when end_date "" or today <= end_date
-    "followup_is_to_date": false,
+  "followup_is_to_date": false,
     "change_campaign": 7,           // end - start (points), null if either null
     "change_followup": -2           // followup - end (points), null if either null
   },
@@ -85,6 +88,8 @@ Existing fields stay exactly as they are (`linked`, `link`, `chartmetric_track_i
     {"date": "2026-08-01", "total": 1000000, "daily": null},   // daily = total - previous total, divided by day gap; null for first point
     {"date": "2026-08-02", "total": 1005000, "daily": 5000}
   ],
+  "followup_day": 8,                // only in follow-up; today - end_date, clamped 1..28
+  "streams_error": null,            // present with user-facing text if streams fetch failed
   "data_as_of": "2026-09-28"        // date of the latest reading across both series ("" if none)
 }
 ```
@@ -95,15 +100,20 @@ Existing fields stay exactly as they are (`linked`, `link`, `chartmetric_track_i
 - Average daily streams over a window [A, B] = `(total_at(B) - total_at(A)) / (days between those two readings' dates)`.
   Use the dates of the readings actually found, not A and B, so gaps don't distort it.
   `null` if either reading is missing or they are the same day.
-- Baseline window = `[start_date - 14 days, start_date]`.
+- Baseline window = `[start_date - 14 days, start_date]`; fetch history from
+  `start_date - 21 days` so a last reading before the boundary can still anchor it.
 - A negative daily delta (data correction) is reported as-is in `streams_history`
   but must not crash anything.
 - `phase`: no start_date → `"no_start"`; today < start → `"not_started"`;
   no end_date or today <= end_date → `"live"`; today <= followup_end → `"followup"`; else `"complete"`.
-- History fetch window: `since = start_date - 14 days` (existing HISTORY_LEAD_DAYS);
+- History fetch window: `since = start_date - 21 days`;
   fall back to today - 90 days when start_date is blank/invalid.
 - Percent values rounded to 1 decimal; daily averages rounded to 1 decimal.
 - `today` must be injectable in the pure module so tests are deterministic.
+- `not_started` has null attribution values and deltas. `*_is_to_date` follows
+  the latest available reading date (`data_as_of`) relative to the target date.
+- A failed streams history request preserves popularity and returns
+  `streams_history: []` plus `streams_error`.
 
 ## UI — evolve `PopScoreCard` into the attribution card
 

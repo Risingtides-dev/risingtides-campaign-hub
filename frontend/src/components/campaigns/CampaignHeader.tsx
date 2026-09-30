@@ -37,6 +37,7 @@ export function CampaignHeader({
     campaign.additional_sounds || []
   )
   const [startDate, setStartDate] = useState(campaign.start_date || "")
+  const [endDate, setEndDate] = useState(campaign.end_date || "")
   const [budget, setBudget] = useState(campaign.budget?.total?.toString() || "0")
   const [cobrandLink, setCobrandLink] = useState(campaign.cobrand_link || "")
 
@@ -55,6 +56,7 @@ export function CampaignHeader({
       tt_track_name: ttTrackName,
       additional_sounds: additionalSounds.filter((s) => s.trim()),
       start_date: startDate,
+      end_date: endDate,
       budget: parseFloat(budget),
       cobrand_link: cobrandLink,
     })
@@ -69,6 +71,7 @@ export function CampaignHeader({
     setTtTrackName(campaign.tt_track_name || "")
     setAdditionalSounds(campaign.additional_sounds || [])
     setStartDate(campaign.start_date || "")
+    setEndDate(campaign.end_date || "")
     setBudget(campaign.budget?.total?.toString() || "0")
     setCobrandLink(campaign.cobrand_link || "")
     setIsEditing(false)
@@ -163,6 +166,10 @@ export function CampaignHeader({
                 onChange={(e) => setStartDate(e.target.value)}
                 className="w-full sm:w-[150px] bg-white/10 border-white/30 text-white"
               />
+            </div>
+            <div className="w-full sm:w-auto">
+              <label className="block text-xs opacity-60 mb-1">End Date</label>
+              <Input type="date" min={startDate} value={endDate} onChange={(e) => setEndDate(e.target.value)} className="w-full sm:w-[150px] bg-white/10 border-white/30 text-white" />
             </div>
             <div className="w-full sm:w-auto">
               <label className="block text-xs opacity-60 mb-1">Budget ($)</label>

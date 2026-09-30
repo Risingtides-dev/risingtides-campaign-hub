@@ -160,6 +160,7 @@ Tag `pre-migration-backup` on both remotes points to the old codebase.
 | `NOTION_API_KEY` | Notion internal integration token |
 | `NOTION_CRM_DATABASE_ID` | `1961465b-b829-80c9-a1b5-c4cb3284149a` |
 | `PORT` | Auto-set by Railway |
+| `CHARTMETRIC_REFRESH_TOKEN` | Required for the Pop Score / Song attribution card. If missing, the card shows a clear error. |
 
 #### Decodo proxy
 

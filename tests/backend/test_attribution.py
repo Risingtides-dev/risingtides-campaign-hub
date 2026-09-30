@@ -40,3 +40,37 @@ def test_followup_not_reached_and_future_end():
     assert res["popularity"]["end_is_to_date"] is True
     assert res["popularity"]["followup"] is None
     assert res["popularity"]["followup_is_to_date"] is False
+
+
+def test_boundary_baseline_uses_reading_before_fourteen_day_boundary():
+    hist = [{"date": "2025-12-15", "value": 0}, {"date": "2026-01-01", "value": 170}]
+    res = calculate_attribution(hist, hist, "2026-01-01", today=date(2026, 1, 1))
+    assert res["streams"]["baseline_daily"] == 10.0
+
+
+def test_not_started_has_no_attribution_values_and_nonpositive_baseline_pct_is_null():
+    hist = [{"date": "2026-01-01", "value": 10}, {"date": "2026-01-02", "value": 20}]
+    res = calculate_attribution(hist, hist, "2026-01-03", "2026-01-10", date(2026, 1, 2))
+    assert all(v is None for k, v in res["popularity"].items() if k.startswith("change_") or k in ("start", "end", "followup"))
+    assert all(v is None for k, v in res["streams"].items() if k not in ("end_is_to_date", "followup_is_to_date"))
+    from campaign_manager.utils.attribution import _pct
+    assert _pct(10, 0) is None and _pct(10, -2) is None
+
+
+def test_complete_phase_has_followup_values_and_data_based_to_date_and_followup_day():
+    hist = [{"date": "2025-12-18", "value": 0}, {"date": "2026-01-01", "value": 140},
+            {"date": "2026-01-20", "value": 330}, {"date": "2026-02-17", "value": 610}]
+    res = calculate_attribution(hist, hist, "2026-01-01", "2026-01-20", date(2026, 3, 1))
+    assert res["phase"] == "complete"
+    assert res["streams"]["followup_total"] == 610
+    assert res["followup_end"] == "2026-02-17"
+    assert res["followup_day"] is None
+    assert res["streams"]["followup_is_to_date"] is False
+
+
+def test_same_reading_changes_are_null():
+    hist = [{"date": "2026-01-01", "value": 10}]
+    res = calculate_attribution(hist, hist, "2026-01-01", "2026-01-02", date(2026, 1, 2))
+    assert res["popularity"]["change_campaign"] is None
+    assert res["streams"]["gained_campaign"] is None
+    assert res["streams"]["gained_followup"] is None

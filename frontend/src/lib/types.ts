@@ -949,6 +949,8 @@ export interface PopScore {
   end_date?: string
   followup_days?: number
   followup_end?: string
+  followup_day?: number | null
+  streams_error?: string
   phase?: AttributionPhase
   popularity?: {
     start: number | null

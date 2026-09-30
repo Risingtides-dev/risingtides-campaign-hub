@@ -587,6 +587,25 @@ def edit_campaign(slug: str):
     title = (data.get("title") or "").strip()
     sound_id_raw = (data.get("sound_id") or "").strip()
     start_date = (data.get("start_date") or "").strip()
+    effective_start = start_date if "start_date" in data else meta.get("start_date", "")
+    effective_end = data.get("end_date", meta.get("end_date", ""))
+    if "start_date" in data and start_date:
+        try:
+            parsed_start = datetime.strptime(start_date, "%Y-%m-%d").date()
+            if parsed_start.isoformat() != start_date:
+                raise ValueError
+        except (TypeError, ValueError):
+            return jsonify({"error": "start_date must be YYYY-MM-DD."}), 400
+    if effective_end and effective_start:
+        try:
+            parsed_start = datetime.strptime(effective_start, "%Y-%m-%d").date()
+            parsed_end = datetime.strptime(effective_end, "%Y-%m-%d").date()
+            if parsed_start.isoformat() != effective_start or parsed_end.isoformat() != effective_end:
+                raise ValueError
+        except (TypeError, ValueError):
+            return jsonify({"error": "Dates must be YYYY-MM-DD."}), 400
+        if parsed_end < parsed_start:
+            return jsonify({"error": "end_date must be on or after start_date."}), 400
     if "end_date" in data:
         end_date = data.get("end_date")
         if not isinstance(end_date, str):
@@ -619,8 +638,8 @@ def edit_campaign(slug: str):
         meta["sound_id"] = extract_sound_id(sound_id_raw)
 
     # Save additional sounds
-    additional = data.get("additional_sounds", [])
-    if isinstance(additional, list):
+    additional = data.get("additional_sounds")
+    if "additional_sounds" in data and isinstance(additional, list):
         meta["additional_sounds"] = [s.strip() for s in additional if s and s.strip()]
 
     if start_date:
@@ -655,8 +674,9 @@ def edit_campaign(slug: str):
                 "valid": ["fuzzy", "strict"],
             }), 400
 
-    cobrand_link = (data.get("cobrand_link") or "").strip()
-    meta["cobrand_link"] = cobrand_link
+    if "cobrand_link" in data:
+        cobrand_link = (data.get("cobrand_link") or "").strip()
+        meta["cobrand_link"] = cobrand_link
 
     if _db.is_active():
         _db.save_campaign(slug, meta)

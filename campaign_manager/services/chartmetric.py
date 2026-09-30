@@ -178,11 +178,8 @@ class ChartmetricClient:
             {"type": "popularity", **({"since": since.isoformat()} if since else {})},
         ) or []
         best = _pick_primary_series(series_list)
-        points = [
-            {"date": p["timestp"][:10], "value": int(p["value"])}
-            for p in best
-            if p.get("timestp") and p.get("value") is not None
-        ]
+        self._preferred_track_domain_id = _pick_primary_object(series_list).get("track_domain_id")
+        points = _clean_points(best)
         if since is not None:
             cutoff = since.isoformat()
             points = [p for p in points if p["date"] >= cutoff]
@@ -194,11 +191,12 @@ class ChartmetricClient:
             f"/track/{int(chartmetric_id)}/spotify/stats/most-history",
             {"type": "streams", **({"since": since.isoformat()} if since else {})},
         ) or []
-        best = _pick_primary_series(series_list)
-        points = [
-            {"date": p["timestp"][:10], "value": int(p["value"])}
-            for p in best if p.get("timestp") and p.get("value") is not None
-        ]
+        pop_id = getattr(self, "_preferred_track_domain_id", None)
+        preferred = [s for s in series_list if s.get("track_domain_id") == pop_id] if pop_id is not None else []
+        best = (max(preferred, key=lambda s: _latest(s)[1]) if preferred else _pick_primary_object(series_list))
+        points = _clean_points(best.get("data") or [])
+        points.sort(key=lambda p: p["date"])
+        points = [p for i, p in enumerate(points) if i == 0 or p["value"] != points[i-1]["value"]]
         if since is not None:
             cutoff = since.isoformat()
             points = [p for p in points if p["date"] >= cutoff]
@@ -206,15 +204,46 @@ class ChartmetricClient:
 
 
 def _pick_primary_series(series_list: List[dict]) -> List[dict]:
-    def rank(series: dict):
-        data = series.get("data") or []
-        if not data:
-            return ("", -1)
-        last = max(data, key=lambda p: p.get("timestp") or "")
-        return (last.get("timestp") or "", last.get("value") or 0)
+    return _pick_primary_object(series_list).get("data", [])
 
+
+def _latest(series):
+    data = _clean_points(series.get("data") or [])
+    last = max(data, key=lambda p: p["date"]) if data else {}
+    return (last.get("date", ""), last.get("value") or 0)
+
+
+def _pick_primary_object(series_list):
     candidates = [s for s in series_list if s.get("data")]
-    return max(candidates, key=rank)["data"] if candidates else []
+    if not candidates:
+        return {}
+    newest = max(_latest(s)[0] for s in candidates)
+    recent = [s for s in candidates if _latest(s)[0] and _date_gap(newest, _latest(s)[0]) <= 3]
+    if not recent:
+        recent = candidates
+    return max(recent, key=lambda s: _latest(s)[1])
+
+
+def _date_gap(a, b):
+    try:
+        return (date.fromisoformat(a) - date.fromisoformat(b)).days
+    except ValueError:
+        return 99999
+
+
+def _clean_points(data):
+    points = []
+    for p in data:
+        stamp = p.get("timestp")
+        try:
+            day = stamp[:10]
+            if date.fromisoformat(day).isoformat() != day:
+                continue
+            value = int(float(p.get("value")))
+        except (TypeError, ValueError, OverflowError, AttributeError):
+            continue
+        points.append({"date": day, "value": value})
+    return points
 
 
 _client: Optional[ChartmetricClient] = None

@@ -21,7 +21,7 @@ log = logging.getLogger(__name__)
 chartmetric_bp = Blueprint("chartmetric", __name__)
 
 # Show the run-up before the campaign started so lift is visible.
-HISTORY_LEAD_DAYS = 14
+HISTORY_LEAD_DAYS = 21
 DEFAULT_HISTORY_DAYS = 90
 MAX_LINK_LENGTH = 500
 
@@ -66,7 +66,6 @@ def get_pop_score(slug: str):
         client = chartmetric.get_client()
         snap = client.track_snapshot(row["track_id"])
         history = client.popularity_history(row["track_id"], since=_history_start(row["start_date"]))
-        streams = client.streams_history(row["track_id"], since=_history_start(row["start_date"]))
     except chartmetric.ChartmetricError as e:
         return jsonify({"linked": True, "link": row["link"], "error": str(e)}), 502
     except Exception:
@@ -75,8 +74,18 @@ def get_pop_score(slug: str):
 
     baseline = _baseline(history, row["start_date"])
     current = snap.spotify_popularity
-    attribution = calculate_attribution(history, streams, row["start_date"], row["end_date"])
-    return jsonify({
+    streams_error = None
+    try:
+        streams = client.streams_history(row["track_id"], since=_history_start(row["start_date"]))
+    except Exception as e:
+        log.exception("streams history fetch failed for %s", slug)
+        streams, streams_error = [], "Streams history is temporarily unavailable."
+    try:
+        attribution = calculate_attribution(history, streams, row["start_date"], row["end_date"])
+    except Exception:
+        log.exception("attribution calculation failed for %s", slug)
+        return jsonify({"linked": True, "link": row["link"], "error": "Couldn't calculate song attribution."}), 502
+    result = {
         "linked": True,
         "link": row["link"],
         "chartmetric_track_id": snap.chartmetric_id,
@@ -89,7 +98,10 @@ def get_pop_score(slug: str):
         "start_date": row["start_date"],
         "history": history,
         **attribution,
-    })
+    }
+    if streams_error:
+        result["streams_error"] = streams_error
+    return jsonify(result)
 
 
 @chartmetric_bp.post("/api/campaign/<slug>/pop-score/track")

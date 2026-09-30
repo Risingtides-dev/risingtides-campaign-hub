@@ -154,6 +154,26 @@ class TestEditCampaign:
         detail = client.get("/api/campaign/sam_barber_fever_dream").get_json()
         assert detail["meta"]["completion_status"] == "completed"
 
+    def test_partial_edits_preserve_optional_campaign_fields(self, client):
+        _create(client)
+        slug = "sam_barber_fever_dream"
+        client.post(f"/api/campaign/{slug}/edit", json={"additional_sounds": ["123"], "cobrand_link": "https://example.test"})
+        for body in ({"end_date": "2026-09-30"}, {"completion_status": "completed"}):
+            assert client.post(f"/api/campaign/{slug}/edit", json=body).status_code == 200
+            meta = client.get(f"/api/campaign/{slug}").get_json()["meta"]
+            assert meta["additional_sounds"] == ["123"]
+            assert meta["cobrand_link"] == "https://example.test"
+        client.post(f"/api/campaign/{slug}/edit", json={"cobrand_link": ""})
+        assert client.get(f"/api/campaign/{slug}").get_json()["meta"]["cobrand_link"] == ""
+
+    def test_start_date_update_validates_effective_end_date(self, client):
+        _create(client)
+        slug = "sam_barber_fever_dream"
+        client.post(f"/api/campaign/{slug}/edit", json={"start_date": "2026-09-01", "end_date": "2026-09-20"})
+        assert client.post(f"/api/campaign/{slug}/edit", json={"start_date": "2026-09-21"}).status_code == 400
+        assert client.post(f"/api/campaign/{slug}/edit", json={"start_date": "2026-9-02"}).status_code == 400
+        assert client.post(f"/api/campaign/{slug}/edit", json={"start_date": "2026-09-02"}).status_code == 200
+
     def test_rejects_bad_match_strategy(self, client):
         _create(client)
         resp = client.post(

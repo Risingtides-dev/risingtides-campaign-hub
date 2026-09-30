@@ -103,6 +103,27 @@ class TestClient:
         assert hist == [{"date": "2026-09-01", "value": 82}, {"date": "2026-09-20", "value": 87}]
         assert client._http.get.call_args.kwargs["params"] == {"type": "streams", "since": "2026-08-25"}
 
+    def test_streams_drops_repeated_cumulative_points_and_skips_invalid_values(self):
+        series = [{"track_domain_id": "x", "data": [
+            {"timestp": "2026-08-07", "value": "3126151554"},
+            {"timestp": "2026-08-08", "value": "3126151554.0"},
+            {"timestp": "2026-08-09", "value": "3129082729"},
+            {"timestp": "bad-date", "value": 8},
+            {"timestp": "2026-08-10", "value": "oops"},
+        ]}]
+        client, _ = _client_with({"most-history": _resp(200, {"obj": series})})
+        assert client.streams_history(1) == [{"date": "2026-08-07", "value": 3126151554}, {"date": "2026-08-09", "value": 3129082729}]
+
+    def test_series_selection_tolerates_one_day_gap_and_streams_match_popularity(self):
+        rows = [
+            {"track_domain_id": "pop", "data": [{"timestp": "2026-09-10", "value": 900}]},
+            {"track_domain_id": "stream", "data": [{"timestp": "2026-09-11", "value": 800}]},
+        ]
+        client, _ = _client_with({"most-history": _resp(200, {"obj": rows})})
+        assert cm._pick_primary_series(rows) is rows[0]["data"]
+        client.popularity_history(1)
+        assert client.streams_history(1) == [{"date": "2026-09-10", "value": 900}]
+
     def test_token_reused_and_responses_cached(self):
         client, http = _client_with({"/track/1": _resp(200, {"obj": TRACK_OBJ})})
         client.track_snapshot(1)
@@ -173,6 +194,17 @@ class TestPopScoreEndpoints:
         assert body["streams"]["start_total"] == 170
         assert body["streams_history"][1]["daily"] == 5.0
 
+    def test_end_date_endpoint_returns_followup_lift_and_gains(self, client):
+        slug = self._campaign(client)
+        fake = self._fake()
+        with patch.object(cm, "get_client", return_value=fake):
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403305"})
+            client.post(f"/api/campaign/{slug}/edit", json={"end_date": "2026-09-20"})
+            body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
+        assert body["followup_end"] == "2026-10-18"
+        assert body["streams"]["gained_campaign"] == 190
+        assert body["streams"]["lift_pct_campaign"] is not None
+
     def test_invalid_link_rejected(self, client):
         slug = self._campaign(client)
         res = client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "not a link"})
@@ -194,6 +226,25 @@ class TestPopScoreEndpoints:
             res = client.get(f"/api/campaign/{slug}/pop-score")
         assert res.status_code == 502
         assert "Chartmetric" in res.get_json()["error"]
+
+    def test_streams_outage_keeps_popularity_response(self, client):
+        slug = self._campaign(client)
+        fake = self._fake()
+        fake.streams_history.side_effect = cm.ChartmetricError("unavailable")
+        with patch.object(cm, "get_client", return_value=fake):
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403305"})
+            body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
+        assert body["linked"] is True
+        assert body["popularity"]["start"] == 82
+        assert body["streams"] == {
+            "start_total": None, "end_total": None, "followup_total": None,
+            "end_is_to_date": True, "followup_is_to_date": False,
+            "gained_campaign": None, "gained_followup": None, "growth_pct_campaign": None,
+            "baseline_daily": None, "campaign_daily": None, "followup_daily": None,
+            "lift_pct_campaign": None, "lift_pct_followup": None,
+        }
+        assert body["streams_history"] == []
+        assert body["streams_error"] == "Streams history is temporarily unavailable."
 
     def test_edit_end_date_set_clear_and_validate(self, client):
         slug = self._campaign(client, start="2026-09-01")
