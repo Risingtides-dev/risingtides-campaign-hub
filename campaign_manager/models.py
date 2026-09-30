@@ -29,6 +29,7 @@ class Campaign(Base):
     additional_sounds = Column(JSONB, default=list)
     cobrand_link = Column(Text, default="")
     start_date = Column(String(20), default="")
+    end_date = Column(String(20), default="")
     budget = Column(Float, default=0.0)
     platform = Column(String(20), default="tiktok")
     total_views = Column(Integer, default=0)
@@ -109,6 +110,7 @@ class Campaign(Base):
             "additional_sounds": self.additional_sounds or [],
             "cobrand_link": self.cobrand_link or "",
             "start_date": self.start_date or "",
+            "end_date": self.end_date or "",
             "budget": self.budget or 0.0,
             "platform": self.platform or "tiktok",
             "created_at": self.created_at.isoformat() if self.created_at else "",

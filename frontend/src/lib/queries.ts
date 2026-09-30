@@ -99,6 +99,7 @@ export function useEditCampaign(slug: string) {
       api.editCampaign(slug, data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: keys.campaign(slug) })
+      qc.invalidateQueries({ queryKey: ["popScore", slug] })
       qc.invalidateQueries({ queryKey: keys.campaigns })
     },
   })

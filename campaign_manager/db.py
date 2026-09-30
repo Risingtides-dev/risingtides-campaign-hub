@@ -297,6 +297,9 @@ def init(database_url: Optional[str] = None):
             s.execute(sa.text(
                 "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS chartmetric_link TEXT DEFAULT ''"
             ))
+            s.execute(sa.text(
+                "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS end_date VARCHAR(20) DEFAULT ''"
+            ))
             s.commit()
     except Exception:
         pass
@@ -671,6 +674,7 @@ def save_campaign(slug: str, meta: Dict):
         c.additional_sounds = meta.get("additional_sounds", [])
         c.cobrand_link = meta.get("cobrand_link", "")
         c.start_date = meta.get("start_date", "")
+        c.end_date = meta.get("end_date", "")
         c.budget = float(meta.get("budget", 0))
         c.platform = meta.get("platform", "tiktok")
 

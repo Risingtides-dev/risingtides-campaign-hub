@@ -382,6 +382,7 @@ def _campaign_summary(c: Dict) -> Dict:
         "artist": c["meta"].get("artist", ""),
         "song": c["meta"].get("song", ""),
         "start_date": c["meta"].get("start_date", ""),
+        "end_date": c["meta"].get("end_date", ""),
         # The sound a campaign runs on. Already searchable via ?search= but
         # never returned, so downstream boards could not tell which TikTok
         # sound a campaign meant — the ShipStream queue went stale because
@@ -586,6 +587,23 @@ def edit_campaign(slug: str):
     title = (data.get("title") or "").strip()
     sound_id_raw = (data.get("sound_id") or "").strip()
     start_date = (data.get("start_date") or "").strip()
+    if "end_date" in data:
+        end_date = data.get("end_date")
+        if not isinstance(end_date, str):
+            return jsonify({"error": "end_date must be YYYY-MM-DD or blank."}), 400
+        end_date = end_date.strip()
+        if end_date:
+            try:
+                parsed_end = datetime.strptime(end_date, "%Y-%m-%d").date()
+                if parsed_end.isoformat() != end_date:
+                    raise ValueError
+                effective_start = start_date or meta.get("start_date", "")
+                parsed_start = datetime.strptime(effective_start, "%Y-%m-%d").date()
+            except (TypeError, ValueError):
+                return jsonify({"error": "end_date must be YYYY-MM-DD and requires a valid start_date."}), 400
+            if parsed_end < parsed_start:
+                return jsonify({"error": "end_date must be on or after start_date."}), 400
+        meta["end_date"] = end_date
     budget_raw = (data.get("budget") or "").strip() if isinstance(data.get("budget"), str) else data.get("budget")
 
     if title:
@@ -727,6 +745,7 @@ def campaign_detail(slug: str):
         "cobrand_share_url": meta.get("cobrand_share_url", ""),
         "cobrand_upload_url": meta.get("cobrand_upload_url", ""),
         "start_date": meta.get("start_date", ""),
+        "end_date": meta.get("end_date", ""),
         "budget": budget,
         "stats": stats,
         "platform": meta.get("platform", "tiktok"),

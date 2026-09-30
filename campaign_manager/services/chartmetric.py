@@ -175,13 +175,29 @@ class ChartmetricClient:
         """
         series_list = self._get(
             f"/track/{int(chartmetric_id)}/spotify/stats/most-history",
-            {"type": "popularity"},
+            {"type": "popularity", **({"since": since.isoformat()} if since else {})},
         ) or []
         best = _pick_primary_series(series_list)
         points = [
             {"date": p["timestp"][:10], "value": int(p["value"])}
             for p in best
             if p.get("timestp") and p.get("value") is not None
+        ]
+        if since is not None:
+            cutoff = since.isoformat()
+            points = [p for p in points if p["date"] >= cutoff]
+        return sorted(points, key=lambda p: p["date"])
+
+    def streams_history(self, chartmetric_id: int, since: Optional[date] = None) -> List[dict]:
+        """Cumulative Spotify streams as sorted date/value readings."""
+        series_list = self._get(
+            f"/track/{int(chartmetric_id)}/spotify/stats/most-history",
+            {"type": "streams", **({"since": since.isoformat()} if since else {})},
+        ) or []
+        best = _pick_primary_series(series_list)
+        points = [
+            {"date": p["timestp"][:10], "value": int(p["value"])}
+            for p in best if p.get("timestp") and p.get("value") is not None
         ]
         if since is not None:
             cutoff = since.isoformat()

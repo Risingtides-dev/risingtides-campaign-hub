@@ -95,6 +95,13 @@ class TestClient:
         client, _ = _client_with({"most-history": _resp(200, {"obj": HISTORY_OBJ})})
         hist = client.popularity_history(1, since=date(2026, 8, 25))
         assert hist == [{"date": "2026-09-01", "value": 82}, {"date": "2026-09-20", "value": 87}]
+        assert client._http.get.call_args.kwargs["params"] == {"type": "popularity", "since": "2026-08-25"}
+
+    def test_streams_history_selects_primary_and_passes_since(self):
+        client, _ = _client_with({"most-history": _resp(200, {"obj": HISTORY_OBJ})})
+        hist = client.streams_history(1, since=date(2026, 8, 25))
+        assert hist == [{"date": "2026-09-01", "value": 82}, {"date": "2026-09-20", "value": 87}]
+        assert client._http.get.call_args.kwargs["params"] == {"type": "streams", "since": "2026-08-25"}
 
     def test_token_reused_and_responses_cached(self):
         client, http = _client_with({"/track/1": _resp(200, {"obj": TRACK_OBJ})})
@@ -137,6 +144,11 @@ class TestPopScoreEndpoints:
             {"date": "2026-09-01", "value": 82},
             {"date": "2026-09-20", "value": 87},
         ]
+        fake.streams_history.return_value = [
+            {"date": "2026-08-18", "value": 100},
+            {"date": "2026-09-01", "value": 170},
+            {"date": "2026-09-20", "value": 360},
+        ]
         return fake
 
     def test_unlinked_campaign(self, client):
@@ -155,6 +167,11 @@ class TestPopScoreEndpoints:
         assert body["baseline"] == 82
         assert body["change_since_start"] == 5
         assert len(body["history"]) == 3
+        assert body["end_date"] == ""
+        assert body["followup_days"] == 28
+        assert body["phase"] == "live"
+        assert body["streams"]["start_total"] == 170
+        assert body["streams_history"][1]["daily"] == 5.0
 
     def test_invalid_link_rejected(self, client):
         slug = self._campaign(client)
@@ -177,6 +194,14 @@ class TestPopScoreEndpoints:
             res = client.get(f"/api/campaign/{slug}/pop-score")
         assert res.status_code == 502
         assert "Chartmetric" in res.get_json()["error"]
+
+    def test_edit_end_date_set_clear_and_validate(self, client):
+        slug = self._campaign(client, start="2026-09-01")
+        assert client.post(f"/api/campaign/{slug}/edit", json={"end_date": "2026-09-30"}).status_code == 200
+        assert client.get(f"/api/campaign/{slug}").get_json()["end_date"] == "2026-09-30"
+        assert client.post(f"/api/campaign/{slug}/edit", json={"end_date": ""}).status_code == 200
+        for value in ("2026-9-30", "2026-08-31"):
+            assert client.post(f"/api/campaign/{slug}/edit", json={"end_date": value}).status_code == 400
 
     def test_unknown_campaign_404(self, client):
         assert client.get("/api/campaign/nope/pop-score").status_code == 404

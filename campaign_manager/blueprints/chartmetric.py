@@ -14,6 +14,7 @@ from flask import Blueprint, jsonify, request
 from campaign_manager import db as _db
 from campaign_manager.models import Campaign
 from campaign_manager.services import chartmetric
+from campaign_manager.utils.attribution import calculate_attribution
 
 log = logging.getLogger(__name__)
 
@@ -47,6 +48,7 @@ def _load(slug: str):
             "track_id": c.chartmetric_track_id,
             "link": c.chartmetric_link or "",
             "start_date": c.start_date or "",
+            "end_date": c.end_date or "",
         }
 
 
@@ -64,6 +66,7 @@ def get_pop_score(slug: str):
         client = chartmetric.get_client()
         snap = client.track_snapshot(row["track_id"])
         history = client.popularity_history(row["track_id"], since=_history_start(row["start_date"]))
+        streams = client.streams_history(row["track_id"], since=_history_start(row["start_date"]))
     except chartmetric.ChartmetricError as e:
         return jsonify({"linked": True, "link": row["link"], "error": str(e)}), 502
     except Exception:
@@ -72,6 +75,7 @@ def get_pop_score(slug: str):
 
     baseline = _baseline(history, row["start_date"])
     current = snap.spotify_popularity
+    attribution = calculate_attribution(history, streams, row["start_date"], row["end_date"])
     return jsonify({
         "linked": True,
         "link": row["link"],
@@ -84,6 +88,7 @@ def get_pop_score(slug: str):
         "change_since_start": (current - baseline) if (current is not None and baseline is not None) else None,
         "start_date": row["start_date"],
         "history": history,
+        **attribution,
     })
 
 

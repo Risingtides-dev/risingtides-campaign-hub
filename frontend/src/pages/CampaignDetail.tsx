@@ -142,7 +142,7 @@ export default function CampaignDetail() {
       )}
 
       {/* Pop Score (Spotify popularity via Chartmetric) */}
-      <PopScoreCard slug={slug!} />
+      <PopScoreCard slug={slug!} tracker_url={campaign.tracker_url} />
 
       {/* Share with Client */}
       <ShareTokenSection slug={slug!} />
