@@ -54,9 +54,11 @@ const API_BASE = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? "http://
 
 class ApiError extends Error {
   status: number
-  constructor(message: string, status: number) {
+  body: unknown
+  constructor(message: string, status: number, body: unknown) {
     super(message)
     this.status = status
+    this.body = body
     this.name = "ApiError"
   }
 }
@@ -73,7 +75,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   })
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: res.statusText }))
-    throw new ApiError(body.error || res.statusText, res.status)
+    throw new ApiError(body.error || res.statusText, res.status, body)
   }
   return res.json()
 }

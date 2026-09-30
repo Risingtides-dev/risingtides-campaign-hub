@@ -173,9 +173,9 @@ def test_including_either_leg_of_rollback_pair_counts_both_as_reported():
         result = calculate_attribution([], [], h[0]["date"], h[-1]["date"], date(2026, 3, 1), ugc=h,
                                        overrides={"ugc": {chosen: "include"}})["ugc"]
         assert result["gained_campaign"] == expected == 5_400
-        for day, partner in ((first, second), (second, first)):
+        for day in (first, second):
             assert {"date": day, "change": h[15 if day == first else 16]["value"] - h[14 if day == first else 15]["value"],
-                    "source": "manual", "with": partner} in result["unusual"]
+                    "source": "manual", "with": chosen} in result["unusual"]
 
 
 def test_pair_thresholds_and_recount_dates_are_exact():

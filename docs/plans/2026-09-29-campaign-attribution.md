@@ -378,3 +378,13 @@ single-leg decision. Stale choices show their date, metric, and saved decision,
 with a pending reset disabled and reset failures reported beside the list.
 Reference labels near the chart's right edge are anchored inward so their text
 remains visible.
+
+## Addendum 2026-09-30 (round 14)
+
+When a pop-score read fails but returns the stored song link, the attribution
+form keeps that link available while showing the error. Saving an empty field
+is disabled. Unlinking uses a separate confirmation because it also clears
+saved attribution choices. For a manually counted rollback pair, either row's
+Reset targets the paired date that holds the saved choice; both rows identify
+the date they were counted with. Chartmetric history selection ignores
+non-object entries in `obj` so malformed values do not make the endpoint fail.

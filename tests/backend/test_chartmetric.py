@@ -339,6 +339,32 @@ class TestPopScoreEndpoints:
         slug = self._campaign(client)
         assert client.get(f"/api/campaign/{slug}/pop-score").get_json() == {"linked": False}
 
+    def test_pop_score_endpoint_skips_malformed_history_objects(self, client):
+        from campaign_manager import db
+        slug = self._campaign(client)
+        db.update_campaign_fields(slug, {"chartmetric_track_id": 118981138,
+            "chartmetric_link": "https://open.spotify.com/track/example"})
+        http = MagicMock()
+        http.post.return_value = _resp(200, {"token": "acc", "expires_in": 3600})
+        valid = {"track_domain_id": "main", "data": [
+            {"timestp": "2026-08-30", "value": 100},
+            {"timestp": "2026-09-01", "value": 120},
+            {"timestp": "2026-09-20", "value": 300},
+        ]}
+        def get(url, params=None, **kwargs):
+            if url.endswith("/track/118981138"):
+                return _resp(200, {"obj": TRACK_OBJ})
+            return _resp(200, {"obj": [None, "bad", ["bad"], valid]})
+        http.get.side_effect = get
+        real_client = cm.ChartmetricClient("refresh", session=http)
+        with patch.object(cm, "get_client", return_value=real_client):
+            response = client.get(f"/api/campaign/{slug}/pop-score")
+        assert response.status_code == 200
+        body = response.get_json()
+        assert body["history"][-1] == {"date": "2026-09-20", "value": 300}
+        assert body["streams_history"]
+        assert body["ugc_history"]
+
     def test_link_then_read_score_with_lift(self, client):
         slug = self._campaign(client)
         fake = self._fake()

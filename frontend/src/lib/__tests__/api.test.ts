@@ -42,6 +42,12 @@ describe('api client', () => {
       })
     })
 
+    it('keeps the JSON error body on ApiError', async () => {
+      const body = { error: 'Chartmetric down', link: 'https://open.spotify.com/track/2qSkIjg1o9h3YT9RAgYN75' }
+      mockFetchError(502, body)
+      await expect(api.getCampaigns()).rejects.toMatchObject({ body })
+    })
+
     it('falls back to statusText when body is not JSON', async () => {
       globalThis.fetch = vi.fn().mockResolvedValue({
         ok: false,

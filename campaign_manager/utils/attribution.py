@@ -132,8 +132,9 @@ def calculate_attribution(popularity, streams, start_date, end_date="", today=No
                     if quiet and abs(increments[j+1]) >= absolute_floor:
                         if action == "include" or pair_action == "include":
                             pair_raw = collapsed[j+2]["raw_index"]
-                            unusual.extend(({"date": ordered[raw_i]["date"], "change": inc, "source": "manual", "with": ordered[pair_raw]["date"]},
-                                            {"date": ordered[pair_raw]["date"], "change": increments[j+1], "source": "manual", "with": ordered[raw_i]["date"]}))
+                            choice_date = ordered[raw_i]["date"] if action == "include" else ordered[pair_raw]["date"]
+                            unusual.extend(({"date": ordered[raw_i]["date"], "change": inc, "source": "manual", "with": choice_date},
+                                            {"date": ordered[pair_raw]["date"], "change": increments[j+1], "source": "manual", "with": choice_date}))
                             manually_included_pair_dates.add(ordered[pair_raw]["date"])
                             continue
                         auto_recount = True

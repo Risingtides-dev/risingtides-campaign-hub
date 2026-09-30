@@ -47,6 +47,48 @@ function setup(data: PopScore = payload) {
 describe('<PopScoreCard /> attribution', () => {
   beforeEach(() => vi.clearAllMocks())
 
+  it('prefills an outage link, disables empty Save, and confirms unlink separately', () => {
+    vi.mocked(usePopScore).mockReturnValue({ data: undefined, isLoading: false, isError: true, error: Object.assign(new Error('Chartmetric down'), { body: { linked: true, link: 'https://open.spotify.com/track/2qSkIjg1o9h3YT9RAgYN75' } }) } as unknown as ReturnType<typeof usePopScore>)
+    vi.mocked(useSetPopScoreTrack).mockReturnValue({ mutate, isPending: false, isError: false } as unknown as ReturnType<typeof useSetPopScoreTrack>)
+    vi.mocked(useOverridePopScore).mockReturnValue({ mutate: overrideMutate, isPending: false, isError: false } as unknown as ReturnType<typeof useOverridePopScore>)
+    vi.mocked(useEditCampaign).mockReturnValue({ mutate, reset: vi.fn(), isPending: false, isError: false } as unknown as ReturnType<typeof useEditCampaign>)
+    const { rerender } = render(<PopScoreCard slug="example" />)
+    const input = screen.getByRole('textbox', { name: 'Song link for pop score' }) as HTMLInputElement
+    expect(input.value).toBe('https://open.spotify.com/track/2qSkIjg1o9h3YT9RAgYN75')
+    expect(screen.getByText('Chartmetric down')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Unlink song' }))
+    expect(screen.getByText(/Unlink — this also clears saved choices\?/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(mutate).not.toHaveBeenCalledWith('')
+    fireEvent.change(input, { target: { value: '' } })
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+    fireEvent.change(input, { target: { value: 'https://open.spotify.com/track/2qSkIjg1o9h3YT9RAgYN75' } })
+    vi.mocked(usePopScore).mockReturnValue({ data: { ...payload, link: input.value }, isLoading: false, isError: false } as ReturnType<typeof usePopScore>)
+    rerender(<PopScoreCard slug="example" />)
+    fireEvent.click(screen.getByRole('button', { name: 'Change song' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Unlink song' }))
+    expect(screen.getByText(/Unlink — this also clears saved choices\?/)).toBeInTheDocument()
+    expect(mutate).not.toHaveBeenCalledWith('')
+    fireEvent.click(screen.getByRole('button', { name: 'Yes' }))
+    expect(mutate).toHaveBeenCalledWith('', expect.any(Object))
+  })
+
+  it('resets either displayed leg of a counted pair through the choice date', () => {
+    setup({ ...payload, phase: 'complete', ugc: { ...payload.ugc!, unusual: [
+      { date: '2026-01-16', change: 20_000, source: 'manual', with: '2026-01-17' },
+      { date: '2026-01-17', change: -20_000, source: 'manual', with: '2026-01-17' },
+    ] } })
+    fireEvent.click(screen.getByRole('button', { name: /TikTok videos: 2 unusual jumps/ }))
+    expect(screen.getAllByText(/counted with Jan 17, 2026 · set by you/)).toHaveLength(2)
+    const resets = screen.getAllByRole('button', { name: /^Reset — / })
+    fireEvent.click(resets[0])
+    fireEvent.click(resets[1])
+    expect(overrideMutate.mock.calls.map(call => call[0])).toEqual([
+      { metric: 'ugc', date: '2026-01-17', action: 'auto' },
+      { metric: 'ugc', date: '2026-01-17', action: 'auto' },
+    ])
+  })
+
   it('keeps real espresso daily bars and only plotted recount marks; stream mode has no recount circles', () => {
     const real = { ...espressoWalk, end_date_auto: false } as unknown as PopScore
     setup(real)

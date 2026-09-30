@@ -219,7 +219,7 @@ class ChartmetricClient:
             f"/track/{int(chartmetric_id)}/spotify/stats/most-history",
             {"type": "streams", **({"since": since.isoformat()} if since else {})}, deadline=deadline,
         ) or []
-        preferred = [s for s in series_list if s.get("track_domain_id") == track_domain_id] if track_domain_id is not None else []
+        preferred = [s for s in series_list if isinstance(s, dict) and s.get("track_domain_id") == track_domain_id] if track_domain_id is not None else []
         best = (max(preferred, key=lambda s: _latest(s)[1]) if preferred else _pick_primary_object(series_list))
         points = _clean_points(best.get("data") or [])
         points.sort(key=lambda p: p["date"])
@@ -250,7 +250,7 @@ def _latest(series):
 
 
 def _pick_primary_object(series_list):
-    candidates = [s for s in series_list if s.get("data")]
+    candidates = [s for s in series_list if isinstance(s, dict) and s.get("data")]
     if not candidates:
         return {}
     newest = max(_latest(s)[0] for s in candidates)
