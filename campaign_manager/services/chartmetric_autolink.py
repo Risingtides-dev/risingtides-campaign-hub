@@ -35,6 +35,10 @@ def retry_days(status):
 
 
 def _due(campaign, now):
+    # A timestamp without a status was written by the legacy v1 linker and
+    # does not represent a v2 attempt with a known retry cadence.
+    if not campaign.chartmetric_link_status:
+        return True
     checked = campaign.chartmetric_autolink_checked_at
     return checked is None or checked <= now - timedelta(days=retry_days(campaign.chartmetric_link_status))
 

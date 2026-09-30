@@ -943,7 +943,7 @@ export type AttributionPhase = "not_started" | "live" | "followup" | "complete" 
 
 export interface PopScore {
   linked: boolean
-  link_status?: "linked_auto" | "manual" | "not_released" | "artist_not_found" | "ambiguous" | "generic_title" | "no_song_info" | ""
+  link_status?: "linked_auto" | "manual" | "pending" | "not_released" | "artist_not_found" | "ambiguous" | "generic_title" | "no_song_info" | ""
   link_detail?: string
   next_check?: string | null
   link?: string

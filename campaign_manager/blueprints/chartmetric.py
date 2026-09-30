@@ -58,8 +58,9 @@ def _load(slug: str):
             "attribution_overrides": c.attribution_overrides or {},
             "link_status": c.chartmetric_link_status or "",
             "link_detail": c.chartmetric_link_detail or "",
-            "link_status": c.chartmetric_link_status or "",
             "checked_at": c.chartmetric_autolink_checked_at,
+            "song": c.song or "",
+            "artist": c.artist or "",
         }
 
 
@@ -71,7 +72,15 @@ def get_pop_score(slug: str):
     if row is None:
         return jsonify({"error": "Campaign not found."}), 404
     if not row["track_id"]:
-        from campaign_manager.services.chartmetric_autolink import retry_days
+        from campaign_manager.services.chartmetric_autolink import get_autolink_interval_minutes, retry_days
+        if not row["link_status"]:
+            if not row["song"].strip() or not row["artist"].strip():
+                return jsonify({"linked": False, "link_status": "no_song_info",
+                                "link_detail": "Add a song title and artist so we can look for the track.",
+                                "next_check": None})
+            next_check = (datetime.now() + timedelta(minutes=get_autolink_interval_minutes())).isoformat()
+            return jsonify({"linked": False, "link_status": "pending",
+                            "link_detail": "Checking Chartmetric soon.", "next_check": next_check})
         checked = row["checked_at"]
         next_check = (checked + timedelta(days=retry_days(row["link_status"]))).isoformat() if checked else None
         return jsonify({"linked": False, "link_status": row["link_status"] or "no_song_info",
