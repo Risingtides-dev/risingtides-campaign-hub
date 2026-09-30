@@ -352,11 +352,16 @@ Chartmetric recount from a real one-day jump. The design therefore is:
    The second leg must also meet the metric floor. Both legs are listed as
    recounts; the adjusted series applies each leg's own offset from its event
    date onward, preserving the pair's net change.
-2. **Manual override per campaign.** Every step the rule flags (recount or unusual)
+2. **Manual override per campaign.** Overrides constrain automatic classification before
+   the rule runs: `include` steps cannot be recounts (including pair legs), and
+   `exclude` steps are manual recounts excluded from pace. Automatic single and pair
+   classification runs only over remaining steps, so a step appears in at most one list.
+   A non-current override date is reported as `stale_overrides` and is not applied.
+   Every step the rule flags (recount or unusual)
    is listed on the card with a small "Count it" / "Leave it out" action. The choice is
    stored on the campaign (`campaigns.attribution_overrides`, JSON:
-   `{"streams": {"YYYY-MM-DD": "include"|"exclude"}, "ugc": {...}}`) and applied after
-   the automatic rule. Each listed step reports `source: "auto" | "manual"`.
+   `{"streams": {"YYYY-MM-DD": "include"|"exclude"}, "ugc": {...}}`). Each listed step reports `source: "auto" | "manual"`.
    `POST /api/campaign/<slug>/pop-score/override {metric, date, action}` with
-   action `include` | `exclude` | `auto` (auto removes the override).
+   action `include` | `exclude` | `auto` (auto removes the override). The endpoint
+   locks the campaign row while updating the JSON so posts for separate dates persist.
 3. **Now column** shows change since start AND since end.

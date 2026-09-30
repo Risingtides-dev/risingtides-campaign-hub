@@ -35,7 +35,7 @@ describe('pass 9 attribution notes and chart boundary', () => {
     expect(note).toBeTruthy()
     fireEvent.click(note)
     expect(screen.getAllByText(/2026|Jun|Jul|Sep/).length).toBeGreaterThan(0)
-    expect(screen.getAllByRole('button', { name: 'Leave it out' })).toHaveLength(7)
+    expect(screen.getAllByRole('button', { name: /^Leave it out — .*?, TikTok videos$/ })).toHaveLength(7)
   })
 
   it('collapses long recount lists and marks adjusted metric rows with the explanatory footnote', () => {

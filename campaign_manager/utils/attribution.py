@@ -102,13 +102,15 @@ def calculate_attribution(popularity, streams, start_date, end_date="", today=No
             raw_i = collapsed[j+1]["raw_index"]
             step_rate = abs(inc) / gaps[j] if gaps[j] else 0
             prior_rates = [abs(increments[k]) / gaps[k] for k in range(max(0, j-14), j)
-                           if k+1 not in recount_indices and gaps[k] > 0]
+                           if collapsed[k+1]["raw_index"] not in recount_indices and gaps[k] > 0]
             pace = max(1, median(prior_rates)) if len(prior_rates) >= 5 else None
+            action = overrides.get(collapsed[j+1]["date"], "auto")
+            blocked = action == "include"
             later = list(range(j+1, min(len(increments), j+4)))
             after_rate = (sum(abs(increments[k]) for k in later) / sum(gaps[k] for k in later)
                           if len(later) == 3 and sum(gaps[k] for k in later) else None)
             early = j < 5
-            candidate = (step_rate >= 20 * pace) if pace is not None else (early and abs(inc) >= absolute_floor)
+            candidate = (step_rate >= 20 * pace) if pace is not None else (early and abs(inc) >= absolute_floor and abs(inc) >= .10 * abs(collapsed[j]["value"]))
             if early:
                 auto_recount = (abs(inc) >= absolute_floor and abs(inc) >= .10 * abs(collapsed[j]["value"])
                                 and after_rate is not None and after_rate < step_rate / 40)
@@ -119,7 +121,8 @@ def calculate_attribution(popularity, streams, start_date, end_date="", today=No
             # the independent forward confirmation cannot see past its recovery.
             paired = (j+1 < len(increments) and inc * increments[j+1] < 0
                       and abs(abs(inc)-abs(increments[j+1])) <= max(100, abs(inc)*.05))
-            if not auto_recount and paired and pace is not None and step_rate >= 50*pace and abs(inc) >= absolute_floor:
+            pair_action = overrides.get(collapsed[j+2]["date"], "auto") if j+1 < len(increments) else "auto"
+            if action == "auto" and pair_action == "auto" and not auto_recount and paired and pace is not None and step_rate >= 50*pace and abs(inc) >= absolute_floor:
                 post = list(range(j+2, min(len(increments), j+5)))
                 if len(post)==3 and sum(gaps[k] for k in post):
                     quiet = sum(abs(increments[k]) for k in post)/sum(gaps[k] for k in post) < step_rate/40
@@ -131,8 +134,9 @@ def calculate_attribution(popularity, streams, start_date, end_date="", today=No
                         for k in range(pair_raw, len(ordered)): offsets[k] += increments[j+1]
                         found.extend(({"date": ordered[raw_i]["date"], "change": inc, "source": "auto"},
                                       {"date": ordered[pair_raw]["date"], "change": increments[j+1], "source": "auto"}))
-            action = overrides.get(collapsed[j+1]["date"], "auto")
-            is_recount = (action == "exclude") if action != "auto" else auto_recount
+            if blocked:
+                auto_recount = False
+            is_recount = action == "exclude" or (action == "auto" and auto_recount)
             if action == "include":
                 candidate = True
             if candidate and not is_recount:
@@ -202,7 +206,19 @@ def calculate_attribution(popularity, streams, start_date, end_date="", today=No
     ugc_baseline_daily = _avg(ugc_adj, start - timedelta(days=14), start) if start else None
     ugc_campaign_daily = _avg(ugc_adj, start, end_target) if start else None
     ugc_follow_daily = _avg(ugc_adj, end, follow_target) if end and follow_target else None
+    stale_overrides = []
+    for metric, history in (("streams", streams), ("ugc", ugc)):
+        current_dates = set()
+        prior = object()
+        for point in history:
+            if point["value"] != prior:
+                current_dates.add(point["date"])
+                prior = point["value"]
+        for day, action in ((overrides or {}).get(metric) or {}).items():
+            if day not in current_dates:
+                stale_overrides.append({"metric": metric, "date": day, "action": action})
     return {
+        "stale_overrides": stale_overrides,
         "end_date": end_date or "", "followup_days": FOLLOWUP_DAYS,
         "followup_end": follow_end.isoformat() if end else "", "phase": phase,
         "popularity": {**block(popularity, pop_start, pop_end, pop_follow, pop_end_to_date, pop_follow_to_date),

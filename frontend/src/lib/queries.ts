@@ -372,7 +372,7 @@ export function useOverridePopScore(slug: string) {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (body: { metric: "streams" | "ugc"; date: string; action: "include" | "exclude" | "auto" }) => api.overridePopScore(slug, body),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["popScore", slug] }),
+    onSuccess: async () => { await qc.invalidateQueries({ queryKey: ["popScore", slug] }) },
   })
 }
 

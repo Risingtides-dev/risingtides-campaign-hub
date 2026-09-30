@@ -196,35 +196,69 @@ describe('<PopScoreCard /> attribution', () => {
     expect(screen.getByRole('button', { name: /TikTok videos: 2 unusual jumps counted · largest −30K on May 22, 2026/ })).toBeInTheDocument()
   })
 
-  it('supports touch friendly anomaly lists and sends recount, unusual, and reset actions', () => {
+  it('uses 24px padded action targets and accessible action names for recount, unusual, and reset actions', () => {
     setup({ ...payload, streams: { ...payload.streams!, recounts: [{ date: '2026-08-12', change: -2000, source: 'auto' }, { date: '2026-08-13', change: 1000, source: 'manual' }], unusual: [{ date: '2026-08-14', change: 3000, source: 'auto' }] } })
     const list = screen.getByRole('button', { name: /Streams: 2 Chartmetric recounts/ })
     fireEvent.click(list)
     expect(list).toHaveAttribute('aria-expanded', 'true')
-    fireEvent.click(screen.getByRole('button', { name: 'Count it' }))
+    const countButton = screen.getByRole('button', { name: 'Count it — Aug 12, 2026, Streams' })
+    expect(countButton.className).toMatch(/min-h-6/)
+    expect(countButton.className).toMatch(/px-1/)
+    fireEvent.click(countButton)
     expect(overrideMutate).toHaveBeenCalledWith({ metric: 'streams', date: '2026-08-12', action: 'include' })
-    fireEvent.click(screen.getByRole('button', { name: 'Reset' }))
+    expect(screen.getByText(/set by you/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Reset — Aug 13, 2026, Streams' }))
     expect(overrideMutate).toHaveBeenCalledWith({ metric: 'streams', date: '2026-08-13', action: 'auto' })
     fireEvent.click(screen.getByRole('button', { name: /Streams: 1 unusual jump/ }))
-    fireEvent.click(screen.getByRole('button', { name: 'Leave it out' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Leave it out — Aug 14, 2026, Streams' }))
     expect(overrideMutate).toHaveBeenCalledWith({ metric: 'streams', date: '2026-08-14', action: 'exclude' })
     fireEvent.click(list)
     expect(list).toHaveAttribute('aria-expanded', 'false')
   })
 
   it('renders mutation errors and disables override controls while pending', () => {
-    const view = setup({ ...payload, streams: { ...payload.streams!, recounts: [{ date: '2026-08-12', change: 1000, source: 'auto' }] } })
-    vi.mocked(useOverridePopScore).mockReturnValue({ mutate: overrideMutate, isPending: true, isError: true, error: new Error('Override failed') } as unknown as ReturnType<typeof useOverridePopScore>)
+    const view = setup({ ...espressoWalk, streams: { ...espressoWalk.streams, recounts: [{ date: '2026-08-02', change: 1000, source: 'auto' }] }, ugc: { ...espressoWalk.ugc, recounts: [{ date: '2026-08-02', change: 1000, source: 'auto' }] } } as unknown as PopScore)
+    vi.mocked(useOverridePopScore).mockReturnValue({ mutate: overrideMutate, variables: { metric: 'ugc', date: '2026-08-02', action: 'exclude' }, isPending: true, isError: true, error: new Error('Override failed') } as unknown as ReturnType<typeof useOverridePopScore>)
     view.rerender(<PopScoreCard slug="example" />)
     fireEvent.click(screen.getByRole('button', { name: /Streams: 1 Chartmetric recount/ }))
-    expect(screen.getByRole('button', { name: 'Count it' })).toBeDisabled()
-    expect(screen.getByRole('alert')).toHaveTextContent('Override failed')
+    expect(screen.getByRole('button', { name: 'Count it — Aug 2, 2026, Streams' })).toBeEnabled()
+    expect(screen.getAllByRole('alert')).toHaveLength(1)
+    expect(screen.getByRole('alert').parentElement).toHaveAttribute('data-metric', 'ugc')
+    fireEvent.click(screen.getByRole('button', { name: /TikTok videos: 1 Chartmetric recount/ }))
+    expect(screen.getByRole('button', { name: 'Count it — Aug 2, 2026, TikTok videos' })).toBeDisabled()
+    expect(screen.getAllByRole('alert')).toHaveLength(1)
+    expect(screen.getAllByRole('alert')[0].parentElement).toHaveTextContent('TikTok videos: 1 Chartmetric recount')
+    expect(screen.getAllByRole('alert')[0]).toHaveTextContent('Override failed')
+  })
+
+  it('renders stale choices with reset mapped to auto and TikTok overrides use ugc', () => {
+    setup({ ...payload, stale_overrides: [{ metric: 'ugc', date: '2026-08-13', action: 'exclude' }], ugc: { ...payload.ugc!, unusual: [{ date: '2026-08-14', change: 3000, source: 'auto' }] } })
+    expect(screen.getByText("1 saved choice no longer matches Chartmetric's data")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Reset stale ugc choice for Aug 13, 2026' }))
+    expect(overrideMutate).toHaveBeenCalledWith({ metric: 'ugc', date: '2026-08-13', action: 'auto' })
+    fireEvent.click(screen.getByRole('button', { name: /TikTok videos: 1 unusual jump/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Leave it out — Aug 14, 2026, TikTok videos' }))
+    expect(overrideMutate).toHaveBeenCalledWith({ metric: 'ugc', date: '2026-08-14', action: 'exclude' })
   })
 
   it('shows both now changes since start and since end', () => {
     setup({ ...payload, streams: { ...payload.streams!, now: 2_000_000, now_date: '2026-09-18', change_since_start: 1_000_000, change_since_end: 600_000 } })
     expect(screen.getByText('+1M since start · +600K since end')).toBeInTheDocument()
     expect(screen.queryByText('+600K since end', { exact: true })).not.toBeInTheDocument()
+  })
+
+  it('shows the available since-start value when since-end is missing', () => {
+    setup({ ...payload, phase: 'live', end_date: '', streams: { ...payload.streams!, change_since_start: 1234, change_since_end: null } })
+    expect(screen.getByText('+1.2K since start')).toBeInTheDocument()
+    expect(screen.getByRole('row', { name: /Streams/ }).querySelectorAll('td')[3]).toHaveTextContent('+1.2K since start')
+    expect(screen.getByRole('row', { name: /Streams/ }).querySelectorAll('td')[3]).not.toHaveTextContent('since end')
+  })
+
+  it('shows only the available since-end value on a finished campaign', () => {
+    setup({ ...payload, phase: 'complete', streams: { ...payload.streams!, change_since_start: null, change_since_end: -1234 } })
+    expect(screen.getByText('−1.2K since end')).toBeInTheDocument()
+    expect(screen.getByRole('row', { name: /Streams/ }).querySelectorAll('td')[3]).toHaveTextContent('−1.2K since end')
+    expect(screen.getByRole('row', { name: /Streams/ }).querySelectorAll('td')[3]).not.toHaveTextContent('since start')
   })
 
   it('breaks equal largest-change ties in favor of the later date', () => {

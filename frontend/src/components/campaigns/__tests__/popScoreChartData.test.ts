@@ -50,8 +50,10 @@ describe("pop score trend preparation", () => {
       expect(result.map(event => event.date)).toEqual(['2026-09-29'])
     } finally {
       vi.useRealTimers()
-      process.env.TZ = priorTz
+      if (priorTz === undefined) delete process.env.TZ
+      else process.env.TZ = priorTz
     }
+    expect(process.env.TZ).toBe(priorTz)
   })
   it("keeps an empty popularity series on the finite default domain", () => {
     const empty = { ...payload, history: [], post_events: [{ date: "2026-01-05", count: 2 }] }

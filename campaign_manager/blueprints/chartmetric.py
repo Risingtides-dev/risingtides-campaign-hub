@@ -3,6 +3,7 @@
 GET  /api/campaign/<slug>/pop-score        current score + daily history
 POST /api/campaign/<slug>/pop-score/track  link a song {"link": "<spotify url | chartmetric url | ISRC>"}
                                            an empty link unlinks it
+POST  /api/campaign/<slug>/pop-score/override set per-date streams/UGC attribution override
 """
 from __future__ import annotations
 
@@ -165,17 +166,21 @@ def set_pop_score_override(slug: str):
     if metric not in ("streams", "ugc") or not valid_date or action not in ("include", "exclude", "auto"):
         return jsonify({"error": "metric, date, or action is invalid."}), 400
     with _db.get_session() as s:
-        campaign = s.query(Campaign).filter_by(slug=slug).first()
+        query = s.query(Campaign).filter_by(slug=slug)
+        if s.bind and s.bind.dialect.name == "postgresql":
+            query = query.with_for_update()
+        campaign = query.first()
         if campaign is None:
             return jsonify({"error": "Campaign not found."}), 404
         overrides = dict(campaign.attribution_overrides or {})
-    metric_values = dict(overrides.get(metric) or {})
-    if action == "auto":
-        metric_values.pop(day, None)
-    else:
-        metric_values[day] = action
-    overrides[metric] = metric_values
-    _db.update_campaign_fields(slug, {"attribution_overrides": overrides})
+        metric_values = dict(overrides.get(metric) or {})
+        if action == "auto":
+            metric_values.pop(day, None)
+        else:
+            metric_values[day] = action
+        overrides[metric] = metric_values
+        campaign.attribution_overrides = overrides
+        s.commit()
     return jsonify({"ok": True, "attribution_overrides": overrides})
 
 
@@ -205,6 +210,7 @@ def set_pop_score_track(slug: str):
             return jsonify({"error": "Campaign not found."}), 404
         c.chartmetric_track_id = track_id
         c.chartmetric_link = link
+        c.attribution_overrides = {}
         s.commit()
 
     return jsonify({"ok": True, "chartmetric_track_id": track_id, "link": link})

@@ -21,17 +21,19 @@ def _raw_fixture_history(block, history):
 def test_real_popscore_fixture_raw_recount_and_unusual_decisions():
     root = Path(__file__).parents[2] / "frontend/src/components/campaigns/__tests__/fixtures"
     expected = {
-        "espresso": ([], [{"date": "2026-07-12", "change": 1728963}, {"date": "2026-07-13", "change": 1691494}, {"date": "2026-07-14", "change": 1538220}, {"date": "2026-07-15", "change": 1649549}, {"date": "2026-07-16", "change": 1626695}], [
+        # These early steps are below 10% of the already-large previous total.
+        "espresso": ([], [], [
             {"date": "2026-08-02", "change": 51655}, {"date": "2026-09-23", "change": 543105}], []),
-        "blinding_lights": ([], [{"date": "2026-05-12", "change": 1286267}, {"date": "2026-05-13", "change": 1427594}, {"date": "2026-05-14", "change": 1493529}, {"date": "2026-05-15", "change": 1556964}, {"date": "2026-05-16", "change": 1558772}], [
+        "blinding_lights": ([], [], [
             {"date": "2026-05-23", "change": -2820230}, {"date": "2026-06-16", "change": 51143},
             {"date": "2026-09-23", "change": 271879}], [
             # 06-14: the changed reading date starts the collapsed step; the
             # repeated 06-15 total extends the next step's starting anchor.
             {"date": "2026-06-14", "change": 10656},
-            {"date": "2026-06-20", "change": 4917}, {"date": "2026-07-15", "change": 3131},
+                {"date": "2026-06-20", "change": 4917}, {"date": "2026-06-29", "change": 1646},
+                {"date": "2026-07-15", "change": 3131},
             {"date": "2026-07-17", "change": 1961}, {"date": "2026-09-06", "change": 7647},
-            {"date": "2026-09-29", "change": 5272}]),
+                {"date": "2026-09-29", "change": 5272}]),
     }
     for name, (sr, su, ur, uu) in expected.items():
         fixture = json.loads((root / f"popscore_{name}_walk.json").read_text())
@@ -73,6 +75,8 @@ def test_recount_decision_boundaries_and_metric_floors():
     # Positive step is unusual at >=20×; exact 50× with the absolute floor and confirmation recounts.
     b = block([10] * 14 + [200, 1, 1, 1])
     assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == [] and [{k:v for k,v in x.items() if k != "source"} for x in b["unusual"]] == [{"date": "2026-01-16", "change": 200}]
+    b = block([10] * 14 + [199, 1, 1, 1])
+    assert b["unusual"] == []  # 19.9x is below the inclusive 20x candidate gate.
     b = block([200] * 14 + [10_000, 1, 1, 1])
     assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == [{"date": "2026-01-16", "change": 10_000}] and [{k:v for k,v in x.items() if k != "source"} for x in b["unusual"]] == []
     # Above the absolute floor but just below 50× pace: counted as unusual.
@@ -85,20 +89,35 @@ def test_recount_decision_boundaries_and_metric_floors():
     assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == [] and [{k:v for k,v in x.items() if k != "source"} for x in b["unusual"]] == [{"date": "2026-01-16", "change": 9_999}]
     b = block([1] * 14 + [10_000, 1, 1, 1])
     assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == [{"date": "2026-01-16", "change": 10_000}]
-    # Absolute prior increments and floor(pace, 1) prevent zero/negative pace fallbacks.
+    # Absolute prior increments and max(1, median pace) prevent zero/negative pace fallbacks.
     b = block([-10] * 14 + [500, 1, 1, 1])
     assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == [] and [{k:v for k,v in x.items() if k != "source"} for x in b["unusual"]] == [{"date": "2026-01-16", "change": 500}]
     b = block([0] * 14 + [50, 1, 1, 1])
     assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == [] and [{k:v for k,v in x.items() if k != "source"} for x in b["unusual"]] == []
-    # Fewer than five prior increments means no candidate; five are enough.
+    b = block([0] * 14 + [20, 1, 1, 1])
+    assert b["unusual"] == []  # pace floor 1 makes this exactly a 20x candidate.
+    b = block([1] * 4 + [9_999, 1, 1, 1], initial=50_000)
+    assert b["recounts"] == [] and b["unusual"] == []  # early steps still need the metric floor.
+    # Fewer than five prior increments means no pace candidate; Jan 6 is
+    # below the 10% previous-total gate (10K / 100,004).
     b = block([1] * 4 + [10_000, 1, 1, 1])
-    assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == [] and [{k:v for k,v in x.items() if k != "source"} for x in b["unusual"]] == [{"date": "2026-01-06", "change": 10_000}]
+    assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == [] and [{k:v for k,v in x.items() if k != "source"} for x in b["unusual"]] == []
+    # The same step clears 10% when the previous total is 90K. A sustained
+    # tail keeps it unusual instead of meeting the quiet-after recount rule.
+    b = block([1] * 4 + [10_000, 250, 250, 250], initial=90_000)
+    assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == []
+    assert {"date": "2026-01-06", "change": 10_000} in [{k:v for k,v in x.items() if k != "source"} for x in b["unusual"]]
+    b = block([1] * 4 + [10_000, 1, 1, 1], initial=99_996)
+    assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == [{"date": "2026-01-06", "change": 10_000}]
     b = block([1] * 5 + [10_000, 1, 1, 1])
     assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == [{"date": "2026-01-07", "change": 10_000}]
     # The 14-step window drops the oldest high step; the median over its
     # remaining seven high and seven low rates is 150.5/day, so this recounts.
     b = block([300] * 8 + [1] * 7 + [10_000, 1, 1, 1])
     assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == [{"date": "2026-01-17", "change": 10_000}]
+    b = block([300] * 8 + [1] * 7 + [7_000, 1, 1, 1])
+    assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == []
+    assert {"date": "2026-01-17", "change": 7_000} in [{k:v for k,v in x.items() if k != "source"} for x in b["unusual"]]
     b = block([1_000] * 14 + [1_000_000, 1, 1, 1], "streams", initial=500_000_000)
     assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == [{"date": "2026-01-16", "change": 1_000_000}]
     b = block([1_000] * 14 + [999_999, 1, 1, 1], "streams", initial=500_000_000)
@@ -146,6 +165,25 @@ def test_v6_rollback_pairs_both_directions_use_rate_based_confirmation():
     assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == [{"date": "2026-01-16", "change": -1_500_000}, {"date": "2026-01-17", "change": 1_500_000}]
 
 
+def test_pair_thresholds_and_recount_dates_are_exact():
+    # Pair legs must be within 5%, and the second leg must meet its own floor.
+    h = _history([100] * 14 + [10_000, -9_500, 100, 100, 100], initial=3_300_000)
+    result = calculate_attribution([], [], "2026-01-01", today=date(2026, 2, 1), ugc=h)["ugc"]
+    assert not all(any(x["date"] == h[i]["date"] for x in result["recounts"]) for i in (15, 16))
+    h = _history([100] * 14 + [20_000, -18_000, 100, 100, 100], initial=3_300_000)
+    result = calculate_attribution([], [], "2026-01-01", today=date(2026, 2, 1), ugc=h)["ugc"]
+    assert not all(any(x["date"] == h[i]["date"] for x in result["recounts"]) for i in (15, 16))
+    # An exact one-fortieth tail is not quiet (strict comparison).
+    h = _history([100] * 14 + [20_000, -20_000, 500, 500, 500], initial=3_300_000)
+    result = calculate_attribution([], [], "2026-01-01", today=date(2026, 2, 1), ugc=h)["ugc"]
+    assert not any(x["date"] in (h[15]["date"], h[16]["date"]) for x in result["recounts"])
+    # Recount is dated at the changed reading, even when that total repeats.
+    h = _history([300] * 14 + [20_000, 0, 0, 1, 1, 1], initial=200_000)
+    whole = calculate_attribution([], [], "2026-01-01", today=date(2026, 2, 1), ugc=h)
+    assert {"date": h[15]["date"], "change": 20_000, "source": "auto"} in whole["ugc"]["recounts"]
+    assert whole["ugc_history"][16]["total"] == h[14]["value"]
+
+
 def test_not_started_adjusted_is_false_and_clean_points_skips_dict_date():
     h = _history([0] * 14 + [20_000, 1, 1, 1])
     result = calculate_attribution([], h, "2027-01-01", today=date(2026, 1, 1), ugc=h)
@@ -156,6 +194,8 @@ def test_not_started_adjusted_is_false_and_clean_points_skips_dict_date():
     no_start = calculate_attribution([], streams_h, "", today=date(2026, 1, 1))
     assert no_start["phase"] == "no_start"
     assert no_start["streams"]["adjusted"] is False
+    no_start_ugc = calculate_attribution([], [], "", today=date(2026, 1, 1), ugc=streams_h)
+    assert no_start_ugc["ugc"]["adjusted"] is False
     from campaign_manager.services.chartmetric import _clean_points
     assert _clean_points([{"timestp": {"x": 1}, "value": 1}, {"timestp": "2026-01-01", "value": 2}]) == [{"date": "2026-01-01", "value": 2}]
 
@@ -502,7 +542,7 @@ def test_v6_required_scenario_pins_from_pass11():
     h = series([100] * 5 + [0] * 7 + [10_000, 1, 1, 1], 200_000)
     assert classify(h)["recounts"] == [{"date": h[13]["date"], "change": 10_000, "source": "auto"}]
 
-    # F3/F5 sequence pins that prior recounts are excluded from pace and both
+    # F3/F5 sequence pins that prior recount steps are excluded from pace and both
     # signs can be classified as recounts.
     h = series([200] * 14 + [15_000] + [1000] * 4 + [51_655, 1000, 1000, 1000], 200_000)
     assert classify(h)["recounts"] == [{"date": h[20]["date"], "change": 51_655, "source": "auto"}]
@@ -550,6 +590,54 @@ def test_excluded_steps_do_not_raise_the_later_pace_median():
     b = calculate_attribution([], [], "2026-01-01", today=date(2026, 2, 1), ugc=h,
         overrides={"ugc": excluded_dates})["ugc"]
     assert [x["date"] for x in b["recounts"]] == [h[i]["date"] for i in range(8, 16)]
+
+
+def test_stall_pace_filter_uses_collapsed_steps_raw_indices():
+    increments = [1_000, 0] * 7 + [100_000] * 7 + [60_000, 1, 1, 1]
+    h = _history(increments, initial=10_000_000)
+    overrides = {h[i]["date"]: "exclude" for i in range(15, 22)}
+    b = calculate_attribution([], [], "2026-01-01", today=date(2026, 2, 1), ugc=h,
+        overrides={"ugc": overrides})["ugc"]
+    assert b["recounts"][-1] == {"date": h[22]["date"], "change": 60_000, "source": "auto"}
+    assert b["gained_campaign"] == 7_003
+
+
+def test_override_constraints_disable_pairing_and_keep_steps_single_classification():
+    # Both legs are large opposite steps with a quiet tail. Pin each include
+    # independently: it forces that leg to unusual and prevents pair recount.
+    h = _history([300] * 14 + [20_000, -20_000, 1, 1, 1], initial=200_000)
+    for index in (15, 16):
+        day = h[index]["date"]
+        result = calculate_attribution([], [], "2026-01-01", today=date(2026, 2, 1), ugc=h,
+            overrides={"ugc": {day: "include"}})["ugc"]
+        assert all(x["date"] != day for x in result["recounts"])
+        assert {"date": day, "change": h[index]["value"] - h[index - 1]["value"], "source": "manual"} in result["unusual"]
+        assert len({x["date"] for x in result["recounts"] + result["unusual"]}) == len(result["recounts"] + result["unusual"])
+    single = _history([300] * 14 + [20_000, 300, 300, 300], initial=200_000)
+    day = single[15]["date"]
+    included = calculate_attribution([], [], "2026-01-01", today=date(2026, 2, 1), ugc=single,
+        overrides={"ugc": {day: "include"}})["ugc"]
+    assert included["recounts"] == []
+    assert {"date": day, "change": 20_000, "source": "manual"} in included["unusual"]
+
+
+def test_stale_overrides_are_reported_and_not_applied():
+    h = _history([300] * 14 + [20_000, 300, 300, 300], initial=200_000)
+    result = calculate_attribution([], [], "2026-01-01", today=date(2026, 2, 1), ugc=h,
+        overrides={"ugc": {"2026-01-30": "exclude", "2026-03-01": "include"}})
+    assert result["stale_overrides"] == [
+        {"metric": "ugc", "date": "2026-01-30", "action": "exclude"},
+        {"metric": "ugc", "date": "2026-03-01", "action": "include"}]
+    assert result["ugc"]["recounts"] == [{"date": "2026-01-16", "change": 20_000, "source": "auto"}]
+
+
+def test_override_uses_collapsed_step_event_date():
+    h = _history([300] * 14 + [20_000, 0, 0, 1, 1, 1], initial=200_000)
+    event_day = h[15]["date"]
+    result = calculate_attribution([], [], "2026-01-01", today=date(2026, 2, 1), ugc=h,
+        overrides={"ugc": {event_day: "include"}})["ugc"]
+    assert result["recounts"] == []
+    assert {"date": event_day, "change": 20_000, "source": "manual"} in result["unusual"]
 
 
 def test_seeded_small_song_monte_carlo_has_zero_false_recounts():

@@ -204,7 +204,7 @@ class TestClient:
         assert http.get.call_count == 1
 
 
-def test_pop_score_override_endpoint_validates_and_persists_campaign_field(client, db, monkeypatch):
+def test_pop_score_override_endpoint_validates_and_persists_campaign_field(client, db):
     assert client.post("/api/campaign/create", json={"title": "Override Artist - Song"}).status_code == 201
     assert client.post("/api/campaign/create", json={"title": "Other Artist - Song"}).status_code == 201
     db.update_campaign_fields("override_artist_song", {"chartmetric_track_id": 12345})
@@ -215,25 +215,25 @@ def test_pop_score_override_endpoint_validates_and_persists_campaign_field(clien
     assert missing.status_code == 404
     for body in ({}, {"metric": "popularity", "date": "2026-01-01", "action": "include"},
                  {"metric": "ugc", "date": "2026-1-1", "action": "include"},
+                 {"metric": "ugc", "date": "20260101", "action": "include"},
                  {"metric": "streams", "date": "2026-01-01", "action": "ignore"}):
         assert client.post(url, json=body).status_code == 400
-    updates = []
-    update = db.update_campaign_fields
-    def recording_update(slug, fields):
-        updates.append((slug, fields.copy()))
-        return update(slug, fields)
-    monkeypatch.setattr(db, "update_campaign_fields", recording_update)
     resp = client.post(url, json={"metric": "ugc", "date": "2026-01-01", "action": "exclude"})
     assert resp.status_code == 200
     assert resp.get_json()["attribution_overrides"] == {"ugc": {"2026-01-01": "exclude"}}
     assert db.get_campaign("override_artist_song")["attribution_overrides"] == {"ugc": {"2026-01-01": "exclude"}}
-    assert updates == [("override_artist_song", {"attribution_overrides": {"ugc": {"2026-01-01": "exclude"}}})]
+    second = client.post(url, json={"metric": "streams", "date": "2026-01-02", "action": "include"})
+    assert second.status_code == 200
+    assert db.get_campaign("override_artist_song")["attribution_overrides"] == {
+        "ugc": {"2026-01-01": "exclude"}, "streams": {"2026-01-02": "include"}}
     other = client.post("/api/campaign/other_artist_song/pop-score/override",
         json={"metric": "ugc", "date": "2026-01-01", "action": "include"})
     assert other.get_json()["attribution_overrides"] == {"ugc": {"2026-01-01": "include"}}
-    assert db.get_campaign("override_artist_song")["attribution_overrides"] == {"ugc": {"2026-01-01": "exclude"}}
+    assert db.get_campaign("override_artist_song")["attribution_overrides"] == {
+        "ugc": {"2026-01-01": "exclude"}, "streams": {"2026-01-02": "include"}}
     resp = client.post(url, json={"metric": "ugc", "date": "2026-01-01", "action": "auto"})
-    assert resp.get_json()["attribution_overrides"] == {"ugc": {}}
+    assert resp.get_json()["attribution_overrides"] == {
+        "ugc": {}, "streams": {"2026-01-02": "include"}}
 
     @pytest.mark.parametrize("status", [401, 429])
     def test_retryable_status_retries_and_succeeds(self, status):
@@ -357,6 +357,17 @@ class TestPopScoreEndpoints:
         assert body["phase"] == "live"
         assert body["streams"]["start_total"] == 170
         assert body["streams_history"][1]["daily"] == 5.0
+
+    def test_get_pop_score_applies_stored_override(self, client):
+        from campaign_manager import db
+        slug = self._campaign(client)
+        fake = self._fake()
+        db.update_campaign_fields(slug, {"chartmetric_track_id": 118981138,
+            "chartmetric_link": "https://open.spotify.com/track/example",
+            "attribution_overrides": {"streams": {"2026-09-20": "include"}}})
+        with patch.object(cm, "get_client", return_value=fake):
+            body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
+        assert {"date": "2026-09-20", "change": 190, "source": "manual"} in body["streams"]["unusual"]
 
     def test_refresh_resolved_field_preserves_finish_end_date_and_budget_edits(self, client):
         from campaign_manager import db
@@ -694,10 +705,17 @@ class TestPopScoreEndpoints:
         assert res.status_code == 400
 
     def test_empty_link_unlinks(self, client):
+        from campaign_manager import db
         slug = self._campaign(client)
         with patch.object(cm, "get_client", return_value=self._fake()):
             client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403305"})
+        db.update_campaign_fields(slug, {"attribution_overrides": {"ugc": {"2026-09-20": "exclude"}}})
+        with patch.object(cm, "get_client", return_value=self._fake()):
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403306"})
+        assert db.get_campaign(slug)["attribution_overrides"] == {}
+        db.update_campaign_fields(slug, {"attribution_overrides": {"ugc": {"2026-09-20": "exclude"}}})
         client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": ""})
+        assert db.get_campaign(slug)["attribution_overrides"] == {}
         assert client.get(f"/api/campaign/{slug}/pop-score").get_json() == {"linked": False}
 
     def test_chartmetric_outage_returns_502_with_message(self, client):

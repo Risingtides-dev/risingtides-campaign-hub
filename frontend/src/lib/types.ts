@@ -937,6 +937,7 @@ export interface AttributionStreamsPoint {
 }
 export interface AttributionRecount { date: string; change: number; source: "auto" | "manual" }
 export interface AttributionUnusual { date: string; change: number; source: "auto" | "manual" }
+export interface AttributionStaleOverride { metric: "streams" | "ugc"; date: string; action: "include" | "exclude" }
 
 export type AttributionPhase = "not_started" | "live" | "followup" | "complete" | "no_start" | "finished_no_end"
 
@@ -1005,4 +1006,5 @@ export interface PopScore {
   data_as_of?: string
   history?: PopScorePoint[]
   post_events?: { date: string; count: number }[]
+  stale_overrides?: AttributionStaleOverride[]
 }
