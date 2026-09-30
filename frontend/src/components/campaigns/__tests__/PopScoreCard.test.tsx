@@ -85,6 +85,34 @@ describe('<PopScoreCard /> attribution', () => {
     expect(keep).toHaveFocus()
   })
 
+  it('clears the song input when the linked track is unlinked', () => {
+    const { rerender } = setup({ ...payload, link: 'https://open.spotify.com/track/original' })
+    fireEvent.click(screen.getByRole('button', { name: 'Change song' }))
+    const input = screen.getByRole('textbox', { name: 'Song link for pop score' }) as HTMLInputElement
+    expect(input.value).toBe('https://open.spotify.com/track/original')
+    vi.mocked(usePopScore).mockReturnValue({ data: { ...payload, linked: false, link: '' }, isLoading: false, isError: false } as ReturnType<typeof usePopScore>)
+    rerender(<PopScoreCard slug="example" tracker_url="https://tracker.example" />)
+    expect((screen.getByRole('textbox', { name: 'Song link for pop score' }) as HTMLInputElement).value).toBe('')
+  })
+
+  it('shows campaign total growth in the headline when available and omits null growth', () => {
+    setup({ ...payload,
+      streams: { ...payload.streams!, baseline_daily: 1_600_000, campaign_daily: 1_400_000, lift_pct_campaign: -10.1, growth_pct_campaign: 1.4 },
+      ugc: { ...payload.ugc!, baseline_daily: 871, campaign_daily: 1100, growth_pct_campaign: 2.6, gained_campaign: 35_300 },
+    })
+    expect(screen.getByText(/streams 1\.6M → 1\.4M\/day \(−10\.1%\), \+1\.4% total/)).toBeInTheDocument()
+    expect(screen.getByText(/TikTok videos 871 → 1\.1K\/day, \+2\.6% total, 35\.3K new during the campaign/)).toBeInTheDocument()
+  })
+
+  it('omits null campaign total growth percentages from the headline', () => {
+    setup({ ...payload,
+      streams: { ...payload.streams!, growth_pct_campaign: null },
+      ugc: { ...payload.ugc!, growth_pct_campaign: null },
+    })
+    expect(screen.getByText(/streams 5K → 14\.3K\/day \(\+185\.7%\)/)).toBeInTheDocument()
+    expect(screen.getByText(/TikTok videos 120 → 480\/day, 3\.6K new during the campaign/)).toBeInTheDocument()
+  })
+
   it('resets either displayed leg of a counted pair through the choice date', () => {
     setup({ ...payload, phase: 'complete', ugc: { ...payload.ugc!, unusual: [
       { date: '2026-01-16', change: 20_000, source: 'manual', with: '2026-01-17', choice_date: '2026-01-17' },

@@ -683,8 +683,10 @@ def save_campaign(slug: str, meta: Dict):
         c.additional_sounds = meta.get("additional_sounds", [])
         c.cobrand_link = meta.get("cobrand_link", "")
         c.start_date = meta.get("start_date", "")
-        c.end_date = meta.get("end_date", "")
-        c.end_date_auto = bool(meta.get("end_date_auto", c.end_date_auto or False))
+        if "end_date" in meta:
+            c.end_date = meta["end_date"]
+        if "end_date_auto" in meta:
+            c.end_date_auto = bool(meta["end_date_auto"])
         c.budget = float(meta.get("budget", 0))
         c.platform = meta.get("platform", "tiktok")
 

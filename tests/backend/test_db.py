@@ -67,6 +67,13 @@ class TestCampaignCrud:
         _make_campaign(db, title="Updated")
         assert db.get_campaign("my_campaign")["title"] == "Updated"
 
+    def test_partial_save_preserves_end_date_and_auto_flag(self, db):
+        _make_campaign(db, end_date="2026-05-01", end_date_auto=True)
+        db.save_campaign("my_campaign", {"title": "Updated"})
+        saved = db.get_campaign("my_campaign")
+        assert saved["end_date"] == "2026-05-01"
+        assert saved["end_date_auto"] is True
+
     def test_update_campaign_fields(self, db):
         _make_campaign(db)
         db.update_campaign_fields("my_campaign", {"completion_status": "completed"})

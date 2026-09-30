@@ -37,6 +37,7 @@ function TrackLinkForm({ initial, onSave, onUnlink, onCancel, isPending, error }
 
 const num = (v: number | null | undefined) => v == null ? "—" : v.toLocaleString()
 const pct = (v: number | null | undefined) => v == null ? "N/A" : `${v > 0 ? "+" : ""}${v.toFixed(1)}%`
+const headlinePct = (v: number | null | undefined) => v == null ? "N/A" : `${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(v).toFixed(1)}%`
 const compact = (v: number | null | undefined) => v == null ? "—" : Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(v)
 const rate = (v: number | null | undefined) => v == null ? "—" : Math.abs(v) < 1000 ? Math.round(v).toLocaleString("en") : compact(v)
 const date = (v?: string) => v ? new Date(`${v}T00:00:00`).toLocaleDateString("en", { month: "short", day: "numeric", year: "numeric" }) : "—"
@@ -161,9 +162,9 @@ function headline(data: PopScore) {
   const parts: string[] = []
   if (data.popularity?.start != null && data.popularity.end != null) parts.push(`Popularity ${data.popularity.start} → ${data.popularity.end}`)
   const s = data.streams
-  if (s?.baseline_daily != null && s.campaign_daily != null) parts.push(`streams ${rate(s.baseline_daily)} → ${rate(s.campaign_daily)}/day (${pct(s.lift_pct_campaign)})`)
+  if (s?.baseline_daily != null && s.campaign_daily != null) parts.push(`streams ${rate(s.baseline_daily)} → ${rate(s.campaign_daily)}/day (${headlinePct(s.lift_pct_campaign)})${s.growth_pct_campaign == null ? "" : `, ${headlinePct(s.growth_pct_campaign)} total`}`)
   const u = data.ugc
-  if (u?.baseline_daily != null && u.campaign_daily != null) parts.push(`TikTok videos ${rate(u.baseline_daily)} → ${rate(u.campaign_daily)}/day${u.gained_campaign == null ? "" : `, ${compact(u.gained_campaign)} new during the campaign`}`)
+  if (u?.baseline_daily != null && u.campaign_daily != null) parts.push(`TikTok videos ${rate(u.baseline_daily)} → ${rate(u.campaign_daily)}/day${u.growth_pct_campaign == null ? "" : `, ${headlinePct(u.growth_pct_campaign)} total`}${u.gained_campaign == null ? "" : `, ${compact(u.gained_campaign)} new during the campaign`}`)
   const toDate = ["live", "finished_no_end", "followup"].includes(data.phase ?? "") ? " (to date)" : ""
   return parts.length ? `${parts.join(" · ")}${toDate}` : ""
 }
