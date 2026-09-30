@@ -48,7 +48,9 @@ view.
 - Add `campaigns.end_date_auto BOOLEAN DEFAULT FALSE` to distinguish an
   automatically stamped completion date from a manually entered date. Include
   it in the campaign detail `meta` object as `end_date_auto: false` by default
-  and clear it with the date when reopening a campaign.
+  and clear it with the date when reopening only if the date was stamped
+  automatically; a manually entered date is retained. Re-finishing stamps a
+  fresh automatic date.
 - `POST /api/campaign/<slug>/edit` accepts `end_date`. Semantics: key absent →
   unchanged; `""` → cleared; otherwise must parse as `YYYY-MM-DD` and be on or
   after `start_date` (400 with a plain message if not).
@@ -214,7 +216,8 @@ Direction from EC after v1 review rounds:
 ### Round 4 implementation contract updates
 
 - Moving a campaign to Finished fills an empty end date with today's ISO date;
-  existing dates are retained and reopening does not clear them. Legacy finished
+  existing manual dates are retained; reopening clears only an automatically
+  stamped end date, and finishing again stamps a new date. Legacy finished
   campaigns without an end date use the `finished_no_end` phase.
 - Streams and TikTok cumulative history share the same change-point daily
   calculation. A reading after a multi-day stall spreads the change over that
@@ -301,15 +304,15 @@ user-facing text when their respective request fails.
 
 For both cumulative `streams` and `ugc`, a negative increment whose magnitude
 exceeds 1% of the previous total is a recount and is excluded from attribution.
-A positive increment is a candidate when it exceeds 20 times the median
-absolute increment in the previous 14 days (at least five prior increments),
-and the median of the next three increments is below one twentieth of the
-candidate (at least three later readings). A candidate is excluded as a recount
-only when it is also at least 5% of the previous total and there are no
-campaign `post_events` within one day of its date. Otherwise it remains counted
-and is reported in that block's `unusual` array as `{date, change}`. The endpoint
-supplies that campaign's post dates to the calculation. Recount detection uses
-raw cumulative readings and does not use Spotify popularity.
+A positive increment is a candidate when it is strictly greater than 20 times
+the median of the previous 14 readings' increments (at least five prior
+increments). If that median is zero, use their mean; if that is also zero, any
+positive increment qualifies. The median of the next three increments must be
+strictly below one twentieth of the candidate, and all three later readings
+must exist. A candidate at least 10% of the previous total is excluded as a
+recount; a smaller candidate remains counted and appears in that block's
+`unusual` array as `{date, change}`. The calculation uses raw readings, never
+Spotify popularity or post dates. `post_events` remain available for the chart.
 
 `popularity` uses `change_campaign` and `change_followup`; cumulative blocks
 (`streams`, `ugc`) use `gained_campaign`, `gained_followup` and

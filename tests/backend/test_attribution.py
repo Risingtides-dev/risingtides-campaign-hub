@@ -22,10 +22,10 @@ def test_real_popscore_fixture_raw_recount_and_unusual_decisions():
     root = Path(__file__).parents[2] / "frontend/src/components/campaigns/__tests__/fixtures"
     expected = {
         "espresso": ([], [], [{"date": "2026-09-23", "change": 543105}], [{"date": "2026-08-02", "change": 51655}]),
-        "blinding_lights": ([], [], [{"date": "2026-05-23", "change": -2820230}, {"date": "2026-09-23", "change": 271879}],
-                            [{"date": "2026-06-14", "change": 10656}, {"date": "2026-06-16", "change": 51143},
+        "blinding_lights": ([], [], [{"date": "2026-05-23", "change": -2820230}],
+                            [{"date": "2026-05-18", "change": 3965}, {"date": "2026-06-14", "change": 10656}, {"date": "2026-06-16", "change": 51143},
                              {"date": "2026-06-20", "change": 4917}, {"date": "2026-07-15", "change": 3131},
-                             {"date": "2026-09-06", "change": 7647}]),
+                             {"date": "2026-09-06", "change": 7647}, {"date": "2026-09-23", "change": 271879}]),
     }
     for name, (sr, su, ur, uu) in expected.items():
         fixture = json.loads((root / f"popscore_{name}_walk.json").read_text())
@@ -38,29 +38,50 @@ def test_real_popscore_fixture_raw_recount_and_unusual_decisions():
         assert result["ugc"]["recounts"] == ur
         assert result["ugc"].get("unusual") == uu
 
+    # Blinding Lights 05-18 is +3,965 / 6,019,824 = 0.07% (unusual);
+    # 05-23 is -2,820,230 / 6,027,502 = -46.79% (negative recount);
+    # 09-23 is +271,879 / 3,304,966 = 8.23% (unusual, counted). Espresso
+    # 09-23 is +543,105 / 1,449,563 = 37.47% (recount); 08-02 is
+    # +51,655 / 1,338,582 = 3.86% (unusual, counted).
 
-def test_positive_spike_thresholds_and_post_day_protection():
+
+def test_positive_spike_zero_median_mean_fallback_and_reverting_stall():
     from datetime import timedelta
     base = date(2026, 1, 1)
-    def series(total, increments):
-        points = []
-        for i, inc in enumerate(increments):
-            total += inc
-            points.append({"date": (base + timedelta(days=i)).isoformat(), "value": total})
-        return points
-    increments = [5] * 14 + [105] + [5] * 3
-    history = series(1000, increments)
-    detected = calculate_attribution([], history, "2026-01-01", today=base + timedelta(days=17), ugc=history)
-    assert detected["ugc"]["recounts"] == [{"date": "2026-01-15", "change": 105}]
-    protected = calculate_attribution([], history, "2026-01-01", today=base + timedelta(days=17), ugc=history,
-                                      post_dates=["2026-01-15"])
-    assert protected["ugc"]["recounts"] == []
-    assert protected["ugc"]["unusual"] == [{"date": "2026-01-15", "change": 105}]
-    launch_history = series(3000, increments)
-    launch_day = calculate_attribution([], [], "2026-01-01", today=base + timedelta(days=17), ugc=launch_history,
-                                       post_dates=["2026-01-15"])
-    assert launch_day["ugc"]["gained_campaign"] == 185
-    assert launch_day["ugc"]["recounts"] == []
+    increments = [0] * 8 + [10] * 6 + [543_105, -543_105, 1, 1]
+    total, history = 100_000, []
+    for i, inc in enumerate(increments):
+        total += inc
+        history.append({"date": (base + timedelta(days=i)).isoformat(), "value": total})
+    result = calculate_attribution([], history, base.isoformat(), today=base + timedelta(days=17), ugc=history)
+    assert result["ugc"]["recounts"] == [
+        {"date": "2026-01-15", "change": 543105},
+        {"date": "2026-01-16", "change": -543105},
+    ]
+    # The previous 14 increments have median 0 but mean 60/14. At +80 the
+    # mean fallback gives an 85.7 threshold, so this step is not a candidate.
+    fallback_probe = [0] * 8 + [10] * 6 + [80, 1, 1, 1]
+    probe_total, probe_history = 10_000, []
+    for i, inc in enumerate(fallback_probe):
+        probe_total += inc
+        probe_history.append({"date": (base + timedelta(days=i)).isoformat(), "value": probe_total})
+    probe = calculate_attribution([], [], base.isoformat(), today=base + timedelta(days=17), ugc=probe_history)["ugc"]
+    assert probe["recounts"] == []
+    assert probe["unusual"] == []
+
+
+def test_positive_fixture_recount_is_size_invariant():
+    root = Path(__file__).parents[2] / "frontend/src/components/campaigns/__tests__/fixtures"
+    fixture = json.loads((root / "popscore_espresso_walk.json").read_text())
+    raw = _raw_fixture_history(fixture["ugc"], fixture["ugc_history"])
+    outcomes = []
+    for scale in (1, 1 / 10, 1 / 30):
+        scaled = [{"date": point["date"], "value": round(point["value"] * scale)} for point in raw]
+        result = calculate_attribution([], [], fixture["start_date"], fixture["end_date"],
+            today=date(2026, 9, 29), ugc=scaled)["ugc"]
+        outcomes.append(result["recounts"])
+    assert [rows[0]["date"] for rows in outcomes] == ["2026-09-23"] * 3
+    assert [rows[0]["change"] for rows in outcomes] == [543105, 54311, 18103]
 
 
 def test_negative_sub_five_percent_recounts_are_size_invariant():
@@ -95,29 +116,39 @@ def test_negative_gate_excludes_exactly_one_percent_and_point_one_percent():
 def test_positive_detector_threshold_window_and_prior_count_boundaries():
     from datetime import timedelta
     origin = date(2026, 4, 1)
-    def decisions(increments, total=100_000):
-        points, value = [], total
+    def decisions(increments, previous_total=100_000):
+        # Arrange for previous_total to be the total immediately before the
+        # candidate, after all increments preceding it.
+        candidate_index = len(increments) - 4
+        initial = previous_total - sum(increments[:candidate_index])
+        points, value = [{"date": origin.isoformat(), "value": initial}], initial
         for index, increment in enumerate(increments):
             value += increment
-            points.append({"date": (origin + timedelta(days=index)).isoformat(), "value": value})
+            points.append({"date": (origin + timedelta(days=index + 1)).isoformat(), "value": value})
         result = calculate_attribution([], [], origin.isoformat(), today=origin + timedelta(days=len(points)), ugc=points)
         block = result["ugc"]
         return block["recounts"], block["unusual"]
     tail = [1, 1, 1]
-    # Candidate must exceed 20x the median of the prior 14 increments.
-    assert decisions([10] * 14 + [150] + tail, total=2000)[0] == []
-    assert decisions([10] * 14 + [210] + tail, total=2000)[0] == [{"date": "2026-04-15", "change": 210}]
+    # Candidate must strictly exceed 20x the median of the prior 14 increments.
+    assert decisions([10] * 14 + [200] + tail, previous_total=2200) == ([], [])
+    # 201 is >200 and 9.1% of the 2,200 previous total, so unusual, not recount.
+    assert decisions([10] * 14 + [201] + tail, previous_total=2200) == ([], [{"date": "2026-04-16", "change": 201}])
+    # Candidate at 220 is exactly 10% of the 2,200 previous total, so recount.
+    assert decisions([10] * 14 + [220] + tail, previous_total=2200)[0] == [{"date": "2026-04-16", "change": 220}]
+    # A next-three median exactly equal to inc/20 fails the strict gate.
+    assert decisions([10] * 14 + [220, 11, 11, 10], previous_total=2200) == ([], [])
     # Median, not maximum: one large earlier day does not suppress a valid spike.
-    assert decisions([10, 10, 10, 10, 1000] + [10] * 9 + [210] + tail, total=2000)[0] == [{"date": "2026-04-15", "change": 210}]
+    assert decisions([10, 10, 10, 10, 1000] + [10] * 9 + [220] + tail, previous_total=2200)[0] == [{"date": "2026-04-16", "change": 220}]
     # The comparison spans 14 increments; narrowing it to the last 7 changes this result.
     mixed = [100] * 8 + [1] * 6 + [30] + tail
     assert decisions(mixed) == ([], [])
     # At least five prior increments and three later readings are required.
-    assert decisions([10] * 4 + [210] + tail, total=2000)[0] == []
-    assert decisions([10] * 5 + [210] + [1, 1], total=2000)[0] == []
+    assert decisions([10] * 4 + [210] + tail, previous_total=2000)[0] == []
+    assert decisions([10] * 5 + [201] + tail, previous_total=2000)[0] == [{"date": "2026-04-07", "change": 201}]
+    assert decisions([10] * 5 + [210] + [1, 1], previous_total=2000)[0] == []
 
 
-def test_positive_candidate_five_percent_floor_controls_recount_vs_unusual():
+def test_positive_candidate_ten_percent_gate_and_unusual():
     from datetime import timedelta
     origin = date(2026, 5, 1)
     def run(total, spike):
@@ -127,11 +158,11 @@ def test_positive_candidate_five_percent_floor_controls_recount_vs_unusual():
             value += inc
             points.append({"date": (origin + timedelta(days=index)).isoformat(), "value": value})
         return calculate_attribution([], [], origin.isoformat(), today=origin + timedelta(days=18), ugc=points)["ugc"]
-    at_five = run(3900, 210)
-    below_five = run(6000, 210)
-    assert at_five["recounts"] == [{"date": "2026-05-15", "change": 210}]
-    assert below_five["recounts"] == []
-    assert below_five["unusual"] == [{"date": "2026-05-15", "change": 210}]
+    exact = run(2000, 214)
+    assert exact["recounts"] == [{"date": "2026-05-15", "change": 214}]
+    below = run(2001, 214)
+    assert below["recounts"] == []
+    assert below["unusual"] == [{"date": "2026-05-15", "change": 214}]
 
 
 def test_missing_baseline_and_gaps_and_negative_delta():

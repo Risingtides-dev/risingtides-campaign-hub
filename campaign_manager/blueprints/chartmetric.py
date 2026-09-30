@@ -104,19 +104,7 @@ def get_pop_score(slug: str):
         log.exception("TikTok posts history fetch failed for %s", slug)
         ugc, ugc_error = [], "Chartmetric is slow — try again shortly" if isinstance(e, (TimeoutError, requests.Timeout, requests.ConnectionError)) else "TikTok video history is temporarily unavailable."
     try:
-        from campaign_manager.models import MatchedVideo
-        with _db.get_session() as s:
-            campaign = s.query(Campaign).filter_by(slug=slug).first()
-            post_dates = []
-            if campaign:
-                for video in s.query(MatchedVideo).filter(MatchedVideo.campaign_id == campaign.id, MatchedVideo.dismissed_at.is_(None)).all():
-                    raw = (video.upload_date or "").strip()
-                    day = raw[:4] + "-" + raw[4:6] + "-" + raw[6:8] if len(raw) == 8 and raw.isdigit() else raw[:10]
-                    try:
-                        post_dates.append(date.fromisoformat(day).isoformat())
-                    except ValueError:
-                        continue
-        attribution = calculate_attribution(history, streams, row["start_date"], row["end_date"], ugc=ugc, completion_status=row["completion_status"], today=datetime.now(_db.EST).date(), post_dates=post_dates)
+        attribution = calculate_attribution(history, streams, row["start_date"], row["end_date"], ugc=ugc, completion_status=row["completion_status"], today=datetime.now(_db.EST).date())
     except Exception:
         log.exception("attribution calculation failed for %s", slug)
         return jsonify({"linked": True, "link": row["link"], "error": "Couldn't calculate song attribution."}), 502

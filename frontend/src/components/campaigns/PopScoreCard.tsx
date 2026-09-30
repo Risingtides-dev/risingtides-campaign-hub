@@ -46,7 +46,7 @@ export function formatTrendTooltip(point: { date: string; value?: number | null;
 export function renderTrendTooltipContent(point: { date: string; value?: number | null; smoothed?: boolean; recount?: boolean }, mode: TrendMode, postCount?: number) {
   const formatted = formatTrendTooltip({ ...point, count: postCount }, mode)
   const isRecount = !!point.recount
-  return <div className="rounded border border-white/15 bg-rt-bg-card px-2 py-1 text-xs shadow"><div>{formatted.date}</div><div>{formatted.value ?? "—"}{!isRecount && ` ${formatted.label}${formatted.estimated ? " · estimated" : ""}`}</div>{formatted.posts != null && <div>{formatted.posts} creator posts</div>}</div>
+  return <div className="rounded border border-white/15 bg-rt-bg-card px-2 py-1 text-xs shadow"><div>{formatted.date}</div>{(formatted.value != null || isRecount) && <div>{formatted.value ?? "—"}{!isRecount && ` ${formatted.label}${formatted.estimated ? " · estimated" : ""}`}</div>}{formatted.posts != null && <div>{formatted.posts} creator posts</div>}</div>
 }
 
 // eslint-disable-next-line react-refresh/only-export-components
@@ -79,8 +79,8 @@ function PopScoreChart({ data }: { data: PopScore }) {
   const chartData = prepared.points
   const points = prepared.points.filter(p => p.value != null)
   const sameBounds = !!data.start_date && data.start_date === data.end_date
-  const markerDates = [data.start_date, sameBounds ? undefined : data.end_date, data.followup_end].filter((date): date is string => !!date).map(date => new Date(`${date}T00:00:00`).getTime())
-  const dates = [...points.map(point => point.time), ...prepared.events.map(event => event.time), ...markerDates]
+  const today = new Date().setHours(0, 0, 0, 0)
+  const dates = [...points.map(point => point.time), ...prepared.events.filter(event => event.time <= today).map(event => event.time)]
   const min = dates.length ? Math.min(...dates) : 0
   const max = dates.length ? Math.max(...dates) : 0
   const lines = [data.start_date, sameBounds ? "" : data.end_date, data.followup_end].map((d, i) => ({ date: d, label: [sameBounds ? "Start/End" : "Start", "End", "+28 days"][i] })).filter((p): p is {date: string; label: string} => !!p.date).filter(p => new Date(`${p.date}T00:00:00`).getTime() >= min && new Date(`${p.date}T00:00:00`).getTime() <= max)
@@ -165,12 +165,11 @@ export function PopScoreCard({ slug, tracker_url }: { slug: string; tracker_url?
         {data.data_as_of && <span className="text-xs text-rt-fg-tertiary">Data as of {date(data.data_as_of)}</span>}
       </div>
       <div className="flex flex-wrap items-center gap-1 text-[13px] text-rt-fg-tertiary">
-        <span>Start {date(data.start_date)}</span><span>→</span><span>End {data.end_date ? date(data.end_date) : "not set"}</span>
+        <span>Start {date(data.start_date)}</span><span>→</span><span>End {data.end_date ? date(data.end_date) : "not set"}</span>{data.end_date_auto && data.end_date && <span className="text-[11px] text-rt-fg-tertiary">· set when finished</span>}
         {!editingEndDate && <><button type="button" className="text-rt-magenta" onClick={() => { editCampaign.reset(); setEndDateDraft(data.end_date || ""); setEditingEndDate(true) }}>{data.end_date ? "Change" : "Set an end date"}</button>{data.end_date && <button type="button" disabled={editCampaign.isPending} className="text-rt-magenta disabled:opacity-40" onClick={() => editCampaign.mutate({ end_date: "" })}>Clear</button>}</>}
         {editingEndDate && <><Input aria-label="End date" type="date" min={data.start_date} value={endDateDraft} className="h-8 w-auto" disabled={editCampaign.isPending} onChange={(e) => setEndDateDraft(e.target.value)} /><Button size="sm" disabled={editCampaign.isPending || !endDateDraft} onClick={() => editCampaign.mutate({ end_date: endDateDraft }, { onSuccess: () => setEditingEndDate(false) })}>Save</Button><button type="button" onClick={() => { editCampaign.reset(); setEditingEndDate(false) }}>Cancel</button></>}
         <span>→</span><span>Follow-up ends {data.followup_end ? date(data.followup_end) : "—"}</span>
         {editCampaign.isPending && <span className="text-[11px] text-rt-fg-tertiary">Updating…</span>}
-      {data.end_date_auto && data.end_date && <span className="text-[11px] text-rt-fg-tertiary">· set when finished</span>}
         {editCampaign.isError && <span role="alert" className="text-red-400">{editCampaign.error?.message}</span>}
       </div>
       {headline(data) && <p className="text-[12px] text-rt-fg-tertiary">{headline(data)}</p>}
@@ -195,7 +194,7 @@ export function PopScoreCard({ slug, tracker_url }: { slug: string; tracker_url?
       {!data.streams_error && <p className="text-[11px] text-rt-fg-tertiary">Daily streams {rate(streams?.baseline_daily)} → {rate(streams?.campaign_daily)} during ({pct(streams?.lift_pct_campaign)}){streams?.followup_daily != null ? ` → ${rate(streams.followup_daily)} after` : ""}</p>}
       {!data.ugc_error && <p className="text-[11px] text-rt-fg-tertiary">New TikTok videos/day {rate(data.ugc?.baseline_daily)} → {rate(data.ugc?.campaign_daily)} during ({pct(data.ugc?.lift_pct_campaign)}){data.ugc?.followup_daily != null ? ` → ${rate(data.ugc.followup_daily)} after` : ""}{data.ugc?.gained_campaign != null ? ` · ${compact(data.ugc.gained_campaign)} new during the campaign` : ""}</p>}
       {[...(data.streams?.recounts ?? []).map(r => ({...r, unit: "streams"})), ...(data.ugc?.recounts ?? []).map(r => ({...r, unit: "TikTok videos"}))].map(r => <p key={`${r.unit}-${r.date}-${r.change}`} className="text-[10px] text-rt-fg-tertiary">Chartmetric recount on {date(r.date)} ({r.change > 0 ? "+" : r.change < 0 ? "−" : ""}{compact(Math.abs(r.change))} {r.unit}) not counted</p>)}
-      {[...(data.streams?.unusual ?? []).map(r => ({...r, unit: "streams"})), ...(data.ugc?.unusual ?? []).map(r => ({...r, unit: "TikTok videos"}))].map(r => <p key={`${r.unit}-${r.date}-${r.change}`} className="text-[10px] text-rt-fg-tertiary">Unusual one-day jump on {date(r.date)} ({r.change > 0 ? "+" : "−"}{compact(Math.abs(r.change))} {r.unit}) — counted</p>)}
+      {[...(data.streams?.unusual ?? []).map(r => ({...r, unit: "streams"})), ...(data.ugc?.unusual ?? []).map(r => ({...r, unit: "TikTok videos"}))].map(r => <p key={`${r.unit}-${r.date}-${r.change}`} className="text-[10px] text-rt-fg-tertiary">Unusual jump on {date(r.date)} ({r.change > 0 ? "+" : "−"}{compact(Math.abs(r.change))} {r.unit}) — counted</p>)}
       <div><button type="button" aria-expanded={showTrend} aria-controls={`attribution-trend-${slug}`} className="text-[12px] text-rt-fg-tertiary hover:text-rt-fg" onClick={() => setShowTrend(v => !v)}>{showTrend ? "Hide trend" : "Show trend"}</button><div id={`attribution-trend-${slug}`} hidden={!showTrend} className="mt-2">{showTrend && <PopScoreChart data={data} />}</div></div>
       <div className="flex flex-wrap items-center justify-between gap-2 border-t border-white/8 pt-3 text-[12px] text-rt-fg-tertiary"><span>Shows what happened to the song around the campaign — not proof the campaign caused all of it.</span>{tracker_url && <a href={tracker_url} target="_blank" rel="noopener noreferrer" className="whitespace-nowrap text-rt-magenta hover:underline">Open Tides Tracker ↗</a>}</div>
     </>}

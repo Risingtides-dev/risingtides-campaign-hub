@@ -245,7 +245,7 @@ def _save_meta(slug: str, meta: Dict, campaign_dir=None):
 
 
 def _save_resolved_campaign_field(slug: str, meta: Dict, field: str, campaign_dir=None):
-    """Persist one sound-resolution result without overwriting concurrent edits."""
+    """Persist one resolved field; file mode falls back to ``_save_meta``."""
     if _db.is_active():
         _db.update_campaign_fields(slug, {field: meta[field]})
     else:

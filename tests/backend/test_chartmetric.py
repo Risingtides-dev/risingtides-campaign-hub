@@ -189,16 +189,21 @@ class TestClient:
         assert http.post.call_count == 1
         assert http.get.call_count == 1
 
-    def test_retries_once_on_429(self):
+    @pytest.mark.parametrize("status", [401, 429])
+    def test_retryable_status_retries_and_succeeds(self, status):
         client, http = _client_with({})
-        http.get.side_effect = [_resp(429), _resp(200, {"obj": TRACK_OBJ})]
+        http.get.side_effect = [_resp(status), _resp(200, {"obj": TRACK_OBJ})]
         assert client.track_snapshot(1).spotify_popularity == 87
+        assert http.get.call_count == 2
 
     @pytest.mark.parametrize("status", [401, 429])
     def test_retryable_status_short_circuits_when_deadline_cannot_cover_retry(self, status):
         client, http = _client_with({})
-        http.get.return_value = _resp(status)
-        with patch.object(cm.time, "monotonic", return_value=100), \
+        http.get.side_effect = [_resp(status), _resp(200, {"obj": TRACK_OBJ})]
+        # A request can fit in the 0.5s budget, but the retry interval cannot.
+        with patch.object(client, "_throttle"), \
+             patch.object(cm, "MIN_REQUEST_INTERVAL_S", 1), \
+             patch.object(cm.time, "monotonic", return_value=100), \
              pytest.raises(cm.ChartmetricError):
             client.track_snapshot(1, deadline=100.5)
         assert http.get.call_count == 1
@@ -303,6 +308,55 @@ class TestPopScoreEndpoints:
         assert current["end_date"] == finished["end_date"]
         assert current["budget"] == 2500
 
+    @pytest.mark.parametrize("case", ["html_id", "html_title", "sound_url", "video_html"])
+    def test_refresh_resolution_sites_preserve_concurrent_campaign_edits(self, client, monkeypatch, case):
+        from campaign_manager import db
+        from campaign_manager.blueprints import campaigns as bp
+        from src.scrapers import master_tracker
+
+        slug = self._campaign(client, title=f"Resolution {case}")
+        meta = db.get_campaign(slug)
+        if case in ("html_id", "html_title"):
+            meta["sound_id"] = "1234567890"
+            meta["official_sound"] = "https://www.tiktok.com/music/original-1234567890"
+            if case == "html_title":
+                meta["song"] = ""
+                meta["artist"] = ""
+            db.save_campaign(slug, meta)
+        elif case == "sound_url":
+            meta["sound_id"] = "https://www.tiktok.com/music/original-1234567890"
+            db.save_campaign(slug, meta)
+        else:
+            meta["sound_id"] = "https://www.tiktok.com/video/1234567890123456789"
+            db.save_campaign(slug, meta)
+        db.save_creators(slug, [{"username": "creator", "platform": "tiktok"}])
+
+        monkeypatch.setattr(master_tracker, "scrape_tiktok_account", lambda *a, **k: [])
+        monkeypatch.setattr(master_tracker, "match_video_to_sounds", lambda *a, **k: False)
+        def concurrent_edit_during_resolution():
+            db.update_campaign_fields(slug, {
+                "completion_status": "completed", "end_date": "2026-09-30",
+                "end_date_auto": True, "budget": 4321,
+            })
+        def resolve_sound_id(*_):
+            if case == "sound_url":
+                concurrent_edit_during_resolution()
+                return "9876543210"
+            return None
+        def resolve_html(*_):
+            concurrent_edit_during_resolution()
+            return (("1234567890", "Resolved Song") if case == "html_title" else
+                    ("9876543210", "Resolved Song"))
+        monkeypatch.setattr(bp, "extract_sound_id", resolve_sound_id)
+        monkeypatch.setattr(bp, "extract_sound_id_from_html", resolve_html)
+        response = client.post(f"/api/campaign/{slug}/refresh")
+        assert response.status_code == 200, response.get_json()
+        current = db.get_campaign(slug)
+        assert current["completion_status"] == "completed"
+        assert current["end_date"] == "2026-09-30"
+        assert current["end_date_auto"] is True
+        assert current["budget"] == 4321
+
     @pytest.mark.parametrize("failure", [__import__("requests").Timeout("slow"), __import__("requests").ConnectionError("offline")])
     def test_stream_transport_errors_use_slow_message(self, client, failure):
         from campaign_manager.blueprints import chartmetric as endpoint
@@ -337,6 +391,7 @@ class TestPopScoreEndpoints:
         expected_since = date(2026, 8, 11)
         fake.popularity_history.assert_called_once_with(118981138, since=expected_since, deadline=ANY)
         fake.streams_history.assert_called_once_with(118981138, since=expected_since, track_domain_id="main", deadline=ANY)
+        fake.tiktok_posts_history.assert_called_once_with(118981138, since=expected_since, deadline=ANY)
         assert body["streams"]["baseline_daily"] == 10.0
 
     def test_calculation_exception_is_json_502(self, client):
@@ -433,6 +488,16 @@ class TestPopScoreEndpoints:
             body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
         fake.tiktok_posts_history.assert_called_once_with(118981138, since=date(2026, 8, 11), deadline=ANY)
         assert body.get("ugc_error") == "TikTok video history is temporarily unavailable."
+
+    @pytest.mark.parametrize("failure", [__import__("requests").Timeout("slow"), __import__("requests").ConnectionError("offline")])
+    def test_ugc_transport_errors_use_slow_message(self, client, failure):
+        slug = self._campaign(client, start="2026-09-01")
+        fake = self._fake()
+        fake.tiktok_posts_history.side_effect = failure
+        with patch.object(cm, "get_client", return_value=fake):
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403305"})
+            body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
+        assert body["ugc_error"] == "Chartmetric is slow — try again shortly"
 
     def test_series_fetches_are_skipped_after_overall_latency_budget(self, client):
         from campaign_manager.blueprints import chartmetric as chartmetric_bp

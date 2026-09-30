@@ -1,6 +1,6 @@
 """Pure campaign attribution calculations for Chartmetric histories."""
 from datetime import date, datetime, timedelta
-from statistics import median
+from statistics import mean, median
 from zoneinfo import ZoneInfo
 
 FOLLOWUP_DAYS = 28
@@ -47,7 +47,7 @@ def _pct(numerator, baseline):
     return round(numerator / baseline * 100, 1) if baseline is not None and baseline > 0 else None
 
 
-def calculate_attribution(popularity, streams, start_date, end_date="", today=None, ugc=None, completion_status=None, post_dates=None):
+def calculate_attribution(popularity, streams, start_date, end_date="", today=None, ugc=None, completion_status=None):
     today = today or datetime.now(ZoneInfo("America/New_York")).date()
     start = _day(start_date)
     end = _day(end_date)
@@ -77,7 +77,6 @@ def calculate_attribution(popularity, streams, start_date, end_date="", today=No
     in_followup = phase == "followup"
     pop_follow_to_date = bool(in_followup or (follow_target and (pop_latest is None or pop_latest < follow_target)))
     stream_follow_to_date = bool(in_followup or (follow_target and (stream_latest is None or stream_latest < follow_target)))
-    post_days = {_day(d) for d in (post_dates or [])}
     def adjust_recounts(history):
         ordered = _dedupe(history)
         increments = [ordered[i]["value"] - ordered[i-1]["value"] for i in range(1, len(ordered))]
@@ -85,15 +84,17 @@ def calculate_attribution(popularity, streams, start_date, end_date="", today=No
         recount_indices, found, unusual = set(), [], []
         for i, inc in enumerate(increments, 1):
             previous = ordered[i-1]["value"]
-            is_recount = inc < 0 and abs(inc) > abs(previous) * .01
+            is_recount = inc < 0 and abs(inc) > previous * .01
             candidate = False
             if inc > 0:
-                prior = [abs(x) for x in increments[max(0, i - 15):i - 1]]
+                prior = increments[max(0, i - 15):i - 1]
                 later = increments[i:i + 3]
-                candidate = len(prior) >= 5 and median(prior) > 0 and inc > 20 * median(prior)
+                baseline = median(prior) if prior else 0
+                if baseline == 0 and prior:
+                    baseline = mean(prior)
+                candidate = len(prior) >= 5 and (baseline == 0 or inc > 20 * baseline)
                 candidate = candidate and len(later) == 3 and median(later) < inc / 20
-                near_post = any(post and abs((post - _day(ordered[i]["date"])).days) <= 1 for post in post_days)
-                is_recount = candidate and previous > 0 and inc >= previous * .05 and not near_post
+                is_recount = candidate and previous > 0 and inc >= previous * .10
                 if candidate and not is_recount:
                     unusual.append({"date": ordered[i]["date"], "change": inc})
             if is_recount:

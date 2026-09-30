@@ -57,6 +57,8 @@ describe('pass7 probes', () => {
     setup(real)
     fireEvent.click(screen.getByRole('button', { name: 'Show trend' }))
     expect(ticks()).toBe(ev.length)
+    const firstTick = document.querySelector('.creator-post-tick')!
+    expect(Number(firstTick.getAttribute('y2')) - Number(firstTick.getAttribute('y1'))).toBe(5)
     expect(document.querySelectorAll('.recharts-line-curve').length).toBeGreaterThan(0)
     fireEvent.click(screen.getByRole('button', { name: 'Daily streams' }))
     expect(ticks()).toBe(ev.length)
@@ -65,27 +67,63 @@ describe('pass7 probes', () => {
     expect(ticks()).toBe(ev.length)
     expect(bars()).toBe(real.ugc_history!.filter(p => p.daily != null).length)
   })
+  it('keeps inserted post days in one continuous popularity line', () => {
+    const real = { ...espressoWalk, post_events: [{ date: '2026-08-18', count: 1 }, { date: '2026-08-19', count: 2 }] } as unknown as PopScore
+    setup(real)
+    fireEvent.click(screen.getByRole('button', { name: 'Show trend' }))
+    const paths = [...document.querySelectorAll('.recharts-line-curve')].map(node => node.getAttribute('d') ?? '')
+    expect(paths.length).toBeGreaterThan(0)
+    expect(paths.reduce((n, path) => n + (path.match(/M/g) ?? []).length, 0)).toBe(1)
+  })
+  it('does not stretch a live chart to future campaign end dates', () => {
+    const live = { ...espressoWalk, start_date: '2026-09-01', end_date: '2026-10-31', followup_end: '2026-11-28', phase: 'live', post_events: [] } as unknown as PopScore
+    setup(live)
+    fireEvent.click(screen.getByRole('button', { name: 'Show trend' }))
+    expect([...document.querySelectorAll('.recharts-label tspan')].map(node => node.textContent)).not.toContain('E')
+    expect([...document.querySelectorAll('.recharts-label tspan')].map(node => node.textContent)).not.toContain('+28 days')
+  })
   it('tooltip on recount day with posts', () => {
     const popup = render(renderTrendTooltipForRow({ date: '2026-09-23', value: null, recountY: 0 }, 'ugc', [{ date: '2026-09-23', count: 5 }]))
     expect(popup.container.textContent).toContain('recount (not counted)')
     expect(popup.container.textContent).toContain('5 creator posts')
+    expect(popup.container.textContent).not.toContain('Popularity')
   })
   it('labels at 375 and after re-render', () => {
+    const observe = vi.fn()
+    const disconnect = vi.fn()
     class MockResizeObserver {
       constructor(callback: ResizeObserverCallback) { resizeCallback = callback }
-      observe() {}
-      disconnect() {}
+      observe = observe
+      disconnect = disconnect
       unobserve() {}
     }
     vi.stubGlobal('ResizeObserver', MockResizeObserver)
-    const real = { ...espressoWalk, end_date_auto: true, end_date: '2026-09-30' } as unknown as PopScore
+    const real = { ...espressoWalk, end_date_auto: true, end_date: '2026-09-30', post_events: [{ date: '2026-09-30', count: 1 }] } as unknown as PopScore
     setup(real)
     fireEvent.click(screen.getByRole('button', { name: 'Show trend' }))
+    expect(observe).toHaveBeenCalled()
     act(() => resizeCallback?.([{ contentRect: { width: 375 } } as ResizeObserverEntry], {} as ResizeObserver))
     expect([...document.querySelectorAll('.recharts-label tspan')].map(n => n.textContent)).toEqual(expect.arrayContaining(['S', 'E']))
     fireEvent.click(screen.getByRole('button', { name: 'Daily new videos' }))
     expect([...document.querySelectorAll('.recharts-label tspan')].map(n => n.textContent)).toEqual(expect.arrayContaining(['S', 'E']))
     expect([...document.querySelectorAll('span')].map(n => n.textContent).filter(t => t?.includes('End Sep 30, 2026'))).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Hide trend' }))
+    expect(disconnect).toHaveBeenCalled()
+  })
+  it('uses the 600px label fallback for zero-width resize entries', () => {
+    const observe = vi.fn()
+    class MockResizeObserver {
+      constructor(callback: ResizeObserverCallback) { resizeCallback = callback }
+      observe = observe
+      disconnect = vi.fn()
+      unobserve = vi.fn()
+    }
+    vi.stubGlobal('ResizeObserver', MockResizeObserver)
+    const real = { ...espressoWalk, end_date: '2026-09-30', post_events: [{ date: '2026-09-30', count: 1 }] } as unknown as PopScore
+    setup(real)
+    fireEvent.click(screen.getByRole('button', { name: 'Show trend' }))
+    act(() => resizeCallback?.([{ contentRect: { width: 0 } } as ResizeObserverEntry], {} as ResizeObserver))
+    expect([...document.querySelectorAll('.recharts-label tspan')].map(n => n.textContent)).toContain('End')
   })
 
   it('shows the end date only once with completion provenance', () => {
@@ -93,6 +131,8 @@ describe('pass7 probes', () => {
     setup(real)
     expect(screen.getByText('· set when finished')).toBeTruthy()
     expect([...document.querySelectorAll('span')].map(n => n.textContent).filter(t => t?.includes('End Sep 30, 2026'))).toHaveLength(1)
+    const end = [...document.querySelectorAll('span')].find(n => n.textContent?.includes('End Sep 30, 2026'))!
+    expect(end.nextElementSibling?.textContent).toBe('· set when finished')
   })
 
   it('shows signed recount changes', () => {
@@ -104,6 +144,11 @@ describe('pass7 probes', () => {
   it('shows unusual jumps as muted counted notes', () => {
     const real = { ...espressoWalk, ugc: { ...espressoWalk.ugc, unusual: [{ date: '2026-08-02', change: 51_743 }] } } as unknown as PopScore
     setup(real)
-    expect(document.body.textContent).toContain('Unusual one-day jump on Aug 2, 2026 (+51.7K TikTok videos) — counted')
+    expect(document.body.textContent).toContain('Unusual jump on Aug 2, 2026 (+51.7K TikTok videos) — counted')
+  })
+  it('keeps unusual streams notes', () => {
+    const real = { ...espressoWalk, streams: { ...espressoWalk.streams, unusual: [{ date: '2026-08-02', change: 12500 }] } } as unknown as PopScore
+    setup(real)
+    expect(document.body.textContent).toContain('Unusual jump on Aug 2, 2026 (+12.5K streams) — counted')
   })
 })

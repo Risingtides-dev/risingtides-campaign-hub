@@ -26,4 +26,11 @@ describe("pop score trend preparation", () => {
     expect(trendEventTicks(payload).map(event => event.date)).toEqual(["2026-01-02", "2026-01-05"])
     expect(prepareTrendData(payload, "ugc").points[1].postCount).toBe(4)
   })
+  it("keeps an empty popularity series on the finite default domain", () => {
+    const empty = { ...payload, history: [], post_events: [{ date: "2026-01-05", count: 2 }] }
+    const prepared = prepareTrendData(empty, "popularity")
+    expect(prepared.domain).toEqual([0, 100])
+    expect(prepared.points[0].postY).toBe(100)
+    expect(prepared.domain?.every(Number.isFinite)).toBe(true)
+  })
 })

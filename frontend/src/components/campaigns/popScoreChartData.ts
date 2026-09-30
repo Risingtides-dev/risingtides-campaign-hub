@@ -33,11 +33,6 @@ export function prepareTrendData(data: PopScore, mode: TrendMode) {
   const counts = new Map(events.map(event => [event.date, event.count]))
   const recounts = new Set((mode === "streams" ? data.streams?.recounts : mode === "ugc" ? data.ugc?.recounts : [])?.map(r => r.date) ?? [])
   const domain = mode === "popularity" ? zoomedPopularityDomain(points) : undefined
-  if (mode === "popularity" && domain) {
-    const values = points.flatMap(point => point.value == null ? [] : [point.value])
-    const upper = Math.min(100, Math.max(...values) + 3)
-    domain[1] = upper
-  }
   const postY = mode === "popularity" ? domain?.[1] : Math.max(0, ...points.flatMap(p => p.value == null ? [] : [p.value]))
   return { points: points.map(point => ({ ...point, postCount: counts.get(point.date), postY: counts.has(point.date) ? postY : null, recountY: recounts.has(point.date) ? 0 : null })), events, domain }
 }

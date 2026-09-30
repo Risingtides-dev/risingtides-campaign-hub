@@ -23,6 +23,24 @@ def _make_campaign(db, slug="my_campaign", title="My Campaign", **extra):
 
 
 class TestCampaignCrud:
+    def test_init_runs_chartmetric_column_self_heal(self, monkeypatch):
+        from campaign_manager import db as db_module
+        monkeypatch.setattr(db_module, "_engine", db_module._engine)
+        monkeypatch.setattr(db_module, "_SessionLocal", db_module._SessionLocal)
+        class Session:
+            def __enter__(self): return self
+            def __exit__(self, *_): pass
+            def execute(self, *_): pass
+            def commit(self): pass
+        monkeypatch.setattr(db_module, "create_engine", lambda *a, **k: object())
+        monkeypatch.setattr(db_module, "sessionmaker", lambda **k: Session)
+        monkeypatch.setattr(db_module.Base.metadata, "create_all", lambda *_: None)
+        monkeypatch.setattr(db_module, "_sync_columns", lambda: None)
+        healed = []
+        monkeypatch.setattr(db_module, "_self_heal_chartmetric_columns", lambda: healed.append(True))
+        assert db_module.init("postgresql://example.invalid/campaigns") is True
+        assert healed == [True]
+
     def test_save_and_fetch_campaign(self, db):
         _make_campaign(db)
         meta = db.get_campaign("my_campaign")
