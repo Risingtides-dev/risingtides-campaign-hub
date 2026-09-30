@@ -48,6 +48,7 @@ describe('<PopScoreCard /> attribution', () => {
   beforeEach(() => vi.clearAllMocks())
 
   it.each([
+    ['pending', 'Looking up this song on Chartmetric — check back shortly.'],
     ['not_released', "Song not out yet — we'll link it automatically when it's released (checked daily)"],
     ['artist_not_found', "Artist not found on Chartmetric yet. We'll keep checking."],
     ['ambiguous', 'Several songs match these details. Add a direct track link to choose the right one.'],

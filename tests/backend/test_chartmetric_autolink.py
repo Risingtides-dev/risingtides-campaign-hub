@@ -302,6 +302,20 @@ def test_autolink_skips_recently_checked_campaign(app, monkeypatch):
     get_client.return_value.resolve_campaign.assert_not_called()
 
 
+def test_legacy_timestamp_without_status_is_due(app, monkeypatch):
+    with db.get_session() as s:
+        s.add(Campaign(slug="legacy", title="Legacy", song="Song", artist="Artist",
+                       chartmetric_link_status=None,
+                       chartmetric_autolink_checked_at=datetime.now() - timedelta(hours=1)))
+        s.commit()
+    monkeypatch.setenv("CHARTMETRIC_REFRESH_TOKEN", "secret-refresh")
+    with patch.object(al, "get_client") as get_client:
+        get_client.return_value.resolve_campaign.return_value = {"status": "ambiguous", "detail": "checked"}
+        result = al.autolink_campaigns()
+    assert result["checked"] == 1
+    get_client.return_value.resolve_campaign.assert_called_once()
+
+
 def test_status_specific_retry_windows_and_never_retry_linked_or_manual(app, monkeypatch):
     utcnow = datetime.now(timezone.utc).replace(tzinfo=None)
     old = utcnow - timedelta(days=4)

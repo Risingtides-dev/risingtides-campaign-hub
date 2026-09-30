@@ -342,6 +342,26 @@ class TestPopScoreEndpoints:
         assert body["link_status"] == "no_song_info"
         assert "link_detail" in body and "next_check" in body
 
+    def test_null_status_with_song_info_is_pending(self, client):
+        from campaign_manager import db
+        slug = self._campaign(client)
+        db.update_campaign_fields(slug, {"song": "Song", "artist": "Artist",
+                                         "chartmetric_autolink_checked_at": datetime.now() - timedelta(hours=1)})
+        body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
+        assert body == {"linked": False, "link_status": "pending",
+                        "link_detail": "Checking Chartmetric soon.", "next_check": body["next_check"]}
+        assert body["next_check"]
+
+    def test_missing_song_metadata_is_no_song_info_without_chartmetric(self, client):
+        from campaign_manager import db
+        slug = self._campaign(client)
+        db.update_campaign_fields(slug, {"song": "", "artist": "Artist"})
+        with patch("campaign_manager.blueprints.chartmetric.chartmetric.get_client") as get_client:
+            body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
+        assert body["link_status"] == "no_song_info"
+        assert body["next_check"] is None
+        get_client.assert_not_called()
+
     def test_pop_score_endpoint_skips_malformed_history_objects(self, client):
         from campaign_manager import db
         slug = self._campaign(client)
