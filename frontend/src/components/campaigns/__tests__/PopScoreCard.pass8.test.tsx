@@ -15,7 +15,7 @@ vi.mock('recharts', async (importOriginal) => {
     Tooltip: ({ content }: { content: (props: unknown) => React.ReactNode }) => <>{content({ active: true, payload: [{ payload: { date: '2026-09-23', value: null, recountY: tooltipRow.recountY } }] })}</>,
   }
 })
-vi.mock('@/lib/queries', () => ({ usePopScore: vi.fn(), useSetPopScoreTrack: vi.fn(), useEditCampaign: vi.fn() }))
+vi.mock('@/lib/queries', () => ({ usePopScore: vi.fn(), useSetPopScoreTrack: vi.fn(), useOverridePopScore: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isError: false })), useEditCampaign: vi.fn() }))
 
 describe('pass 8 chart regressions', () => {
   it('wires recount plus post rows through the rendered chart tooltip', () => {

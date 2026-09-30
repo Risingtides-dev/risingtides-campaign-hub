@@ -54,6 +54,7 @@ def _load(slug: str):
             "end_date": c.end_date or "",
             "end_date_auto": bool(c.end_date_auto),
             "completion_status": c.completion_status or "none",
+            "attribution_overrides": c.attribution_overrides or {},
         }
 
 
@@ -104,7 +105,7 @@ def get_pop_score(slug: str):
         log.exception("TikTok posts history fetch failed for %s", slug)
         ugc, ugc_error = [], "Chartmetric is slow — try again shortly" if isinstance(e, (TimeoutError, requests.Timeout, requests.ConnectionError)) else "TikTok video history is temporarily unavailable."
     try:
-        attribution = calculate_attribution(history, streams, row["start_date"], row["end_date"], ugc=ugc, completion_status=row["completion_status"], today=datetime.now(_db.EST).date())
+        attribution = calculate_attribution(history, streams, row["start_date"], row["end_date"], ugc=ugc, completion_status=row["completion_status"], today=datetime.now(_db.EST).date(), overrides=row["attribution_overrides"])
     except Exception:
         log.exception("attribution calculation failed for %s", slug)
         return jsonify({"linked": True, "link": row["link"], "error": "Couldn't calculate song attribution."}), 502
@@ -146,6 +147,36 @@ def get_pop_score(slug: str):
                     events[day] = events.get(day, 0) + 1
     result["post_events"] = [{"date": d, "count": events[d]} for d in sorted(events)]
     return jsonify(result)
+
+
+@chartmetric_bp.post("/api/campaign/<slug>/pop-score/override")
+def set_pop_score_override(slug: str):
+    if not _db.is_active():
+        return jsonify({"error": "Database not available."}), 503
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Invalid override."}), 400
+    metric, day, action = data.get("metric"), data.get("date"), data.get("action")
+    try:
+        parsed = date.fromisoformat(day) if isinstance(day, str) else None
+        valid_date = parsed is not None and parsed.isoformat() == day
+    except ValueError:
+        valid_date = False
+    if metric not in ("streams", "ugc") or not valid_date or action not in ("include", "exclude", "auto"):
+        return jsonify({"error": "metric, date, or action is invalid."}), 400
+    with _db.get_session() as s:
+        campaign = s.query(Campaign).filter_by(slug=slug).first()
+        if campaign is None:
+            return jsonify({"error": "Campaign not found."}), 404
+        overrides = dict(campaign.attribution_overrides or {})
+    metric_values = dict(overrides.get(metric) or {})
+    if action == "auto":
+        metric_values.pop(day, None)
+    else:
+        metric_values[day] = action
+    overrides[metric] = metric_values
+    _db.update_campaign_fields(slug, {"attribution_overrides": overrides})
+    return jsonify({"ok": True, "attribution_overrides": overrides})
 
 
 @chartmetric_bp.post("/api/campaign/<slug>/pop-score/track")

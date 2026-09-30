@@ -93,6 +93,7 @@ class Campaign(Base):
     # Chartmetric link for Spotify popularity ("pop score") tracking.
     chartmetric_track_id = Column(BigInteger, nullable=True)
     chartmetric_link = Column(Text, default="")
+    attribution_overrides = Column(JSONB, default=dict, nullable=False)
 
     creators = relationship("Creator", back_populates="campaign", cascade="all, delete-orphan")
     matched_videos = relationship("MatchedVideo", back_populates="campaign", cascade="all, delete-orphan")
@@ -113,6 +114,7 @@ class Campaign(Base):
             "start_date": self.start_date or "",
             "end_date": self.end_date or "",
             "end_date_auto": bool(self.end_date_auto),
+            "attribution_overrides": self.attribution_overrides or {},
             "budget": self.budget or 0.0,
             "platform": self.platform or "tiktok",
             "created_at": self.created_at.isoformat() if self.created_at else "",

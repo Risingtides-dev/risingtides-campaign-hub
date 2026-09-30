@@ -122,6 +122,11 @@ export const api = {
       { method: "POST", body: JSON.stringify({ link }) },
     ),
 
+  overridePopScore: (slug: string, body: { metric: "streams" | "ugc"; date: string; action: "include" | "exclude" | "auto" }) =>
+    request<ApiOk>(`/api/campaign/${slug}/pop-score/override`, {
+      method: "POST", body: JSON.stringify(body),
+    }),
+
   refreshStats: (slug: string) =>
     request<ApiOk>(`/api/campaign/${slug}/refresh`, {
       method: "POST",

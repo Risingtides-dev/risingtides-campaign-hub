@@ -21,15 +21,17 @@ def _raw_fixture_history(block, history):
 def test_real_popscore_fixture_raw_recount_and_unusual_decisions():
     root = Path(__file__).parents[2] / "frontend/src/components/campaigns/__tests__/fixtures"
     expected = {
-        "espresso": ([], [], [
+        "espresso": ([], [{"date": "2026-07-12", "change": 1728963}, {"date": "2026-07-13", "change": 1691494}, {"date": "2026-07-14", "change": 1538220}, {"date": "2026-07-15", "change": 1649549}, {"date": "2026-07-16", "change": 1626695}], [
             {"date": "2026-08-02", "change": 51655}, {"date": "2026-09-23", "change": 543105}], []),
-        "blinding_lights": ([], [], [
+        "blinding_lights": ([], [{"date": "2026-05-12", "change": 1286267}, {"date": "2026-05-13", "change": 1427594}, {"date": "2026-05-14", "change": 1493529}, {"date": "2026-05-15", "change": 1556964}, {"date": "2026-05-16", "change": 1558772}], [
             {"date": "2026-05-23", "change": -2820230}, {"date": "2026-06-16", "change": 51143},
             {"date": "2026-09-23", "change": 271879}], [
-            # 06-14: 10,656 over 2 days = 5,328/day; pace is ~180/day,
-            # so it clears 20× but not the 50× recount threshold.
-            {"date": "2026-06-14", "change": 10656},
-            {"date": "2026-07-15", "change": 3131}, {"date": "2026-09-06", "change": 7647}]),
+            # 06-15: 10,656 over the collapsed 2-day gap = 5,328/day; v6
+            # computes the local 14-step median pace and after-rate on steps.
+            {"date": "2026-06-15", "change": 10656},
+            {"date": "2026-06-20", "change": 4917}, {"date": "2026-07-15", "change": 3131},
+            {"date": "2026-07-17", "change": 1961}, {"date": "2026-09-06", "change": 7647},
+            {"date": "2026-09-29", "change": 5272}]),
     }
     for name, (sr, su, ur, uu) in expected.items():
         fixture = json.loads((root / f"popscore_{name}_walk.json").read_text())
@@ -37,21 +39,21 @@ def test_real_popscore_fixture_raw_recount_and_unusual_decisions():
         ugc = _raw_fixture_history(fixture["ugc"], fixture["ugc_history"])
         result = calculate_attribution(fixture["history"], streams, fixture["start_date"], fixture["end_date"],
             today=date(2026, 9, 29), ugc=ugc)
-        assert result["streams"]["recounts"] == sr
-        assert result["streams"]["unusual"] == su
-        assert result["ugc"]["recounts"] == ur
-        assert result["ugc"]["unusual"] == uu
+        assert [{k:v for k,v in x.items() if k != "source"} for x in result["streams"]["recounts"]] == sr
+        assert [{k:v for k,v in x.items() if k != "source"} for x in result["streams"]["unusual"]] == su
+        assert [{k:v for k,v in x.items() if k != "source"} for x in result["ugc"]["recounts"]] == ur
+        assert [{k:v for k,v in x.items() if k != "source"} for x in result["ugc"]["unusual"]] == uu
 
 
 def test_plan_records_current_recount_and_chart_contract():
     plan = (Path(__file__).parents[2] / "docs/plans/2026-09-29-campaign-attribution.md").read_text()
-    assert "at least 50× pace" in plan
-    assert "metric's absolute floor" in plan
+    assert ">=50×pace" in plan
+    assert "magnitude >= floor" in plan
     assert "and campaign/follow-up deltas use the recount-adjusted" in plan
-    assert "14\nsteps" in plan and "per day" in plan
+    assert "14 prior collapsed step rates" in plan and "1/day" in plan
     assert "observed in production" not in plan
-    assert "excluded steps that meet the recount rule" in plan
-    assert "counted jumps ≥20× the normal daily pace" in plan
+    assert "{date, change, source}" in plan
+    assert "counted unusual steps" in plan
 
 
 def _history(increments, initial=100_000, start=date(2026, 1, 1)):
@@ -70,36 +72,36 @@ def test_recount_decision_boundaries_and_metric_floors():
             today=date(2026, 2, 1), ugc=h if metric == "ugc" else [])[metric]
     # Positive step is unusual at >=20×; exact 50× with the absolute floor and confirmation recounts.
     b = block([10] * 14 + [200, 1, 1, 1])
-    assert b["recounts"] == [] and b["unusual"] == [{"date": "2026-01-16", "change": 200}]
+    assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == [] and [{k:v for k,v in x.items() if k != "source"} for x in b["unusual"]] == [{"date": "2026-01-16", "change": 200}]
     b = block([200] * 14 + [10_000, 1, 1, 1])
-    assert b["recounts"] == [{"date": "2026-01-16", "change": 10_000}] and b["unusual"] == []
+    assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == [{"date": "2026-01-16", "change": 10_000}] and [{k:v for k,v in x.items() if k != "source"} for x in b["unusual"]] == []
     # Above the absolute floor but just below 50× pace: counted as unusual.
     b = block([300] * 14 + [14_999, 1, 1, 1])
-    assert b["recounts"] == [] and b["unusual"] == [{"date": "2026-01-16", "change": 14_999}]
+    assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == [] and [{k:v for k,v in x.items() if k != "source"} for x in b["unusual"]] == [{"date": "2026-01-16", "change": 14_999}]
     # Next-three condition is strict, and floor equality is included.
     b = block([10] * 14 + [10_000, 500, 500, 500])
-    assert b["recounts"] == []
+    assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == []
     b = block([1] * 14 + [9_999, 1, 1, 1])
-    assert b["recounts"] == [] and b["unusual"] == [{"date": "2026-01-16", "change": 9_999}]
+    assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == [] and [{k:v for k,v in x.items() if k != "source"} for x in b["unusual"]] == [{"date": "2026-01-16", "change": 9_999}]
     b = block([1] * 14 + [10_000, 1, 1, 1])
-    assert b["recounts"] == [{"date": "2026-01-16", "change": 10_000}]
+    assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == [{"date": "2026-01-16", "change": 10_000}]
     # Absolute prior increments and floor(pace, 1) prevent zero/negative pace fallbacks.
     b = block([-10] * 14 + [500, 1, 1, 1])
-    assert b["recounts"] == [] and b["unusual"] == [{"date": "2026-01-16", "change": 500}]
+    assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == [] and [{k:v for k,v in x.items() if k != "source"} for x in b["unusual"]] == [{"date": "2026-01-16", "change": 500}]
     b = block([0] * 14 + [50, 1, 1, 1])
-    assert b["recounts"] == [] and b["unusual"] == [{"date": "2026-01-16", "change": 50}]
+    assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == [] and [{k:v for k,v in x.items() if k != "source"} for x in b["unusual"]] == []
     # Fewer than five prior increments means no candidate; five are enough.
     b = block([1] * 4 + [10_000, 1, 1, 1])
-    assert b["recounts"] == [] and b["unusual"] == []
+    assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == [] and [{k:v for k,v in x.items() if k != "source"} for x in b["unusual"]] == [{"date": "2026-01-06", "change": 10_000}]
     b = block([1] * 5 + [10_000, 1, 1, 1])
-    assert b["recounts"] == [{"date": "2026-01-07", "change": 10_000}]
-    # The lookback is the immediately previous 14 increments, not 13 or 15.
+    assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == [{"date": "2026-01-07", "change": 10_000}]
+    # The collapsed-step lookback is capped at the immediately previous 14 steps.
     b = block([300] * 8 + [1] * 7 + [10_000, 1, 1, 1])
-    assert b["recounts"] == [{"date": "2026-01-17", "change": 10_000}]
+    assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == []
     b = block([20_000] * 14 + [1_000_000, 1, 1, 1], "streams")
-    assert b["recounts"] == [{"date": "2026-01-16", "change": 1_000_000}]
+    assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == [{"date": "2026-01-16", "change": 1_000_000}]
     b = block([20_000] * 14 + [999_999, 1, 1, 1], "streams")
-    assert b["recounts"] == []
+    assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == []
 
 
 def test_small_song_steps_count_and_negative_recount_requires_size_floor():
@@ -107,13 +109,13 @@ def test_small_song_steps_count_and_negative_recount_requires_size_floor():
                  [1] * 14 + [30], [0] * 14 + [-2]):
         h = _history(incs, initial=150)
         b = calculate_attribution([], [], "2026-01-01", today=date(2026, 2, 1), ugc=h)["ugc"]
-        assert b["recounts"] == []
+        assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == []
     h = _history([0] * 5 + [-10_000, 1, 1, 1], initial=999_999)
     b = calculate_attribution([], [], "2026-01-01", today=date(2026, 1, 3), ugc=h)["ugc"]
-    assert b["recounts"] == [{"date": "2026-01-07", "change": -10_000}]
+    assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == []  # early step fails the 10% prior-total gate
     h = _history([0] * 5 + [-9_999, 1, 1, 1], initial=1_000_000)
     b = calculate_attribution([], [], "2026-01-01", today=date(2026, 1, 3), ugc=h)["ugc"]
-    assert b["recounts"] == []
+    assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == []
 
 
 def test_recount_adjusted_changes_keep_raw_now_and_mark_adjusted():
@@ -125,22 +127,22 @@ def test_recount_adjusted_changes_keep_raw_now_and_mark_adjusted():
     assert result["ugc"].get("adjusted") is True
 
 
-def test_v5_recounts_both_directions_and_uses_rate_based_confirmation():
+def test_v6_rollback_pairs_both_directions_use_rate_based_confirmation():
     def series(increments, initial):
         return _history(increments, initial=initial)
-    # 100/day history, then a glitch pair; adjusted campaign gain is the real 450.
+    # 100/day history, then a paired correction; adjusted gain excludes both legs.
     h = series([100] * 14 + [-20_000, 20_050] + [100] * 3, 3_300_000)
     b = calculate_attribution([], [], "2026-01-01", "2026-01-19", date(2026, 1, 20), ugc=h)["ugc"]
-    assert b["recounts"] == [{"date": "2026-01-16", "change": -20_000}, {"date": "2026-01-17", "change": 20_050}]
+    assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == [{"date": "2026-01-16", "change": -20_000}, {"date": "2026-01-17", "change": 20_050}]
     assert b["adjusted"] is True
     assert b["now"] == h[-1]["value"]
     h = series([100] * 14 + [20_000, -20_000] + [100] * 3, 3_300_000)
     b = calculate_attribution([], [], "2026-01-01", "2026-01-19", date(2026, 1, 20), ugc=h)["ugc"]
-    assert b["recounts"] == [{"date": "2026-01-16", "change": 20_000}, {"date": "2026-01-17", "change": -20_000}]
+    assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == [{"date": "2026-01-16", "change": 20_000}, {"date": "2026-01-17", "change": -20_000}]
     # Stream floor is 1M; 1.5M down and recovery both qualify.
     h = series([20_000] * 14 + [-1_500_000, 1_500_000] + [20_000] * 3, 500_000_000)
     b = calculate_attribution([], h, "2026-01-01", "2026-01-19", date(2026, 1, 20))["streams"]
-    assert b["recounts"] == [{"date": "2026-01-16", "change": -1_500_000}, {"date": "2026-01-17", "change": 1_500_000}]
+    assert [{k:v for k,v in x.items() if k != "source"} for x in b["recounts"]] == [{"date": "2026-01-16", "change": -1_500_000}, {"date": "2026-01-17", "change": 1_500_000}]
 
 
 def test_not_started_adjusted_is_false_and_clean_points_skips_dict_date():
@@ -360,7 +362,7 @@ def test_recount_steps_adjust_cumulative_history_but_keep_raw_headlines():
     assert result["ugc"]["end_total"] == 650105
     assert result["ugc"]["now"] == 650105
     assert result["ugc"]["gained_campaign"] == 7000
-    assert result["ugc"]["recounts"] == [{"date": "2026-09-23", "change": 543105}]
+    assert [{k:v for k,v in x.items() if k != "source"} for x in result["ugc"]["recounts"]] == [{"date": "2026-09-23", "change": 543105}]
     assert result["ugc_history"][-1]["total"] == 107000
     popularity = [{"date": point["date"], "value": point["value"]} for point in h]
     pop_result = calculate_attribution(popularity, h, "2026-09-20", "2026-09-26", date(2026, 9, 26), ugc=h)
@@ -381,13 +383,12 @@ def test_negative_ugc_recount_in_baseline_window_is_adjusted():
     h += [{"date": "2026-05-15", "value": 9_993_770}]
     h += [{"date": f"2026-05-{20+i:02d}", "value": value} for i, value in enumerate(values)]
     result = calculate_attribution([], [], "2026-05-24", "2026-05-30", date(2026, 5, 30), ugc=h)
-    # This synthetic history's previous 14-step rate is too high for v5's
-    # 50× rule; the real Blinding Lights fixture is pinned above.
-    assert result["ugc"]["recounts"] == []
+    # Its 2.82M negative step clears v6's pace, floor, and quiet-after gates.
+    assert [{k:v for k,v in x.items() if k != "source"} for x in result["ugc"]["recounts"]] == [{"date": "2026-05-23", "change": -2820230}]
     assert result["ugc"]["start_total"] == 7_182_770
     assert result["ugc"]["end_total"] == 7_188_770
     assert result["ugc"]["gained_campaign"] == 6000
-    assert result["ugc"]["baseline_daily"] == -200445
+    assert result["ugc"]["baseline_daily"] == 1000.0
 
 
 def test_ugc_one_day_behind_uses_same_reading_guard():
@@ -418,7 +419,7 @@ def test_sustained_live_edge_surge_is_counted_in_full(surge_days):
         total += 200
         h.append({"date": f"2026-06-{d:02}", "value": total})
     result = calculate_attribution([], [], "2026-06-01", today=date(2026, 6, 8 + surge_days - 1), ugc=h)
-    assert result["ugc"]["recounts"] == []
+    assert [{k:v for k,v in x.items() if k != "source"} for x in result["ugc"]["recounts"]] == []
     assert result["ugc"]["gained_campaign"] == total - 5000
 
 
@@ -427,7 +428,7 @@ def test_positive_recount_candidate_needs_three_later_readings_and_suppresses_ne
     vals += [vals[-1] + 100_000, vals[-1] + 110_000, vals[-1] + 120_000, vals[-1] + 130_000]
     h = [{"date": f"2026-07-{i+1:02}", "value": v} for i, v in enumerate(vals)]
     result = calculate_attribution([], [], "2026-07-01", today=date(2026, 7, len(h)), ugc=h)
-    assert result["ugc"]["recounts"] == []
+    assert [{k:v for k,v in x.items() if k != "source"} for x in result["ugc"]["recounts"]] == []
 
 
 def test_positive_recount_step_is_null_daily_and_not_smoothed():
@@ -437,7 +438,7 @@ def test_positive_recount_step_is_null_daily_and_not_smoothed():
     vals += [vals[-1] + 1000, vals[-1] + 1000, vals[-1] + 1000]
     h = [{"date": f"2026-07-{i+1:02}", "value": v} for i, v in enumerate(vals)]
     result = calculate_attribution([], [], "2026-07-01", today=date(2026, 7, len(h)), ugc=h)
-    assert result["ugc"]["recounts"] == [{"date": "2026-07-08", "change": 100000}]
+    assert [{k:v for k,v in x.items() if k != "source"} for x in result["ugc"]["recounts"]] == [{"date": "2026-07-08", "change": 100000}]
     points = result["ugc_history"]
     assert points[7]["daily"] is None and "smoothed" not in points[7]
     assert "smoothed" not in points[6] and "smoothed" not in points[8]
@@ -448,5 +449,5 @@ def test_candidate_with_only_two_later_readings_is_counted():
     vals += [vals[-1] + 100_000, vals[-1] + 101_000, vals[-1] + 102_000]
     h = [{"date": f"2026-07-{i+1:02}", "value": v} for i, v in enumerate(vals)]
     result = calculate_attribution([], [], "2026-07-01", today=date(2026, 7, len(h)), ugc=h)
-    assert result["ugc"]["recounts"] == []
+    assert [{k:v for k,v in x.items() if k != "source"} for x in result["ugc"]["recounts"]] == []
     assert result["ugc"]["now"] == vals[-1]

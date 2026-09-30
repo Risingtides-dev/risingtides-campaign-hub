@@ -17,6 +17,7 @@ vi.mock('recharts', async (importOriginal) => {
 vi.mock('@/lib/queries', () => ({
   usePopScore: vi.fn(),
   useSetPopScoreTrack: vi.fn(),
+  useOverridePopScore: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isError: false })),
   useEditCampaign: vi.fn(),
 }))
 
@@ -138,17 +139,20 @@ describe('pass7 probes', () => {
   it('shows signed recount changes', () => {
     const real = { ...espressoWalk, ugc: { ...espressoWalk.ugc, recounts: [{ date: '2026-05-23', change: -2_800_000 }] } } as unknown as PopScore
     setup(real)
+    fireEvent.click(screen.getByRole('button', { name: /TikTok videos: 1 Chartmetric recount/ }))
     expect(screen.getByText(/−2\.8M TikTok videos/)).toBeTruthy()
   })
 
   it('shows unusual jumps as muted counted notes', () => {
     const real = { ...espressoWalk, ugc: { ...espressoWalk.ugc, unusual: [{ date: '2026-08-02', change: 51_743 }] } } as unknown as PopScore
     setup(real)
-    expect(document.body.textContent).toContain('TikTok videos: Unusual jump on Aug 2, 2026 (+51.7K TikTok videos) — counted')
+    fireEvent.click(screen.getByRole('button', { name: /TikTok videos: 1 unusual jump/ }))
+    expect(document.body.textContent).toContain('Aug 2, 2026 (+51.7K TikTok videos) · counted')
   })
   it('keeps unusual streams notes', () => {
     const real = { ...espressoWalk, streams: { ...espressoWalk.streams, unusual: [{ date: '2026-08-02', change: 12500 }] } } as unknown as PopScore
     setup(real)
-    expect(document.body.textContent).toContain('Streams: Unusual jump on Aug 2, 2026 (+12.5K streams) — counted')
+    fireEvent.click(screen.getByRole('button', { name: /Streams: 1 unusual jump/ }))
+    expect(document.body.textContent).toContain('Aug 2, 2026 (+12.5K streams) · counted')
   })
 })

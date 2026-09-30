@@ -95,8 +95,8 @@ Existing fields stay exactly as they are (`linked`, `link`, `chartmetric_track_i
     "followup_daily": 8928.6,       // avg daily streams end_date -> followup_end (or -> latest); null when no follow-up yet
     "lift_pct_campaign": 185.7,     // (campaign_daily - baseline_daily) / baseline_daily * 100; null if baseline null or 0
     "lift_pct_followup": 78.6,      // (followup_daily - baseline_daily) / baseline_daily * 100 — the "rate of impact"
-    "recounts": [],                 // excluded steps that meet the recount rule
-    "unusual": []                   // counted jumps ≥20× the normal daily pace
+    "recounts": [],                 // {date, change, source}; source is auto|manual
+    "unusual": []                   // {date, change, source}; counted unusual steps
   },
   "streams_history": [
     {"date": "2026-08-01", "total": 1000000, "daily": null},   // daily = total - previous total, divided by day gap; null for first point
@@ -110,8 +110,8 @@ Existing fields stay exactly as they are (`linked`, `link`, `chartmetric_track_i
     "growth_pct_campaign": 40.0, "baseline_daily": 5.0,
     "campaign_daily": 14.3, "followup_daily": 8.9,
     "lift_pct_campaign": 185.7, "lift_pct_followup": 78.6,
-    "recounts": [],                 // excluded steps that meet the recount rule
-    "unusual": []                   // counted jumps ≥20× the normal daily pace
+    "recounts": [],                 // {date, change, source}; source is auto|manual
+    "unusual": []                   // {date, change, source}; counted unusual steps
   },
   "ugc_history": [],                // adjusted daily history; block totals remain raw
   "ugc_error": null,                // present with user-facing text if UGC history fetch failed
@@ -302,26 +302,27 @@ and `true` only on daily points spread across a multi-day change interval.
 `streams_error` and `ugc_error` are omitted on success and included with
 user-facing text when their respective request fails.
 
-For both cumulative `streams` and `ugc`, recount detection uses raw increments
-and never popularity. A step's rate is the absolute increment divided by the
-elapsed days. Its pace is the sum of absolute increments over the previous 14
-steps, excluding steps already classified as recounts, divided by the days
-spanned by those steps; at least five prior steps are required, and pace is
-floored at 1 per day. The after-rate is the sum of absolute increments over the
-next three steps divided by their elapsed days (three later steps required).
-`ABS_FLOOR` is 10,000 videos for UGC and 1,000,000 streams; these floors are set
-above normal daily growth for Rising Tides campaign sizes and below the
-smallest systemic Chartmetric steps seen (51K). A positive or negative step is
-excluded as a recount when its rate is at least 50× pace, its after-rate is
-strictly less than one twentieth of its rate, and its magnitude meets the
-metric's absolute floor. Any step at least 20× pace that is not a recount
-remains counted and appears in `unusual` as `{date, change}`. `post_events`
-remain available for the chart.
+For cumulative `streams` and `ugc`, detection uses raw totals and never
+popularity. Collapse every consecutive run of identical totals to one reading;
+the next step spans from the last date in that run to the next distinct reading.
+Displayed totals and histories retain raw readings. `step_rate` is absolute
+change/gap days. Pace is the median of up to 14 prior collapsed step rates,
+excluding recounts, after at least five prior steps, floored at 1/day. The
+after-rate is the absolute change over the next three collapsed steps divided
+by their combined days; all three are required. Floors are 10,000 UGC and
+1,000,000 streams. With >=5 prior steps, recount iff step_rate >=50×pace,
+after_rate < step_rate/40, and magnitude >= floor. Earlier steps recount iff
+magnitude >= floor and >=10% of previous total, with three later steps and
+after_rate < step_rate/40. Either sign qualifies. Non-recounts are unusual at
+>=20× pace, or on an early step with magnitude >= floor. Listed recount and
+unusual entries are `{date, change, source}` (`source`: `auto` or `manual`).
+`post_events` remain available for the chart.
 
 The `now` cumulative totals remain raw for display. `change_since_start`,
 `change_since_end`, and campaign/follow-up deltas use the recount-adjusted
-series consistently. A cumulative block sets `adjusted: true` when a recount
-falls within the available history range from its first reading through `now`.
+series consistently. A cumulative block sets `adjusted: true` when an
+exclusion falls within the available history range from its first reading
+through `now`; it is false in `no_start` and when no adjustment applies.
 This lets the UI footnote that displayed raw `now` and adjusted changes differ.
 
 `popularity` uses `change_campaign` and `change_followup`; cumulative blocks
@@ -333,3 +334,20 @@ expose totals, daily averages, and lift percentages shown above. `post_events`
 counts only matched videos owned by the requested campaign, normalizes dates,
 and is limited to the attribution history window. `finished_no_end` is returned
 when completion status is completed and no effective end date exists.
+
+## Addendum 2026-09-30 (lead): final recount approach — automatic default + manual override
+
+After nine review passes it is clear that no automatic rule can perfectly tell a
+Chartmetric recount from a real one-day jump. The design therefore is:
+
+1. **Automatic default (rule v6)** — described in the recount section; it runs on
+   stall-collapsed steps (repeated totals merged into one longer step) and uses a
+   median per-day pace, so irregular Chartmetric update cadence can't erase growth.
+2. **Manual override per campaign.** Every step the rule flags (recount or unusual)
+   is listed on the card with a small "Count it" / "Leave it out" action. The choice is
+   stored on the campaign (`campaigns.attribution_overrides`, JSON:
+   `{"streams": {"YYYY-MM-DD": "include"|"exclude"}, "ugc": {...}}`) and applied after
+   the automatic rule. Each listed step reports `source: "auto" | "manual"`.
+   `POST /api/campaign/<slug>/pop-score/override {metric, date, action}` with
+   action `include` | `exclude` | `auto` (auto removes the override).
+3. **Now column** shows change since start AND since end.

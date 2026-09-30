@@ -6,7 +6,7 @@ import {
 import { AlertCircle, Loader2, Pencil } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { useEditCampaign, usePopScore, useSetPopScoreTrack } from "@/lib/queries"
+import { useEditCampaign, useOverridePopScore, usePopScore, useSetPopScoreTrack } from "@/lib/queries"
 import type { PopScore } from "@/lib/types"
 import { chartAxisProps, chartTooltipProps } from "./chartDate"
 import { prepareTrendData, type TrendMode } from "./popScoreChartData"
@@ -38,21 +38,26 @@ const date = (v?: string) => v ? new Date(`${v}T00:00:00`).toLocaleDateString("e
 const shortDate = (v: string) => date(v)
 const signedCompact = (v: number) => `${v > 0 ? "+" : v < 0 ? "−" : ""}${compact(Math.abs(v))}`
 
-function anomalyNotes(metric: "streams" | "ugc", data: PopScore) {
+function AnomalyNotes({ metric, data, pending, error, onOverride }: { metric: "streams" | "ugc"; data: PopScore; pending: boolean; error?: string; onOverride: (body: { metric: "streams" | "ugc"; date: string; action: "include" | "exclude" | "auto" }) => void }) {
   const block = data[metric]
   const unit = metric === "streams" ? "streams" : "TikTok videos"
   const recounts = block?.recounts ?? []
   const unusual = block?.unusual ?? []
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const summary = (items: typeof recounts, kind: "recount" | "unusual") => {
-    const largest = items.reduce<typeof items[number] | undefined>((current, item) => !current || Math.abs(item.change) > Math.abs(current.change) ? item : current, undefined)
+    // Equal absolute changes choose the later calendar date.
+    // Equal absolute changes choose the later calendar date.
+    const largest = items.reduce<typeof items[number] | undefined>((current, item) => !current || Math.abs(item.change) > Math.abs(current.change) || (Math.abs(item.change) === Math.abs(current.change) && item.date > current.date) ? item : current, undefined)
     const metricName = metric === "streams" ? "Streams" : "TikTok videos"
-    if (kind === "unusual" && items.length >= 2) {
-      return <p key={`${metric}-${kind}`} title={items.map(item => `${shortDate(item.date)} (${signedCompact(item.change)} ${unit})`).join("; ")} className="text-[10px] text-rt-fg-tertiary">{metricName}: {items.length} unusual jumps counted · largest {signedCompact(largest!.change)} on {shortDate(largest!.date)}</p>
-    }
-    if (kind === "recount" && items.length >= 2) {
-      return <p key={`${metric}-${kind}`} title={items.map(item => `${shortDate(item.date)} (${signedCompact(item.change)} ${unit})`).join("; ")} className="text-[10px] text-rt-fg-tertiary">{metricName}: {items.length} Chartmetric recounts not counted · largest {signedCompact(largest!.change)} on {shortDate(largest!.date)}</p>
-    }
-    return items.map(item => <p key={`${metric}-${kind}-${item.date}-${item.change}`} title={kind === "recount" ? `${shortDate(item.date)} (${signedCompact(item.change)} ${unit})` : undefined} className="text-[10px] text-rt-fg-tertiary">{kind === "unusual" ? `${metricName}: Unusual jump on ${shortDate(item.date)} (${signedCompact(item.change)} ${unit}) — counted` : `Chartmetric recount on ${date(item.date)} (${signedCompact(item.change)} ${unit}) not counted`}</p>)
+    if (!items.length) return null
+    const isExpanded = !!expanded[`${metric}-${kind}`]
+    const label = kind === "recount" ? `${items.length} Chartmetric recount${items.length === 1 ? "" : "s"} not counted` : `${items.length} unusual jump${items.length === 1 ? "" : "s"} counted`
+    return <div key={`${metric}-${kind}`} className="text-[10px] text-rt-fg-tertiary"><button type="button" aria-expanded={isExpanded} onClick={() => setExpanded(value => ({ ...value, [`${metric}-${kind}`]: !value[`${metric}-${kind}`] }))} className="text-left hover:text-rt-fg">{metricName}: {label}{items.length > 1 && ` · largest ${signedCompact(largest!.change)} on ${shortDate(largest!.date)}`}</button>{isExpanded && <ul className="ml-3 mt-1 space-y-1">{items.map(item => {
+      const counted = kind === "unusual"
+      const action = item.source === "manual" ? "auto" : kind === "recount" ? "include" : "exclude"
+      const actionText = item.source === "manual" ? "Reset" : kind === "recount" ? "Count it" : "Leave it out"
+      return <li key={`${item.date}-${item.change}`} className="flex flex-wrap items-center gap-x-1.5"><span>{shortDate(item.date)} ({signedCompact(item.change)} {unit}) · {counted ? "counted" : "not counted"}{item.source === "manual" ? " · set by you" : ""}</span><button type="button" disabled={pending} onClick={() => onOverride({ metric, date: item.date, action })} className="text-rt-magenta disabled:opacity-40">{actionText}</button></li>
+    })}</ul>}{error && <p role="alert" className="text-red-400">{error}</p>}</div>
   }
   return <>{summary(recounts, "recount")}{summary(unusual, "unusual")}</>
 }
@@ -161,6 +166,7 @@ function headline(data: PopScore) {
 export function PopScoreCard({ slug, tracker_url }: { slug: string; tracker_url?: string }) {
   const popScore = usePopScore(slug)
   const setTrack = useSetPopScoreTrack(slug)
+  const override = useOverridePopScore(slug)
   const editCampaign = useEditCampaign(slug)
   const [editing, setEditing] = useState(false)
   const [endDateDraft, setEndDateDraft] = useState("")
@@ -205,20 +211,21 @@ export function PopScoreCard({ slug, tracker_url }: { slug: string; tracker_url?
           "TikTok videos", data.ugc?.start_total, data.ugc?.end_total, data.ugc?.followup_total, data.ugc?.now, data.ugc?.end_is_to_date, data.ugc?.followup_is_to_date, data.ugc?.gained_campaign, data.ugc?.gained_followup, data.ugc?.change_since_end,
         ]] as const).map(([label, a, b, c, d, endTd, followTd, changeCampaign, changeFollowup, changeNow]) => {
           const adjusted = label === "Streams" ? streams?.adjusted : label === "TikTok videos" ? data.ugc?.adjusted : false
-          return <tr key={label} className="border-t border-white/8"><th className="sticky left-0 bg-rt-bg-card py-1.5 text-left font-medium">{label}{adjusted && <sup className="ml-0.5 text-[9px] text-rt-fg-tertiary">*</sup>}</th>{[a,b,c,d].map((value,i) => {
+          const star = data.phase !== "not_started" && data.phase !== "no_start" && adjusted
+          return <tr key={label} className="border-t border-white/8"><th className="sticky left-0 bg-rt-bg-card py-1.5 text-left font-medium">{label}{label !== "Popularity" && star && <sup className="ml-0.5 text-[9px] text-rt-fg-tertiary">*</sup>}</th>{[a,b,c,d].map((value,i) => {
           const change = i === 1 ? changeCampaign : i === 2 ? changeFollowup : i === 3 ? changeNow : null
           const block = label === "Popularity" ? pop : label === "Streams" ? streams : data.ugc
           const readingDate = i === 3 ? block?.now_date : undefined
           const followDate = label === "Popularity" ? (pop?.followup_is_to_date ? pop?.now_date : data.followup_end) : label === "Streams" ? (streams?.followup_is_to_date ? streams?.now_date : data.followup_end) : (data.ugc?.followup_is_to_date ? data.ugc?.now_date : data.followup_end)
           const sameReading = i === 3 && !!readingDate && readingDate === followDate
           const asOf = i === 3 ? block?.now_date : i === 1 ? data.end_date : i === 0 ? data.start_date : undefined
-          return <td key={i} className="py-1.5 text-right tabular-nums">{i === 3 && d != null && d === c && sameReading ? <span className="text-rt-fg-tertiary">same as +28 days</span> : value == null ? "—" : label === "Popularity" ? num(value) : compact(value)}{i === 1 && endTd && <> <span className="text-[10px] text-rt-fg-tertiary">to date</span></>}{i === 2 && followTd && <> <span className="text-[10px] text-rt-fg-tertiary">to date</span></>}{i === 3 && asOf && <span className="block text-[10px] text-rt-fg-tertiary">as of {date(asOf)}</span>}{change != null && !sameReading && <span className="block text-[10px] text-rt-fg-tertiary">{change > 0 ? "+" : ""}{label === "Popularity" ? num(change) : compact(change)} {i === 1 ? "during campaign" : "since end"}</span>}</td>
+          return <td key={i} className="py-1.5 text-right tabular-nums">{i === 3 && d != null && d === c && sameReading ? <span className="text-rt-fg-tertiary">same as +28 days</span> : value == null ? "—" : label === "Popularity" ? num(value) : compact(value)}{i === 1 && endTd && <> <span className="text-[10px] text-rt-fg-tertiary">to date</span></>}{i === 2 && followTd && <> <span className="text-[10px] text-rt-fg-tertiary">to date</span></>}{i === 3 && asOf && <span className="block text-[10px] text-rt-fg-tertiary">as of {date(asOf)}</span>}{change != null && !sameReading && i !== 3 && <span className="block text-[10px] text-rt-fg-tertiary">{change > 0 ? "+" : ""}{label === "Popularity" ? num(change) : compact(change)} {i === 1 ? "during campaign" : "since end"}</span>}{i === 3 && block?.change_since_start != null && block.change_since_end != null && <span className="block text-[10px] text-rt-fg-tertiary">{signedCompact(block.change_since_start)} since start · {signedCompact(block.change_since_end)} since end</span>}</td>
         })}</tr>})}
       </tbody></table></div>
       {data.phase !== "not_started" && data.phase !== "no_start" && (streams?.adjusted || data.ugc?.adjusted) && <p className="text-[10px] text-rt-fg-tertiary">* Totals are as reported; changes leave out Chartmetric recounts.</p>}
       {!data.streams_error && <p className="text-[11px] text-rt-fg-tertiary">Daily streams {rate(streams?.baseline_daily)} → {rate(streams?.campaign_daily)} during ({pct(streams?.lift_pct_campaign)}){streams?.followup_daily != null ? ` → ${rate(streams.followup_daily)} after` : ""}</p>}
       {!data.ugc_error && <p className="text-[11px] text-rt-fg-tertiary">New TikTok videos/day {rate(data.ugc?.baseline_daily)} → {rate(data.ugc?.campaign_daily)} during ({pct(data.ugc?.lift_pct_campaign)}){data.ugc?.followup_daily != null ? ` → ${rate(data.ugc.followup_daily)} after` : ""}{data.ugc?.gained_campaign != null ? ` · ${compact(data.ugc.gained_campaign)} new during the campaign` : ""}</p>}
-      {anomalyNotes("streams", data)}{anomalyNotes("ugc", data)}
+      {data.phase !== "not_started" && data.phase !== "no_start" && <><AnomalyNotes metric="streams" data={data} pending={override.isPending} error={override.isError ? override.error?.message : undefined} onOverride={body => override.mutate(body)} /><AnomalyNotes metric="ugc" data={data} pending={override.isPending} error={override.isError ? override.error?.message : undefined} onOverride={body => override.mutate(body)} /></>}
       <div><button type="button" aria-expanded={showTrend} aria-controls={`attribution-trend-${slug}`} className="text-[12px] text-rt-fg-tertiary hover:text-rt-fg" onClick={() => setShowTrend(v => !v)}>{showTrend ? "Hide trend" : "Show trend"}</button><div id={`attribution-trend-${slug}`} hidden={!showTrend} className="mt-2">{showTrend && <PopScoreChart data={data} />}</div></div>
       <div className="flex flex-wrap items-center justify-between gap-2 border-t border-white/8 pt-3 text-[12px] text-rt-fg-tertiary"><span>Shows what happened to the song around the campaign — not proof the campaign caused all of it.</span>{tracker_url && <a href={tracker_url} target="_blank" rel="noopener noreferrer" className="whitespace-nowrap text-rt-magenta hover:underline">Open Tides Tracker ↗</a>}</div>
     </>}

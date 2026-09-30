@@ -102,6 +102,9 @@ def _self_heal_chartmetric_columns():
                 "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS chartmetric_link TEXT DEFAULT ''",
                 "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS end_date VARCHAR(20) DEFAULT ''",
                 "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS end_date_auto BOOLEAN DEFAULT FALSE",
+                "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS attribution_overrides JSONB DEFAULT '{}'::jsonb",
+                "UPDATE campaigns SET attribution_overrides = '{}'::jsonb WHERE attribution_overrides IS NULL",
+                "ALTER TABLE campaigns ALTER COLUMN attribution_overrides SET DEFAULT '{}'::jsonb",
                 "UPDATE campaigns SET end_date_auto = FALSE WHERE end_date_auto IS NULL",
                 "ALTER TABLE campaigns ALTER COLUMN end_date_auto SET DEFAULT FALSE",
             )

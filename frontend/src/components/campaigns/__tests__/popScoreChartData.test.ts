@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest"
 import type { PopScore } from "@/lib/types"
 import { prepareTrendData, selectTrendSeries, trendEventTicks, zoomedPopularityDomain } from "../popScoreChartData"
 
+declare const process: { env: Record<string, string | undefined> }
+
 const payload: PopScore = {
   linked: true, phase: "live", streams: { start_total: 10, end_total: 20, followup_total: 20, now: 25, end_is_to_date: false, followup_is_to_date: false, gained_campaign: 10, gained_followup: 0, growth_pct_campaign: 100, baseline_daily: 5, campaign_daily: 4, followup_daily: 1, lift_pct_campaign: -20, lift_pct_followup: -80 },
   ugc: { start: 2, end: 5, followup: 7, start_total: 2, end_total: 5, followup_total: 7, now: 8, now_date: "2026-01-04", change_since_start: 6, change_since_end: 3, baseline_daily: 2, campaign_daily: 3, followup_daily: 1, gained_campaign: 3, gained_followup: 2, lift_pct_campaign: 50, end_is_to_date: false, followup_is_to_date: false },
@@ -35,6 +37,20 @@ describe("pop score trend preparation", () => {
       expect(prepareTrendData(data, "popularity").events.map(event => event.date)).toEqual(["2026-09-30"])
     } finally {
       vi.useRealTimers()
+    }
+  })
+
+  it("uses the local day when UTC has already crossed midnight", () => {
+    const priorTz = process.env.TZ
+    process.env.TZ = 'America/Los_Angeles'
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-30T02:00:00Z'))
+    try {
+      const result = trendEventTicks({ ...payload, post_events: [{ date: '2026-09-29', count: 1 }, { date: '2026-09-30', count: 1 }] })
+      expect(result.map(event => event.date)).toEqual(['2026-09-29'])
+    } finally {
+      vi.useRealTimers()
+      process.env.TZ = priorTz
     }
   })
   it("keeps an empty popularity series on the finite default domain", () => {

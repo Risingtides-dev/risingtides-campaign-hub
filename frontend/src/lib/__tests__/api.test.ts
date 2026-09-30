@@ -136,6 +136,15 @@ describe('api client', () => {
     })
   })
 
+  it('posts a pop score override with metric, date, and action', async () => {
+    const fetchMock = mockFetchOk({ ok: true })
+    await api.overridePopScore('my-campaign', { metric: 'ugc', date: '2026-09-03', action: 'exclude' })
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toContain('/api/campaign/my-campaign/pop-score/override')
+    expect(init?.method).toBe('POST')
+    expect(JSON.parse(String(init?.body))).toEqual({ metric: 'ugc', date: '2026-09-03', action: 'exclude' })
+  })
+
   describe('POST/PUT/DELETE endpoints', () => {
     it('createCampaign sends JSON body', async () => {
       const fetchMock = mockFetchOk({ ok: true, slug: 'x' })

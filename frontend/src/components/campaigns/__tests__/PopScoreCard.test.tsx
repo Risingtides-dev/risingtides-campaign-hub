@@ -4,7 +4,7 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import { PopScoreCard } from '@/components/campaigns/PopScoreCard'
 import { chartAxisProps as componentChartAxisProps, formatTrendTooltip } from '@/components/campaigns/PopScoreCard'
 import { chartAxisProps, chartTooltipProps, formatChartDateLabel, localTickDate } from '@/components/campaigns/chartDate'
-import { useEditCampaign, usePopScore, useSetPopScoreTrack } from '@/lib/queries'
+import { useEditCampaign, useOverridePopScore, usePopScore, useSetPopScoreTrack } from '@/lib/queries'
 import type { PopScore } from '@/lib/types'
 import espressoWalk from './fixtures/popscore_espresso_walk.json'
 import blindingLightsWalk from './fixtures/popscore_blinding_lights_walk.json'
@@ -19,6 +19,7 @@ vi.mock('recharts', async (importOriginal) => {
 vi.mock('@/lib/queries', () => ({
   usePopScore: vi.fn(),
   useSetPopScoreTrack: vi.fn(),
+  useOverridePopScore: vi.fn(),
   useEditCampaign: vi.fn(),
 }))
 
@@ -34,9 +35,11 @@ const payload: PopScore = {
   ugc_history: [{ date: '2026-08-01', total: 120, daily: null }, { date: '2026-08-10', total: 300, daily: 18 }, { date: '2026-08-20', total: 480, daily: 18 }],
 }
 const mutate = vi.fn()
+const overrideMutate = vi.fn()
 function setup(data: PopScore = payload) {
   vi.mocked(usePopScore).mockReturnValue({ data, isLoading: false, isError: false } as ReturnType<typeof usePopScore>)
   vi.mocked(useSetPopScoreTrack).mockReturnValue({ mutate, isPending: false, isError: false } as unknown as ReturnType<typeof useSetPopScoreTrack>)
+  vi.mocked(useOverridePopScore).mockReturnValue({ mutate: overrideMutate, isPending: false, isError: false } as unknown as ReturnType<typeof useOverridePopScore>)
   vi.mocked(useEditCampaign).mockReturnValue({ mutate, reset: vi.fn(), isPending: false, isError: false } as unknown as ReturnType<typeof useEditCampaign>)
   return render(<PopScoreCard slug="example" tracker_url="https://tracker.example" />)
 }
@@ -165,16 +168,18 @@ describe('<PopScoreCard /> attribution', () => {
 
 
   it('shows recount copy and a hollow recount marker without changing adjusted bars', () => {
-    setup({ ...payload, ugc: { ...payload.ugc!, recounts: [{ date: '2026-08-10', change: 543000 }] } })
-    expect(screen.getByText(/Chartmetric recount on Aug 10, 2026 \(\+543K TikTok videos\) not counted/)).toBeInTheDocument()
+    setup({ ...payload, ugc: { ...payload.ugc!, recounts: [{ date: '2026-08-10', change: 543000, source: 'auto' }] } })
+    fireEvent.click(screen.getByRole('button', { name: /TikTok videos: 1 Chartmetric recount/ }))
+    expect(screen.getByText(/Aug 10, 2026 \(\+543K TikTok videos\) · not counted/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Show trend' }))
     fireEvent.click(screen.getByRole('button', { name: 'Daily new videos' }))
     expect(document.querySelector('circle[fill="none"][stroke="#909098"]')).toBeInTheDocument()
   })
 
   it('shows stream recounts with muted copy, a hollow mark, and recount tooltip wording', () => {
-    setup({ ...payload, streams: { ...payload.streams!, recounts: [{ date: '2026-08-10', change: -543000 }] } })
-    expect(screen.getByText(/Chartmetric recount on Aug 10, 2026 \(−543K streams\) not counted/)).toBeInTheDocument()
+    setup({ ...payload, streams: { ...payload.streams!, recounts: [{ date: '2026-08-10', change: -543000, source: 'auto' }] } })
+    fireEvent.click(screen.getByRole('button', { name: /Streams: 1 Chartmetric recount/ }))
+    expect(screen.getByText(/Aug 10, 2026 \(−543K streams\) · not counted/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Show trend' }))
     fireEvent.click(screen.getByRole('button', { name: 'Daily streams' }))
     expect(document.querySelectorAll('circle[fill="none"][stroke="#909098"]')).toHaveLength(1)
@@ -183,18 +188,61 @@ describe('<PopScoreCard /> attribution', () => {
 
   it('collapses recounts and unusual jumps at two, reports largest absolute signed change and keeps hover details', () => {
     setup({ ...payload,
-      streams: { ...payload.streams!, adjusted: true, recounts: [{ date: '2026-05-20', change: 1_200_000 }, { date: '2026-05-23', change: -2_800_000 }], unusual: [{ date: '2026-05-24', change: -4_000 }, { date: '2026-05-25', change: 3_000 }] },
-      ugc: { ...payload.ugc!, adjusted: false, recounts: [], unusual: [{ date: '2026-05-21', change: 20_000 }, { date: '2026-05-22', change: -30_000 }] },
+      streams: { ...payload.streams!, adjusted: true, recounts: [{ date: '2026-05-20', change: 1_200_000, source: 'auto' }, { date: '2026-05-23', change: -2_800_000, source: 'auto' }], unusual: [{ date: '2026-05-24', change: -4_000, source: 'auto' }, { date: '2026-05-25', change: 3_000, source: 'auto' }] },
+      ugc: { ...payload.ugc!, adjusted: false, recounts: [], unusual: [{ date: '2026-05-21', change: 20_000, source: 'auto' }, { date: '2026-05-22', change: -30_000, source: 'auto' }] },
     })
-    const recount = screen.getByText(/Streams: 2 Chartmetric recounts not counted · largest −2.8M on May 23, 2026/)
-    expect(recount).toHaveAttribute('title', expect.stringContaining('May 20, 2026 (+1.2M streams)'))
-    expect(screen.getByText(/Streams: 2 unusual jumps counted · largest −4K on May 24, 2026/)).toBeInTheDocument()
-    expect(screen.getByText(/TikTok videos: 2 unusual jumps counted · largest −30K on May 22, 2026/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Streams: 2 Chartmetric recounts not counted · largest −2.8M on May 23, 2026/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Streams: 2 unusual jumps counted · largest −4K on May 24, 2026/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /TikTok videos: 2 unusual jumps counted · largest −30K on May 22, 2026/ })).toBeInTheDocument()
+  })
+
+  it('supports touch friendly anomaly lists and sends recount, unusual, and reset actions', () => {
+    setup({ ...payload, streams: { ...payload.streams!, recounts: [{ date: '2026-08-12', change: -2000, source: 'auto' }, { date: '2026-08-13', change: 1000, source: 'manual' }], unusual: [{ date: '2026-08-14', change: 3000, source: 'auto' }] } })
+    const list = screen.getByRole('button', { name: /Streams: 2 Chartmetric recounts/ })
+    fireEvent.click(list)
+    expect(list).toHaveAttribute('aria-expanded', 'true')
+    fireEvent.click(screen.getByRole('button', { name: 'Count it' }))
+    expect(overrideMutate).toHaveBeenCalledWith({ metric: 'streams', date: '2026-08-12', action: 'include' })
+    fireEvent.click(screen.getByRole('button', { name: 'Reset' }))
+    expect(overrideMutate).toHaveBeenCalledWith({ metric: 'streams', date: '2026-08-13', action: 'auto' })
+    fireEvent.click(screen.getByRole('button', { name: /Streams: 1 unusual jump/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Leave it out' }))
+    expect(overrideMutate).toHaveBeenCalledWith({ metric: 'streams', date: '2026-08-14', action: 'exclude' })
+    fireEvent.click(list)
+    expect(list).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('renders mutation errors and disables override controls while pending', () => {
+    const view = setup({ ...payload, streams: { ...payload.streams!, recounts: [{ date: '2026-08-12', change: 1000, source: 'auto' }] } })
+    vi.mocked(useOverridePopScore).mockReturnValue({ mutate: overrideMutate, isPending: true, isError: true, error: new Error('Override failed') } as unknown as ReturnType<typeof useOverridePopScore>)
+    view.rerender(<PopScoreCard slug="example" />)
+    fireEvent.click(screen.getByRole('button', { name: /Streams: 1 Chartmetric recount/ }))
+    expect(screen.getByRole('button', { name: 'Count it' })).toBeDisabled()
+    expect(screen.getByRole('alert')).toHaveTextContent('Override failed')
+  })
+
+  it('shows both now changes since start and since end', () => {
+    setup({ ...payload, streams: { ...payload.streams!, now: 2_000_000, now_date: '2026-09-18', change_since_start: 1_000_000, change_since_end: 600_000 } })
+    expect(screen.getByText('+1M since start · +600K since end')).toBeInTheDocument()
+    expect(screen.queryByText('+600K since end', { exact: true })).not.toBeInTheDocument()
+  })
+
+  it('breaks equal largest-change ties in favor of the later date', () => {
+    setup({ ...payload, streams: { ...payload.streams!, unusual: [{ date: '2026-08-12', change: -5000, source: 'auto' }, { date: '2026-08-20', change: 5000, source: 'auto' }] } })
+    expect(screen.getByRole('button', { name: /largest \+5K on Aug 20, 2026/ })).toBeInTheDocument()
+  })
+
+  it.each(['no_start', 'not_started'] as const)('hides stars, footnotes, and recount notes in %s phase', phase => {
+    const { container } = setup({ ...payload, phase, streams: { ...payload.streams!, adjusted: true, recounts: [{ date: '2026-08-12', change: -1000, source: 'auto' }] } })
+    expect(container.querySelector('tbody tr:nth-child(2) sup')).toBeNull()
+    expect(screen.queryByText(/Totals are as reported/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Chartmetric recount/ })).not.toBeInTheDocument()
   })
 
   it('shows recount footnote only with adjusted metrics, marks only those rows, and omits footnote before start', () => {
     const { container, rerender } = setup({ ...payload, streams: { ...payload.streams!, adjusted: true }, ugc: { ...payload.ugc!, adjusted: false } })
     const rows = [...container.querySelectorAll('tbody tr')]
+    expect(rows[0].querySelector('sup')).toBeNull()
     expect(rows[1].querySelector('sup')).toHaveTextContent('*')
     expect(rows[2].querySelector('sup')).toBeNull()
     expect(screen.getByText('* Totals are as reported; changes leave out Chartmetric recounts.')).toBeInTheDocument()
@@ -202,6 +250,20 @@ describe('<PopScoreCard /> attribution', () => {
     rerender(<PopScoreCard slug="example" />)
     expect(screen.queryByText('* Totals are as reported; changes leave out Chartmetric recounts.')).not.toBeInTheDocument()
     expect(screen.getAllByText('Not started')).toHaveLength(1)
+  })
+
+  it('omits the recount footnote when neither metric row is adjusted', () => {
+    setup({ ...payload, streams: { ...payload.streams!, adjusted: false }, ugc: { ...payload.ugc!, adjusted: false } })
+    expect(screen.queryByText('* Totals are as reported; changes leave out Chartmetric recounts.')).not.toBeInTheDocument()
+  })
+
+  it('shows the footnote for an adjusted UGC row even when streams are not adjusted', () => {
+    const { container } = setup({ ...payload, streams: { ...payload.streams!, adjusted: false }, ugc: { ...payload.ugc!, adjusted: true } })
+    const rows = [...container.querySelectorAll('tbody tr')]
+    expect(rows[0].querySelector('sup')).toBeNull()
+    expect(rows[1].querySelector('sup')).toBeNull()
+    expect(rows[2].querySelector('sup')).toHaveTextContent('*')
+    expect(screen.getByText('* Totals are as reported; changes leave out Chartmetric recounts.')).toBeInTheDocument()
   })
 
   it('dims smoothed bars with a lighter dim fill and labels the estimate', () => {

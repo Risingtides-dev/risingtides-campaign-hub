@@ -10,7 +10,7 @@ vi.mock('recharts', async (importOriginal) => {
   const actual = await importOriginal<typeof import('recharts')>()
   return { ...actual, ResponsiveContainer: ({ children }: { children: React.ReactElement }) => <div style={{ width: 600, height: 240 }}>{cloneElement(children as React.ReactElement<{ width?: number; height?: number }>, { width: 600, height: 240 })}</div> }
 })
-vi.mock('@/lib/queries', () => ({ usePopScore: vi.fn(), useSetPopScoreTrack: vi.fn(), useEditCampaign: vi.fn() }))
+vi.mock('@/lib/queries', () => ({ usePopScore: vi.fn(), useSetPopScoreTrack: vi.fn(), useOverridePopScore: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isError: false })), useEditCampaign: vi.fn() }))
 
 function setup(data: PopScore) {
   vi.mocked(usePopScore).mockReturnValue({ data, isLoading: false, isError: false } as ReturnType<typeof usePopScore>)
@@ -22,7 +22,7 @@ function setup(data: PopScore) {
 describe('pass 9 attribution notes and chart boundary', () => {
   beforeEach(() => vi.useRealTimers())
 
-  it('collapses seven Blinding Lights unusual jumps into one muted line with the full list in its title', () => {
+  it('collapses seven Blinding Lights unusual jumps into an expandable list', () => {
     const unusual = [
       { date: '2026-06-14', change: 10700 }, { date: '2026-06-16', change: 51100 },
       { date: '2026-06-20', change: 12000 }, { date: '2026-07-02', change: 14000 },
@@ -30,12 +30,12 @@ describe('pass 9 attribution notes and chart boundary', () => {
       { date: '2026-09-23', change: 22000 },
     ]
     const data = { ...blinding, ugc: { ...blinding.ugc, unusual } } as unknown as PopScore
-    const { container } = setup(data)
-    const note = [...container.querySelectorAll('p')].find(p => p.textContent?.includes('7 unusual jumps counted'))
+    setup(data)
+    const note = screen.getByRole('button', { name: 'TikTok videos: 7 unusual jumps counted · largest +51.1K on Jun 16, 2026' })
     expect(note).toBeTruthy()
-    expect(note?.textContent).toBe('TikTok videos: 7 unusual jumps counted · largest +51.1K on Jun 16, 2026')
-    expect(note?.getAttribute('title')?.split(';')).toHaveLength(7)
-    expect([...container.querySelectorAll('p')].filter(p => p.textContent?.includes('unusual jumps counted'))).toHaveLength(1)
+    fireEvent.click(note)
+    expect(screen.getAllByText(/2026|Jun|Jul|Sep/).length).toBeGreaterThan(0)
+    expect(screen.getAllByRole('button', { name: 'Leave it out' })).toHaveLength(7)
   })
 
   it('collapses long recount lists and marks adjusted metric rows with the explanatory footnote', () => {
@@ -50,7 +50,7 @@ describe('pass 9 attribution notes and chart boundary', () => {
     expect([...container.querySelectorAll('th')].map(node => node.textContent)).toContain('TikTok videos*')
     expect(screen.getByText('* Totals are as reported; changes leave out Chartmetric recounts.')).toBeInTheDocument()
     expect(screen.getByText('TikTok videos: 3 Chartmetric recounts not counted · largest −2.8M on May 23, 2026')).toBeInTheDocument()
-    expect([...container.querySelectorAll('p')].filter(p => p.textContent?.includes('Chartmetric recounts not counted'))).toHaveLength(1)
+    expect(screen.getByRole('button', { name: 'TikTok videos: 3 Chartmetric recounts not counted · largest −2.8M on May 23, 2026' })).toBeInTheDocument()
   })
 
   it('draws post events through frozen today and excludes tomorrow', () => {

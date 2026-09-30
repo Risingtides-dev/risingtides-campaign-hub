@@ -49,7 +49,7 @@ def _pct(numerator, baseline):
     return round(numerator / baseline * 100, 1) if baseline is not None and baseline > 0 else None
 
 
-def calculate_attribution(popularity, streams, start_date, end_date="", today=None, ugc=None, completion_status=None):
+def calculate_attribution(popularity, streams, start_date, end_date="", today=None, ugc=None, completion_status=None, overrides=None):
     today = today or datetime.now(ZoneInfo("America/New_York")).date()
     start = _day(start_date)
     end = _day(end_date)
@@ -79,65 +79,68 @@ def calculate_attribution(popularity, streams, start_date, end_date="", today=No
     in_followup = phase == "followup"
     pop_follow_to_date = bool(in_followup or (follow_target and (pop_latest is None or pop_latest < follow_target)))
     stream_follow_to_date = bool(in_followup or (follow_target and (stream_latest is None or stream_latest < follow_target)))
-    def adjust_recounts(history, absolute_floor):
+    def adjust_recounts(history, absolute_floor, overrides=None):
         ordered = _dedupe(history)
-        increments = [ordered[i]["value"] - ordered[i-1]["value"] for i in range(1, len(ordered))]
-        gaps = [(_day(ordered[i]["date"]) - _day(ordered[i-1]["date"])).days for i in range(1, len(ordered))]
+        # Detection uses change points: each changed total is measured from the
+        # last date at the preceding distinct total (stall days are included).
+        collapsed = []
+        for index, point in enumerate(ordered):
+            if not collapsed or point["value"] != collapsed[-1]["value"]:
+                collapsed.append({**point, "raw_index": index})
+            else:
+                collapsed[-1] = {**point, "raw_index": index}
+        increments = [collapsed[i]["value"] - collapsed[i-1]["value"] for i in range(1, len(collapsed))]
+        gaps = [(_day(collapsed[i]["date"]) - _day(collapsed[i-1]["date"])).days for i in range(1, len(collapsed))]
         offsets = [0] * len(ordered)
         recount_indices, found, unusual = set(), [], []
-        for i, inc in enumerate(increments, 1):
-            if i in recount_indices:
-                continue
-            step_rate = abs(inc) / gaps[i - 1] if gaps[i - 1] else 0
-            prior_indices = [j for j in range(max(0, i - 15), i - 1) if j + 1 not in recount_indices]
-            pace = None
-            if len(prior_indices) >= 5:
-                days = sum(gaps[j] for j in prior_indices)
-                if days:
-                    pace = max(1, sum(abs(increments[j]) for j in prior_indices) / days)
-            later_indices = range(i, min(len(increments), i + 3))
-            later_indices = list(later_indices)
-            after_rate = None
-            if len(later_indices) == 3:
-                days = sum(gaps[j] for j in later_indices)
-                if days:
-                    after_rate = sum(abs(increments[j]) for j in later_indices) / days
-            candidate = pace is not None and step_rate >= 20 * pace
-            is_recount = (pace is not None and after_rate is not None
-                and step_rate >= 50 * pace and after_rate < step_rate / 20
-                and abs(inc) >= absolute_floor)
-            # A one-step rollback pair is one Chartmetric glitch: assess its
-            # quiet period after both legs, then exclude both legs together.
-            paired = (i < len(increments) and inc * increments[i] < 0
-                and abs(abs(inc) - abs(increments[i])) <= max(100, abs(inc) * .05))
-            pair_handled = False
-            if not is_recount and paired and pace is not None and step_rate >= 50 * pace and abs(inc) >= absolute_floor:
-                post = list(range(i + 1, min(len(increments), i + 4)))
-                post_days = sum(gaps[j] for j in post)
-                if len(post) == 3 and post_days:
-                    post_rate = sum(abs(increments[j]) for j in post) / post_days
-                    if post_rate < step_rate / 20 and abs(increments[i]) >= absolute_floor:
-                        is_recount = True
-                        recount_indices.add(i)
-                        recount_indices.add(i + 1)
-                        for k in range(i, len(ordered)):
-                            offsets[k] += inc
-                        for k in range(i + 1, len(ordered)):
-                            offsets[k] += increments[i]
-                        found.append({"date": ordered[i]["date"], "change": inc})
-                        found.append({"date": ordered[i + 1]["date"], "change": increments[i]})
-                        pair_handled = True
+        overrides = overrides or {}
+        for j, inc in enumerate(increments):
+            raw_i = collapsed[j+1]["raw_index"]
+            step_rate = abs(inc) / gaps[j] if gaps[j] else 0
+            prior_rates = [abs(increments[k]) / gaps[k] for k in range(max(0, j-14), j)
+                           if k+1 not in recount_indices and gaps[k] > 0]
+            pace = max(1, sorted(prior_rates)[len(prior_rates)//2]) if len(prior_rates) >= 5 else None
+            later = list(range(j+1, min(len(increments), j+4)))
+            after_rate = (sum(abs(increments[k]) for k in later) / sum(gaps[k] for k in later)
+                          if len(later) == 3 and sum(gaps[k] for k in later) else None)
+            early = j < 5
+            candidate = (step_rate >= 20 * pace) if pace is not None else (early and abs(inc) >= absolute_floor)
+            if early:
+                auto_recount = (abs(inc) >= absolute_floor and abs(inc) >= .10 * abs(collapsed[j]["value"])
+                                and after_rate is not None and after_rate < step_rate / 40)
+            else:
+                auto_recount = (pace is not None and step_rate >= 50 * pace and after_rate is not None
+                                and after_rate < step_rate / 40 and abs(inc) >= absolute_floor)
+            # A short opposite-sign rollback pair is treated as one glitch when
+            # the independent forward confirmation cannot see past its recovery.
+            paired = (j+1 < len(increments) and inc * increments[j+1] < 0
+                      and abs(abs(inc)-abs(increments[j+1])) <= max(100, abs(inc)*.05))
+            if not auto_recount and paired and pace is not None and step_rate >= 50*pace and abs(inc) >= absolute_floor:
+                post = list(range(j+2, min(len(increments), j+5)))
+                if len(post)==3 and sum(gaps[k] for k in post):
+                    quiet = sum(abs(increments[k]) for k in post)/sum(gaps[k] for k in post) < step_rate/40
+                    if quiet and abs(increments[j+1]) >= absolute_floor:
+                        auto_recount = True
+                        pair_raw = collapsed[j+2]["raw_index"]
+                        recount_indices.update((raw_i, pair_raw))
+                        for k in range(raw_i, len(ordered)): offsets[k] += inc
+                        for k in range(pair_raw, len(ordered)): offsets[k] += increments[j+1]
+                        found.extend(({"date": ordered[raw_i]["date"], "change": inc, "source": "auto"},
+                                      {"date": ordered[pair_raw]["date"], "change": increments[j+1], "source": "auto"}))
+            action = overrides.get(collapsed[j+1]["date"], "auto")
+            is_recount = (action == "exclude") if action != "auto" else auto_recount
+            if action == "include":
+                candidate = True
             if candidate and not is_recount:
-                unusual.append({"date": ordered[i]["date"], "change": inc})
-            if is_recount and not pair_handled:
-                recount_indices.add(i)
-                for k in range(i, len(ordered)):
-                    offsets[k] += inc
-                found.append({"date": ordered[i]["date"], "change": inc})
+                unusual.append({"date": collapsed[j+1]["date"], "change": inc, "source": "manual" if action == "include" else "auto"})
+            if is_recount and raw_i not in recount_indices:
+                recount_indices.add(raw_i)
+                for k in range(raw_i, len(ordered)): offsets[k] += inc
+                found.append({"date": collapsed[j+1]["date"], "change": inc, "source": "manual" if action == "exclude" else "auto"})
         adjusted = [{**p, "value": p["value"] - offsets[i]} for i, p in enumerate(ordered)]
         return adjusted, found, recount_indices, unusual
-    streams_adj, streams_recounts, streams_recount_indices, streams_unusual = adjust_recounts(streams, STREAMS_RECOUNT_ABS_FLOOR)
-    ugc_adj, ugc_recounts, ugc_recount_indices, ugc_unusual = adjust_recounts(ugc, UGC_RECOUNT_ABS_FLOOR)
+    streams_adj, streams_recounts, streams_recount_indices, streams_unusual = adjust_recounts(streams, STREAMS_RECOUNT_ABS_FLOOR, (overrides or {}).get("streams"))
+    ugc_adj, ugc_recounts, ugc_recount_indices, ugc_unusual = adjust_recounts(ugc, UGC_RECOUNT_ABS_FLOOR, (overrides or {}).get("ugc"))
     baseline_daily = _avg(streams_adj, start - timedelta(days=14), start) if start else None
     campaign_daily = _avg(streams_adj, start, end_target) if start else None
     follow_daily = _avg(streams_adj, end, follow_target) if end and follow_target else None
@@ -203,7 +206,7 @@ def calculate_attribution(popularity, streams, start_date, end_date="", today=No
             "change_campaign": pop_end - pop_start if pop_end is not None and pop_start is not None and not same_campaign_reading else None,
             "change_followup": pop_follow - pop_end if pop_follow is not None and pop_end is not None and not same_follow_reading else None},
         "streams": {**block(streams_adj, _value(streams_adj, start) if start else None, _value(streams_adj, end_target), _value(streams_adj, follow_target) if follow_target else None, stream_end_to_date, stream_follow_to_date),
-            "adjusted": phase != "not_started" and bool(streams_recounts),
+            "adjusted": phase not in ("not_started", "no_start") and bool(streams_recounts),
             "start": stream_start, "end": stream_end, "followup": stream_follow,
             "now": None if phase == "not_started" else (_value(streams, stream_latest) if stream_latest else None),
             "start_total": stream_start, "end_total": stream_end, "end_is_to_date": stream_end_to_date,
@@ -218,7 +221,7 @@ def calculate_attribution(popularity, streams, start_date, end_date="", today=No
             "unusual": None if phase == "not_started" else streams_unusual},
         "streams_history": stream_history,
         "ugc": {**block(ugc_adj, _value(ugc_adj, start) if start else None, _value(ugc_adj, end_target), _value(ugc_adj, follow_target) if follow_target else None, ugc_end_td, ugc_follow_td),
-            "adjusted": phase != "not_started" and bool(ugc_recounts),
+            "adjusted": phase not in ("not_started", "no_start") and bool(ugc_recounts),
             "start": None if phase == "not_started" else ugc_start, "end": None if phase == "not_started" else ugc_end,
             "followup": None if phase == "not_started" else ugc_follow,
             "now": None if phase == "not_started" else (_value(ugc, ugc_latest) if ugc_latest else None),
