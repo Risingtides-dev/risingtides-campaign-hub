@@ -8,11 +8,12 @@ from __future__ import annotations
 import os
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
 EST = ZoneInfo("America/New_York")
 
-from sqlalchemy import create_engine, desc, func
+from sqlalchemy import create_engine, desc, func, text
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
 from campaign_manager.models import (
@@ -650,6 +651,53 @@ def get_session() -> Session:
 
 # ── Campaign CRUD ─────────────────────────────────────────────────────
 
+def _canonical_sound_url(value: str) -> Optional[str]:
+    """Normalize HTTP(S) URLs to the identity used for campaign uniqueness."""
+    if not isinstance(value, str):
+        return None
+    raw = value.strip()
+    if not raw or len(raw) > 2048 or any(ord(char) < 32 for char in raw):
+        return None
+    try:
+        parsed = urlsplit(raw)
+        port = parsed.port
+        hostname = parsed.hostname
+    except ValueError:
+        return None
+    scheme = parsed.scheme.lower()
+    if scheme not in {"http", "https"} or not hostname or parsed.username or parsed.password:
+        return None
+    try:
+        host = hostname.encode("idna").decode("ascii").lower()
+    except UnicodeError:
+        return None
+    if ":" in host:
+        host = f"[{host}]"
+    if port is not None and not ((scheme == "http" and port == 80) or (scheme == "https" and port == 443)):
+        host = f"{host}:{port}"
+    return urlunsplit((scheme, host, parsed.path or "/", parsed.query, ""))
+
+
+def _check_sound_url_write(session, campaign: Campaign, meta: Dict, expected_official_sound: Optional[str]) -> Optional[str]:
+    """Validate a legacy whole-campaign sound URL write inside its transaction."""
+    current = campaign.official_sound or ""
+    candidate = meta.get("official_sound") or ""
+    canonical = _canonical_sound_url(candidate)
+    if canonical is None:
+        return None
+    previous = _canonical_sound_url(current)
+    if expected_official_sound is not None and current != expected_official_sound:
+        return "conflict"
+    if canonical == previous:
+        return None
+    if not isinstance(expected_official_sound, str):
+        return "missing_revision"
+    for other in session.query(Campaign.slug, Campaign.official_sound).filter(Campaign.slug != campaign.slug):
+        if _canonical_sound_url(other.official_sound or "") == canonical:
+            return "duplicate"
+    meta["official_sound"] = canonical
+    return None
+
 def get_campaign(slug: str) -> Optional[Dict]:
     """Get campaign metadata as a dict (matches old campaign.json format)."""
     with get_session() as s:
@@ -665,10 +713,17 @@ def get_campaign_obj(slug: str) -> Optional[Campaign]:
         return s.query(Campaign).filter_by(slug=slug).first()
 
 
-def save_campaign(slug: str, meta: Dict):
+def save_campaign(slug: str, meta: Dict, *, expected_official_sound: Optional[str] = None):
     """Create or update a campaign from a meta dict."""
     with get_session() as s:
-        c = s.query(Campaign).filter_by(slug=slug).first()
+        candidate_url = _canonical_sound_url(meta.get("official_sound") or "")
+        guarded_sound_write = candidate_url is not None and expected_official_sound is not None
+        if guarded_sound_write and s.bind and s.bind.dialect.name == "postgresql":
+            s.execute(text("SELECT pg_advisory_xact_lock(hashtext('campaign-sound-url'))"))
+        campaign_query = s.query(Campaign).filter_by(slug=slug)
+        if guarded_sound_write:
+            campaign_query = campaign_query.with_for_update().populate_existing()
+        c = campaign_query.first()
         if not c:
             c = Campaign(slug=slug)
             s.add(c)
@@ -678,6 +733,10 @@ def save_campaign(slug: str, meta: Dict):
             # sometimes minutes earlier, and must not put that copy back over
             # captions the CRM has since changed.
             c.internal_captions = meta.get("internal_captions")
+        else:
+            result = _check_sound_url_write(s, c, meta, expected_official_sound)
+            if result:
+                return result
 
         c.title = meta.get("title", "")
         c.name = meta.get("name", meta.get("title", ""))
@@ -736,6 +795,7 @@ def save_campaign(slug: str, meta: Dict):
 
         c.updated_at = datetime.now()
         s.commit()
+        return "updated" if guarded_sound_write else None
 
 
 def update_campaign_fields(slug: str, fields: Dict):

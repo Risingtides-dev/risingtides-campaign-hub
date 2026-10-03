@@ -151,3 +151,30 @@ area:      [backend]
 
 Eric's team asked on rotational-posting-agent#672 for campaign captions to sync both ways, and the one thing missing on the Hub side was a door that saves one campaign's captions. PUT /api/campaign/<slug>/internal-captions takes internal_captions and expected (the value the caller last saw, or null), writes the text to the campaign's CRM page first and stores it here only once the CRM took it, so the CRM stays the source of truth; a stored value that differs from expected answers 409 with the current value, a CRM refusal answers 502 and stores nothing, a campaign without a CRM page is stored here only, and when HUB_WRITE_KEY is set the X-Hub-Write-Key header must match it. Known window: a refresh that read the CRM just before such a write can put the older value back until the next refresh. 696 passed with the one known TT-label failure; seven new tests.
 _________________________________________________________________________________
+_________________________________________________________________________________
+time:      [12:17pm] [10-03-26]
+agent:     [codex] [gpt-6]
+worktree:  codex/campaign-sound-invariant-20261003
+type:      [bug report]
+area:      [backend]
+
+Closed the campaign sound URL invariant bypass in legacy POST /api/campaign/<slug>/edit: changing official_sound to an HTTP(S) URL now requires the exact expected_official_sound revision, canonicalizes the URL, rejects canonical duplicates, and takes the same campaign-sound transaction advisory lock before re-reading and saving. Existing numeric/non-URL sound_id edits keep their behavior. Added backend regressions for canonical duplicate/stale revision rejection, sound-ID compatibility, and lock/CAS ordering. Verification: 27 relevant campaign endpoint tests passed; the complete target file has one existing date-fixture failure because its hard-coded 2026-09-30 end date precedes the fixture's 2026-10-03 default start date. PR #228 remains untouched and held; this branch is a separate candidate with no merge or deployment.
+_________________________________________________________________________________
+_________________________________________________________________________________
+time:      [12:20pm] [10-03-26]
+agent:     [codex] [gpt-6]
+worktree:  codex/campaign-sound-invariant-20261003
+type:      [gh actions]
+area:      [review]
+
+Published the isolated sound URL invariant repair as Campaign Hub PR #236 from commit 72e7669. The PR is open for review; no merge or deployment performed.
+_________________________________________________________________________________
+_________________________________________________________________________________
+time:      [12:39pm] [10-03-26]
+agent:     [codex] [gpt-6]
+worktree:  codex/campaign-sound-invariant-20261003
+type:      [bug report]
+area:      [backend]
+
+Fixed PR #236 review regressions: CampaignHeader now sends the displayed official_sound as expected_official_sound for URL edits, and the API preserves the typed token in the POST body; numeric sound IDs send no revision token. The legacy edit route now returns 409 when save_campaign reports missing_revision, conflict, or duplicate; a deterministic interleaving test proves a competing URL write is preserved and the stale edit is rejected. Backend checks: focused sound regressions 4 passed; full campaign endpoint file 28 passed and the existing hard-coded 2026-09-30 end-date fixture failed against 2026-10-03 default start. Frontend tests were added but not run because node_modules is absent and the host volume is full; no dependency installation or cleanup was attempted. No merge or deployment.
+_________________________________________________________________________________

@@ -172,10 +172,16 @@ describe('api client', () => {
 
     it('editCampaign uses POST and slug in URL', async () => {
       const fetchMock = mockFetchOk({ ok: true })
-      await api.editCampaign('my-slug', { title: 'new' })
+      const edit = {
+        title: 'new',
+        sound_id: 'https://www.tiktok.com/music/new-123',
+        expected_official_sound: 'https://www.tiktok.com/music/old-456',
+      }
+      await api.editCampaign('my-slug', edit)
       const [url, init] = fetchMock.mock.calls[0]
       expect(url).toContain('/api/campaign/my-slug/edit')
       expect(init?.method).toBe('POST')
+      expect(JSON.parse(String(init?.body))).toEqual(edit)
     })
 
     it('removeCreator uses POST', async () => {

@@ -64,6 +64,9 @@ export function CampaignHeader({
       budget: parseFloat(budget),
       cobrand_link: cobrandLink,
     }
+    if (/^https?:\/\//i.test(soundId.trim())) {
+      payload.expected_official_sound = campaign.official_sound || ""
+    }
     if (endDate !== editEndDateOriginal) payload.end_date = endDate
     try {
       await onEdit(payload)
