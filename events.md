@@ -160,3 +160,12 @@ area:      [backend]
 
 Closed the campaign sound URL invariant bypass in legacy POST /api/campaign/<slug>/edit: changing official_sound to an HTTP(S) URL now requires the exact expected_official_sound revision, canonicalizes the URL, rejects canonical duplicates, and takes the same campaign-sound transaction advisory lock before re-reading and saving. Existing numeric/non-URL sound_id edits keep their behavior. Added backend regressions for canonical duplicate/stale revision rejection, sound-ID compatibility, and lock/CAS ordering. Verification: 27 relevant campaign endpoint tests passed; the complete target file has one existing date-fixture failure because its hard-coded 2026-09-30 end date precedes the fixture's 2026-10-03 default start date. PR #228 remains untouched and held; this branch is a separate candidate with no merge or deployment.
 _________________________________________________________________________________
+_________________________________________________________________________________
+time:      [12:20pm] [10-03-26]
+agent:     [codex] [gpt-6]
+worktree:  codex/campaign-sound-invariant-20261003
+type:      [gh actions]
+area:      [review]
+
+Published the isolated sound URL invariant repair as Campaign Hub PR #236 from commit 72e7669. The PR is open for review; no merge or deployment performed.
+_________________________________________________________________________________
