@@ -647,6 +647,7 @@ def edit_campaign(slug: str):
     if not meta:
         return jsonify({"error": "Campaign not found."}), 404
 
+    original_official_sound = meta.get("official_sound") or ""
     prior_completion_status = meta.get("completion_status", "none")
     old_song_fields = {key: meta.get(key, "") for key in ("song", "artist", "sound_id", "tt_artist_label", "tt_track_name")}
     data = request.get_json(silent=True) or {}
@@ -713,8 +714,33 @@ def edit_campaign(slug: str):
             meta[key] = data[key].strip()
 
     if "sound_id" in data:
-        meta["official_sound"] = sound_id_raw
+        canonical_url = _db._canonical_sound_url(sound_id_raw)
+        is_http_url = sound_id_raw.lower().startswith(("http://", "https://"))
+        if is_http_url and canonical_url is None:
+            return jsonify({"error": "Paste a valid HTTP(S) URL.", "code": "invalid_url"}), 400
+        meta["official_sound"] = canonical_url if canonical_url is not None else sound_id_raw
         meta["sound_id"] = extract_sound_id(sound_id_raw) if sound_id_raw else ""
+        changed_sound_url = (
+            canonical_url is not None
+            and canonical_url != _db._canonical_sound_url(original_official_sound)
+        )
+        if changed_sound_url:
+            expected_official_sound = data.get("expected_official_sound")
+            if not isinstance(expected_official_sound, str):
+                return jsonify({
+                    "error": "Reload the campaign before changing its sound link.",
+                    "code": "missing_revision",
+                }), 409
+            if original_official_sound != expected_official_sound:
+                return jsonify({
+                    "error": "This campaign changed. Reload it before saving the link.",
+                    "code": "conflict",
+                }), 409
+        else:
+            expected_official_sound = None
+    else:
+        changed_sound_url = False
+        expected_official_sound = None
 
     # Save additional sounds
     additional = data.get("additional_sounds")
@@ -775,8 +801,24 @@ def edit_campaign(slug: str):
         meta["cobrand_link"] = cobrand_link
 
     if _db.is_active():
-        _db.save_campaign(slug, meta)
+        if changed_sound_url:
+            result = _db.save_campaign(
+                slug, meta, expected_official_sound=expected_official_sound,
+            )
+            if result == "conflict":
+                return jsonify({"error": "This campaign changed. Reload it before saving the link.", "code": "conflict"}), 409
+            if result == "duplicate":
+                return jsonify({"error": "That link already belongs to another campaign.", "code": "duplicate"}), 409
+        else:
+            _db.save_campaign(slug, meta)
     else:
+        if changed_sound_url:
+            if any(
+                row["slug"] != slug
+                and _db._canonical_sound_url(row["meta"].get("official_sound") or "") == canonical_url
+                for row in get_campaigns()
+            ):
+                return jsonify({"error": "That link already belongs to another campaign.", "code": "duplicate"}), 409
         save_json(campaign_dir / "campaign.json", meta)
 
     # Mirror delivery status onto the client-facing tracker badge. Only when

@@ -20,6 +20,7 @@ Campaign CRM integration, campaign delivery reporting, and creator operations.
 - CRM `Internal Captions` holds a campaign's text-on-screen lines, typed by staff or submitted on an intake form. The same refresh keeps each active campaign's copy current, verbatim, under the same preserve-or-clear rule; a value too long to read whole counts as unreadable, never as a shorter list. Saving a whole campaign never changes its captions once it exists.
 - `GET /api/campaigns/captions` lists every active campaign whose CRM captions have been read, with its sound, for the posting control plane. Finished campaigns and campaigns never read are left out, and the campaign list itself carries no caption text.
 - `PUT /api/campaign/<slug>/internal-captions` saves one campaign's captions from the posting control plane, CRM page first, stored here only once the CRM took it. The caller sends `expected`, the value it last saw; a different stored value answers 409 with the current one. When `HUB_WRITE_KEY` is set the `X-Hub-Write-Key` header must match.
+- Legacy `POST /api/campaign/<slug>/edit` requires `expected_official_sound` when changing `official_sound` to an HTTP(S) URL. URL identity uses normalized HTTP(S) scheme, host, default port, path, query, and no fragment; duplicate assignments return 409. Database writes use the campaign-sound transaction advisory lock and recheck the expected value before updating. Non-URL sound-ID edits retain their existing behavior.
 
 ## Work Guidance
 

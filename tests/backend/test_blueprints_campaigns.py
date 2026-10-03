@@ -207,6 +207,101 @@ class TestEditCampaign:
         )
         assert resp.status_code == 200
 
+    def test_legacy_sound_url_edit_rejects_canonical_duplicate_and_stale_revision(self, client, db):
+        canonical = "https://www.tiktok.com/music/example-123"
+        _create(client, title="First Artist - First Song", official_sound=canonical)
+        _create(client, title="Second Artist - Second Song")
+        slug = "second_artist_second_song"
+
+        # Host case, explicit default port, and fragment do not create a new URL identity.
+        duplicate = client.post(
+            f"/api/campaign/{slug}/edit",
+            json={
+                "sound_id": "HTTPS://WWW.TIKTOK.COM:443/music/example-123#share",
+                "expected_official_sound": "",
+            },
+        )
+        assert duplicate.status_code == 409
+        assert duplicate.get_json()["code"] == "duplicate"
+        assert db.get_campaign(slug)["official_sound"] == ""
+
+        missing_revision = client.post(
+            f"/api/campaign/{slug}/edit",
+            json={"sound_id": "https://www.tiktok.com/music/new-456"},
+        )
+        assert missing_revision.status_code == 409
+        assert missing_revision.get_json()["code"] == "missing_revision"
+
+    def test_legacy_sound_id_edit_keeps_identifier_behavior(self, client):
+        _create(client)
+        slug = "sam_barber_fever_dream"
+        sound_id = "1234567890123456789"
+        response = client.post(
+            f"/api/campaign/{slug}/edit",
+            json={"sound_id": sound_id},
+        )
+        assert response.status_code == 200
+        detail = client.get(f"/api/campaign/{slug}").get_json()
+        assert detail["sound_id"] == sound_id
+        assert detail["official_sound"] == sound_id
+
+    def test_legacy_sound_url_write_takes_shared_postgres_lock_before_read(self, client, db, monkeypatch):
+        from types import SimpleNamespace
+
+        _create(client)
+        slug = "sam_barber_fever_dream"
+        first_meta = db.get_campaign(slug)
+        original_get_session = db.get_session
+        events = []
+
+        class SessionProxy:
+            def __init__(self):
+                self.session = original_get_session()
+                self.bind = SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self.session.close()
+
+            def execute(self, statement, *args, **kwargs):
+                sql = str(statement)
+                events.append(("lock", sql))
+                assert "pg_advisory_xact_lock(hashtext('campaign-sound-url'))" in sql
+                # The test fixture uses SQLite, so observe rather than execute PostgreSQL SQL.
+                return None
+
+            def query(self, *args, **kwargs):
+                events.append(("query", ""))
+                return self.session.query(*args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(self.session, name)
+
+        monkeypatch.setattr(db, "get_session", SessionProxy)
+        candidate = "https://www.tiktok.com/music/unique-456"
+        result = db.save_campaign(
+            slug,
+            {**first_meta, "official_sound": candidate},
+            expected_official_sound="",
+        )
+        assert result == "updated"
+        assert events[0][0] == "lock"
+        assert all(event[0] == "query" for event in events[1:])
+
+        # A second writer carrying the same old revision sees the committed URL
+        # after taking the same lock and cannot overwrite it.
+        second_meta = db.get_campaign(slug)
+        events.clear()
+        result = db.save_campaign(
+            slug,
+            {**second_meta, "official_sound": candidate},
+            expected_official_sound="",
+        )
+        assert result == "conflict"
+        assert events[0][0] == "lock"
+
 
 class TestCreatorNichesRoundtrip:
     """Regression: niches field was omitted from campaign_detail creator response,
