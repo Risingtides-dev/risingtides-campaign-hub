@@ -88,3 +88,6 @@ backups/
 
 # stitchpad runtime (isolated history)
 .stitchpad/
+
+# Claude Code
+.claude/
