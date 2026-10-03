@@ -155,7 +155,8 @@ class TestEditCampaign:
         assert detail["meta"]["completion_status"] == "completed"
 
     def test_partial_edits_preserve_optional_campaign_fields(self, client):
-        _create(client)
+        # Keep the date pair valid independently of the day this suite runs.
+        _create(client, start_date="2026-09-01")
         slug = "sam_barber_fever_dream"
         client.post(f"/api/campaign/{slug}/edit", json={"additional_sounds": ["123"], "cobrand_link": "https://example.test"})
         for body in ({"end_date": "2026-09-30"}, {"completion_status": "completed"}):

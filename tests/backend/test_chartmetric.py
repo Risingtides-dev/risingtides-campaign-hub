@@ -448,7 +448,14 @@ class TestPopScoreEndpoints:
             if case == "html_title":
                 meta["song"] = ""
                 meta["artist"] = ""
-            db.save_campaign(slug, meta)
+            # Seed a legacy stored URL directly; save_campaign now requires the
+            # UI revision token before a user-path URL change can be persisted.
+            db.update_campaign_fields(slug, {
+                "sound_id": meta["sound_id"],
+                "official_sound": meta["official_sound"],
+                "song": meta["song"],
+                "artist": meta["artist"],
+            })
         elif case == "sound_url":
             meta["sound_id"] = "https://www.tiktok.com/music/original-1234567890"
             db.save_campaign(slug, meta)
