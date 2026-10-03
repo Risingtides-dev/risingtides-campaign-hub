@@ -270,6 +270,18 @@ class TestFetchCampaignSubmissions:
         assert r.ok is False
         assert r.error_kind == "bad_payload"
 
+    def test_payload_with_non_array_videos_is_rejected(self):
+        # A 200 response with a broken payload must not be logged as a
+        # successful zero-submission sync: that would hide an upstream schema
+        # regression and make campaign reporting falsely look empty.
+        with patch.object(
+            tides_tracker.requests, "get",
+            return_value=_mock_response(200, {"videos": {"unexpected": "object"}}),
+        ):
+            r = tides_tracker.fetch_campaign_submissions(VALID_TRACKER_ID)
+        assert r.ok is False
+        assert r.error_kind == "bad_payload"
+
     def test_non_dict_videos_entries_are_skipped(self):
         # Defensive: a malformed entry in the array shouldn't kill the whole fetch.
         payload = {"videos": [_video(), "garbage", None, _video(url="https://x/video/9")]}
