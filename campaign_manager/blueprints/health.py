@@ -14,6 +14,8 @@ def _safe_db_target(db_url: str) -> str:
         return ""
     try:
         target = make_url(db_url)
+        if db_url.count("@") > 1:
+            return "set"
         return f"{target.drivername}://{target.host}" if target.host else (target.drivername or "set")
     except Exception:
         return "set"
