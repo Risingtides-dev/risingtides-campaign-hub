@@ -26,7 +26,7 @@ Campaign CRM integration, campaign delivery reporting, and creator operations.
 
 ## Verification
 
-- Backend checks run with `pytest tests/backend`.
+- Backend checks run with `pytest tests/backend`; `.github/workflows/backend-tests.yml` runs the same suite on pull requests and pushes to `main`.
 - Run `pytest -q tests/backend/test_health_db_target.py tests/backend/test_smoke.py` for synthetic credential redaction and existing app health contracts; only test-owned SQLite fixtures are used.
 
 ## Child devlog Index
