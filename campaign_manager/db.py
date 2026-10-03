@@ -32,6 +32,94 @@ _engine = None
 _SessionLocal = None
 
 
+def _sync_columns():
+    """Add any model column missing from its live table (idempotent, additive).
+
+    Guards the class of failure where a model column has no ALTER migration, or
+    where a column is dropped out-of-band: the next boot re-adds it instead of
+    every SELECT 500ing. New columns are added nullable / with the model default;
+    existing columns and data are never touched. Postgres-only; per-column
+    failures are swallowed so one bad column can't abort startup.
+    """
+    from sqlalchemy import inspect, text
+    insp = inspect(_engine)
+    existing_tables = set(insp.get_table_names())
+    for table in Base.metadata.sorted_tables:
+        if table.name not in existing_tables:
+            continue  # create_all already made it with the full current schema
+        have = {col["name"] for col in insp.get_columns(table.name)}
+        for col in table.columns:
+            if col.name in have:
+                continue
+            ddl = col.type.compile(_engine.dialect)
+            try:
+                with _SessionLocal() as s:
+                    s.execute(text(
+                        f'ALTER TABLE {table.name} '
+                        f'ADD COLUMN IF NOT EXISTS "{col.name}" {ddl}'
+                    ))
+                    s.commit()
+            except Exception:
+                pass
+
+
+def dialect_insert(table):
+    """Dialect-aware INSERT construct for upserts.
+
+    Production is Postgres, the test suite runs in-memory sqlite — both
+    dialects support ``on_conflict_do_nothing`` / ``on_conflict_do_update``,
+    but each needs its own Insert construct. This helper was referenced by
+    ``notion_sync._apply_membership_diff`` (and pinned by
+    tests/backend/test_upsert_dialect_compile.py) but never landed in db.py
+    — every membership insert raised AttributeError, which the resolver
+    swallowed per-row as "resolve_failed". Prod ran with 0 membership rows
+    for months while the cron logged success.
+    """
+    name = getattr(getattr(_engine, "dialect", None), "name", "")
+    if name == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+        return pg_insert(table)
+    from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+    return sqlite_insert(table)
+
+
+def _sql_greatest(current, incoming):
+    """GREATEST(COALESCE(a,0), COALESCE(b,0)) — keep the larger of the
+    stored and incoming value in an upsert. Postgres spells it GREATEST;
+    sqlite's scalar ``max()`` takes two args and does the same job."""
+    name = getattr(getattr(_engine, "dialect", None), "name", "")
+    fn = func.greatest if name == "postgresql" else func.max
+    return fn(func.coalesce(current, 0), func.coalesce(incoming, 0))
+
+
+def _self_heal_chartmetric_columns():
+    """Add and normalize the additive Chartmetric campaign columns."""
+    try:
+        with _SessionLocal() as s:
+            sa = __import__("sqlalchemy")
+            statements = (
+                "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS chartmetric_track_id BIGINT NULL",
+                "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS chartmetric_link TEXT DEFAULT ''",
+                "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS chartmetric_autolink_checked_at TIMESTAMP NULL",
+                "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS chartmetric_link_status VARCHAR(32) DEFAULT ''",
+                "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS chartmetric_link_detail TEXT DEFAULT ''",
+                "UPDATE campaigns SET chartmetric_link_status = '' WHERE chartmetric_link_status IS NULL",
+                "UPDATE campaigns SET chartmetric_link_detail = '' WHERE chartmetric_link_detail IS NULL",
+                "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS end_date VARCHAR(20) DEFAULT ''",
+                "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS end_date_auto BOOLEAN DEFAULT FALSE",
+                "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS attribution_overrides JSONB DEFAULT '{}'::jsonb",
+                "UPDATE campaigns SET attribution_overrides = '{}'::jsonb WHERE attribution_overrides IS NULL",
+                "ALTER TABLE campaigns ALTER COLUMN attribution_overrides SET DEFAULT '{}'::jsonb",
+                "UPDATE campaigns SET end_date_auto = FALSE WHERE end_date_auto IS NULL",
+                "ALTER TABLE campaigns ALTER COLUMN end_date_auto SET DEFAULT FALSE",
+            )
+            for statement in statements:
+                s.execute(sa.text(statement))
+            s.commit()
+    except Exception:
+        pass
+
+
 def init(database_url: Optional[str] = None):
     """Initialize the database connection and create tables."""
     global _engine, _SessionLocal
@@ -43,6 +131,10 @@ def init(database_url: Optional[str] = None):
     # Railway uses postgres:// but SQLAlchemy 2.x needs postgresql://
     if url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql://", 1)
+    # Pin the driver we actually ship (psycopg2-binary). SQLAlchemy 2.1+
+    # resolves bare postgresql:// to psycopg v3, which isn't installed.
+    if url.startswith("postgresql://"):
+        url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
 
     _engine = create_engine(url, pool_pre_ping=True, pool_size=5, max_overflow=10)
     _SessionLocal = sessionmaker(bind=_engine)
@@ -67,6 +159,19 @@ def init(database_url: Optional[str] = None):
             pass
         else:
             raise
+
+    # Reconcile columns. create_all() creates missing *tables* but NEVER adds a
+    # new column to a table that already exists — and it can't restore a column
+    # that was dropped out-of-band. Any model column the live table lacks makes
+    # every SELECT of that model throw UndefinedColumn -> 500 (this is what took
+    # /api/campaigns down when `campaigns.status` went missing). Auto-add any
+    # model column the table is missing so the schema self-heals on boot,
+    # instead of relying on the hand-maintained ALTER blocks below.
+    # NOTE: the dead `status` column is dropped as a DELIBERATE one-time
+    # migration AFTER this code deploys (so no running code references it),
+    # NOT here. Auto-running schema DROPs on every db.init() broke prod once
+    # already — see scripts/migrations/drop_campaigns_status.sql.
+    _sync_columns()
 
     # Add completion_status column if missing (create_all won't add columns to existing tables)
     try:
@@ -182,6 +287,36 @@ def init(database_url: Optional[str] = None):
             s.commit()
     except Exception:
         pass
+
+    # Allow the same handle once per platform on a campaign (TikTok + IG
+    # bookings of one creator). Backfill NULL/blank platforms first so the
+    # new unique key can't be sidestepped by NULLs.
+    try:
+        with _SessionLocal() as s:
+            sa = __import__("sqlalchemy")
+            s.execute(sa.text(
+                "UPDATE creators SET platform = 'tiktok' "
+                "WHERE platform IS NULL OR platform = ''"
+            ))
+            s.execute(sa.text(
+                "ALTER TABLE creators DROP CONSTRAINT IF EXISTS uq_campaign_creator"
+            ))
+            s.execute(sa.text(
+                "DO $$ BEGIN "
+                "IF NOT EXISTS (SELECT 1 FROM pg_constraint "
+                "WHERE conname = 'uq_campaign_creator_platform') THEN "
+                "ALTER TABLE creators ADD CONSTRAINT uq_campaign_creator_platform "
+                "UNIQUE (campaign_id, username, platform); "
+                "END IF; END $$;"
+            ))
+            s.commit()
+    except Exception as e:
+        __import__("logging").getLogger(__name__).warning(
+            "creators per-platform unique key migration failed: %s", e
+        )
+
+    # Chartmetric track link for pop-score (Spotify popularity) tracking.
+    _self_heal_chartmetric_columns()
 
     # Add tracking-workflow + match metadata to matched_videos.
     # - first_seen_at: when the cron first matched this video (used by
@@ -358,12 +493,152 @@ def init(database_url: Optional[str] = None):
     except Exception:
         pass
 
+    # Index the hot matched_videos columns the creator-aggregation and
+    # sound-matcher paths group by (account, extracted_sound_id). The model
+    # marks them index=True so fresh DBs get them via create_all; this adds
+    # them to the existing prod table. Not CONCURRENTLY here — runs inside the
+    # app's init transaction; for a huge table apply CONCURRENTLY out-of-band.
+    try:
+        import sqlalchemy as sa
+        with _SessionLocal() as s:
+            s.execute(sa.text(
+                "CREATE INDEX IF NOT EXISTS ix_matched_videos_account "
+                "ON matched_videos (account)"
+            ))
+            s.execute(sa.text(
+                "CREATE INDEX IF NOT EXISTS ix_matched_videos_extracted_sound_id "
+                "ON matched_videos (extracted_sound_id)"
+            ))
+            s.commit()
+    except Exception:
+        pass
+
+    # Backfill stale tracker_url hosts (CAMP-41 / View-Tracker bug). Some
+    # campaigns stored tracker_url with the old frontend-tidestracker.vercel.app
+    # host, which pins to stale deploys — "View Tracker" sent users to a dead
+    # page. Rewrite to the canonical risingtides-tracker.com, preserving the
+    # UUID path. Idempotent: the WHERE clause matches nothing once fixed.
+    try:
+        import sqlalchemy as sa
+        with _SessionLocal() as s:
+            # Cover both stale hosts the serve-time canonicalizer treats as
+            # stale, keeping stored data consistent with the served link.
+            # Order matters: 'frontend-tidestracker.vercel.app' CONTAINS
+            # 'tidestracker.vercel.app', so replace the longer host first (inner
+            # REPLACE) before the bare one (outer) — otherwise the bare swap
+            # would leave a broken 'frontend-risingtides-tracker.com' prefix.
+            s.execute(sa.text(
+                "UPDATE campaigns "
+                "SET tracker_url = REPLACE(REPLACE(tracker_url, "
+                "  'frontend-tidestracker.vercel.app', 'risingtides-tracker.com'), "
+                "  'tidestracker.vercel.app', 'risingtides-tracker.com') "
+                "WHERE tracker_url LIKE '%tidestracker.vercel.app%'"
+            ))
+            s.commit()
+    except Exception:
+        pass
+
     return True
 
 
 def is_active() -> bool:
     """Check if database is initialized and active."""
     return _engine is not None
+
+
+# ── Tides Tracker stats cache (CAMP-9) — Postgres L2 ──────────────────────
+def get_tides_stats_cache(tracker_id: str):
+    """Return (submissions_json, api_fetched_at, fetched_at) for a tracker, or
+    None. submissions_json is the raw JSONB list (list[dict])."""
+    if not tracker_id or not is_active():
+        return None
+    try:
+        from campaign_manager.models import TidesTrackerStatsCache
+        with _SessionLocal() as s:
+            row = s.get(TidesTrackerStatsCache, tracker_id)
+            if row is None:
+                return None
+            return (row.submissions_json, row.api_fetched_at or "", row.fetched_at)
+    except Exception:
+        return None
+
+
+def upsert_tides_stats_cache(
+    tracker_id: str, submissions_json, api_fetched_at: str, fetched_at,
+    aggregates: Optional[Dict] = None,
+):
+    """Write-through upsert of one tracker's cached submissions. Best-effort —
+    a cache write must never break the request that produced the data.
+
+    ``aggregates`` is {views, likes, comments, shares, post_count} rolled up
+    from the submissions at write time, so the campaigns list can read sums
+    without parsing the blob (see get_tides_stats_agg). None leaves the
+    columns NULL (legacy shape) and readers fall back to the blob.
+    """
+    if not tracker_id or not is_active():
+        return
+    try:
+        from campaign_manager.models import TidesTrackerStatsCache
+        agg = aggregates or {}
+        with _SessionLocal() as s:
+            stmt = dialect_insert(TidesTrackerStatsCache.__table__).values(
+                tracker_id=tracker_id,
+                submissions_json=submissions_json,
+                api_fetched_at=api_fetched_at or "",
+                fetched_at=fetched_at,
+                agg_views=agg.get("views"),
+                agg_likes=agg.get("likes"),
+                agg_comments=agg.get("comments"),
+                agg_shares=agg.get("shares"),
+                agg_post_count=agg.get("post_count"),
+            )
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["tracker_id"],
+                set_={
+                    "submissions_json": stmt.excluded.submissions_json,
+                    "api_fetched_at": stmt.excluded.api_fetched_at,
+                    "fetched_at": stmt.excluded.fetched_at,
+                    "agg_views": stmt.excluded.agg_views,
+                    "agg_likes": stmt.excluded.agg_likes,
+                    "agg_comments": stmt.excluded.agg_comments,
+                    "agg_shares": stmt.excluded.agg_shares,
+                    "agg_post_count": stmt.excluded.agg_post_count,
+                },
+            )
+            s.execute(stmt)
+            s.commit()
+    except Exception:
+        pass
+
+
+def get_tides_stats_agg(tracker_id: str) -> Optional[Dict]:
+    """Cheap freshness + rollup probe for one tracker's L2 cache row.
+
+    Returns {views, likes, comments, shares, post_count, api_fetched_at,
+    fetched_at} WITHOUT touching submissions_json — the whole point is that
+    the campaigns list can serve totals without deserializing the blob.
+    ``post_count`` is None on a legacy row written before the aggregate
+    columns existed; callers must fall back to the blob path for those.
+    Returns None when the row doesn't exist at all.
+    """
+    if not tracker_id or not is_active():
+        return None
+    try:
+        from campaign_manager.models import TidesTrackerStatsCache as T
+        with _SessionLocal() as s:
+            row = s.query(
+                T.agg_views, T.agg_likes, T.agg_comments, T.agg_shares,
+                T.agg_post_count, T.api_fetched_at, T.fetched_at,
+            ).filter(T.tracker_id == tracker_id).first()
+            if row is None:
+                return None
+            return {
+                "views": row[0], "likes": row[1], "comments": row[2],
+                "shares": row[3], "post_count": row[4],
+                "api_fetched_at": row[5] or "", "fetched_at": row[6],
+            }
+    except Exception:
+        return None
 
 
 def get_session() -> Session:
@@ -397,6 +672,12 @@ def save_campaign(slug: str, meta: Dict):
         if not c:
             c = Campaign(slug=slug)
             s.add(c)
+            # Captions are set when the campaign is created and after that
+            # change only through the CRM refresh (update_campaign_fields).
+            # A whole-campaign save carries whatever copy its caller loaded,
+            # sometimes minutes earlier, and must not put that copy back over
+            # captions the CRM has since changed.
+            c.internal_captions = meta.get("internal_captions")
 
         c.title = meta.get("title", "")
         c.name = meta.get("name", meta.get("title", ""))
@@ -407,8 +688,11 @@ def save_campaign(slug: str, meta: Dict):
         c.additional_sounds = meta.get("additional_sounds", [])
         c.cobrand_link = meta.get("cobrand_link", "")
         c.start_date = meta.get("start_date", "")
+        if "end_date" in meta:
+            c.end_date = meta["end_date"]
+        if "end_date_auto" in meta:
+            c.end_date_auto = bool(meta["end_date_auto"])
         c.budget = float(meta.get("budget", 0))
-        c.status = meta.get("status", "active")
         c.platform = meta.get("platform", "tiktok")
 
         c.cobrand_share_url = meta.get("cobrand_share_url", c.cobrand_share_url or "")
@@ -478,19 +762,17 @@ def update_campaign_stats(slug: str, total_views: int, total_likes: int):
             s.commit()
 
 
-def list_campaigns(status: str = "active", exclude_completed: bool = False) -> List[Dict]:
-    """List all campaigns with the given status, returning meta dicts.
+def list_campaigns(exclude_completed: bool = False) -> List[Dict]:
+    """List all campaigns, returning meta dicts.
 
-    `exclude_completed=True` additionally filters out campaigns whose
-    completion_status is "completed". The cron, internal-creator attach,
-    and slack-sounds poster pass this so they stop touching finished
-    campaigns. Frontend list endpoints leave it False — the UI's
-    Active/Finished tabs filter client-side and need both sets.
+    `exclude_completed=True` filters out campaigns whose completion_status
+    is "completed". The cron, internal-creator attach, and slack-sounds
+    poster pass this so they stop touching finished campaigns. Frontend
+    list endpoints leave it False — the UI's Active/Finished tabs filter
+    client-side and need both sets.
     """
     with get_session() as s:
         query = s.query(Campaign)
-        if status:
-            query = query.filter_by(status=status)
         if exclude_completed:
             query = query.filter(Campaign.completion_status != "completed")
         campaigns = query.all()
@@ -498,9 +780,9 @@ def list_campaigns(status: str = "active", exclude_completed: bool = False) -> L
 
 
 def list_campaigns_with_creators(
-    status: str = "active",
     *,
     with_matched_videos: bool = False,
+    completion: Optional[str] = None,
 ) -> List[Tuple[Dict, List[Dict], List[Dict]]]:
     """List campaigns with their creators (and optionally matched_videos)
     eagerly loaded.
@@ -509,6 +791,20 @@ def list_campaigns_with_creators(
     optionally `get_matched_videos(slug)`) in a loop. Issues 2 queries
     when `with_matched_videos=False`, 3 when True — independent of the
     campaign count.
+
+    `completion` pushes the active/finished split DOWN INTO THE QUERY:
+      "active"   -> completion_status != 'completed'
+      "finished" -> completion_status == 'completed'
+      None       -> everything (the old behaviour)
+
+    This matters a lot more than it looks. The campaigns list endpoint
+    used to load every campaign, then filter to the active ones in
+    Python — so the default page load dragged all ~285 completed
+    campaigns and the ~15.7k matched_videos hanging off them out of
+    Postgres, built a dict for each, and threw ~90% of it away. The
+    selectinload for creators/matched_videos is driven by the campaign
+    IDs this query returns, so filtering here shrinks the child fetches
+    too. See CAMP-40 for the original N+1 pass.
 
     Returns a list of (meta_dict, creators_list, matched_videos_list)
     tuples. When `with_matched_videos=False`, the third element is an
@@ -519,8 +815,10 @@ def list_campaigns_with_creators(
         options.append(selectinload(Campaign.matched_videos))
     with get_session() as s:
         query = s.query(Campaign).options(*options)
-        if status:
-            query = query.filter_by(status=status)
+        if completion == "active":
+            query = query.filter(Campaign.completion_status != "completed")
+        elif completion == "finished":
+            query = query.filter(Campaign.completion_status == "completed")
         campaigns = query.all()
         return [
             (
@@ -807,6 +1105,38 @@ def get_all_paypal() -> Dict[str, str]:
         return {p.username: p.email for p in s.query(PaypalMemory).all()}
 
 
+# ── Rate Memory ───────────────────────────────────────────────────────
+
+def get_last_rate(username: str) -> Optional[Dict]:
+    """The most recent booking with a real rate for this username, or None.
+
+    Derived from the creators table rather than a separate memory table, so an
+    edited rate is remembered too. Ordered by added_date — save_creators
+    deletes and re-inserts a campaign's rows, so ids don't track booking order.
+    """
+    if not username:
+        return None
+    with get_session() as s:
+        row = (
+            s.query(Creator, Campaign.title)
+            .join(Campaign, Creator.campaign_id == Campaign.id)
+            .filter(func.lower(Creator.username) == username.lower())
+            .filter(Creator.total_rate > 0)
+            .filter(Creator.status != "removed")
+            .order_by(desc(Creator.added_date), desc(Creator.id))
+            .first()
+        )
+        if not row:
+            return None
+        cr, title = row
+        return {
+            "total_rate": cr.total_rate,
+            "posts_owed": cr.posts_owed or 0,
+            "campaign": title or "",
+            "added_date": cr.added_date or "",
+        }
+
+
 # ── Inbox ─────────────────────────────────────────────────────────────
 
 def get_inbox(status: Optional[str] = None) -> List[Dict]:
@@ -930,29 +1260,43 @@ def merge_internal_cache(username: str, new_videos: List[Dict]) -> List[Dict]:
             InternalVideoCache.cached_at < cutoff,
         ).delete(synchronize_session=False)
 
-        # Get existing URLs
-        existing_urls = {v.url for v in
-                         s.query(InternalVideoCache).filter_by(username=uname).all()}
+        # Existing rows by URL — keep the objects so we can REFRESH their stats
+        # (sweep #5 fix: previously only new URLs were inserted and existing
+        # rows were never updated, so an internal video's views/likes were
+        # frozen at first-scrape value forever — internal song-discovery /
+        # reporting off this cache showed stale numbers). Refresh with max()
+        # since views/likes are monotonic, same rule as merge_matched_videos.
+        existing_by_url = {v.url: v for v in
+                           s.query(InternalVideoCache).filter_by(username=uname).all()}
 
         new_rows: List[InternalVideoCache] = []
         for vd in new_videos:
             url = vd.get("url", "")
-            if url and url not in existing_urls:
+            if not url:
+                continue
+            fresh_views = int(vd.get("views", 0) or 0)
+            fresh_likes = int(vd.get("likes", 0) or 0)
+            if url in existing_by_url:
+                row = existing_by_url[url]
+                row.views = max(int(row.views or 0), fresh_views)
+                row.likes = max(int(row.likes or 0), fresh_likes)
+                row.cached_at = datetime.now()
+            else:
                 row = InternalVideoCache(
                     username=uname,
                     url=url,
                     song=vd.get("song", ""),
                     artist=vd.get("artist", ""),
                     account=vd.get("account", ""),
-                    views=int(vd.get("views", 0) or 0),
-                    likes=int(vd.get("likes", 0) or 0),
+                    views=fresh_views,
+                    likes=fresh_likes,
                     upload_date=vd.get("upload_date", ""),
                     timestamp=str(vd.get("timestamp", "")),
                     cached_at=datetime.now(),
                 )
                 s.add(row)
                 new_rows.append(row)
-                existing_urls.add(url)
+                existing_by_url[url] = row
 
         # Flush so new_rows get their PK ids before we write attribution.
         if new_rows:
@@ -1069,6 +1413,55 @@ def update_cobrand_cache(slug: str, stats: dict):
 
 
 # ── Notion Sync ───────────────────────────────────────────────────────
+
+def get_campaign_notion_links(*, active_only: bool = False) -> List[Dict]:
+    """(slug, notion_page_id, content_types, internal_captions) for every
+    campaign imported from Notion.
+
+    Drives the CRM refresh: these are the campaigns whose CRM row exists and
+    whose content_types and internal_captions should track it.
+    """
+    with get_session() as s:
+        query = s.query(
+            Campaign.slug, Campaign.notion_page_id, Campaign.content_types,
+            Campaign.internal_captions,
+        ).filter(
+            Campaign.notion_page_id.isnot(None),
+            Campaign.notion_page_id != "",
+        )
+        if active_only:
+            query = query.filter(Campaign.completion_status.in_(["none", "booked"]))
+        rows = query.order_by(Campaign.slug).all()
+        return [
+            {"slug": slug, "notion_page_id": page_id, "content_types": content_types or [],
+             "internal_captions": internal_captions}
+            for slug, page_id, content_types, internal_captions in rows
+        ]
+
+
+def list_campaign_captions() -> List[Dict]:
+    """Every active campaign whose CRM captions have been read, with its sound.
+
+    The posting control plane attaches these lines to the campaign's TikTok
+    sound. A campaign whose CRM row has never been read (NULL) is left out,
+    so "not read yet" is never mistaken for "no captions". Finished campaigns
+    are left out too: the refresh no longer follows their CRM rows, so their
+    stored captions could never be corrected from the CRM again.
+    """
+    with get_session() as s:
+        rows = s.query(
+            Campaign.slug, Campaign.sound_id, Campaign.official_sound,
+            Campaign.internal_captions,
+        ).filter(
+            Campaign.internal_captions.isnot(None),
+            Campaign.completion_status.in_(["none", "booked"]),
+        ).order_by(Campaign.slug).all()
+        return [
+            {"slug": slug, "sound_id": sound_id or "", "official_sound": official_sound or "",
+             "internal_captions": internal_captions}
+            for slug, sound_id, official_sound, internal_captions in rows
+        ]
+
 
 def get_synced_notion_ids() -> set:
     """Get all Notion page IDs that have already been synced."""

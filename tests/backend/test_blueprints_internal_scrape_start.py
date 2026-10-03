@@ -56,7 +56,7 @@ def fake_worker(monkeypatch):
     started = threading.Event()
 
     def fake(hours, creators, *, start_date_str="", end_date_str="",
-            job_id=None, group_slug=None):
+            job_id=None, group_slug=None, **_kwargs):
         started.set()
         # Mid-run progress update so polling tests see partial state.
         if job_id:

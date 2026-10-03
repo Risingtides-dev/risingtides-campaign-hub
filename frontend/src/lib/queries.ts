@@ -1,10 +1,15 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { api } from "./api"
-import type { ScrapeStatus, JobScrapeStatus } from "./types"
+import type { ScrapeStatus, JobScrapeStatus, BreakerLens, LibraryWindow, CreatorRef } from "./types"
 
 // Query keys
 export const keys = {
   campaigns: ["campaigns"] as const,
+  // Split keys share the "campaigns" prefix so every existing
+  // invalidateQueries({ queryKey: keys.campaigns }) call refetches
+  // these too (React Query invalidation matches by prefix).
+  campaignsActive: ["campaigns", "active"] as const,
+  campaignsFinished: ["campaigns", "finished"] as const,
   campaign: (slug: string) => ["campaign", slug] as const,
   campaignLinks: (slug: string) => ["campaign", slug, "links"] as const,
   cobrandStats: (slug: string) => ["campaign", slug, "cobrand"] as const,
@@ -20,7 +25,10 @@ export const keys = {
     ["internal", "creator", username] as const,
   internalGroups: ["internal", "groups"] as const,
   internalGroup: (slug: string) => ["internal", "groups", slug] as const,
-  internalGroupStats: (slug: string) => ["internal", "groups", slug, "stats"] as const,
+  // days is part of the key: omitting it made the stats period picker serve
+  // the first-fetched window forever (cache hit on every range change).
+  internalGroupStats: (slug: string, days: number) => ["internal", "groups", slug, "stats", days] as const,
+  internalFreshness: ["internal", "freshness"] as const,
   inbox: (status?: string) => ["inbox", status ?? "all"] as const,
   paypal: (username: string) => ["paypal", username] as const,
   network: ["network"] as const,
@@ -38,6 +46,18 @@ export const keys = {
 
 export function useCampaigns() {
   return useQuery({ queryKey: keys.campaigns, queryFn: api.getCampaigns })
+}
+
+// Split hooks for the campaigns list page: active is small and fast (~37
+// rows, ~200ms), finished is the big slow set (~285 rows). Fetching them
+// independently lets the page render the Active tab as soon as it lands
+// instead of blocking on the slowest request.
+export function useActiveCampaigns() {
+  return useQuery({ queryKey: keys.campaignsActive, queryFn: api.getActiveCampaigns })
+}
+
+export function useFinishedCampaigns() {
+  return useQuery({ queryKey: keys.campaignsFinished, queryFn: api.getFinishedCampaigns })
 }
 
 export function useCampaign(slug: string) {
@@ -77,9 +97,12 @@ export function useEditCampaign(slug: string) {
   return useMutation({
     mutationFn: (data: Record<string, unknown>) =>
       api.editCampaign(slug, data),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: keys.campaign(slug) })
-      qc.invalidateQueries({ queryKey: keys.campaigns })
+    onSuccess: async () => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: keys.campaign(slug) }),
+        qc.invalidateQueries({ queryKey: keys.campaigns }),
+      ])
+      void qc.invalidateQueries({ queryKey: ["popScore", slug] })
     },
   })
 }
@@ -114,12 +137,12 @@ export function useEditCreator(slug: string) {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: ({
-      username,
+      creator,
       data,
     }: {
-      username: string
+      creator: CreatorRef
       data: Record<string, unknown>
-    }) => api.editCreator(slug, username, data),
+    }) => api.editCreator(slug, creator, data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: keys.campaign(slug) })
       qc.invalidateQueries({ queryKey: keys.campaigns })
@@ -130,7 +153,7 @@ export function useEditCreator(slug: string) {
 export function useTogglePaid(slug: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (username: string) => api.togglePaid(slug, username),
+    mutationFn: (creator: CreatorRef) => api.togglePaid(slug, creator),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: keys.campaign(slug) })
       qc.invalidateQueries({ queryKey: keys.campaigns })
@@ -141,7 +164,7 @@ export function useTogglePaid(slug: string) {
 export function useRemoveCreator(slug: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (username: string) => api.removeCreator(slug, username),
+    mutationFn: (creator: CreatorRef) => api.removeCreator(slug, creator),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: keys.campaign(slug) })
       qc.invalidateQueries({ queryKey: keys.campaigns })
@@ -168,6 +191,17 @@ export function useCreatorProfile(username: string) {
     queryKey: keys.creatorProfile(username),
     queryFn: () => api.getCreatorProfile(username),
     enabled: !!username,
+  })
+}
+
+export function useUpdateCreatorNiches(username: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (niches: string[]) => api.updateCreatorNiches(username, niches),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: keys.creatorProfile(username) })
+      qc.invalidateQueries({ queryKey: keys.creators })
+    },
   })
 }
 
@@ -314,6 +348,36 @@ export function useSetCobrandLinks(slug: string) {
   })
 }
 
+// --- Chartmetric pop score ---
+
+export function usePopScore(slug: string) {
+  return useQuery({
+    queryKey: ["popScore", slug] as const,
+    queryFn: () => api.getPopScore(slug),
+    enabled: !!slug,
+    staleTime: 30 * 60 * 1000, // Chartmetric updates popularity daily
+    refetchInterval: 30 * 60 * 1000,
+    refetchIntervalInBackground: false,
+    retry: false,
+  })
+}
+
+export function useSetPopScoreTrack(slug: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (link: string) => api.setPopScoreTrack(slug, link),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["popScore", slug] }),
+  })
+}
+
+export function useOverridePopScore(slug: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: { metric: "streams" | "ugc"; date: string; action: "include" | "exclude" | "auto" }) => api.overridePopScore(slug, body),
+    onSuccess: async () => { await qc.invalidateQueries({ queryKey: ["popScore", slug] }) },
+  })
+}
+
 // --- Internal ---
 
 export function useInternalCreators() {
@@ -394,9 +458,52 @@ export function useInternalGroup(slug: string) {
 
 export function useInternalGroupStats(slug: string, days = 30) {
   return useQuery({
-    queryKey: keys.internalGroupStats(slug),
+    queryKey: keys.internalGroupStats(slug, days),
     queryFn: () => api.getInternalGroupStats(slug, days),
     enabled: !!slug,
+  })
+}
+
+export function useCreateInternalGroup() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (data: { slug: string; title: string; kind: string }) => {
+      const res = await fetch("/api/internal/groups", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body.error || `Create failed (${res.status})`)
+      }
+      return res.json()
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.internalGroups }),
+  })
+}
+
+export function useDeleteInternalGroup() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (id: number) => {
+      const res = await fetch(`/api/internal/groups/${id}`, { method: "DELETE" })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body.error || `Delete failed (${res.status})`)
+      }
+      return res.json()
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.internalGroups }),
+  })
+}
+
+
+export function useInternalFreshness() {
+  return useQuery({
+    queryKey: keys.internalFreshness,
+    queryFn: () => api.getInternalFreshness(),
+    staleTime: 60_000,
   })
 }
 
@@ -727,5 +834,258 @@ export function useTriggerCron() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["scrape-tasks"] })
     },
+  })
+}
+
+// ---- Creator Intelligence ----
+export function useBreakers(lens: BreakerLens = "balanced", minPosts = 5) {
+  return useQuery({
+    queryKey: ["intelligence", "breakers", lens, minPosts],
+    queryFn: () => api.getBreakers(lens, 100, minPosts),
+    staleTime: 5 * 60 * 1000,
+  })
+}
+
+export function useCreatorIntel(account: string | null) {
+  return useQuery({
+    queryKey: ["intelligence", "creator", account],
+    queryFn: () => api.getCreatorIntel(account as string),
+    enabled: !!account,
+    staleTime: 5 * 60 * 1000,
+  })
+}
+
+// Cobrand outcome enrichment — slower (network calls to Cobrand), loaded
+// on demand when the user opens a creator dossier.
+export function useCreatorOutcomes(account: string | null, enabled: boolean) {
+  return useQuery({
+    queryKey: ["intelligence", "creator", account, "outcomes"],
+    queryFn: () => api.getCreatorIntel(account as string, true),
+    enabled: !!account && enabled,
+    staleTime: 10 * 60 * 1000,
+  })
+}
+
+// Sound-fit — the sound-first entry point.
+export function useSounds() {
+  return useQuery({
+    queryKey: ["intelligence", "sounds"],
+    queryFn: () => api.getSounds(),
+    staleTime: 10 * 60 * 1000,
+  })
+}
+
+export function useSoundFit(soundId: string | null) {
+  return useQuery({
+    queryKey: ["intelligence", "sound-fit", soundId],
+    queryFn: () => api.getSoundFit(soundId as string),
+    enabled: !!soundId,
+    staleTime: 5 * 60 * 1000,
+  })
+}
+
+// Client-facing campaign report (CAMP-84)
+export function useCampaignReport(slug: string) {
+  return useQuery({
+    queryKey: ["campaign", slug, "report"],
+    queryFn: () => api.getCampaignReport(slug),
+    enabled: !!slug,
+    staleTime: 5 * 60 * 1000,
+  })
+}
+
+// Re-book suggestions (CAMP-87)
+export function useRebookSuggestions() {
+  return useQuery({
+    queryKey: ["intelligence", "rebook"],
+    queryFn: () => api.getRebookSuggestions(),
+    staleTime: 5 * 60 * 1000,
+  })
+}
+
+// Attribution rollups (CAMP-34 / CAMP-38)
+export function useLabelStats(days = 3650) {
+  return useQuery({ queryKey: ["internal", "labels", days], queryFn: () => api.getLabelStats(days), staleTime: 5 * 60 * 1000 })
+}
+export function usePosters(days = 3650) {
+  return useQuery({ queryKey: ["internal", "posters", days], queryFn: () => api.getPosters(days), staleTime: 5 * 60 * 1000 })
+}
+export function useBookers(days = 3650) {
+  return useQuery({ queryKey: ["internal", "bookers", days], queryFn: () => api.getBookers(days), staleTime: 5 * 60 * 1000 })
+}
+export function useBookerStats(slug: string | null, days = 3650) {
+  return useQuery({ queryKey: ["internal", "booker", slug, days], queryFn: () => api.getBookerStats(slug as string, days), enabled: !!slug, staleTime: 5 * 60 * 1000 })
+}
+
+// Per-creator unified rollup (CAMP-34 endpoint #1)
+export function useCreatorRollup(username: string | null, days = 90) {
+  return useQuery({
+    queryKey: ["creator", username, "rollup", days],
+    queryFn: () => api.getCreatorRollup(username as string, days),
+    enabled: !!username,
+    staleTime: 5 * 60 * 1000,
+  })
+}
+
+// On-demand scrape trigger (CAMP-24/22) — fires + polls the job
+export function useTriggerScrape() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: { all_active?: boolean; campaign_id?: string }) =>
+      api.triggerScrape(body),
+    onSuccess: () => {
+      // refresh the queue + health after a scrape kicks off
+      qc.invalidateQueries({ queryKey: ["scrape-tasks"] })
+    },
+  })
+}
+
+// Poll a scrape trigger job's live progress (CAMP-21). Polls every 1.5s
+// while a job_id is set and the job is still running.
+export function useScrapeJobStatus(jobId: string | null) {
+  return useQuery({
+    queryKey: ["scrape-tasks", "trigger-status", jobId],
+    queryFn: () => api.scrapeTriggerStatus(jobId as string),
+    enabled: !!jobId,
+    refetchInterval: (q) => {
+      const s = q.state.data?.state
+      return s === "running" ? 1500 : false
+    },
+  })
+}
+
+// ── Creator Library ────────────────────────────────────────────────────
+// Every mutation invalidates the roster; tagging also invalidates the
+// vocabulary so usage counts in the picker stay honest.
+
+export const libraryKeys = {
+  all: ["library"] as const,
+  creators: (window: LibraryWindow) => ["library", "creators", window] as const,
+  niches: ["library", "niches"] as const,
+  rate: (username: string) => ["library", "rate", username] as const,
+}
+
+export function useLibrary(window: LibraryWindow = "w60") {
+  return useQuery({
+    queryKey: libraryKeys.creators(window),
+    queryFn: () => api.getLibrary(window),
+    // Windows are cheap to switch between and the payload is a few hundred
+    // rows; keeping previous data avoids a full-page spinner on every toggle.
+    placeholderData: (prev) => prev,
+  })
+}
+
+export function useNiches() {
+  return useQuery({
+    queryKey: libraryKeys.niches,
+    queryFn: () => api.getNiches(),
+  })
+}
+
+export function useLibraryRate(username: string, enabled = true) {
+  return useQuery({
+    queryKey: libraryKeys.rate(username),
+    queryFn: () => api.getLibraryRate(username),
+    enabled: enabled && Boolean(username),
+  })
+}
+
+function useLibraryMutation<TArgs, TResult>(
+  fn: (args: TArgs) => Promise<TResult>,
+  opts: { touchesNiches?: boolean } = {}
+) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: fn,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: libraryKeys.all })
+      if (opts.touchesNiches) {
+        qc.invalidateQueries({ queryKey: libraryKeys.niches })
+      }
+    },
+  })
+}
+
+export function useAddLibraryCreator() {
+  return useLibraryMutation(
+    (data: Parameters<typeof api.addLibraryCreator>[0]) =>
+      api.addLibraryCreator(data),
+    { touchesNiches: true }
+  )
+}
+
+export function useUpdateLibraryCreator() {
+  return useLibraryMutation(
+    (args: {
+      username: string
+      data: Parameters<typeof api.updateLibraryCreator>[1]
+    }) => api.updateLibraryCreator(args.username, args.data)
+  )
+}
+
+export function useSetLibraryNiches() {
+  return useLibraryMutation(
+    (args: { username: string; niches: string[] }) =>
+      api.setLibraryNiches(args.username, args.niches),
+    { touchesNiches: true }
+  )
+}
+
+export function useCreateNiche() {
+  return useLibraryMutation((name: string) => api.createNiche(name), {
+    touchesNiches: true,
+  })
+}
+
+export function useRenameNiche() {
+  return useLibraryMutation(
+    (args: { id: number; name: string }) => api.renameNiche(args.id, args.name),
+    { touchesNiches: true }
+  )
+}
+
+export function useDeleteNiche() {
+  return useLibraryMutation((id: number) => api.deleteNiche(id), {
+    touchesNiches: true,
+  })
+}
+
+export function useMergeNiche() {
+  return useLibraryMutation(
+    (args: { id: number; into: number }) => api.mergeNiche(args.id, args.into),
+    { touchesNiches: true }
+  )
+}
+
+export function useApplyNiche() {
+  return useLibraryMutation(
+    (args: { id: number; usernames: string[] }) =>
+      api.applyNiche(args.id, args.usernames),
+    { touchesNiches: true }
+  )
+}
+
+/** Kicks off the refresh (202) and polls until the server reports it done,
+ *  then invalidates the roster so the new numbers appear. */
+export function useRefreshLibraryStats() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async () => {
+      await api.refreshLibraryStats()
+      // Poll for up to 5 minutes. The walk is a few hundred trackers and
+      // finishes in well under a minute, but a slow tracker shouldn't make
+      // the UI claim failure while the job is still working.
+      const deadline = Date.now() + 5 * 60_000
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 4000))
+        const status = await api.getLibraryRefreshStatus()
+        if (!status.running) {
+          if (status.error) throw new Error(status.error)
+          return status.last
+        }
+      }
+      throw new Error("Refresh is taking longer than expected — check back shortly")
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: libraryKeys.all }),
   })
 }

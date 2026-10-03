@@ -8,7 +8,7 @@ import {
   type SortingState,
   useReactTable,
 } from "@tanstack/react-table"
-import { ArrowUpDown, ArrowUp, ArrowDown, Pencil, Trash2, Loader2, X } from "lucide-react"
+import { ArrowUpDown, ArrowUp, ArrowDown, Pencil, Trash2, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -27,15 +27,16 @@ import {
   DialogDescription,
   DialogFooter,
 } from "@/components/ui/dialog"
-import type { Creator } from "@/lib/types"
+import type { Creator, CreatorRef } from "@/lib/types"
+import { NICHE_VOCAB } from "@/lib/types"
 
 // ---- Types ----
 
 interface CreatorsTableProps {
   creators: Creator[]
-  onTogglePaid: (username: string) => void
-  onEditCreator: (username: string, data: Record<string, unknown>) => void
-  onRemoveCreator: (username: string) => void
+  onTogglePaid: (creator: CreatorRef) => void
+  onEditCreator: (creator: CreatorRef, data: Record<string, unknown>) => void
+  onRemoveCreator: (creator: CreatorRef) => void
   isToggling: boolean
   isEditing: boolean
   isRemoving: boolean
@@ -47,7 +48,6 @@ interface EditState {
   paypalEmail: string
   notes: string
   niches: string[]
-  nicheInput: string
 }
 
 // Niche color palette
@@ -87,7 +87,7 @@ function SortableHeader({
   return (
     <button
       type="button"
-      className="flex items-center gap-1 hover:text-[#555] transition-colors"
+      className="flex items-center gap-1 hover:text-rt-fg transition-colors"
       onClick={() => column.toggleSorting(sorted === "asc")}
     >
       {label}
@@ -109,7 +109,7 @@ function PaidToggle({
   onToggle,
 }: {
   creator: Creator
-  onToggle: (username: string) => void
+  onToggle: (creator: CreatorRef) => void
 }) {
   const isPaid = creator.paid?.toLowerCase() === "yes"
 
@@ -118,7 +118,7 @@ function PaidToggle({
       <input
         type="checkbox"
         checked={isPaid}
-        onChange={() => onToggle(creator.username)}
+        onChange={() => onToggle(toRef(creator))}
         className="w-4 h-4 accent-green-500 cursor-pointer"
       />
       <span
@@ -134,6 +134,16 @@ function PaidToggle({
   )
 }
 
+// A booking is handle + platform — the same handle can be booked for both
+// TikTok and Instagram on one campaign, so username alone isn't unique.
+function toRef(c: Creator): CreatorRef {
+  return { username: c.username, platform: c.platform || "tiktok" }
+}
+
+function rowKey(c: Creator): string {
+  return `${c.username}|${c.platform || "tiktok"}`
+}
+
 // ---- Main Component ----
 
 export function CreatorsTable({
@@ -145,14 +155,13 @@ export function CreatorsTable({
   isEditing,
   isRemoving,
 }: CreatorsTableProps) {
-  const [editingUsername, setEditingUsername] = useState<string | null>(null)
+  const [editingKey, setEditingKey] = useState<string | null>(null)
   const [editState, setEditState] = useState<EditState>({
     postsOwed: "",
     totalRate: "",
     paypalEmail: "",
     notes: "",
     niches: [],
-    nicheInput: "",
   })
   const editStateRef = useRef(editState)
   editStateRef.current = editState
@@ -163,47 +172,57 @@ export function CreatorsTable({
     },
     []
   )
-  const [removeConfirm, setRemoveConfirm] = useState<string | null>(null)
+  const [removeConfirm, setRemoveConfirm] = useState<Creator | null>(null)
   const [sorting, setSorting] = useState<SortingState>([])
+  const [nicheFilter, setNicheFilter] = useState<string | null>(null)
 
   function startEdit(creator: Creator) {
-    setEditingUsername(creator.username)
+    setEditingKey(rowKey(creator))
     setEditState({
       postsOwed: creator.posts_owed.toString(),
       totalRate: creator.total_rate.toFixed(2),
       paypalEmail: creator.paypal_email || "",
       notes: creator.notes || "",
       niches: creator.niches || [],
-      nicheInput: "",
     })
   }
 
   function cancelEdit() {
-    setEditingUsername(null)
+    setEditingKey(null)
   }
 
-  function saveEdit(username: string) {
-    const current = editStateRef.current
-    onEditCreator(username, {
-      posts_owed: parseInt(current.postsOwed, 10),
-      total_rate: parseFloat(current.totalRate),
-      paypal_email: current.paypalEmail,
-      notes: current.notes,
-      niches: current.niches,
+  function saveEdit(creator: Creator) {
+    const s = editStateRef.current
+    onEditCreator(toRef(creator), {
+      posts_owed: parseInt(s.postsOwed, 10),
+      total_rate: parseFloat(s.totalRate),
+      paypal_email: s.paypalEmail,
+      notes: s.notes,
+      niches: s.niches,
     })
-    setEditingUsername(null)
+    setEditingKey(null)
   }
 
-  function confirmRemove(username: string) {
-    onRemoveCreator(username)
+  function confirmRemove(creator: Creator) {
+    onRemoveCreator(toRef(creator))
     setRemoveConfirm(null)
   }
 
-  // Filter to active creators (status !== "removed")
-  const activeCreators = useMemo(
-    () => creators.filter((c) => c.status !== "removed"),
-    [creators]
-  )
+  // All unique niches present in this campaign's creator roster
+  const allNiches = useMemo(() => {
+    const set = new Set<string>()
+    creators.forEach((c) => (c.niches || []).forEach((n) => set.add(n)))
+    return Array.from(set).sort()
+  }, [creators])
+
+  // Filter to active creators, then apply niche filter
+  const activeCreators = useMemo(() => {
+    let result = creators.filter((c) => c.status !== "removed")
+    if (nicheFilter) {
+      result = result.filter((c) => (c.niches || []).includes(nicheFilter))
+    }
+    return result
+  }, [creators, nicheFilter])
 
   const columns: ColumnDef<Creator>[] = useMemo(
     () => [
@@ -214,9 +233,9 @@ export function CreatorsTable({
         ),
         cell: ({ row }) => {
           const c = row.original
-          if (editingUsername === c.username) {
+          if (editingKey === rowKey(c)) {
             return (
-              <span className="font-semibold text-[#0b62d6]">
+              <span className="font-semibold text-rt-magenta">
                 @{c.username}
               </span>
             )
@@ -225,26 +244,60 @@ export function CreatorsTable({
             <div className="flex items-center gap-2">
               <Link
                 to={`/creators/${c.username}`}
-                className="font-semibold text-[#0b62d6] hover:underline"
+                className="font-semibold text-rt-magenta hover:underline"
               >
                 @{c.username}
               </Link>
-              <a
-                href={`https://www.tiktok.com/@${c.username}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-[#999] hover:text-[#333] transition-colors"
-                title="View on TikTok"
+              <span
+                className={`text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded ${
+                  c.platform === "instagram"
+                    ? "bg-pink-500/15 text-pink-400"
+                    : "bg-white/8 text-rt-fg-tertiary"
+                }`}
+                title={c.platform === "instagram" ? "Instagram booking" : "TikTok booking"}
               >
-                <svg
-                  className="size-3.5"
-                  viewBox="0 0 24 24"
-                  fill="currentColor"
-                  xmlns="http://www.w3.org/2000/svg"
+                {c.platform === "instagram" ? "IG" : "TT"}
+              </span>
+              {c.platform === "instagram" ? (
+                <a
+                  href={`https://www.instagram.com/${c.username}/reels/`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-rt-fg-tertiary hover:text-rt-fg transition-colors"
+                  title="View on Instagram"
+                  aria-label="View on Instagram"
                 >
-                  <path d="M19.59 6.69a4.83 4.83 0 01-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 01-2.88 2.5 2.89 2.89 0 01-2.89-2.89 2.89 2.89 0 012.89-2.89c.28 0 .54.04.79.1v-3.5a6.37 6.37 0 00-.79-.05A6.34 6.34 0 003.15 15.2a6.34 6.34 0 006.34 6.34 6.34 6.34 0 006.34-6.34V8.73a8.19 8.19 0 004.76 1.52V6.8a4.84 4.84 0 01-1-.11z" />
-                </svg>
-              </a>
+                  <svg
+                    className="size-3.5"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    xmlns="http://www.w3.org/2000/svg"
+                  >
+                    <rect x="3" y="3" width="18" height="18" rx="5" />
+                    <circle cx="12" cy="12" r="4" />
+                    <circle cx="17.5" cy="6.5" r="1" fill="currentColor" stroke="none" />
+                  </svg>
+                </a>
+              ) : (
+                <a
+                  href={`https://www.tiktok.com/@${c.username}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-rt-fg-tertiary hover:text-rt-fg transition-colors"
+                  title="View on TikTok"
+                >
+                  <svg
+                    className="size-3.5"
+                    viewBox="0 0 24 24"
+                    fill="currentColor"
+                    xmlns="http://www.w3.org/2000/svg"
+                  >
+                    <path d="M19.59 6.69a4.83 4.83 0 01-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 01-2.88 2.5 2.89 2.89 0 01-2.89-2.89 2.89 2.89 0 012.89-2.89c.28 0 .54.04.79.1v-3.5a6.37 6.37 0 00-.79-.05A6.34 6.34 0 003.15 15.2a6.34 6.34 0 006.34 6.34 6.34 6.34 0 006.34-6.34V8.73a8.19 8.19 0 004.76 1.52V6.8a4.84 4.84 0 01-1-.11z" />
+                  </svg>
+                </a>
+              )}
             </div>
           )
         },
@@ -254,37 +307,39 @@ export function CreatorsTable({
         header: "Niches",
         cell: ({ row }) => {
           const c = row.original
-          if (editingUsername === c.username) {
+          if (editingKey === rowKey(c)) {
+            const current = editStateRef.current.niches
             return (
-              <div className="flex flex-wrap gap-1 items-center max-w-[180px]">
-                {editStateRef.current.niches.map((n) => (
-                  <span key={n} className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-medium ${getNicheColor(n)}`}>
-                    {n}
-                    <button type="button" onClick={() => setEditState((s) => ({ ...s, niches: s.niches.filter((x) => x !== n) }))}>
-                      <X className="size-2.5" />
-                    </button>
-                  </span>
-                ))}
-                <Input
-                  value={editStateRef.current.nicheInput}
-                  onChange={(e) => setEditState((s) => ({ ...s, nicheInput: e.target.value }))}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault()
-                      const val = editStateRef.current.nicheInput.trim().toLowerCase()
-                      if (val && !editStateRef.current.niches.includes(val)) {
-                        setEditState((s) => ({ ...s, niches: [...s.niches, val], nicheInput: "" }))
+              <div className="flex flex-wrap gap-1 items-center max-w-[220px]">
+                {NICHE_VOCAB.map((n) => {
+                  const active = current.includes(n)
+                  return (
+                    <button
+                      key={n}
+                      type="button"
+                      onClick={() =>
+                        setEditState((s) => ({
+                          ...s,
+                          niches: active
+                            ? s.niches.filter((x) => x !== n)
+                            : [...s.niches, n],
+                        }))
                       }
-                    }
-                  }}
-                  placeholder="+ niche"
-                  className="w-[70px] h-6 text-[10px] px-1"
-                />
+                      className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium border transition-all ${
+                        active
+                          ? getNicheColor(n) + " border-transparent"
+                          : "bg-rt-bg-card text-rt-fg-tertiary border-white/10 hover:border-rt-fg-tertiary"
+                      }`}
+                    >
+                      {n}
+                    </button>
+                  )
+                })}
               </div>
             )
           }
           const niches = c.niches || []
-          if (niches.length === 0) return <span className="text-[#ccc] text-xs">{"\u2014"}</span>
+          if (niches.length === 0) return <span className="text-rt-fg-tertiary text-xs">{"\u2014"}</span>
           return (
             <div className="flex flex-wrap gap-1">
               {niches.map((n) => (
@@ -304,7 +359,7 @@ export function CreatorsTable({
         ),
         cell: ({ row }) => {
           const c = row.original
-          if (editingUsername === c.username) {
+          if (editingKey === rowKey(c)) {
             return (
               <div className="flex items-center gap-1">
                 <span className="font-semibold">{c.posts_done}/</span>
@@ -335,7 +390,7 @@ export function CreatorsTable({
         ),
         cell: ({ row }) => {
           const c = row.original
-          if (editingUsername === c.username) {
+          if (editingKey === rowKey(c)) {
             return (
               <Input
                 type="number"
@@ -365,7 +420,7 @@ export function CreatorsTable({
         header: "PayPal",
         cell: ({ row }) => {
           const c = row.original
-          if (editingUsername === c.username) {
+          if (editingKey === rowKey(c)) {
             return (
               <div className="flex items-center gap-2">
                 <Input
@@ -392,7 +447,7 @@ export function CreatorsTable({
         header: "Notes",
         cell: ({ row }) => {
           const c = row.original
-          if (editingUsername === c.username) {
+          if (editingKey === rowKey(c)) {
             return (
               <Input
                 defaultValue={editStateRef.current.notes}
@@ -403,7 +458,7 @@ export function CreatorsTable({
             )
           }
           return (
-            <span className="text-[12px] text-[#666]">{c.notes || ""}</span>
+            <span className="text-[12px] text-rt-fg-tertiary">{c.notes || ""}</span>
           )
         },
       },
@@ -412,14 +467,14 @@ export function CreatorsTable({
         header: "Actions",
         cell: ({ row }) => {
           const c = row.original
-          if (editingUsername === c.username) {
+          if (editingKey === rowKey(c)) {
             return (
               <div className="flex items-center gap-1.5">
                 <Button
                   size="xs"
-                  onClick={() => saveEdit(c.username)}
+                  onClick={() => saveEdit(c)}
                   disabled={isEditing}
-                  className="bg-[#0b62d6] hover:bg-[#0951b5] text-white"
+                  className="bg-rt-magenta hover:bg-rt-purple text-white"
                 >
                   {isEditing ? (
                     <Loader2 className="size-3 animate-spin" />
@@ -445,7 +500,7 @@ export function CreatorsTable({
               <Button
                 size="xs"
                 variant="destructive"
-                onClick={() => setRemoveConfirm(c.username)}
+                onClick={() => setRemoveConfirm(c)}
                 disabled={isRemoving}
               >
                 <Trash2 className="size-3" />
@@ -456,7 +511,8 @@ export function CreatorsTable({
         },
       },
     ],
-    [editingUsername, isEditing, isRemoving, isToggling, onTogglePaid, updateField]
+    // editState is accessed via ref inside cells; no dep needed here
+    [editingKey, isEditing, isRemoving, isToggling, onTogglePaid, updateField]
   )
 
   const table = useReactTable({
@@ -470,19 +526,49 @@ export function CreatorsTable({
 
   return (
     <>
-      <div className="bg-white border border-[#e8e8ef] rounded-[10px] overflow-hidden">
+      {/* Niche filter chips — only shown when at least one creator has niches */}
+      {allNiches.length > 0 && (
+        <div className="flex items-center gap-1.5 flex-wrap mb-3">
+          <span className="text-[11px] text-rt-fg-tertiary uppercase tracking-wide">Niche:</span>
+          {allNiches.map((niche) => (
+            <button
+              key={niche}
+              type="button"
+              onClick={() => setNicheFilter(nicheFilter === niche ? null : niche)}
+              className={`inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-medium transition-all ${
+                nicheFilter === niche
+                  ? getNicheColor(niche) + " ring-2 ring-offset-1 ring-current"
+                  : "bg-white/5 text-rt-fg-tertiary hover:bg-white/8"
+              }`}
+            >
+              {niche}
+            </button>
+          ))}
+          {nicheFilter && (
+            <button
+              type="button"
+              onClick={() => setNicheFilter(null)}
+              className="text-[11px] text-rt-fg-tertiary hover:text-rt-fg underline"
+            >
+              clear
+            </button>
+          )}
+        </div>
+      )}
+
+      <div className="bg-rt-bg-card border border-white/8 rounded-[10px] overflow-hidden">
         <div className="overflow-x-auto">
         <Table>
           <TableHeader>
             {table.getHeaderGroups().map((headerGroup) => (
               <TableRow
                 key={headerGroup.id}
-                className="border-b-2 border-[#e8e8ef] hover:bg-transparent"
+                className="border-b-2 border-white/8 hover:bg-transparent"
               >
                 {headerGroup.headers.map((header) => (
                   <TableHead
                     key={header.id}
-                    className="text-[#888] text-xs font-semibold uppercase tracking-[0.3px] px-4 py-3 border-b-2 border-[#e8e8ef]"
+                    className="text-rt-fg-tertiary text-xs font-semibold uppercase tracking-[0.3px] px-4 py-3 border-b-2 border-white/8"
                   >
                     {header.isPlaceholder
                       ? null
@@ -500,7 +586,7 @@ export function CreatorsTable({
               <TableRow>
                 <TableCell
                   colSpan={columns.length}
-                  className="text-center text-[#888] py-10 text-sm"
+                  className="text-center text-rt-fg-tertiary py-10 text-sm"
                 >
                   No creators yet. Add one above.
                 </TableCell>
@@ -509,12 +595,12 @@ export function CreatorsTable({
               table.getRowModel().rows.map((row) => (
                 <TableRow
                   key={row.id}
-                  className="hover:bg-[#fafaff] border-b border-[#f0f0f5]"
+                  className="hover:bg-white/[0.03] border-b border-white/5"
                 >
                   {row.getVisibleCells().map((cell) => (
                     <TableCell
                       key={cell.id}
-                      className="px-4 py-2 text-[14px] border-b border-[#f0f0f5] align-middle"
+                      className="px-4 py-2 text-[14px] border-b border-white/5 align-middle"
                     >
                       {flexRender(
                         cell.column.columnDef.cell,
@@ -541,8 +627,9 @@ export function CreatorsTable({
           <DialogHeader>
             <DialogTitle>Remove Creator</DialogTitle>
             <DialogDescription>
-              Are you sure you want to remove @{removeConfirm} from this
-              campaign? This action cannot be undone.
+              Are you sure you want to remove @{removeConfirm?.username}
+              {removeConfirm?.platform === "instagram" ? " (Instagram)" : " (TikTok)"} from
+              this campaign? This action cannot be undone.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

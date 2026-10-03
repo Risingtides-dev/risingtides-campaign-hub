@@ -51,6 +51,15 @@ def cron_trigger():
     if job_type not in ("campaign_refresh", "internal_scrape"):
         return jsonify({"error": "Invalid job_type. Use 'campaign_refresh' or 'internal_scrape'"}), 400
 
+    # Delegate campaign scrapes to the local node when configured (Railway's IP
+    # is TikTok-blocked). This also stops stray POSTs here from launching a
+    # doomed Railway-side scrape.
+    if job_type == "campaign_refresh":
+        from campaign_manager.services.local_agent import is_configured, dispatch_scrape
+        if is_configured():
+            result = dispatch_scrape(None)
+            return jsonify({"status": "delegated_to_local", **result}), (202 if result.get("ok") else 502)
+
     # Run in background thread so we return immediately
     thread = threading.Thread(target=trigger_job, args=(job_type,), daemon=True)
     thread.start()
@@ -111,6 +120,18 @@ def cron_diag():
 
     result["tiktok_impersonate_env"] = os.environ.get("TIKTOK_IMPERSONATE", "0")
     result["tiktok_impersonate_target_env"] = os.environ.get("TIKTOK_IMPERSONATE_TARGET", "")
+
+    # CAMP-96 hardening: the EXPENSIVE live tests below (a yt-dlp scrape + a
+    # proxy HTML fetch) now run only when explicitly requested with ?run=1.
+    # A plain GET used to fire them on every hit — anyone (this endpoint is
+    # unauthenticated) could loop it to burn scraper/proxy budget, and the
+    # scrape_test_stderr_tail can leak proxy hostnames / auth-failure details.
+    # The cheap config/version diagnostics above stay always-on for ops; pass
+    # ?run=1 for the full live test (and only then is the stderr tail included).
+    run_live = request.args.get("run") in ("1", "true", "yes")
+    if not run_live:
+        result["live_tests"] = "skipped — append ?run=1 to run the yt-dlp scrape + enrich tests"
+        return jsonify(result)
 
     # Live scrape test against a known-public TikTok account
     try:

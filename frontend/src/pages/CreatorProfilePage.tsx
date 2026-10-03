@@ -16,8 +16,9 @@ import {
   ExternalLink,
   Loader2,
 } from "lucide-react"
-import { useCreatorProfile } from "@/lib/queries"
+import { useCreatorProfile, useUpdateCreatorNiches, useCreatorRollup } from "@/lib/queries"
 import type { CreatorCampaignEntry, CreatorVideo } from "@/lib/types"
+import { NICHE_VOCAB } from "@/lib/types"
 import {
   Table,
   TableBody,
@@ -45,6 +46,28 @@ function formatViews(value: number): string {
 function formatCpm(value: number | null): string {
   if (value === null || value === undefined) return "-"
   return `$${value.toFixed(2)}`
+}
+
+// ---- Niche Colors ----
+
+const NICHE_COLORS: Record<string, string> = {}
+const COLOR_PALETTE = [
+  "bg-blue-100 text-blue-700",
+  "bg-purple-100 text-purple-700",
+  "bg-green-100 text-green-700",
+  "bg-amber-100 text-amber-700",
+  "bg-rose-100 text-rose-700",
+  "bg-cyan-100 text-cyan-700",
+  "bg-indigo-100 text-indigo-700",
+  "bg-orange-100 text-orange-700",
+  "bg-teal-100 text-teal-700",
+  "bg-pink-100 text-pink-700",
+]
+function getNicheColor(niche: string): string {
+  if (!NICHE_COLORS[niche]) {
+    NICHE_COLORS[niche] = COLOR_PALETTE[Object.keys(NICHE_COLORS).length % COLOR_PALETTE.length]
+  }
+  return NICHE_COLORS[niche]
 }
 
 // ---- TikTok Icon ----
@@ -78,7 +101,7 @@ function SortableHeader({
   return (
     <button
       type="button"
-      className="flex items-center gap-1 hover:text-[#555] transition-colors"
+      className="flex items-center gap-1 hover:text-rt-fg transition-colors"
       onClick={() => column.toggleSorting(sorted === "asc")}
     >
       {label}
@@ -100,6 +123,10 @@ export default function CreatorProfilePage() {
   const { data: profile, isLoading, isError, error } = useCreatorProfile(
     username!
   )
+  const updateNiches = useUpdateCreatorNiches(username!)
+  const rollup = useCreatorRollup(username ?? null, 3650)
+  const [editingNiches, setEditingNiches] = useState(false)
+  const [pendingNiches, setPendingNiches] = useState<string[]>([])
 
   const [campaignSorting, setCampaignSorting] = useState<SortingState>([])
   const [videoSorting, setVideoSorting] = useState<SortingState>([
@@ -119,7 +146,7 @@ export default function CreatorProfilePage() {
           return (
             <Link
               to={`/campaign/${c.slug}`}
-              className="font-semibold text-[#0b62d6] hover:underline"
+              className="font-semibold text-rt-magenta hover:underline"
             >
               {c.title}
             </Link>
@@ -160,8 +187,8 @@ export default function CreatorProfilePage() {
             <span
               className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-semibold ${
                 isPaid
-                  ? "bg-[#f0fdf4] text-[#16a34a]"
-                  : "bg-[#fef2f2] text-[#dc2626]"
+                  ? "bg-rt-green/10 text-rt-green"
+                  : "bg-rt-red/10 text-rt-red"
               }`}
             >
               {isPaid ? "Paid" : "Unpaid"}
@@ -180,8 +207,8 @@ export default function CreatorProfilePage() {
             <span
               className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-semibold ${
                 status === "active"
-                  ? "bg-[#eef2ff] text-[#0b62d6]"
-                  : "bg-[#f5f5f5] text-[#888]"
+                  ? "bg-rt-magenta/10 text-rt-magenta"
+                  : "bg-white/5 text-rt-fg-tertiary"
               }`}
             >
               {status.charAt(0).toUpperCase() + status.slice(1)}
@@ -193,7 +220,7 @@ export default function CreatorProfilePage() {
         accessorKey: "notes",
         header: "Notes",
         cell: ({ row }) => (
-          <span className="text-[12px] text-[#666]">
+          <span className="text-[12px] text-rt-fg-tertiary">
             {row.original.notes || ""}
           </span>
         ),
@@ -213,7 +240,7 @@ export default function CreatorProfilePage() {
         cell: ({ row }) => (
           <Link
             to={`/campaign/${row.original.campaign_slug}`}
-            className="text-[#0b62d6] hover:underline text-[13px]"
+            className="text-rt-magenta hover:underline text-[13px]"
           >
             {row.original.campaign_title}
           </Link>
@@ -227,7 +254,7 @@ export default function CreatorProfilePage() {
             href={row.original.url}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-[#0b62d6] hover:underline inline-flex items-center gap-1 text-[13px]"
+            className="text-rt-magenta hover:underline inline-flex items-center gap-1 text-[13px]"
           >
             View Post
             <ExternalLink className="size-3" />
@@ -262,7 +289,7 @@ export default function CreatorProfilePage() {
           <SortableHeader column={column} label="Date" />
         ),
         cell: ({ row }) => (
-          <span className="text-[13px] text-[#666]">
+          <span className="text-[13px] text-rt-fg-tertiary">
             {row.original.upload_date || "-"}
           </span>
         ),
@@ -293,8 +320,8 @@ export default function CreatorProfilePage() {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-20">
-        <Loader2 className="size-6 animate-spin text-[#888]" />
-        <span className="ml-2 text-[#888] text-sm">Loading creator...</span>
+        <Loader2 className="size-6 animate-spin text-rt-fg-tertiary" />
+        <span className="ml-2 text-rt-fg-tertiary text-sm">Loading creator...</span>
       </div>
     )
   }
@@ -302,13 +329,13 @@ export default function CreatorProfilePage() {
   // Error
   if (isError || !profile) {
     return (
-      <div className="bg-white border border-[#e8e8ef] rounded-[10px] p-10 text-center">
+      <div className="bg-rt-bg-card border border-white/8 rounded-[10px] p-10 text-center">
         <p className="text-red-600 text-sm">
           {error?.message || "Failed to load creator profile"}
         </p>
         <Link
           to="/creators"
-          className="text-[#0b62d6] text-sm mt-2 inline-block hover:underline"
+          className="text-rt-magenta text-sm mt-2 inline-block hover:underline"
         >
           Back to Creator Database
         </Link>
@@ -352,42 +379,126 @@ export default function CreatorProfilePage() {
   return (
     <div className="space-y-4">
       {/* Breadcrumb */}
-      <div className="flex items-center gap-1.5 text-[13px] text-[#888]">
+      <div className="flex items-center gap-1.5 text-[13px] text-rt-fg-tertiary">
         <Link
           to="/creators"
-          className="hover:text-[#555] transition-colors"
+          className="hover:text-rt-fg transition-colors"
         >
           Creator Database
         </Link>
         <ChevronRight className="size-3.5" />
-        <span className="text-[#333] font-medium">@{profile.username}</span>
+        <span className="text-rt-fg font-medium">@{profile.username}</span>
       </div>
 
       {/* Header */}
-      <div className="bg-white border border-[#e8e8ef] rounded-[10px] px-6 py-5 flex items-center justify-between">
-        <div>
-          <h1 className="text-[22px] font-semibold text-[#1a1a2e]">
-            @{profile.username}
-          </h1>
-          {profile.paypal_email && (
-            <p className="text-[13px] text-[#888] mt-0.5">
-              PayPal: {profile.paypal_email}
-            </p>
-          )}
-        </div>
-        <a
-          href={`https://www.tiktok.com/@${profile.username}`}
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Button
-            variant="outline"
-            className="gap-2"
+      <div className="bg-rt-bg-card border border-white/8 rounded-[10px] px-6 py-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex-1 min-w-0">
+            <h1 className="text-[22px] font-semibold text-rt-fg">
+              @{profile.username}
+            </h1>
+            {profile.paypal_email && (
+              <p className="text-[13px] text-rt-fg-tertiary mt-0.5">
+                PayPal: {profile.paypal_email}
+              </p>
+            )}
+
+            {/* Niche tags */}
+            <div className="mt-3">
+              {editingNiches ? (
+                <div className="space-y-2">
+                  <div className="flex flex-wrap gap-1.5">
+                    {NICHE_VOCAB.map((n) => {
+                      const active = pendingNiches.includes(n)
+                      return (
+                        <button
+                          key={n}
+                          type="button"
+                          onClick={() =>
+                            setPendingNiches((prev) =>
+                              active ? prev.filter((x) => x !== n) : [...prev, n]
+                            )
+                          }
+                          className={`inline-flex items-center px-2.5 py-1 rounded-full text-[12px] font-medium border transition-all ${
+                            active
+                              ? getNicheColor(n) + " border-transparent"
+                              : "bg-rt-bg-card text-rt-fg-tertiary border-white/10 hover:border-white/20"
+                          }`}
+                        >
+                          {n}
+                        </button>
+                      )
+                    })}
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      className="bg-rt-magenta hover:bg-rt-purple text-white"
+                      disabled={updateNiches.isPending}
+                      onClick={() => {
+                        updateNiches.mutate(pendingNiches, {
+                          onSuccess: () => setEditingNiches(false),
+                        })
+                      }}
+                    >
+                      {updateNiches.isPending ? (
+                        <Loader2 className="size-3 animate-spin mr-1" />
+                      ) : null}
+                      Save
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setEditingNiches(false)}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 flex-wrap">
+                  {(profile.niches || []).length === 0 ? (
+                    <span className="text-[12px] text-rt-fg-tertiary">No niches tagged</span>
+                  ) : (
+                    (profile.niches || []).map((n) => (
+                      <span
+                        key={n}
+                        className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium ${getNicheColor(n)}`}
+                      >
+                        {n}
+                      </span>
+                    ))
+                  )}
+                  <button
+                    type="button"
+                    className="text-[11px] text-rt-magenta hover:underline ml-1"
+                    onClick={() => {
+                      setPendingNiches(profile.niches || [])
+                      setEditingNiches(true)
+                    }}
+                  >
+                    {(profile.niches || []).length === 0 ? "Add niches" : "Edit"}
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <a
+            href={`https://www.tiktok.com/@${profile.username}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="shrink-0"
           >
-            <TikTokIcon className="size-4" />
-            View on TikTok
-          </Button>
-        </a>
+            <Button
+              variant="outline"
+              className="gap-2"
+            >
+              <TikTokIcon className="size-4" />
+              View on TikTok
+            </Button>
+          </a>
+        </div>
       </div>
 
       {/* Stat Cards */}
@@ -395,39 +506,78 @@ export default function CreatorProfilePage() {
         {statCards.map((card) => (
           <div
             key={card.label}
-            className="bg-white border border-[#e8e8ef] rounded-[10px] p-4"
+            className="bg-rt-bg-card border border-white/8 rounded-[10px] p-4"
           >
-            <div className="text-[#888] text-xs font-semibold uppercase tracking-wide mb-1">
+            <div className="text-rt-fg-tertiary text-xs font-semibold uppercase tracking-wide mb-1">
               {card.label}
             </div>
-            <div className="text-[22px] font-bold text-[#1a1a2e]">
+            <div className="text-[22px] font-bold text-rt-fg">
               {card.value}
             </div>
             {card.sub && (
-              <div className="text-[#888] text-[13px] mt-0.5">{card.sub}</div>
+              <div className="text-rt-fg-tertiary text-[13px] mt-0.5">{card.sub}</div>
             )}
           </div>
         ))}
       </div>
 
+      {/* All Activity (internal + external) — CAMP-34 */}
+      {rollup.data && (rollup.data.internal.posts > 0 || rollup.data.external.posts > 0) && (
+        <div className="mb-6">
+          <h2 className="text-[16px] font-semibold text-rt-fg mb-3">
+            All Activity{" "}
+            <span className="text-rt-fg-tertiary text-[13px] font-normal">
+              internal pages + external campaigns
+            </span>
+          </h2>
+          <div className="grid grid-cols-3 gap-4">
+            <div className="rounded-xl border border-rt-magenta/20 bg-gradient-to-br from-rt-magenta/[0.07] to-rt-purple/[0.05] px-4 py-3">
+              <div className="text-[10px] uppercase tracking-[0.14em] text-rt-fg-tertiary">Total Reach</div>
+              <div className="rt-num text-2xl font-bold rt-gradient-text">
+                {formatViews(rollup.data.totals.views)}
+              </div>
+              <div className="text-[11px] text-rt-fg-tertiary">{rollup.data.totals.posts} posts</div>
+            </div>
+            <div className="rounded-xl border border-white/8 bg-rt-bg-card/50 px-4 py-3">
+              <div className="text-[10px] uppercase tracking-[0.14em] text-rt-fg-tertiary">
+                Internal Pages{rollup.data.internal.label ? ` · ${rollup.data.internal.label}` : ""}
+              </div>
+              <div className="rt-num text-2xl font-bold text-rt-fg">
+                {formatViews(rollup.data.internal.views)}
+              </div>
+              <div className="text-[11px] text-rt-fg-tertiary">{rollup.data.internal.posts} posts</div>
+            </div>
+            <div className="rounded-xl border border-white/8 bg-rt-bg-card/50 px-4 py-3">
+              <div className="text-[10px] uppercase tracking-[0.14em] text-rt-fg-tertiary">External Campaigns</div>
+              <div className="rt-num text-2xl font-bold text-rt-fg">
+                {formatViews(rollup.data.external.views)}
+              </div>
+              <div className="text-[11px] text-rt-fg-tertiary">
+                {rollup.data.external.posts} posts · {rollup.data.external.campaigns.length} campaigns
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Campaign History */}
       <div>
-        <h2 className="text-[16px] font-semibold text-[#1a1a2e] mb-3">
+        <h2 className="text-[16px] font-semibold text-rt-fg mb-3">
           Campaign History
         </h2>
-        <div className="bg-white border border-[#e8e8ef] rounded-[10px] overflow-hidden">
+        <div className="bg-rt-bg-card border border-white/8 rounded-[10px] overflow-hidden">
           <div className="overflow-x-auto">
             <Table>
               <TableHeader>
                 {campaignTable.getHeaderGroups().map((headerGroup) => (
                   <TableRow
                     key={headerGroup.id}
-                    className="border-b-2 border-[#e8e8ef] hover:bg-transparent"
+                    className="border-b-2 border-white/8 hover:bg-transparent"
                   >
                     {headerGroup.headers.map((header) => (
                       <TableHead
                         key={header.id}
-                        className="text-[#888] text-xs font-semibold uppercase tracking-[0.3px] px-4 py-3 border-b-2 border-[#e8e8ef]"
+                        className="text-rt-fg-tertiary text-xs font-semibold uppercase tracking-[0.3px] px-4 py-3 border-b-2 border-white/8"
                       >
                         {header.isPlaceholder
                           ? null
@@ -445,7 +595,7 @@ export default function CreatorProfilePage() {
                   <TableRow>
                     <TableCell
                       colSpan={campaignColumns.length}
-                      className="text-center text-[#888] py-10 text-sm"
+                      className="text-center text-rt-fg-tertiary py-10 text-sm"
                     >
                       No campaign history.
                     </TableCell>
@@ -454,12 +604,12 @@ export default function CreatorProfilePage() {
                   campaignTable.getRowModel().rows.map((row) => (
                     <TableRow
                       key={row.id}
-                      className="hover:bg-[#fafaff] border-b border-[#f0f0f5]"
+                      className="hover:bg-white/[0.03] border-b border-white/5"
                     >
                       {row.getVisibleCells().map((cell) => (
                         <TableCell
                           key={cell.id}
-                          className="px-4 py-2 text-[14px] border-b border-[#f0f0f5] align-middle"
+                          className="px-4 py-2 text-[14px] border-b border-white/5 align-middle"
                         >
                           {flexRender(
                             cell.column.columnDef.cell,
@@ -479,22 +629,22 @@ export default function CreatorProfilePage() {
       {/* Live Posts */}
       {profile.videos.length > 0 && (
         <div>
-          <h2 className="text-[16px] font-semibold text-[#1a1a2e] mb-3">
+          <h2 className="text-[16px] font-semibold text-rt-fg mb-3">
             Live Posts ({profile.videos.length})
           </h2>
-          <div className="bg-white border border-[#e8e8ef] rounded-[10px] overflow-hidden">
+          <div className="bg-rt-bg-card border border-white/8 rounded-[10px] overflow-hidden">
             <div className="overflow-x-auto">
               <Table>
                 <TableHeader>
                   {videoTable.getHeaderGroups().map((headerGroup) => (
                     <TableRow
                       key={headerGroup.id}
-                      className="border-b-2 border-[#e8e8ef] hover:bg-transparent"
+                      className="border-b-2 border-white/8 hover:bg-transparent"
                     >
                       {headerGroup.headers.map((header) => (
                         <TableHead
                           key={header.id}
-                          className="text-[#888] text-xs font-semibold uppercase tracking-[0.3px] px-4 py-3 border-b-2 border-[#e8e8ef]"
+                          className="text-rt-fg-tertiary text-xs font-semibold uppercase tracking-[0.3px] px-4 py-3 border-b-2 border-white/8"
                         >
                           {header.isPlaceholder
                             ? null
@@ -511,12 +661,12 @@ export default function CreatorProfilePage() {
                   {videoTable.getRowModel().rows.map((row) => (
                     <TableRow
                       key={row.id}
-                      className="hover:bg-[#fafaff] border-b border-[#f0f0f5]"
+                      className="hover:bg-white/[0.03] border-b border-white/5"
                     >
                       {row.getVisibleCells().map((cell) => (
                         <TableCell
                           key={cell.id}
-                          className="px-4 py-2 text-[14px] border-b border-[#f0f0f5] align-middle"
+                          className="px-4 py-2 text-[14px] border-b border-white/5 align-middle"
                         >
                           {flexRender(
                             cell.column.columnDef.cell,

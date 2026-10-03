@@ -32,7 +32,7 @@ def _clear_cache():
 
 def _seed_campaign_with_tracker(slug: str, tracker_id: str = "tracker-uuid-1") -> int:
     with _db.get_session() as s:
-        camp = Campaign(slug=slug, title=slug, artist="A", song="S", status="active",
+        camp = Campaign(slug=slug, title=slug, artist="A", song="S",
                         tracker_campaign_id=tracker_id)
         s.add(camp)
         s.commit()
@@ -46,7 +46,7 @@ def _seed_campaign_with_tracker(slug: str, tracker_id: str = "tracker-uuid-1") -
 
 def _seed_campaign_no_tracker(slug: str) -> int:
     with _db.get_session() as s:
-        camp = Campaign(slug=slug, title=slug, artist="A", song="S", status="active")
+        camp = Campaign(slug=slug, title=slug, artist="A", song="S")
         s.add(camp)
         s.commit()
         return camp.id
@@ -232,7 +232,7 @@ class TestGetCampaignStats:
     def test_resolves_tracker_via_overlay_table(self, db):
         # No tracker_campaign_id on the row — but a link in the overlay.
         with _db.get_session() as s:
-            s.add(Campaign(slug="omega", title="omega", status="active"))
+            s.add(Campaign(slug="omega", title="omega"))
             s.add(TrackerCampaignLink(tracker_id="tk-omega", campaign_slug="omega"))
             s.commit()
         with patch.object(
@@ -372,6 +372,19 @@ class TestFallbackRoundFilter:
 
 
 class TestGetCampaignStatsBulk:
+    def test_limits_cold_refreshes_and_defers_the_rest(self, db):
+        slugs = [f"bulk-{i}" for i in range(11)]
+        tracker_map = {slug: f"tracker-{i}" for i, slug in enumerate(slugs)}
+        with patch.object(
+            campaign_stats, "fetch_campaign_submissions",
+            side_effect=lambda tracker_id, **_: _ok_fetch(tracker_id, []),
+        ) as fetch:
+            out = get_campaign_stats_bulk(slugs, tracker_id_by_slug=tracker_map)
+
+        assert fetch.call_count == 10
+        assert all(call.kwargs["timeout"] == 5 for call in fetch.call_args_list)
+        assert out["bulk-10"].error_kind == "refresh_deferred"
+
     def test_threads_start_date_per_slug_into_fallback(self, db):
         cid_a = _seed_campaign_no_tracker("bulk-a")
         cid_b = _seed_campaign_no_tracker("bulk-b")
@@ -459,3 +472,259 @@ class TestOverlayVideoStats:
         subs = [Submission(video_url="https://tt.com/v/1", views=999)]
         _ = overlay_video_stats(rows, subs)
         assert rows[0]["views"] == 10  # input untouched
+
+
+class TestLivePostsSource:
+    """live_posts (delivery count) sources from the tracker when it attests,
+    scraper-side posts_done otherwise. (Jake's Claude request, 2026-07-01)"""
+
+    def _creators(self):
+        return [
+            {"username": "a", "status": "active", "posts_done": 2},
+            {"username": "b", "status": "active", "posts_done": 3},
+            {"username": "c", "status": "removed", "posts_done": 9},
+        ]
+
+    def _result(self, source, n_subs):
+        from campaign_manager.services.campaign_stats import (
+            CampaignStatsResult, Submission,
+        )
+        subs = [Submission(video_url=f"https://t/{i}") for i in range(n_subs)]
+        return CampaignStatsResult(slug="s", source=source, submissions=subs)
+
+    def test_tracker_api_wins(self):
+        from campaign_manager.blueprints.campaigns import _stats_from_result
+        stats = _stats_from_result({}, self._creators(), self._result("api", 8))
+        assert stats["live_posts"] == 8  # tracker count, not 5
+
+    def test_cached_tracker_wins(self):
+        from campaign_manager.blueprints.campaigns import _stats_from_result
+        stats = _stats_from_result({}, self._creators(), self._result("api_cached", 7))
+        assert stats["live_posts"] == 7
+
+    def test_no_tracker_falls_back_to_posts_done(self):
+        from campaign_manager.blueprints.campaigns import _stats_from_result
+        stats = _stats_from_result({}, self._creators(), self._result("scraper_fallback", 4))
+        assert stats["live_posts"] == 5  # 2+3, removed creator excluded
+
+
+class TestBulkFrozenSlugs:
+    """Completed campaigns must never spend the live-fetch budget.
+
+    The tides_tracker_pull cron only warms ACTIVE campaigns' trackers,
+    so a finished campaign's cache entry is permanently stale — without
+    the frozen_slugs exclusion, every ?include_finished page load burned
+    the entire 10-tracker cold batch (timeout=5s each, ~6.5s wall)
+    re-fetching stats that cannot change, and the active trackers the
+    batch exists for got crowded out.
+    """
+
+    def test_frozen_slugs_never_fetch_live(self, db):
+        slugs = ["frozen-a", "frozen-b", "live-a"]
+        tracker_map = {
+            "frozen-a": "tk-frozen-a",
+            "frozen-b": "tk-frozen-b",
+            "live-a": "tk-live-a",
+        }
+        with patch.object(
+            campaign_stats, "fetch_campaign_submissions",
+            side_effect=lambda tracker_id, **_: _ok_fetch(tracker_id, []),
+        ) as fetch:
+            out = get_campaign_stats_bulk(
+                slugs,
+                tracker_id_by_slug=tracker_map,
+                frozen_slugs={"frozen-a", "frozen-b"},
+            )
+
+        fetched = {call.args[0] for call in fetch.call_args_list}
+        assert fetched == {"tk-live-a"}
+        # Frozen slugs still get a result — deferred, not dropped.
+        assert out["frozen-a"].error_kind == "refresh_deferred"
+        assert out["frozen-b"].error_kind == "refresh_deferred"
+        assert out["live-a"].source == SOURCE_API
+
+    def test_shared_tracker_still_fetched_for_the_live_slug(self, db):
+        # One tracker serves both a finished and an active campaign:
+        # the active campaign must still get a live fetch.
+        tracker_map = {"frozen-x": "tk-shared", "live-x": "tk-shared"}
+        with patch.object(
+            campaign_stats, "fetch_campaign_submissions",
+            side_effect=lambda tracker_id, **_: _ok_fetch(tracker_id, []),
+        ) as fetch:
+            out = get_campaign_stats_bulk(
+                ["frozen-x", "live-x"],
+                tracker_id_by_slug=tracker_map,
+                frozen_slugs={"frozen-x"},
+            )
+
+        assert fetch.call_count == 1
+        assert out["live-x"].source == SOURCE_API
+        # The frozen slug rides along on the now-warm shared cache.
+        assert out["frozen-x"].source == SOURCE_API
+
+    def test_frozen_budget_goes_to_live_trackers(self, db):
+        # 11 live + 5 frozen trackers, batch cap of 10: all 10 fetches
+        # must be live trackers, none frozen.
+        live = {f"live-{i}": f"tk-live-{i}" for i in range(11)}
+        frozen = {f"frozen-{i}": f"tk-frozen-{i}" for i in range(5)}
+        tracker_map = {**live, **frozen}
+        with patch.object(
+            campaign_stats, "fetch_campaign_submissions",
+            side_effect=lambda tracker_id, **_: _ok_fetch(tracker_id, []),
+        ) as fetch:
+            get_campaign_stats_bulk(
+                list(tracker_map),
+                tracker_id_by_slug=tracker_map,
+                frozen_slugs=set(frozen),
+            )
+
+        assert fetch.call_count == 10
+        assert all(
+            call.args[0].startswith("tk-live-")
+            for call in fetch.call_args_list
+        )
+
+
+class TestStaleWhileRevalidate:
+    """The bulk prewarm must never block a page load on a stale tracker.
+
+    One slow tracker (7.5s upstream vs the 5s inline budget) used to
+    hold EVERY /api/campaigns request at ~5-7s: the inline fetch timed
+    out, wrote no cache, and the next request retried it. Stale entries
+    now serve immediately and refresh off-thread with the full 15s
+    timeout; only trackers with no cache anywhere may block (new
+    trackers, once). All attempts respect a per-worker cooldown.
+    """
+
+    @staticmethod
+    def _stale_entry(tracker_id):
+        from datetime import datetime, timedelta, timezone
+        campaign_stats._cache[tracker_id] = campaign_stats._CacheEntry(
+            submissions=[],
+            fetched_at=datetime.now(timezone.utc) - timedelta(hours=2),
+            api_fetched_at="2026-05-14T10:00:00Z",
+        )
+
+    def test_stale_tracker_serves_now_refreshes_in_background(self, db):
+        self._stale_entry("tk-stale")
+        scheduled = []
+        with patch.object(
+            campaign_stats, "_spawn_background_refresh", scheduled.append,
+        ), patch.object(
+            campaign_stats, "fetch_campaign_submissions",
+        ) as fetch:
+            out = get_campaign_stats_bulk(
+                ["c1"], tracker_id_by_slug={"c1": "tk-stale"})
+
+        fetch.assert_not_called()               # request thread never blocked
+        assert scheduled == [["tk-stale"]]      # refresh handed off
+        assert out["c1"].source == SOURCE_API_CACHED  # stale served now
+
+    def test_missing_tracker_blocks_briefly_once(self, db):
+        with patch.object(
+            campaign_stats, "fetch_campaign_submissions",
+            side_effect=lambda tid, **_: _ok_fetch(tid, []),
+        ) as fetch:
+            get_campaign_stats_bulk(["c1"], tracker_id_by_slug={"c1": "tk-new"})
+        assert fetch.call_count == 1
+        assert fetch.call_args.kwargs["timeout"] == 5
+
+    def test_cooldown_stops_repeat_attempts(self, db):
+        # First request: fetch fails (upstream down). Second request within
+        # the cooldown: no new attempt — this is the fix for the retry loop.
+        with patch.object(
+            campaign_stats, "fetch_campaign_submissions",
+            side_effect=lambda tid, **_: _err_fetch(tid),
+        ) as fetch:
+            get_campaign_stats_bulk(["c1"], tracker_id_by_slug={"c1": "tk-down"})
+            get_campaign_stats_bulk(["c1"], tracker_id_by_slug={"c1": "tk-down"})
+        assert fetch.call_count == 1
+
+    def test_stale_refresh_respects_cooldown(self, db):
+        self._stale_entry("tk-slow")
+        scheduled = []
+        with patch.object(
+            campaign_stats, "_spawn_background_refresh", scheduled.append,
+        ):
+            get_campaign_stats_bulk(["c1"], tracker_id_by_slug={"c1": "tk-slow"})
+            get_campaign_stats_bulk(["c1"], tracker_id_by_slug={"c1": "tk-slow"})
+        assert scheduled == [["tk-slow"]]       # second request: no re-schedule
+
+    def test_background_refresh_uses_full_timeout_and_caches(self, db):
+        # The background path is the only request-side way a slow tracker
+        # heals: it must use the 15s timeout, and a success must land in
+        # the cache so later requests are fresh.
+        with patch.object(
+            campaign_stats, "fetch_campaign_submissions",
+            side_effect=lambda tid, **kw: _ok_fetch(tid, []),
+        ) as fetch:
+            campaign_stats._refresh_trackers_sync(["tk-heal"], timeout=15)
+        assert fetch.call_args.kwargs["timeout"] == 15
+        assert campaign_stats._cache_get("tk-heal") is not None
+
+
+class TestAggregateFastPath:
+    """The campaigns list must serve totals from the L2 aggregate columns
+    without deserializing submissions blobs.
+
+    Blob-parsing every tracker per worker after a deploy measured ~3s per
+    finished-list request (phase log: stats_bulk=3.15s of total=4.18s),
+    and those requests queued into 12-21s walls on 4 sync workers.
+    """
+
+    @staticmethod
+    def _write_l2(db, tracker_id, subs, when=None):
+        from datetime import datetime, timezone
+        campaign_stats._cache_set(tracker_id, campaign_stats._CacheEntry(
+            submissions=subs,
+            fetched_at=when or datetime.now(timezone.utc),
+            api_fetched_at="2026-08-14T00:00:00Z",
+        ))
+        campaign_stats.invalidate_cache(tracker_id)  # clear L1, keep L2
+
+    def test_cache_set_writes_aggregates(self, db):
+        subs = [
+            Submission(video_url="u1", views=100, likes=10, comments=3, shares=1),
+            Submission(video_url="u2", views=50, likes=5, comments=2, shares=0),
+        ]
+        self._write_l2(db, "tk-agg", subs)
+        agg = _db.get_tides_stats_agg("tk-agg")
+        assert agg["views"] == 150 and agg["likes"] == 15
+        assert agg["comments"] == 5 and agg["shares"] == 1
+        assert agg["post_count"] == 2
+
+    def test_list_path_serves_aggregates_without_blob_parse(self, db):
+        self._write_l2(db, "tk-agg2", [Submission(video_url="u", views=777, likes=7)])
+        with patch.object(_db, "get_tides_stats_cache",
+                          side_effect=AssertionError("blob path must not run")):
+            r = get_campaign_stats("some-slug", tracker_id="tk-agg2",
+                                   allow_live_fetch=False)
+        assert r.total_views == 777
+        assert r.post_count == 1
+        assert r.submissions == []          # aggregates-only result
+        assert r.source in (SOURCE_API, SOURCE_API_CACHED)
+
+    def test_stale_aggregates_carry_provenance(self, db):
+        from datetime import datetime, timedelta, timezone
+        old = datetime.now(timezone.utc) - timedelta(hours=3)
+        self._write_l2(db, "tk-agg3", [Submission(video_url="u", views=5)], when=old)
+        r = get_campaign_stats("s", tracker_id="tk-agg3", allow_live_fetch=False)
+        assert r.source == SOURCE_API_CACHED
+        assert r.error_kind == "refresh_deferred"
+        assert r.stale_since != ""
+
+    def test_legacy_row_without_aggregates_falls_back_to_blob(self, db):
+        # Write a legacy-shaped row (no aggregate columns) directly.
+        from datetime import datetime, timezone
+        _db.upsert_tides_stats_cache(
+            "tk-legacy",
+            [{"video_url": "u", "views": 42, "likes": 1, "comments": 0,
+              "shares": 0, "engagement_rate": 0.0, "follower_count": 0,
+              "posted_at": "", "creator_username": ""}],
+            "2026-08-14T00:00:00Z",
+            datetime.now(timezone.utc),
+            aggregates=None,
+        )
+        r = get_campaign_stats("s", tracker_id="tk-legacy", allow_live_fetch=False)
+        assert r.total_views == 42          # served via the blob path
+        assert len(r.submissions) == 1

@@ -45,7 +45,7 @@ from campaign_manager import db as _db
 USE_DB = _db.init()  # returns True if DATABASE_URL was found and connected
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "campaign-dashboard-local")
+app.secret_key = os.environ.get("SECRET_KEY") or os.urandom(24).hex()
 
 CREATOR_FIELDS = [
     "username", "posts_owed", "posts_done", "posts_matched",
@@ -294,7 +294,7 @@ def extract_sound_id(input_str: str) -> str:
 
 def get_campaigns() -> List[Dict]:
     if USE_DB:
-        metas = _db.list_campaigns(status="active")
+        metas = _db.list_campaigns()
         items = []
         for meta in metas:
             slug = meta["slug"]

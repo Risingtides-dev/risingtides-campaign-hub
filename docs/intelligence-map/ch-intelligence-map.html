@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Campaign Hub — Creator Intelligence Assembly</title>
+<style>
+  :root {
+    --bg: #060606;
+    --bg-2: #0A0A0A;
+    --panel: #12151c;
+    --ink: #FAFCFF;
+    --ink-2: #B8B9BB;
+    --ink-3: #6f7178;
+    --faint: rgba(255,255,255,0.10);
+    --rule: rgba(255,255,255,0.07);
+    --magenta: #E100C3;
+    --purple: #8500D7;
+    --done: #1ED760;
+    --wip: #FFB020;
+    --p0: #E100C3;
+    --p1: #8500D7;
+    --p2: #5d6d9e;
+    --p3: #6f7178;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: 'Poppins','Helvetica Neue', Arial, sans-serif;
+    font-size: 11px;
+    overflow: hidden;
+  }
+  body::before {
+    content:''; position: fixed; inset: 0; z-index: 0; pointer-events: none;
+    background-image:
+      linear-gradient(var(--rule) 1px, transparent 1px),
+      linear-gradient(90deg, var(--rule) 1px, transparent 1px);
+    background-size: 32px 32px; opacity: 0.5;
+  }
+  body::after {
+    content:''; position: fixed; inset: 0; z-index: 0; pointer-events: none;
+    background:
+      radial-gradient(700px 360px at 12% -5%, rgba(225,0,195,0.10), transparent 60%),
+      radial-gradient(640px 440px at 92% 0%, rgba(133,0,215,0.10), transparent 55%);
+  }
+
+  /* ---- Title block (bottom-right cartouche) ---- */
+  #cartouche {
+    position: fixed; right: 18px; bottom: 18px; z-index: 40;
+    border: 1px solid var(--faint); background: var(--bg-2);
+    width: 312px; font-size: 9px;
+  }
+  #cartouche .row { display: grid; grid-template-columns: 1fr 1fr; border-bottom: 1px solid var(--rule); }
+  #cartouche .row:last-child { border-bottom: none; }
+  #cartouche .cell { padding: 6px 9px; border-right: 1px solid var(--rule); }
+  #cartouche .cell:last-child { border-right: none; }
+  #cartouche .k { color: var(--ink-3); letter-spacing: 0.14em; text-transform: uppercase; font-size: 7.5px; }
+  #cartouche .v { font-weight: 600; margin-top: 2px; color: var(--ink); }
+  #cartouche .title-cell { grid-column: 1 / -1; padding: 8px 9px; }
+  #cartouche .title-cell .v {
+    font-size: 12px; letter-spacing: 0.02em;
+    background: linear-gradient(90deg, var(--magenta), var(--purple));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+
+  /* ---- Top control rail ---- */
+  #rail {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 50;
+    display: flex; align-items: center; gap: 14px;
+    padding: 11px 18px; border-bottom: 1px solid var(--faint);
+    background: rgba(6,6,6,0.92); backdrop-filter: blur(8px);
+  }
+  #rail .brand {
+    font-size: 11px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase;
+    background: linear-gradient(90deg, var(--magenta), var(--purple));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  #rail .sep { width: 1px; height: 20px; background: var(--rule); }
+  .ctl {
+    font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase;
+    border: 1px solid var(--faint); padding: 5px 10px; cursor: pointer; background: transparent;
+    font-family: inherit; color: var(--ink-2); border-radius: 6px;
+  }
+  .ctl:hover, .ctl.on { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  .ctl.p0 { border-color: var(--magenta); color: var(--magenta); }
+  .ctl.p0:hover, .ctl.p0.on { background: var(--magenta); color: #fff; }
+
+  #explode-wrap { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+  #explode-wrap label { font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); }
+  #explode {
+    -webkit-appearance: none; appearance: none; width: 200px; height: 2px;
+    background: var(--faint); outline: none;
+  }
+  #explode::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none; width: 16px; height: 16px;
+    background: var(--magenta); border: none; border-radius: 50%; cursor: pointer;
+    box-shadow: 0 0 12px rgba(225,0,195,0.6);
+  }
+  #explode::-moz-range-thumb {
+    width: 16px; height: 16px; background: var(--magenta); border: none; border-radius: 50%; cursor: pointer;
+  }
+  #search {
+    background: var(--bg-2); border: 1px solid var(--faint); padding: 5px 9px;
+    font-size: 10px; font-family: inherit; color: var(--ink); width: 150px; outline: none; border-radius: 6px;
+  }
+  #search:focus { border-color: var(--magenta); }
+
+  #progress { display: flex; align-items: center; gap: 8px; font-size: 9px; color: var(--ink-2); }
+  #ptrack { width: 100px; height: 4px; background: var(--faint); position: relative; border-radius: 2px; overflow: hidden; }
+  #pfill { position: absolute; left:0; top:0; height:100%; background: linear-gradient(90deg, var(--magenta), var(--purple)); transition: width .4s; }
+
+  #stage { position: absolute; inset: 0; z-index: 1; top: 43px; }
+  svg { width: 100%; height: 100%; display: block; cursor: grab; }
+  svg.panning { cursor: grabbing; }
+
+  .spindle { stroke: var(--faint); stroke-width: 1; stroke-dasharray: 2 4; }
+  .plate-body { fill: var(--panel); stroke: var(--faint); stroke-width: 1.2; }
+  .plate-label { font: 700 13px 'Poppins', Arial; letter-spacing: 0.01em; fill: var(--ink); }
+  .plate-sub { font: 9px 'SF Mono','Fira Code',monospace; fill: var(--ink-3); letter-spacing: 0.04em; }
+
+  .leader { stroke: var(--ink-3); stroke-width: 0.8; fill: none; }
+  .leader.done { stroke: var(--done); }
+  .leader.wip { stroke: var(--wip); }
+  .leader-dot { fill: var(--ink-2); }
+  .leader-dot.done { fill: var(--done); }
+  .leader-dot.wip { fill: var(--wip); }
+
+  .callout-num { font: 700 9px 'SF Mono',monospace; fill: #fff; }
+  .callout-circle { stroke-width: 1.2; cursor: pointer; }
+  .callout-circle.p0 { fill: var(--p0); stroke: var(--p0); }
+  .callout-circle.p1 { fill: var(--p1); stroke: var(--p1); }
+  .callout-circle.p2 { fill: var(--p2); stroke: var(--p2); }
+  .callout-circle.p3 { fill: var(--p3); stroke: var(--p3); }
+  .callout-circle.done { fill: var(--done); stroke: var(--done); }
+  .callout-circle.wip { fill: var(--wip); stroke: var(--wip); }
+
+  .callout-ticket { font: 700 8px 'SF Mono',monospace; fill: var(--ink); letter-spacing: 0.04em; cursor: pointer; }
+  .callout-ticket.done { fill: var(--done); }
+  .callout-label { font: 9.5px 'Poppins', Arial; fill: var(--ink-2); cursor: pointer; }
+  .callout-label.done { fill: var(--ink-3); }
+  .callout-group:hover .callout-label { fill: var(--ink); }
+  .callout-group:hover .callout-circle { filter: brightness(1.25); }
+  .callout-group:hover .callout-hit { fill: rgba(255,255,255,0.04); }
+  .callout-group:hover .leader { stroke: var(--magenta); stroke-width: 1.1; }
+  .callout-hit { fill: transparent; }
+  .callout-strike { stroke: var(--done); stroke-width: 0.8; }
+
+  /* ---- Detail flyout ---- */
+  #flyout {
+    position: fixed; top: 58px; left: 18px; z-index: 60;
+    width: 350px; max-height: calc(100vh - 92px); overflow-y: auto;
+    background: var(--bg-2); border: 1px solid var(--faint); border-radius: 12px;
+    display: none; font-size: 11px;
+  }
+  #flyout.open { display: block; }
+  #flyout .fly-head { display: flex; justify-content: space-between; align-items: flex-start;
+    padding: 13px 15px; border-bottom: 1px solid var(--rule); gap: 8px; }
+  #flyout .fly-ticket { font: 700 11px 'SF Mono',monospace; letter-spacing: 0.05em; }
+  #flyout .fly-close { cursor: pointer; font-size: 14px; line-height: 1; color: var(--ink-3); border: none; background: none; }
+  #flyout .fly-close:hover { color: var(--ink); }
+  #flyout .fly-body { padding: 13px 15px; line-height: 1.55; }
+  #flyout .fly-title { font-size: 13px; font-weight: 600; line-height: 1.3; margin-bottom: 9px; color: var(--ink); }
+  #flyout .fly-meta { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 11px; }
+  #flyout .tag { font-size: 8px; letter-spacing: 0.08em; text-transform: uppercase; padding: 3px 7px; border: 1px solid var(--faint); border-radius: 4px; color: var(--ink-2); }
+  #flyout .tag.pr { color: #fff; border: none; }
+  #flyout .fly-detail { font-size: 10.5px; color: var(--ink-2); margin-bottom: 13px; }
+  #flyout .fly-files { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 13px; }
+  #flyout .ffile { font: 8px 'SF Mono',monospace; color: var(--ink-3); border: 1px solid var(--faint); padding: 3px 7px; border-radius: 4px; }
+  #flyout .fly-dep { font-size: 9px; color: var(--ink-3); margin-bottom: 11px; letter-spacing: 0.04em; }
+  #flyout .fly-dep b { color: var(--wip); }
+
+  #legend { position: fixed; left: 18px; bottom: 18px; z-index: 40; font-size: 8px; }
+  #legend .lg { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; color: var(--ink-3); }
+  #legend .lg .sw { width: 8px; height: 8px; border-radius: 2px; }
+
+  .hint { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 40;
+    font-size: 9px; color: var(--ink-3); letter-spacing: 0.08em; }
+</style>
+</head>
+<body>
+
+<div id="rail">
+  <span class="brand">Campaign Hub</span>
+  <span class="sep"></span>
+  <button class="ctl p0 on" data-p="ALL" onclick="setFilter('ALL',this)">All</button>
+  <button class="ctl" data-p="P0" onclick="setFilter('P0',this)">P0</button>
+  <button class="ctl" data-p="P1" onclick="setFilter('P1',this)">P1</button>
+  <button class="ctl" data-p="P2" onclick="setFilter('P2',this)">P2</button>
+  <span class="sep"></span>
+  <input id="search" placeholder="search…" oninput="setSearch(this.value)">
+  <span class="sep"></span>
+  <span id="progress">
+    <span id="pcount">0/11 done</span>
+    <span id="ptrack"><span id="pfill"></span></span>
+    <span id="sync-stamp" style="font-size:8px;color:var(--ink-3);opacity:0.5;letter-spacing:0.06em">live</span>
+  </span>
+  <div id="explode-wrap">
+    <label>Assembled</label>
+    <input id="explode" type="range" min="0" max="100" value="16" oninput="setExplode(this.value)">
+    <label>Exploded</label>
+  </div>
+</div>
+
+<div id="stage">
+  <svg id="svg" viewBox="0 0 1400 1800" preserveAspectRatio="xMidYMin meet"></svg>
+</div>
+
+<div id="legend"></div>
+
+<div id="cartouche">
+  <div class="row"><div class="cell title-cell"><div class="k">Drawing</div><div class="v">Creator Intelligence — Sound-Breaking Analytics</div></div></div>
+  <div class="row">
+    <div class="cell"><div class="k">Project</div><div class="v">risingtides-campaign-hub</div></div>
+    <div class="cell"><div class="k">Rev</div><div class="v">2026-06-05</div></div>
+  </div>
+  <div class="row">
+    <div class="cell"><div class="k">Assemblies</div><div class="v" id="cart-parts">6 stages</div></div>
+    <div class="cell"><div class="k">Callouts</div><div class="v" id="cart-callouts">11 tickets</div></div>
+  </div>
+</div>
+
+<div id="flyout">
+  <div class="fly-head">
+    <span class="fly-ticket" id="fly-ticket"></span>
+    <button class="fly-close" onclick="closeFly()">✕</button>
+  </div>
+  <div class="fly-body">
+    <div class="fly-title" id="fly-title"></div>
+    <div class="fly-meta" id="fly-meta"></div>
+    <div class="fly-dep" id="fly-dep"></div>
+    <div class="fly-detail" id="fly-detail"></div>
+    <div class="fly-files" id="fly-files"></div>
+  </div>
+</div>
+
+<div class="hint">Drag to pan · Scroll to zoom · Slide top-right to explode · Click an assembly to isolate</div>
+
+<script>
+// ============ DATA ============
+const DOMAINS = [
+  { id:0, name:'Brand / Design',  color:'#E100C3' },
+  { id:1, name:'Backend / API',   color:'#8500D7' },
+  { id:2, name:'Dashboard UI',    color:'#4D7CFF' },
+  { id:3, name:'Data / Cobrand',  color:'#1ED760' },
+  { id:4, name:'Quality / Perf',  color:'#FFB020' },
+  { id:5, name:'Ship / Deploy',   color:'#FF3B3B' },
+];
+
+// Assemblies (build stages) — top to bottom along the spindle.
+const ASSEMBLIES = [
+  { key:'brand',     label:'Brand Foundation',   sub:'RT tokens + fonts app-wide',     domain:0 },
+  { key:'backend',   label:'Intelligence Backend',sub:'breaker + sound-fit services',  domain:1 },
+  { key:'dashboard', label:'Mission Control UI',  sub:'/intelligence dashboard',        domain:2 },
+  { key:'outcomes',  label:'Cobrand Outcomes',    sub:'per-creator shares/comments',    domain:3 },
+  { key:'quality',   label:'Quality & Perf',      sub:'audits, edge cases, bundle',     domain:4 },
+  { key:'ship',      label:'Ship',                sub:'ticket + PR + deploy',           domain:5 },
+];
+
+// Live status from ch-map-status.json (polled every 3s when served over http).
+let TICKET_STATUS = {};
+let LAST_STATUS_STAMP = null;
+
+async function pollStatus(){
+  try {
+    const res = await fetch('ch-map-status.json?ts=' + Date.now(), { cache:'no-store' });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data.updated !== LAST_STATUS_STAMP) {
+      LAST_STATUS_STAMP = data.updated;
+      TICKET_STATUS = data.status || {};
+      recomputeNums(); render(); flashSync(data.updated);
+    }
+  } catch(e) { /* file:// — stay static */ }
+}
+function flashSync(stamp){
+  const el = document.getElementById('sync-stamp');
+  if (el){ el.textContent = 'synced ' + (stamp ? stamp.replace('T',' ').replace('Z','') : ''); el.style.opacity='1'; setTimeout(()=>el.style.opacity='0.5', 600); }
+}
+
+// Each callout = one ticket. dep = blocked-by (or null).
+const TICKETS = [
+  { t:'CH-1',  p:'P0', a:'brand',     d:0, dep:null, title:'RT design tokens app-wide + fonts',
+    file:'frontend/src/styles/rt-brand.css, frontend/src/index.css, frontend/public/fonts/',
+    detail:'Ship Poppins/Lato/mono fonts. Remap shadcn --primary/--background/--card to RT magenta-purple so the WHOLE app goes dark-on-brand (was stock grayscale). Layout.tsx/Sidebar.tsx hardcoded light hex → tokens.' },
+  { t:'CH-2',  p:'P0', a:'backend',   d:1, dep:null, title:'Breaker leaderboard backend (3 lenses)',
+    file:'campaign_manager/services/creator_intelligence.py, blueprints/creator_intelligence.py',
+    detail:'Rank creators by sound-breaking ability from matched_videos: velocity, viral rate, 1M+, distinct sounds. 3 lenses: ceiling / volume / balanced (confidence-dampened). /api/intelligence/breakers.' },
+  { t:'CH-3',  p:'P0', a:'dashboard', d:2, dep:'CH-2', title:'Mission-control dashboard + drilldown',
+    file:'frontend/src/pages/CreatorIntelligence.tsx',
+    detail:'Dark dashboard, live lens toggle, glow-coded heat bars, drilldown drawer with velocity histogram + scout/early/mid/late timing badges. /intelligence route + sidebar nav.' },
+  { t:'CH-4',  p:'P1', a:'outcomes',  d:3, dep:null, title:'Cobrand outcome layer',
+    file:'campaign_manager/services/cobrand_outcomes.py, services/creator_intelligence.py',
+    detail:'Per-creator shares/comments from Cobrand list_promotion_submissions (auth = token already on campaign.cobrand_share_url). The #1 insight: who DELIVERS the outcome, not just views.' },
+  { t:'CH-5',  p:'P1', a:'backend',   d:1, dep:'CH-2', title:'Sound-fit backend',
+    file:'campaign_manager/services/creator_intelligence.py',
+    detail:'Given a target sound_id, rank creators by behavioral fit: balanced breaker + 25 (broke this exact sound) + 12 (broke this artist\'s sounds). /api/intelligence/sounds + /sound-fit/<id>.' },
+  { t:'CH-6',  p:'P1', a:'dashboard', d:2, dep:'CH-5', title:'Sound-fit picker UI (sound-first entry)',
+    file:'frontend/src/pages/CreatorIntelligence.tsx',
+    detail:'Sound-first flow: pick a target sound, see ranked creators for THAT sound with fit reasons. The other half of "both equally" (creator-first ✓, sound-first pending).' },
+  { t:'CH-7',  p:'P2', a:'quality',   d:4, dep:null, title:'Timing-bucket audit',
+    file:'campaign_manager/services/creator_intelligence.py',
+    detail:'Spot-check 20 videos / 5 campaigns: confirm scout/early/mid/late windows align with real campaign launch dates. If upload_date vs start_date is off, the lifecycle lens collapses.' },
+  { t:'CH-8',  p:'P2', a:'backend',   d:1, dep:'CH-5', title:'Saturated-sound edge case',
+    file:'campaign_manager/services/creator_intelligence.py',
+    detail:'When ~everyone posted a sound (e.g. Cowgirl, 354 posts) the +25 boost collapses toward base ranking. Weight velocity-ON-this-sound, not mere presence, for high-usage sounds.' },
+  { t:'CH-9',  p:'P2', a:'outcomes',  d:3, dep:'CH-4', title:'Outcome-loop perf',
+    file:'campaign_manager/services/creator_intelligence.py',
+    detail:'Only 10/192 campaigns have Cobrand share URLs (~5%). Currently loops all 10 sequentially on every dossier open. Cache submissions per-poll, short-circuit, surface coverage honestly.' },
+  { t:'CH-10', p:'P2', a:'quality',   d:4, dep:null, title:'Code-split the 1MB JS bundle',
+    file:'frontend/vite.config.ts',
+    detail:'Bundle is 1.08MB (recharts + react). manualChunks or lazy-load the /intelligence + /efficiency chart pages so first paint stays fast.' },
+  { t:'CH-11', p:'P1', a:'ship',      d:5, dep:'CH-6', title:'Ship: Linear ticket + PR + deploy',
+    file:'git, Linear (CAMP), Railway',
+    detail:'Create CAMP tracking issue, push feat/creator-intelligence-dashboard, open PR to main, deploy from main per the deploy-from-main rule. Terminal node — blocked by the feature work.' },
+];
+
+// ============ STATE ============
+let filter = 'ALL', search = '', explode = 0.16, isolatedAssembly = null;
+const PCOLOR = { P0:'#E100C3', P1:'#8500D7', P2:'#5d6d9e', P3:'#6f7178' };
+
+function statusOf(t){ return TICKET_STATUS[t.t] || 'todo'; }
+function pClass(t){ const s=statusOf(t); return s==='done'?'done':s==='wip'?'wip':t.p.toLowerCase(); }
+function visible(t){
+  if (isolatedAssembly && t.a!==isolatedAssembly) return false;
+  if (filter!=='ALL' && t.p!==filter) return false;
+  if (search){ const q=search.toLowerCase();
+    return t.t.toLowerCase().includes(q)||t.title.toLowerCase().includes(q)||t.file.toLowerCase().includes(q)||t.detail.toLowerCase().includes(q)||(DOMAINS[t.d]?.name||'').toLowerCase().includes(q);
+  }
+  return true;
+}
+function toggleAssembly(key){ isolatedAssembly = (isolatedAssembly===key) ? null : key; recomputeNums(); render(); }
+
+// ============ LAYOUT ============
+const NS = 'http://www.w3.org/2000/svg';
+const CX = 520;
+const PLATE_W = 360, PLATE_H = 64;
+const TOP = 90;
+const GAP_MIN = 84, GAP_MAX = 210, ROW_H = 28;
+
+function buildAssemblyOrder(){
+  return ASSEMBLIES.filter(a => TICKETS.some(t => t.a===a.key && visible(t)));
+}
+
+function render(){
+  const svg = document.getElementById('svg');
+  svg.innerHTML = '';
+  const order = buildAssemblyOrder();
+  const gap = GAP_MIN + (GAP_MAX-GAP_MIN)*explode;
+  let y = TOP;
+  const layout = order.map(a => {
+    const tix = TICKETS.filter(t => t.a===a.key && visible(t));
+    const rows = Math.max(tix.length, 1);
+    const blockH = Math.max(PLATE_H, rows*ROW_H);
+    const rec = { a, tix, top:y, cy: y+blockH/2, h:blockH };
+    y += blockH + gap;
+    return rec;
+  });
+  const totalH = y + 60;
+  svg.setAttribute('viewBox', `0 0 1400 ${Math.max(totalH, 700)}`);
+
+  const frag = document.createDocumentFragment();
+
+  if (layout.length){
+    const x = CX;
+    const y1 = layout[layout.length-1].cy;
+    frag.appendChild(line(x, TOP-40, x, y1+40, 'spindle'));
+    frag.appendChild(circle(x, TOP-40, 4, 'leader-dot'));
+    frag.appendChild(circle(x, y1+40, 4, 'leader-dot'));
+  }
+
+  layout.forEach((rec, idx) => {
+    const a = rec.a, cy = rec.cy;
+    const px = CX - PLATE_W/2, py = cy - PLATE_H/2;
+    const dom = DOMAINS[a.domain];
+
+    const plate = rect(px, py, PLATE_W, PLATE_H, 'plate-body');
+    plate.setAttribute('rx', 10);
+    plate.style.cursor = 'pointer';
+    plate.addEventListener('click', (e)=>{ e.stopPropagation(); toggleAssembly(a.key); });
+    frag.appendChild(plate);
+    frag.appendChild(circle(px+20, cy, 5, '', dom.color));
+    frag.appendChild(text(px+36, cy-3, a.label, 'plate-label'));
+    frag.appendChild(text(px+36, cy+13, a.sub, 'plate-sub'));
+    frag.appendChild(text(px-16, cy+4, 'A'+String(idx+1).padStart(2,'0'), 'plate-sub'));
+
+    const startX = px + PLATE_W;
+    const railX = 940 + explode*120;
+    const n = rec.tix.length;
+    const firstY = cy - ((n-1)*ROW_H)/2;
+
+    rec.tix.forEach((t, i) => {
+      const ty = firstY + i*ROW_H;
+      const cls = pClass(t);
+      const st = statusOf(t);
+      const g = el('g', { class:'callout-group', 'data-t':t.t });
+      g.style.cursor = 'pointer';
+
+      const hitW = (railX + 18 + 6.6*Math.min(t.title.length,44) + 20) - startX;
+      g.appendChild(el('rect', { x:startX, y:ty-ROW_H/2, width:Math.max(hitW,200), height:ROW_H, class:'callout-hit' }));
+
+      const elbowX = startX + 40 + i*8;
+      g.appendChild(el('path', {
+        d:`M ${startX} ${cy} L ${elbowX} ${cy} L ${elbowX} ${ty} L ${railX-16} ${ty}`,
+        class:'leader '+(st==='done'?'done':st==='wip'?'wip':'')
+      }));
+      g.appendChild(circle(startX, cy, 2.5, 'leader-dot '+(st==='done'?'done':st==='wip'?'wip':'')));
+
+      g.appendChild(el('circle', { cx:railX, cy:ty, r:9, class:'callout-circle '+cls }));
+      g.appendChild(text(railX, ty+3, String(globalNum(t)), 'callout-num', 'middle'));
+
+      g.appendChild(text(railX+18, ty-2, t.t, 'callout-ticket '+(st==='done'?'done':'')));
+      g.appendChild(text(railX+18, ty+10, truncate(t.title, 44), 'callout-label '+(st==='done'?'done':'')));
+      if (st==='done'){
+        const w = 6.6*Math.min(t.title.length,44);
+        g.appendChild(line(railX+18, ty+7, railX+18+w, ty+7, 'callout-strike'));
+      }
+
+      g.addEventListener('click', (e)=>{ e.stopPropagation(); openFly(t); });
+      frag.appendChild(g);
+    });
+  });
+
+  svg.appendChild(frag);
+  updateProgress();
+}
+
+let NUM_INDEX = {};
+function recomputeNums(){ NUM_INDEX = {}; let n=1; TICKETS.forEach(t=>{ if(visible(t)) NUM_INDEX[t.t]=n++; }); }
+function globalNum(t){ return NUM_INDEX[t.t] || '?'; }
+
+// ============ SVG helpers ============
+function el(tag, attrs){ const e=document.createElementNS(NS,tag); for(const k in attrs) e.setAttribute(k,attrs[k]); return e; }
+function line(x1,y1,x2,y2,cls){ return el('line',{x1,y1,x2,y2,class:cls}); }
+function rect(x,y,w,h,cls){ return el('rect',{x,y,width:w,height:h,class:cls}); }
+function circle(cx,cy,r,cls,fill){ const c=el('circle',{cx,cy,r,class:cls||''}); if(fill)c.setAttribute('fill',fill); return c; }
+function text(x,y,str,cls,anchor){ const t=el('text',{x,y,class:cls}); if(anchor)t.setAttribute('text-anchor',anchor); t.textContent=str; return t; }
+function truncate(s,n){ return s.length>n? s.slice(0,n-1)+'…' : s; }
+
+// ============ CONTROLS ============
+function setFilter(p, btn){
+  filter=p;
+  document.querySelectorAll('#rail .ctl[data-p]').forEach(b=>b.classList.remove('on'));
+  btn.classList.add('on');
+  recomputeNums(); render();
+}
+function setSearch(v){ search=v; recomputeNums(); render(); }
+function setExplode(v){ explode = v/100; render(); }
+
+// ============ PROGRESS ============
+function updateProgress(){
+  const total = TICKETS.length;
+  const done = TICKETS.filter(t=>statusOf(t)==='done').length;
+  const pct = total? Math.round(100*done/total):0;
+  document.getElementById('pcount').textContent = `${done}/${total} done`;
+  document.getElementById('pfill').style.width = pct+'%';
+  document.getElementById('cart-callouts').textContent = `${total} tickets`;
+}
+
+// ============ FLYOUT ============
+function openFly(t){
+  document.getElementById('fly-ticket').textContent = t.t;
+  document.getElementById('fly-ticket').style.color = PCOLOR[t.p];
+  document.getElementById('fly-title').textContent = t.title;
+  const meta = document.getElementById('fly-meta'); meta.innerHTML='';
+  const pr = document.createElement('span'); pr.className='tag pr'; pr.style.background=PCOLOR[t.p]; pr.textContent=t.p; meta.appendChild(pr);
+  const dm = document.createElement('span'); dm.className='tag'; dm.textContent=DOMAINS[t.d]?.name||''; meta.appendChild(dm);
+  const st = statusOf(t); const ss=document.createElement('span'); ss.className='tag';
+  ss.textContent = st==='done'?'✓ Done':st==='wip'?'In Progress':'Todo';
+  if(st==='done'){ ss.style.background='#1ED760'; ss.style.color='#060606'; ss.style.border='none'; }
+  if(st==='wip'){ ss.style.background='#FFB020'; ss.style.color='#060606'; ss.style.border='none'; }
+  meta.appendChild(ss);
+  const dep = document.getElementById('fly-dep');
+  dep.innerHTML = t.dep ? `Blocked by <b>${t.dep}</b>` : 'No dependencies — can start anytime';
+  document.getElementById('fly-detail').textContent = t.detail;
+  const files = document.getElementById('fly-files'); files.innerHTML='';
+  t.file.split(',').forEach(f=>{ const s=document.createElement('span'); s.className='ffile'; s.textContent=f.trim(); files.appendChild(s); });
+  document.getElementById('flyout').classList.add('open');
+}
+function closeFly(){ document.getElementById('flyout').classList.remove('open'); }
+
+// ============ LEGEND ============
+function renderLegend(){
+  const lg = document.getElementById('legend'); lg.innerHTML='';
+  DOMAINS.forEach(d=>{
+    if(!TICKETS.some(t=>t.d===d.id)) return;
+    const row=document.createElement('div'); row.className='lg';
+    row.innerHTML=`<span class="sw" style="background:${d.color}"></span>${d.name}`;
+    lg.appendChild(row);
+  });
+}
+
+// ============ PAN + ZOOM ============
+(function(){
+  const svg=document.getElementById('svg');
+  let vb={x:0,y:0,w:1400,h:1800};
+  function applyVB(){ svg.setAttribute('viewBox',`${vb.x} ${vb.y} ${vb.w} ${vb.h}`); }
+  const sync=()=>{ const p=svg.getAttribute('viewBox').split(' ').map(Number); vb={x:p[0],y:p[1],w:p[2],h:p[3]}; };
+  let drag=false,sx,sy,ox,oy;
+  svg.addEventListener('mousedown',e=>{ sync(); drag=true; sx=e.clientX; sy=e.clientY; ox=vb.x; oy=vb.y; svg.classList.add('panning'); });
+  window.addEventListener('mousemove',e=>{ if(!drag)return; const r=svg.getBoundingClientRect(); const scale=vb.w/r.width;
+    vb.x=ox-(e.clientX-sx)*scale; vb.y=oy-(e.clientY-sy)*scale; applyVB(); });
+  window.addEventListener('mouseup',()=>{ drag=false; svg.classList.remove('panning'); });
+  svg.addEventListener('wheel',e=>{ e.preventDefault(); sync();
+    const r=svg.getBoundingClientRect(); const mx=vb.x+(e.clientX-r.left)/r.width*vb.w; const my=vb.y+(e.clientY-r.top)/r.height*vb.h;
+    const f=e.deltaY>0?1.1:0.9; const nw=Math.min(Math.max(vb.w*f,400),4000); const nh=nw*(vb.h/vb.w);
+    vb.x=mx-(mx-vb.x)*(nw/vb.w); vb.y=my-(my-vb.y)*(nh/vb.h); vb.w=nw; vb.h=nh; applyVB();
+  }, {passive:false});
+})();
+
+document.addEventListener('keydown',e=>{
+  if(e.key==='Escape'){ closeFly(); isolatedAssembly=null; setFilter('ALL', document.querySelector('#rail .ctl[data-p="ALL"]')); document.getElementById('search').value=''; search=''; recomputeNums(); render(); }
+});
+
+// ============ INIT ============
+renderLegend();
+recomputeNums();
+render();
+pollStatus();
+setInterval(pollStatus, 3000);
+</script>
+</body>
+</html>

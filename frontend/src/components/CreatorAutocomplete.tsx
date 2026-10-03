@@ -110,7 +110,7 @@ export function CreatorAutocomplete({
       {showDropdown && (
         <div
           ref={listRef}
-          className="absolute z-50 top-full left-0 mt-1 w-full max-h-[200px] overflow-y-auto rounded-md border border-[#e8e8ef] bg-white shadow-lg"
+          className="absolute z-50 top-full left-0 mt-1 w-full max-h-[200px] overflow-y-auto rounded-md border border-white/8 bg-rt-bg-card shadow-lg"
         >
           {filtered.map((creator, idx) => (
             <button
@@ -123,13 +123,13 @@ export function CreatorAutocomplete({
               onMouseEnter={() => setHighlightIdx(idx)}
               className={`w-full text-left px-3 py-1.5 text-[13px] cursor-pointer transition-colors ${
                 idx === highlightIdx
-                  ? "bg-[#f0f4ff] text-[#0b62d6]"
-                  : "text-[#333] hover:bg-[#f7f7f9]"
+                  ? "bg-white/[0.03] text-rt-magenta"
+                  : "text-rt-fg hover:bg-white/[0.03]"
               }`}
             >
               <span className="font-semibold">@{creator.username}</span>
               {creator.campaigns_count > 0 && (
-                <span className="ml-2 text-[11px] text-[#888]">
+                <span className="ml-2 text-[11px] text-rt-fg-tertiary">
                   {creator.campaigns_count} campaign{creator.campaigns_count !== 1 ? "s" : ""}
                 </span>
               )}

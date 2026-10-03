@@ -459,7 +459,7 @@ def discovery_report() -> Dict:
     from campaign_manager import db as _db
 
     sound_map = build_sound_to_trackers_map()
-    campaigns = _db.list_campaigns(status="active")
+    campaigns = _db.list_campaigns()
 
     matched: List[Dict] = []
     unmatched: List[Dict] = []

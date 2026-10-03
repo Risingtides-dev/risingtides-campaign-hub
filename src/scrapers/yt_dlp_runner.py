@@ -41,6 +41,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 from typing import Dict, List, Optional
@@ -53,8 +54,49 @@ _DEFAULT_UA = (
 )
 
 
+class NativeSubprocessCrash(RuntimeError):
+    """A child process died from a native signal instead of a Python error."""
+
+    def __init__(self, context: str, returncode: int):
+        signum = -returncode
+        try:
+            signal_name = signal.Signals(signum).name
+        except ValueError:
+            signal_name = f"SIGNAL_{signum}"
+        self.context = context
+        self.returncode = returncode
+        self.signal_name = signal_name
+        super().__init__(
+            f"{context} terminated by native signal {signal_name} "
+            f"(returncode {returncode})"
+        )
+
+
+def raise_for_native_crash(
+    result: subprocess.CompletedProcess,
+    *,
+    context: str = "yt-dlp",
+) -> None:
+    """Raise when ``subprocess`` reports signal termination (negative rc)."""
+    if result.returncode < 0:
+        raise NativeSubprocessCrash(context, result.returncode)
+
+
 def _yt_dlp_base() -> List[str]:
-    """Base command — prefers the binary on PATH, falls back to module form."""
+    """Base command — prefer THIS interpreter's yt_dlp module, PATH binary last.
+
+    The venv's yt-dlp is the one whose deps we control (curl_cffi for
+    --impersonate). Preferring the PATH binary bit us on 2026-06-28: a brew
+    upgrade replaced /opt/homebrew/bin/yt-dlp with a build lacking curl_cffi,
+    and every local scrape silently returned 0 videos ("Impersonate target
+    not available") until caught on 2026-07-01. A random PATH binary must
+    never outrank the pinned venv install.
+    """
+    try:
+        import yt_dlp  # noqa: F401
+        return [sys.executable, "-m", "yt_dlp"]
+    except ImportError:
+        pass
     if shutil.which("yt-dlp"):
         return ["yt-dlp"]
     return [sys.executable, "-m", "yt_dlp"]

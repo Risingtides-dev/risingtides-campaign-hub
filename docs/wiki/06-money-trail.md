@@ -24,7 +24,7 @@ Campaign Hub also calculates a **per-post rate** automatically: total rate ÷ po
 
 ## Campaign budgets — Campaign Hub
 
-Each campaign has a total **budget** — the maximum amount Rising Tides can spend on creator payments for that campaign. The budget is set when the campaign is created and can be edited later (e.g. if the label adds more money).
+Each campaign has a total **budget** — the maximum amount Rising Tides can deploy into creator payments for that campaign. This is the internal market deployment amount, not the full client spend. For CPM reporting, Campaign Hub grosses this value up 2x because the deployment amount represents 50% of the client budget.
 
 Campaign Hub tracks four budget numbers automatically:
 
@@ -51,9 +51,15 @@ PayPal emails are remembered across campaigns — if a creator has been paid bef
 
 ---
 
-## Client billing — NOT here, that's in Notion
+## Client billing — Notion owns invoices; Campaign Hub derives CPM spend
 
-What the *label* pays Rising Tides (the agency fee, contract terms, invoices) is tracked in Notion, not in Campaign Hub. Campaign Hub doesn't know how much the label is paying — it only knows the budget Rising Tides has allocated to creator payments out of that fee.
+What the *label* pays Rising Tides (the agency fee, contract terms, invoices) is tracked in Notion, not in Campaign Hub. Campaign Hub stores the budget Rising Tides has allocated to creator payments out of that fee.
+
+For CPM only, Campaign Hub derives gross client spend from the market deployment amount:
+
+```
+gross client spend = creator/market deployment spend × 2
+```
 
 If you need to know what a label is paying for a campaign, look in Notion.
 
@@ -61,7 +67,7 @@ If you need to know what a label is paying for a campaign, look in Notion.
 
 ## Performance numbers (views, comments) — NOT here, that's pulled from Cobrand
 
-Campaign Hub *displays* performance numbers (total views, CPM, submission counts) but **does not own them**. These numbers are fetched live from Cobrand and shown for convenience. If Cobrand goes offline, Campaign Hub shows the last known numbers but can't update them.
+Campaign Hub *displays* performance numbers (total views and submission counts), but **does not own them**. These numbers are fetched live from Cobrand and shown for convenience. CPM is derived in Campaign Hub from grossed-up client spend and the fetched views. If Cobrand goes offline, Campaign Hub shows the last known numbers but can't update them.
 
 **Never enter performance data manually in Campaign Hub.** If a views number looks wrong, check Cobrand directly or hit the Refresh Stats button to re-pull.
 
@@ -72,7 +78,7 @@ Campaign Hub *displays* performance numbers (total views, CPM, submission counts
 | Type of information | Where it lives | Where it does NOT live |
 |---|---|---|
 | Creator rate / per-post rate | Campaign Hub | Cobrand, Notion |
-| Campaign budget | Campaign Hub | Cobrand, Notion |
+| Campaign market-deployment budget | Campaign Hub | Cobrand |
 | Who's been paid | Campaign Hub | Cobrand, Notion |
 | PayPal emails | Campaign Hub | Anywhere else |
 | What the label pays Rising Tides | Notion | Campaign Hub |
@@ -85,14 +91,14 @@ Campaign Hub *displays* performance numbers (total views, CPM, submission counts
 
 CPM stands for **Cost Per Mille** ("mille" is Latin for thousand). In practice: how much did it cost for every 1,000 views?
 
-**Formula:** Total paid ÷ (total views ÷ 1,000)
+**Formula:** Gross client spend ÷ (total views ÷ 1,000)
 
-**Example:** If a campaign paid $1,000 to creators and got 500,000 views:
+**Example:** If a campaign deployed $1,000 to creators, the gross client spend is $2,000. If it got 500,000 views:
 
 ```
-CPM = $1,000 ÷ (500,000 ÷ 1,000)
-    = $1,000 ÷ 500
-    = $2.00 per thousand views
+CPM = $2,000 ÷ (500,000 ÷ 1,000)
+    = $2,000 ÷ 500
+    = $4.00 per thousand views
 ```
 
 A **lower CPM** means we're getting more views per dollar — efficient spend. A **higher CPM** might mean creators didn't perform well, or the budget was overallocated relative to what the audience produced.

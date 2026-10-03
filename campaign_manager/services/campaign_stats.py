@@ -85,30 +85,208 @@ _cache: Dict[str, _CacheEntry] = {}
 _cache_lock = threading.Lock()
 
 
+def _submissions_to_json(submissions: List[Submission]) -> list:
+    from dataclasses import asdict
+    return [asdict(s) for s in submissions]
+
+
+def _submissions_from_json(rows) -> List[Submission]:
+    out: List[Submission] = []
+    for r in rows or []:
+        try:
+            out.append(Submission(**r))
+        except (TypeError, ValueError):
+            # Tolerate a schema drift in stored rows — skip the bad one rather
+            # than poison the whole cached entry.
+            continue
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Refresh attempt cooldown (per worker)
+#
+# A tracker whose upstream fetch fails — or exceeds the list endpoint's 5s
+# prewarm timeout — never gets a cache write, so before this every single
+# /api/campaigns request re-attempted it and burned the full timeout again.
+# One slow tracker (sombr_june_release: 7.5s upstream, 262KB) held the whole
+# campaigns page at ~5-7s for every user until the cron happened to rescue it.
+# Record every live-fetch attempt; don't re-attempt the same tracker from the
+# request path until the cooldown passes. Stale data (or scraper fallback)
+# serves in the meantime — the 30-min cron with its 15s timeout remains the
+# thing that actually heals slow trackers.
+# ---------------------------------------------------------------------------
+
+_REFRESH_COOLDOWN_SECONDS = 120
+_refresh_attempts: Dict[str, datetime] = {}
+_refresh_attempts_lock = threading.Lock()
+
+
+def _in_cooldown(tracker_id: str) -> bool:
+    with _refresh_attempts_lock:
+        at = _refresh_attempts.get(tracker_id)
+    if at is None:
+        return False
+    return (datetime.now(timezone.utc) - at).total_seconds() < _REFRESH_COOLDOWN_SECONDS
+
+
+def _mark_attempt(tracker_id: str) -> None:
+    with _refresh_attempts_lock:
+        _refresh_attempts[tracker_id] = datetime.now(timezone.utc)
+
+
+def _refresh_trackers_sync(tracker_ids: List[str], *, timeout: float) -> None:
+    """Fetch + cache each tracker; failures are recorded, never raised."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    if not tracker_ids:
+        return
+    with ThreadPoolExecutor(max_workers=len(tracker_ids)) as ex:
+        futures = {
+            ex.submit(fetch_campaign_submissions, tid, timeout=timeout): tid
+            for tid in tracker_ids
+        }
+        for fut in as_completed(futures):
+            tid = futures[fut]
+            try:
+                fres = fut.result()
+            except Exception:
+                logger.exception(
+                    "campaign_stats: refresh fetch raised for tracker %s", tid,
+                )
+                continue
+            if not fres.ok:
+                # Don't poison the cache with a failure; the cooldown mark
+                # (set before dispatch) keeps request paths from re-burning
+                # the timeout until it expires.
+                continue
+            _cache_set(tid, _CacheEntry(
+                submissions=fres.submissions,
+                fetched_at=datetime.now(timezone.utc),
+                api_fetched_at=fres.fetched_at,
+            ))
+
+
+def _spawn_background_refresh(tracker_ids: List[str]) -> None:
+    """Refresh stale-but-present trackers off the request thread.
+
+    Uses the full 15s upstream timeout — the whole point is that trackers
+    too slow for the list endpoint's 5s budget (the sombr class) can still
+    heal here, instead of being permanently unwarmable from the request
+    path. Tests monkeypatch this to run inline / record calls.
+    """
+    threading.Thread(
+        target=_refresh_trackers_sync,
+        args=(tracker_ids,),
+        kwargs={"timeout": 15},
+        daemon=True,
+        name="tides-stats-bg-refresh",
+    ).start()
+
+
 def _cache_get(tracker_id: str) -> Optional[_CacheEntry]:
+    # L1: fast in-process dict (per worker).
     with _cache_lock:
-        return _cache.get(tracker_id)
+        entry = _cache.get(tracker_id)
+    if entry is not None:
+        return entry
+    # L2: Postgres (CAMP-9) — survives redeploys + shared across workers. On an
+    # L1 miss, hydrate from the DB so a fetch by any worker / pre-restart warms
+    # this worker too. Best-effort; falls through to None if the DB is absent.
+    try:
+        from campaign_manager import db as _db
+        hit = _db.get_tides_stats_cache(tracker_id)
+        if hit is not None:
+            submissions_json, api_fetched_at, fetched_at = hit
+            entry = _CacheEntry(
+                submissions=_submissions_from_json(submissions_json),
+                fetched_at=fetched_at,
+                api_fetched_at=api_fetched_at,
+            )
+            with _cache_lock:
+                _cache[tracker_id] = entry  # promote into L1
+            return entry
+    except Exception:
+        pass
+    return None
 
 
 def _cache_set(tracker_id: str, entry: _CacheEntry) -> None:
+    # Write-through: L1 in-process + L2 Postgres. Aggregates ride along so
+    # list reads never have to parse the blob (get_tides_stats_agg).
     with _cache_lock:
         _cache[tracker_id] = entry
+    try:
+        from campaign_manager import db as _db
+        subs = entry.submissions
+        _db.upsert_tides_stats_cache(
+            tracker_id,
+            _submissions_to_json(subs),
+            entry.api_fetched_at,
+            entry.fetched_at,
+            aggregates={
+                "views": sum(s.views for s in subs),
+                "likes": sum(s.likes for s in subs),
+                "comments": sum(s.comments for s in subs),
+                "shares": sum(s.shares for s in subs),
+                "post_count": len(subs),
+            },
+        )
+    except Exception:
+        pass
+
+
+def warm_cache(tracker_id: str, submissions, api_fetched_at: str = "") -> None:
+    """Public write-through so the Tides Tracker cron can warm the request-path
+    cache (CAMP-74). The cron already fetches each tracker's submissions for
+    its audit log; calling this keeps the in-process read cache that
+    get_campaign_stats() consults warm across the 30-min tick, instead of going
+    cold after every redeploy. No-op on falsy tracker_id.
+    """
+    if not tracker_id:
+        return
+    _cache_set(
+        tracker_id,
+        _CacheEntry(
+            submissions=submissions,
+            fetched_at=datetime.now(timezone.utc),
+            api_fetched_at=api_fetched_at,
+        ),
+    )
 
 
 def _is_fresh(entry: _CacheEntry, ttl_seconds: int) -> bool:
+    return _is_fresh_at(entry.fetched_at, ttl_seconds)
+
+
+def _is_fresh_at(fetched_at: datetime, ttl_seconds: int) -> bool:
     if ttl_seconds <= 0:
         return False
-    age = (datetime.now(timezone.utc) - entry.fetched_at).total_seconds()
+    if fetched_at.tzinfo is None:
+        # sqlite (tests / file-mode dev) round-trips DateTime(timezone=True)
+        # as naive; values are written as UTC, so interpret them as UTC.
+        fetched_at = fetched_at.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - fetched_at).total_seconds()
     return age < ttl_seconds
 
 
 def invalidate_cache(tracker_id: Optional[str] = None) -> None:
-    """Drop one tracker's cached entry, or the whole cache."""
+    """Drop one tracker's cached entry, or the whole cache.
+
+    Also clears the matching refresh-attempt cooldown marks: a caller
+    invalidating a tracker wants the next read to actually go live, not
+    to sit out the rest of a cooldown started by an earlier attempt.
+    (The test suite's autouse cache reset relies on this too.)
+    """
     with _cache_lock:
         if tracker_id is None:
             _cache.clear()
         else:
             _cache.pop(tracker_id, None)
+    with _refresh_attempts_lock:
+        if tracker_id is None:
+            _refresh_attempts.clear()
+        else:
+            _refresh_attempts.pop(tracker_id, None)
 
 
 # ---------------------------------------------------------------------------
@@ -138,26 +316,43 @@ class CampaignStatsResult:
     fetched_at: str = ""
     stale_since: str = ""
     error_kind: str = ""
+    # Precomputed rollups from the L2 cache's aggregate columns. When set,
+    # the totals below serve from here and `submissions` is intentionally
+    # empty — the campaigns list only reads sums, and parsing every cached
+    # submissions blob to re-derive them was ~3s of each cold finished-list
+    # request. Detail views (allow_live_fetch=True) never use this path and
+    # always carry real submissions.
+    agg: Optional[Dict[str, int]] = None
 
     # Derived rollups callers commonly need.
     @property
     def total_views(self) -> int:
+        if self.agg is not None:
+            return int(self.agg.get("views") or 0)
         return sum(s.views for s in self.submissions)
 
     @property
     def total_likes(self) -> int:
+        if self.agg is not None:
+            return int(self.agg.get("likes") or 0)
         return sum(s.likes for s in self.submissions)
 
     @property
     def total_comments(self) -> int:
+        if self.agg is not None:
+            return int(self.agg.get("comments") or 0)
         return sum(s.comments for s in self.submissions)
 
     @property
     def total_shares(self) -> int:
+        if self.agg is not None:
+            return int(self.agg.get("shares") or 0)
         return sum(s.shares for s in self.submissions)
 
     @property
     def post_count(self) -> int:
+        if self.agg is not None:
+            return int(self.agg.get("post_count") or 0)
         return len(self.submissions)
 
 
@@ -283,6 +478,7 @@ def get_campaign_stats(
     tracker_id: Optional[str] = None,
     start_date: str = "",
     force_refresh: bool = False,
+    allow_live_fetch: bool = True,
 ) -> CampaignStatsResult:
     """Resolve performance stats for one campaign.
 
@@ -329,6 +525,35 @@ def get_campaign_stats(
         )
 
     ttl = _cache_ttl_seconds()
+
+    # List path (no live fetch): serve from the L2 aggregate columns when
+    # this worker's L1 has no entry, instead of hydrating the full
+    # submissions blob. The list only reads totals, and blob-parsing every
+    # tracker per worker after a deploy measured ~3s per finished-list
+    # request (which then queued into 12-21s walls on 4 sync workers).
+    # Legacy rows (post_count NULL) and L1 hits keep the original path.
+    if not allow_live_fetch and not force_refresh:
+        with _cache_lock:
+            l1 = _cache.get(tracker_id)
+        if l1 is None:
+            agg = None
+            try:
+                agg = _db.get_tides_stats_agg(tracker_id)
+            except Exception:
+                agg = None
+            if agg is not None and agg.get("post_count") is not None:
+                fresh = _is_fresh_at(agg["fetched_at"], ttl)
+                return CampaignStatsResult(
+                    slug=s,
+                    tracker_id=tracker_id,
+                    source=SOURCE_API if fresh else SOURCE_API_CACHED,
+                    submissions=[],
+                    agg=agg,
+                    fetched_at=agg.get("api_fetched_at", ""),
+                    stale_since="" if fresh else agg["fetched_at"].isoformat(),
+                    error_kind="" if fresh else "refresh_deferred",
+                )
+
     cached = None if force_refresh else _cache_get(tracker_id)
 
     if cached and _is_fresh(cached, ttl):
@@ -339,6 +564,26 @@ def get_campaign_stats(
             api_fetched_at=cached.api_fetched_at,
             matched_videos=matched_videos,
             source=SOURCE_API,
+        )
+
+    # The list endpoint has a fixed latency budget. When its bulk pre-warm
+    # did not fetch this tracker, return cached/scraper data rather than
+    # turning the request into an unbounded series of upstream calls.
+    if not allow_live_fetch:
+        if cached is not None:
+            return _result_from_api(
+                slug=s,
+                tracker_id=tracker_id,
+                submissions=cached.submissions,
+                api_fetched_at=cached.api_fetched_at,
+                matched_videos=matched_videos,
+                source=SOURCE_API_CACHED,
+                stale_since=cached.fetched_at.isoformat(),
+                error_kind="refresh_deferred",
+            )
+        return _fallback(
+            s, matched_videos, tracker_id=tracker_id,
+            error_kind="refresh_deferred", start_date=start_date,
         )
 
     # Cache miss or expired — go live.
@@ -496,6 +741,7 @@ def get_campaign_stats_bulk(
     matched_videos_by_slug: Optional[Dict[str, List[Dict[str, Any]]]] = None,
     start_date_by_slug: Optional[Dict[str, str]] = None,
     tracker_id_by_slug: Optional[Dict[str, str]] = None,
+    frozen_slugs: Optional[set] = None,
 ) -> Dict[str, CampaignStatsResult]:
     """Resolve stats for many campaigns in one call.
 
@@ -518,9 +764,19 @@ def get_campaign_stats_bulk(
     slug->tracker_id in bulk (campaigns list endpoint does) to avoid
     re-querying per-slug. Falls back to per-slug resolution when not
     provided.
-    """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
 
+    Pass ``frozen_slugs`` (completed campaigns) to exclude their
+    trackers from the cold-fetch batch. Completed campaigns' numbers
+    don't move, but the ``tides_tracker_pull`` cron only warms ACTIVE
+    campaigns' trackers — so a finished campaign's cache entry is
+    stale forever, and without this exclusion every ``?include_finished``
+    page load burned the whole 10-tracker cold batch (at timeout=5s,
+    ~6.5s wall) re-fetching stats that cannot change, crowding out the
+    active trackers the batch exists for. Frozen slugs still get served
+    below — from the durable L2 cache (stale is fine: the campaign is
+    done) or the scraper fallback. A tracker shared with a non-frozen
+    slug still gets fetched.
+    """
     out: Dict[str, CampaignStatsResult] = {}
     mv = matched_videos_by_slug or {}
     sd = start_date_by_slug or {}
@@ -533,47 +789,68 @@ def get_campaign_stats_bulk(
             except Exception:
                 tracker_map[s] = ""
 
-    # Collect distinct cold tracker_ids that need a live fetch.
+    # Sort distinct non-fresh trackers into two buckets. Frozen slugs
+    # never nominate their tracker — but iterate non-frozen slugs only
+    # (rather than filtering trackers), so a tracker shared by an active
+    # and a finished campaign is still refreshed for the active one.
+    #
+    #   stale (cache entry exists, just old)  -> serve the stale entry NOW,
+    #       refresh in a background thread with the full 15s timeout
+    #       (stale-while-revalidate). This is the common case and it must
+    #       never block: one tracker whose upstream exceeded the old 5s
+    #       inline budget used to hold EVERY page load at ~5-7s, because a
+    #       timed-out fetch writes no cache and next request retried it.
+    #   missing (no cache anywhere)           -> block briefly (5s cap) so
+    #       brand-new trackers show data on first load. Rare: only ever a
+    #       just-linked tracker, and only until its first successful fetch
+    #       lands in the durable L2.
+    #
+    # Both buckets respect the attempt cooldown so a dead/slow upstream is
+    # probed at most once per _REFRESH_COOLDOWN_SECONDS per worker, not on
+    # every request.
+    frozen = frozen_slugs or set()
     ttl = _cache_ttl_seconds()
-    cold_tracker_ids: List[str] = []
+    stale_ids: List[str] = []
+    missing_ids: List[str] = []
     seen: set = set()
     for s in slugs:
+        if s in frozen:
+            continue
         tid = tracker_map.get(s, "")
         if not tid or tid in seen:
             continue
         seen.add(tid)
-        cached = _cache_get(tid)
-        if not (cached and _is_fresh(cached, ttl)):
-            cold_tracker_ids.append(tid)
+        # Freshness classification needs only fetched_at — probe L1 then the
+        # L2 aggregate columns rather than _cache_get, which deserializes the
+        # full submissions blob per tracker (the dominant cost of a cold
+        # request; the per-slug pass below serves from aggregates anyway).
+        with _cache_lock:
+            l1 = _cache.get(tid)
+        if l1 is not None:
+            has_cache, fetched_at = True, l1.fetched_at
+        else:
+            agg = _db.get_tides_stats_agg(tid)
+            has_cache = agg is not None
+            fetched_at = agg["fetched_at"] if agg else None
+        if has_cache and fetched_at is not None and _is_fresh_at(fetched_at, ttl):
+            continue
+        if _in_cooldown(tid):
+            continue
+        (stale_ids if has_cache else missing_ids).append(tid)
 
-    # Parallel pre-warm. Bounded worker count — past ~10 the gains
-    # tail off and a flood of concurrent connections can saturate the
-    # Tides Tracker upstream.
-    if cold_tracker_ids:
-        max_workers = min(10, len(cold_tracker_ids))
-        with ThreadPoolExecutor(max_workers=max_workers) as ex:
-            futures = {
-                ex.submit(fetch_campaign_submissions, tid): tid
-                for tid in cold_tracker_ids
-            }
-            for fut in as_completed(futures):
-                tid = futures[fut]
-                try:
-                    fres = fut.result()
-                except Exception:
-                    logger.exception(
-                        "campaign_stats: prewarm fetch raised for tracker %s", tid,
-                    )
-                    continue
-                if not fres.ok:
-                    # Don't poison the cache with a failure; per-slug call
-                    # below will serve stale-cache or scraper fallback.
-                    continue
-                _cache_set(tid, _CacheEntry(
-                    submissions=fres.submissions,
-                    fetched_at=datetime.now(timezone.utc),
-                    api_fetched_at=fres.fetched_at,
-                ))
+    if stale_ids:
+        stale_ids = stale_ids[:10]
+        for tid in stale_ids:
+            _mark_attempt(tid)
+        _spawn_background_refresh(stale_ids)
+
+    # One bounded batch keeps a slow Tracker upstream from occupying every
+    # sync Gunicorn worker. Later requests fill the remaining cold entries.
+    if missing_ids:
+        missing_ids = missing_ids[:10]
+        for tid in missing_ids:
+            _mark_attempt(tid)
+        _refresh_trackers_sync(missing_ids, timeout=5)
 
     # Per-slug pass — now hitting a warm cache for every tracker we
     # successfully pre-warmed.
@@ -583,5 +860,6 @@ def get_campaign_stats_bulk(
             matched_videos=mv.get(s),
             tracker_id=tracker_map.get(s, ""),
             start_date=sd.get(s, ""),
+            allow_live_fetch=False,
         )
     return out

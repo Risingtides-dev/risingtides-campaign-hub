@@ -1,7 +1,7 @@
 """SQLAlchemy models for the Warner Campaign Manager."""
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone as _timezone
 
 from sqlalchemy import (
     BigInteger, Boolean, Column, Date, DateTime, Float, ForeignKey, Index,
@@ -29,8 +29,9 @@ class Campaign(Base):
     additional_sounds = Column(JSONB, default=list)
     cobrand_link = Column(Text, default="")
     start_date = Column(String(20), default="")
+    end_date = Column(String(20), default="")
+    end_date_auto = Column(Boolean, default=False, nullable=False)
     budget = Column(Float, default=0.0)
-    status = Column(String(20), default="active", index=True)
     platform = Column(String(20), default="tiktok")
     total_views = Column(Integer, default=0)
     total_likes = Column(Integer, default=0)
@@ -83,6 +84,19 @@ class Campaign(Base):
     client_email = Column(String(255), default="")
     platform_split = Column(JSONB, default=dict)
     content_types = Column(JSONB, default=list)
+    # CRM "Internal Captions": the text-on-screen lines for this campaign's
+    # sound, exactly as typed in the CRM or submitted on an intake form.
+    # NULL means the CRM property has never been read for this campaign; an
+    # empty string means the CRM explicitly holds no captions.
+    internal_captions = Column(Text, nullable=True)
+
+    # Chartmetric link for Spotify popularity ("pop score") tracking.
+    chartmetric_track_id = Column(BigInteger, nullable=True)
+    chartmetric_link = Column(Text, default="")
+    chartmetric_autolink_checked_at = Column(DateTime, nullable=True)
+    chartmetric_link_status = Column(String(32), default="", nullable=False)
+    chartmetric_link_detail = Column(Text, default="", nullable=False)
+    attribution_overrides = Column(JSONB, default=dict, nullable=False)
 
     creators = relationship("Creator", back_populates="campaign", cascade="all, delete-orphan")
     matched_videos = relationship("MatchedVideo", back_populates="campaign", cascade="all, delete-orphan")
@@ -101,8 +115,10 @@ class Campaign(Base):
             "additional_sounds": self.additional_sounds or [],
             "cobrand_link": self.cobrand_link or "",
             "start_date": self.start_date or "",
+            "end_date": self.end_date or "",
+            "end_date_auto": bool(self.end_date_auto),
+            "attribution_overrides": self.attribution_overrides or {},
             "budget": self.budget or 0.0,
-            "status": self.status or "active",
             "platform": self.platform or "tiktok",
             "created_at": self.created_at.isoformat() if self.created_at else "",
             "stats": {
@@ -133,13 +149,20 @@ class Campaign(Base):
             "client_email": self.client_email or "",
             "platform_split": self.platform_split or {},
             "content_types": self.content_types or [],
+            "internal_captions": self.internal_captions,
+            "chartmetric_track_id": self.chartmetric_track_id,
+            "chartmetric_link": self.chartmetric_link or "",
+            "chartmetric_link_status": self.chartmetric_link_status or "",
+            "chartmetric_link_detail": self.chartmetric_link_detail or "",
         }
 
 
 class Creator(Base):
     __tablename__ = "creators"
     __table_args__ = (
-        UniqueConstraint("campaign_id", "username", name="uq_campaign_creator"),
+        # One booking per handle PER PLATFORM — a creator can be booked for
+        # both their TikTok and Instagram on the same campaign.
+        UniqueConstraint("campaign_id", "username", "platform", name="uq_campaign_creator_platform"),
     )
 
     id = Column(Integer, primary_key=True)
@@ -191,14 +214,17 @@ class MatchedVideo(Base):
     url = Column(Text, nullable=False)
     song = Column(String(500), default="")
     artist = Column(String(255), default="")
-    account = Column(String(255), default="")
+    # Indexed: creator-aggregation (breaker/intelligence queries group by
+    # account) and the sound matcher (groups by extracted_sound_id) both hit
+    # these as hot paths over ~10K rows.
+    account = Column(String(255), default="", index=True)
     views = Column(Integer, default=0)
     likes = Column(Integer, default=0)
     upload_date = Column(String(20), default="")
     timestamp = Column(String(30), default="")
     music_id = Column(String(50), default="")
     platform = Column(String(20), default="tiktok")
-    extracted_sound_id = Column(String(50), default="")
+    extracted_sound_id = Column(String(50), default="", index=True)
     extracted_song_title = Column(String(500), default="")
 
     # When this match was first seen by the cron (so the Scrape Tasks tab
@@ -376,6 +402,11 @@ class InternalScrapeResult(Base):
     total_videos_unfiltered = Column(Integer, default=0)
     unique_songs = Column(Integer, default=0)
     songs = Column(JSONB, default=list)
+    # 'full' = all internal creators; 'partial:<label>' = manual single-
+    # account / group scrape. NULL (legacy rows) is treated as 'full'.
+    # get_internal_results serves the latest FULL row so a small manual
+    # scrape can't shadow the daily cron's full results.
+    scope = Column(Text, nullable=True)
 
 
 class NetworkCreator(Base):
@@ -804,3 +835,153 @@ class TidesTrackerSyncLog(Base):
     submissions_fetched = Column(Integer)
     errors = Column(JSONB)                                 # list of {tracker_id, error_kind, detail}
     triggered_by = Column(Text)                            # cron | manual:<user>
+
+
+class TidesTrackerStatsCache(Base):
+    """Postgres-backed L2 for the Tides Tracker stats cache (CAMP-9).
+
+    The request-path cache in services/campaign_stats.py is a per-worker
+    in-process dict — it's blown away on every Railway redeploy and not shared
+    across the 4 gunicorn workers. This table persists the cached submissions
+    so a fetch by ANY worker warms the cache for ALL workers, and the cache
+    survives restarts. The in-process dict stays as a fast L1 in front of this.
+    """
+    __tablename__ = "tides_tracker_stats_cache"
+
+    tracker_id = Column(String(100), primary_key=True)
+    submissions_json = Column(JSONB, nullable=False)        # list[asdict(Submission)]
+    api_fetched_at = Column(Text, default="")              # API's reported fetched_at
+    # timezone-aware default — _is_fresh() subtracts against datetime.now(utc),
+    # and a naive default would make any default-omitting insert poison that
+    # subtraction with a TypeError (naive vs aware).
+    fetched_at = Column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(_timezone.utc),
+    )
+    # Precomputed rollups of submissions_json, written on every upsert.
+    # The campaigns LIST endpoint only ever needs these sums — parsing the
+    # full submissions blob (up to ~800KB per tracker, ~29k rows across the
+    # table) per L1-miss was measured at ~3s of the finished-list request
+    # after every deploy, and those 3-4s requests then queued behind each
+    # other on 4 sync workers into 12-21s walls. NULL means a legacy row
+    # written before these columns existed — readers fall back to parsing
+    # the blob, and the next cache write heals the row.
+    agg_views = Column(BigInteger, nullable=True)
+    agg_likes = Column(BigInteger, nullable=True)
+    agg_comments = Column(BigInteger, nullable=True)
+    agg_shares = Column(BigInteger, nullable=True)
+    agg_post_count = Column(Integer, nullable=True)
+
+
+# ---------------------------------------------------------------------------
+# Creator Library (CAMP-LIB)
+#
+# The Creator Database aggregates bookings on the fly, so a creator only
+# exists there once they've been hired and anything you record about them
+# has to live on a per-campaign row. The Library models the *person*:
+#   Niche / CreatorNiche  — a custom, user-owned vocabulary, tagged per person
+#   CreatorProfile        — rate memory, working notes, cached tracker stats
+#
+# Usernames are stored lowercased throughout and used as the join key, since
+# that is the only stable identifier shared across campaigns and trackers.
+# ---------------------------------------------------------------------------
+
+class Niche(Base):
+    """One entry in the niche vocabulary.
+
+    Deliberately a table and not a constant: the whole point is that Jake can
+    invent "pinterest moodboard" mid-session without a deploy. Names are
+    stored lowercased so "Gym" and "gym" can't both exist.
+    """
+    __tablename__ = "niches"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(80), nullable=False, unique=True, index=True)
+    created_at = Column(DateTime, default=datetime.now)
+
+    def to_dict(self, count: int = 0):
+        return {
+            "id": self.id,
+            "name": self.name or "",
+            "count": count,
+            "created_at": self.created_at.isoformat() if self.created_at else "",
+        }
+
+
+class CreatorNiche(Base):
+    """Join row: this creator carries this niche.
+
+    A creator can hold many niches and a niche many creators, so tagging one
+    creator never rewrites another's tags — the failure mode of storing tags
+    as a JSON blob on each booking row.
+    """
+    __tablename__ = "creator_niches"
+    __table_args__ = (
+        UniqueConstraint("username", "niche_id", name="uq_creator_niche"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    username = Column(String(255), nullable=False, index=True)
+    niche_id = Column(
+        Integer, ForeignKey("niches.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    created_at = Column(DateTime, default=datetime.now)
+
+
+class CreatorProfile(Base):
+    """Per-person library record.
+
+    Exists for creators who have never been booked (scouted off the platform)
+    as well as for everyone in the booking history, so the Library can be a
+    real roster rather than a view over past invoices.
+    """
+    __tablename__ = "creator_profiles"
+
+    username = Column(String(255), primary_key=True)
+    display_username = Column(String(255), default="")
+    platform = Column(String(20), default="tiktok")
+
+    # Rate memory. `rate_override` is what Jake typed; `rate_override_at`
+    # timestamps it so a *newer* real booking can supersede it. See
+    # services/creator_library.effective_rate for the resolution rule.
+    rate_override = Column(Float, nullable=True)
+    rate_override_at = Column(DateTime, nullable=True)
+
+    slow = Column(Boolean, default=False)
+    note = Column(Text, default="")
+    paypal_email = Column(String(255), default="")
+
+    # Tracker-derived performance, refreshed by the stats job. Cached because
+    # rebuilding it means walking every tracker — far too slow per request.
+    stats = Column(JSONB, default=dict)
+    followers = Column(Integer, default=0)
+    stats_updated_at = Column(DateTime, nullable=True)
+
+    # Cover image of the creator's most recent tracked post. Not a true
+    # profile picture — TikTok's oEmbed stopped returning author thumbnails
+    # and the Cobrand author payload comes back empty — but these are
+    # durable cobrand-public URLs that never expire, and a real image beats
+    # coloured initials for recognising someone at a glance.
+    avatar_url = Column(Text, default="")
+
+    added_at = Column(DateTime, default=datetime.now)
+
+    def to_dict(self):
+        return {
+            "username": self.display_username or self.username or "",
+            "platform": self.platform or "tiktok",
+            "rate_override": self.rate_override,
+            "rate_override_at": (
+                self.rate_override_at.isoformat() if self.rate_override_at else ""
+            ),
+            "slow": bool(self.slow),
+            "note": self.note or "",
+            "paypal_email": self.paypal_email or "",
+            "stats": self.stats or {},
+            "followers": self.followers or 0,
+            "avatar_url": self.avatar_url or "",
+            "stats_updated_at": (
+                self.stats_updated_at.isoformat() if self.stats_updated_at else ""
+            ),
+        }

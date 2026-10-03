@@ -1,3 +1,15 @@
+// Controlled vocabulary for creator niches.
+// Extend this list to add new niches — the UI derives its picker options from here.
+export const NICHE_VOCAB = [
+  "trucks",
+  "country face",
+  "anime",
+  "movie edits",
+  "naturetok",
+] as const
+
+export type Niche = typeof NICHE_VOCAB[number]
+
 // Campaign types
 export interface CampaignBudget {
   total: number
@@ -8,7 +20,11 @@ export interface CampaignBudget {
 }
 
 export interface CampaignStats {
+  /** Posts actually collected — from the Tides Tracker where there is one,
+   *  otherwise the scraper's per-creator counts. */
   live_posts: number
+  /** Posts booked across active creators: the delivery denominator. */
+  posts_expected: number
   total_views: number
   cpm: number | null
 }
@@ -19,7 +35,8 @@ export interface CampaignSummary {
   artist: string
   song: string
   start_date: string
-  status: string
+  end_date: string
+  end_date_auto?: boolean
   completion_status: "none" | "booked" | "completed"
   budget: CampaignBudget
   stats: CampaignStats
@@ -57,6 +74,8 @@ export interface CampaignDetail {
   cobrand_share_url: string
   cobrand_upload_url: string
   start_date: string
+  end_date: string
+  end_date_auto?: boolean
   budget: CampaignBudget
   stats: CampaignStats
   creators: Creator[]
@@ -272,6 +291,7 @@ export interface CreatorProfile {
   username: string
   platform: string
   paypal_email: string
+  niches: string[]
   stats: {
     campaigns_count: number
     total_posts_owed: number
@@ -309,6 +329,14 @@ export interface CreatorVideo {
   upload_date: string
 }
 
+/** Most recent booking with a real rate for a creator, used to pre-fill the add form. */
+export interface LastRate {
+  total_rate: number
+  posts_owed: number
+  campaign: string
+  added_date: string
+}
+
 export interface CreatorSummary {
   username: string
   campaigns_count: number
@@ -318,6 +346,7 @@ export interface CreatorSummary {
   total_payout: number
   total_views: number
   avg_cpm: number | null
+  avg_recent_views: number | null
   platform: string
   paypal_email: string
   niches: string[]
@@ -551,4 +580,434 @@ export interface ScrapeTaskHealth {
     summary?: Record<string, unknown>
   } | null
   history: ScrapeTaskHealthRun[]
+}
+
+// ---- Creator Intelligence (sound-breaking analytics) ----
+export type BreakerLens = "ceiling" | "volume" | "balanced"
+
+export interface BreakerRow {
+  account: string
+  posts: number
+  avg_views: number
+  median_views: number
+  peak_views: number
+  viral_rate: number
+  millionaires: number
+  distinct_sounds: number
+  total_views: number
+  score_ceiling: number
+  score_volume: number
+  score_balanced: number
+}
+
+export interface BreakerResponse {
+  lens: BreakerLens
+  count: number
+  min_posts: number
+  breakers: BreakerRow[]
+}
+
+export type SoundTiming = "scout" | "early" | "mid" | "late" | "unknown"
+
+export interface CreatorSound {
+  sound_id: string
+  sound_title: string
+  artist: string
+  campaign_slug: string
+  posts: number
+  total_views: number
+  peak_views: number
+  days_after_start: number | null
+  timing: SoundTiming
+}
+
+export interface ViewBand {
+  band: string
+  count: number
+}
+
+export interface CreatorOutcomes {
+  views: number
+  likes: number
+  comments: number
+  shares: number
+  posts: number
+  campaigns: number
+  follower_count: number
+  shares_per_1k_followers: number
+  avatar_url?: string
+  engagement_rate: number
+  outcome_score: number
+}
+
+export interface CreatorDrilldown {
+  account: string
+  posts: number
+  avg_views: number
+  median_views: number
+  peak_views: number
+  viral_rate: number
+  millionaires: number
+  distinct_sounds: number
+  early_adopter_rate: number
+  sounds: CreatorSound[]
+  view_distribution: ViewBand[]
+  score_balanced: number
+  outcomes: CreatorOutcomes | null
+}
+
+// ---- Sound-fit (rank creators for a specific sound) ----
+export type SoundFreshness = "fresh" | "warm" | "saturated"
+
+export interface TargetSound {
+  sound_id: string
+  artist: string
+  song: string
+  campaign_slug: string
+  post_count: number
+  freshness: SoundFreshness
+}
+
+export interface SoundFitCreator {
+  account: string
+  fit_score: number
+  breaker_score: number
+  viral_rate: number
+  avg_views: number
+  millionaires: number
+  distinct_sounds: number
+  on_sound_avg: number | null
+  posted_this_sound: boolean
+  posted_this_artist: boolean
+  reasons: string[]
+}
+
+export interface SoundFitResponse {
+  sound_id: string
+  artist: string
+  song: string
+  campaign_slug: string
+  creators: SoundFitCreator[]
+}
+
+// ---- Campaign Report (client-facing, CAMP-84) ----
+export interface ReportTopPost {
+  url: string
+  account: string
+  views: number
+  likes: number
+  upload_date: string
+  cover_url?: string
+}
+
+export interface ReportCreatorRow {
+  username: string
+  posts: number
+  views: number
+  likes: number
+  shares: number
+  comments: number
+}
+
+export interface CampaignReport {
+  slug: string
+  title: string
+  artist: string
+  song: string
+  start_date: string
+  headline: {
+    total_views: number
+    total_likes: number
+    post_count: number
+    creator_count: number
+  }
+  top_posts: ReportTopPost[]
+  creators: ReportCreatorRow[]
+  source: string
+  stale_since: string
+}
+
+// Re-book suggestions (CAMP-87)
+export interface RebookSuggestion {
+  account: string
+  breaker_score: number
+  viral_rate: number
+  avg_views: number
+  millionaires: number
+  campaigns_booked: number
+  posts_owed: number
+  posts_done: number
+  repeat_rate: number
+  days_since_booked: number | null
+  opportunity_score: number
+}
+
+// ---- Attribution rollups (CAMP-38 labels + CAMP-34 bookers) ----
+export interface LabelTopAccount {
+  account: string
+  views: number
+  likes: number
+  posts: number
+}
+export interface LabelStats {
+  label: string
+  slug: string
+  days: number
+  account_count: number
+  accounts_with_videos: number
+  total_views: number
+  total_likes: number
+  post_count: number
+  top_accounts: LabelTopAccount[]
+}
+export interface BookerSummary {
+  slug: string
+  booker: string
+  account_count: number
+  total_views: number
+  post_count: number
+}
+// Canonical name for the person axis on internal pages: posters run our
+// pages (Notion `Poster` column); creators are external people we book.
+export interface PosterSummary {
+  slug: string
+  poster: string
+  account_count: number
+  total_views: number
+  post_count: number
+}
+export interface BookerLabelSplit {
+  label: string
+  views: number
+  likes: number
+  posts: number
+}
+export interface BookerStats {
+  slug: string
+  booker: string
+  days: number
+  account_count: number
+  accounts_with_videos: number
+  total_views: number
+  total_likes: number
+  post_count: number
+  by_label: BookerLabelSplit[]
+  top_accounts: Array<{ account: string; label: string; views: number; likes: number; posts: number }>
+}
+
+// Per-creator unified rollup (CAMP-34 endpoint #1)
+export interface CreatorRollupCampaign {
+  campaign_id: number
+  slug: string
+  views: number
+  likes: number
+  posts: number
+}
+export interface CreatorRollup {
+  username: string
+  days: number
+  label: string | null
+  totals: { views: number; likes: number; posts: number }
+  internal: { views: number; likes: number; posts: number; label: string | null }
+  external: { views: number; likes: number; posts: number; campaigns: CreatorRollupCampaign[] }
+}
+
+// ---------------------------------------------------------------------------
+// Creator Library
+//
+// The person-level view: tags that follow a creator between campaigns, a
+// remembered rate, and performance measured over a recent window rather
+// than all time.
+// ---------------------------------------------------------------------------
+
+export type LibraryWindow = "w30" | "w60" | "w90" | "wall"
+
+export const LIBRARY_WINDOW_LABELS: Record<LibraryWindow, string> = {
+  w30: "30d",
+  w60: "60d",
+  w90: "90d",
+  wall: "All",
+}
+
+/** One performance window. `null` where the creator has no posts in it —
+ *  which must render as a dash, never as a zero. */
+export interface LibraryWindowStats {
+  posts: number
+  total: number
+  median: number
+  avg: number
+  p25: number
+  peak: number
+  /** Share of posts at or above 100k views. */
+  viral_rate: number
+  /** Current rate ÷ typical views. Null when either is unknown. */
+  pcpm: number | null
+  /** Same sum against a bottom-quartile post: the downside case. */
+  floor: number | null
+}
+
+export interface LibraryNiche {
+  id: number
+  name: string
+  count: number
+  created_at: string
+}
+
+export interface LibraryCreator {
+  /** Display casing. */
+  username: string
+  /** Lowercased join key — use this for lookups and mutations. */
+  key: string
+  niches: string[]
+  rate: number | null
+  rate_source: "override" | "booking" | "none"
+  rate_override: number | null
+  slow: boolean
+  note: string
+  paypal_email: string
+  platform: string
+  followers: number
+  /** Cover of their most recent tracked post — stands in for a profile
+   *  picture. Empty when we have no tracked posts for them. */
+  avatar_url: string
+  campaigns: number
+  posts_owed: number
+  posts_done: number
+  spend: number
+  last_booked_at: string
+  /** Never booked — show dashes for performance. */
+  scouted: boolean
+  stats: Partial<Record<LibraryWindow, LibraryWindowStats | null>>
+  stats_updated_at: string
+}
+
+export interface LibraryResponse {
+  window: LibraryWindow
+  windows: LibraryWindow[]
+  count: number
+  creators: LibraryCreator[]
+}
+
+export interface LibraryRate {
+  username: string
+  rate: number | null
+  source: "override" | "booking" | "none"
+  last_rate: number | null
+  last_booked_at: string
+  campaigns: number
+}
+
+export interface LibraryRefreshSummary {
+  trackers: number
+  failed: number
+  creators: number
+  posts: number
+  updated_at: string
+}
+
+/** The refresh walks every tracker server-side, so the UI polls rather
+ *  than holding a request open. */
+export interface LibraryRefreshStatus {
+  running: boolean
+  started_at: string
+  last: LibraryRefreshSummary | null
+  error: string
+}
+
+// A creator booking is identified by handle + platform: the same handle can
+// be booked for both TikTok and Instagram on one campaign.
+export interface CreatorRef {
+  username: string
+  platform: string
+}
+
+// --- Chartmetric pop score (Spotify popularity) ---
+
+export interface PopScorePoint {
+  date: string
+  value: number
+  smoothed?: boolean
+}
+
+export interface AttributionStreamsPoint {
+  date: string
+  total: number
+  daily: number | null
+  smoothed?: boolean
+}
+export interface AttributionRecount { date: string; change: number; source: "auto" | "manual"; with?: string; choice_date?: string }
+export interface AttributionUnusual { date: string; change: number; source: "auto" | "manual"; with?: string; choice_date?: string }
+export interface AttributionStaleOverride { metric: "streams" | "ugc"; date: string; action: "include" | "exclude" }
+
+export type AttributionPhase = "not_started" | "live" | "followup" | "complete" | "no_start" | "finished_no_end"
+
+export interface PopScore {
+  linked: boolean
+  link_status?: "linked_auto" | "manual" | "pending" | "not_released" | "artist_not_found" | "ambiguous" | "generic_title" | "no_song_info" | ""
+  link_detail?: string
+  next_check?: string | null
+  link?: string
+  error?: string
+  chartmetric_track_id?: number
+  track?: { name: string; artists: string[]; image_url: string }
+  spotify_popularity?: number | null
+  chartmetric_score?: number | null
+  spotify_streams?: number | null
+  baseline?: number | null
+  change_since_start?: number | null
+  start_date?: string
+  end_date?: string
+  end_date_auto?: boolean
+  followup_days?: number
+  followup_end?: string
+  followup_day?: number | null
+  streams_error?: string
+  ugc_error?: string
+  ugc?: {
+    start?: number | null; end?: number | null; followup?: number | null
+    start_total: number | null; end_total: number | null; followup_total: number | null
+    now: number | null; now_date: string | null; change_since_start: number | null; change_since_end: number | null
+    baseline_daily: number | null; campaign_daily: number | null; followup_daily: number | null
+    gained_campaign: number | null; gained_followup: number | null; growth_pct_campaign?: number | null; lift_pct_campaign: number | null; lift_pct_followup?: number | null
+    end_is_to_date: boolean; followup_is_to_date: boolean
+    recounts?: AttributionRecount[]
+    unusual?: AttributionUnusual[]
+    adjusted?: boolean
+  }
+  phase?: AttributionPhase
+  popularity?: {
+    start: number | null
+    end: number | null
+    end_is_to_date: boolean
+    followup: number | null
+    followup_is_to_date: boolean
+    change_campaign: number | null
+    change_followup: number | null
+    now?: number | null; now_date?: string | null; change_since_start?: number | null; change_since_end?: number | null
+  }
+  streams?: {
+    start_total: number | null
+    end_total: number | null
+    end_is_to_date: boolean
+    followup_total: number | null
+    followup_is_to_date: boolean
+    gained_campaign: number | null
+    gained_followup: number | null
+    growth_pct_campaign: number | null
+    baseline_daily: number | null
+    campaign_daily: number | null
+    followup_daily: number | null
+    lift_pct_campaign: number | null
+    lift_pct_followup: number | null
+    recounts?: AttributionRecount[]
+    unusual?: AttributionUnusual[]
+    adjusted?: boolean
+    now?: number | null; now_date?: string | null; change_since_start?: number | null; change_since_end?: number | null
+  }
+  streams_history?: AttributionStreamsPoint[]
+  ugc_history?: AttributionStreamsPoint[]
+  data_as_of?: string
+  history?: PopScorePoint[]
+  post_events?: { date: string; count: number }[]
+  stale_overrides?: AttributionStaleOverride[]
 }

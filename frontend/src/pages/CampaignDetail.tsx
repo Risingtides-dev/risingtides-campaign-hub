@@ -18,7 +18,9 @@ import { CobrandStatsCard, CobrandLinkInput, CobrandUploadSection } from "@/comp
 import { ShareTokenSection } from "@/components/campaigns/ShareTokenSection"
 import { AddCreatorForm } from "@/components/campaigns/AddCreatorForm"
 import { CreatorsTable } from "@/components/campaigns/CreatorsTable"
+import { PopScoreCard } from "@/components/campaigns/PopScoreCard"
 import { ChevronRight, Loader2 } from "lucide-react"
+import { campaignEditWiring } from "./campaignEditWiring"
 
 export default function CampaignDetail() {
   const { slug } = useParams<{ slug: string }>()
@@ -43,8 +45,8 @@ export default function CampaignDetail() {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-20">
-        <Loader2 className="size-6 animate-spin text-[#888]" />
-        <span className="ml-2 text-[#888] text-sm">Loading campaign...</span>
+        <Loader2 className="size-6 animate-spin text-rt-fg-tertiary" />
+        <span className="ml-2 text-rt-fg-tertiary text-sm">Loading campaign...</span>
       </div>
     )
   }
@@ -52,11 +54,11 @@ export default function CampaignDetail() {
   // Error state
   if (isError || !campaign) {
     return (
-      <div className="bg-white border border-[#e8e8ef] rounded-[10px] p-10 text-center">
+      <div className="bg-rt-bg-card border border-white/8 rounded-[10px] p-10 text-center">
         <p className="text-red-600 text-sm">
           {error?.message || "Failed to load campaign"}
         </p>
-        <Link to="/" className="text-[#0b62d6] text-sm mt-2 inline-block hover:underline">
+        <Link to="/" className="text-rt-magenta text-sm mt-2 inline-block hover:underline">
           Back to campaigns
         </Link>
       </div>
@@ -66,20 +68,19 @@ export default function CampaignDetail() {
   return (
     <div className="space-y-4">
       {/* Breadcrumb */}
-      <div className="flex items-center gap-1.5 text-[13px] text-[#888]">
-        <Link to="/" className="hover:text-[#555] transition-colors">
+      <div className="flex items-center gap-1.5 text-[13px] text-rt-fg-tertiary">
+        <Link to="/" className="hover:text-rt-fg transition-colors">
           Promotions
         </Link>
         <ChevronRight className="size-3.5" />
-        <span className="text-[#333] font-medium">{campaign.title}</span>
+        <span className="text-rt-fg font-medium">{campaign.title}</span>
       </div>
 
       {/* Campaign Header */}
       <CampaignHeader
         campaign={campaign}
-        onEdit={(data) => editCampaign.mutate(data)}
+        {...campaignEditWiring(editCampaign)}
         onRefresh={() => refreshStats.mutate()}
-        isEditing={editCampaign.isPending}
         isRefreshing={refreshStats.isPending}
         onToggleCobrand={() => {
           setCobrandVisible((v) => !v)
@@ -140,6 +141,9 @@ export default function CampaignDetail() {
         />
       )}
 
+      {/* Pop Score (Spotify popularity via Chartmetric) */}
+      <PopScoreCard key={slug} slug={slug!} tracker_url={campaign.tracker_url} />
+
       {/* Share with Client */}
       <ShareTokenSection slug={slug!} />
 
@@ -159,11 +163,11 @@ export default function CampaignDetail() {
       {/* Creators Table */}
       <CreatorsTable
         creators={campaign.creators}
-        onTogglePaid={(username) => togglePaid.mutate(username)}
-        onEditCreator={(username, data) =>
-          editCreator.mutate({ username, data })
+        onTogglePaid={(creator) => togglePaid.mutate(creator)}
+        onEditCreator={(creator, data) =>
+          editCreator.mutate({ creator, data })
         }
-        onRemoveCreator={(username) => removeCreator.mutate(username)}
+        onRemoveCreator={(creator) => removeCreator.mutate(creator)}
         isToggling={togglePaid.isPending}
         isEditing={editCreator.isPending}
         isRemoving={removeCreator.isPending}

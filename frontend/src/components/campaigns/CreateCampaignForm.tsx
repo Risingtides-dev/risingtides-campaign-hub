@@ -43,14 +43,14 @@ export function CreateCampaignForm({ open }: CreateCampaignFormProps) {
   }
 
   return (
-    <div className="bg-white border border-[#e8e8ef] rounded-[10px] p-5 mb-4">
+    <div className="bg-rt-bg-card border border-white/8 rounded-[10px] p-5 mb-4">
       <h3 className="mb-3 text-base font-semibold">Create Campaign</h3>
       <form
         onSubmit={handleSubmit}
         className="flex flex-wrap items-end gap-3"
       >
         <div className="w-full sm:w-auto">
-          <label className="block text-[#888] text-[13px] mb-1">
+          <label className="block text-rt-fg-tertiary text-[13px] mb-1">
             Title (Artist - Song Promo)
           </label>
           <Input
@@ -62,7 +62,7 @@ export function CreateCampaignForm({ open }: CreateCampaignFormProps) {
           />
         </div>
         <div className="w-full sm:w-auto">
-          <label className="block text-[#888] text-[13px] mb-1">
+          <label className="block text-rt-fg-tertiary text-[13px] mb-1">
             Sound ID or URL
           </label>
           <Input
@@ -74,7 +74,7 @@ export function CreateCampaignForm({ open }: CreateCampaignFormProps) {
           />
         </div>
         <div className="w-full sm:w-auto">
-          <label className="block text-[#888] text-[13px] mb-1">
+          <label className="block text-rt-fg-tertiary text-[13px] mb-1">
             Start Date
           </label>
           <Input
@@ -86,7 +86,7 @@ export function CreateCampaignForm({ open }: CreateCampaignFormProps) {
           />
         </div>
         <div className="w-full sm:w-auto">
-          <label className="block text-[#888] text-[13px] mb-1">
+          <label className="block text-rt-fg-tertiary text-[13px] mb-1">
             Budget ($)
           </label>
           <Input
@@ -102,7 +102,7 @@ export function CreateCampaignForm({ open }: CreateCampaignFormProps) {
         <Button
           type="submit"
           disabled={createCampaign.isPending}
-          className="bg-[#0b62d6] hover:bg-[#0951b5] text-white"
+          className="bg-rt-magenta hover:bg-rt-purple text-white"
         >
           {createCampaign.isPending ? "Creating..." : "Create"}
         </Button>

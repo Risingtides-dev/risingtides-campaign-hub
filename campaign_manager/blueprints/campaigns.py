@@ -6,17 +6,20 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 import os
 import re
 
 import requests as _requests
 from datetime import date, datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from flask import Blueprint, current_app, jsonify, request
 
 from campaign_manager import db as _db
+
+logger = logging.getLogger(__name__)
 from campaign_manager.utils.helpers import (
     slugify,
     campaign_title,
@@ -28,7 +31,7 @@ from campaign_manager.utils.helpers import (
     save_json,
     video_posted_before_start,
 )
-from campaign_manager.utils.budget import calc_budget, calc_stats
+from campaign_manager.utils.budget import calc_budget, calc_cpm, calc_stats, to_number
 from campaign_manager.services.campaign_stats import (
     CampaignStatsResult,
     get_campaign_stats,
@@ -36,6 +39,19 @@ from campaign_manager.services.campaign_stats import (
 )
 
 campaigns_bp = Blueprint("campaigns", __name__)
+
+
+def _canon_tracker_url(url: str) -> str:
+    """Normalize a stored tracker_url to the canonical domain before serving.
+    Stored values historically baked in the stale Vercel host, breaking
+    'View Tracker' links. Import-local + fail-open so a service hiccup never
+    blocks a campaign payload."""
+    try:
+        from campaign_manager.services.tidestracker import canonicalize_tracker_url
+        return canonicalize_tracker_url(url)
+    except Exception:
+        return url or ""
+
 
 # ---------------------------------------------------------------------------
 # Stats helpers (RTA-43)
@@ -51,19 +67,32 @@ def _stats_from_result(
     Keeps the existing keys (`live_posts`, `total_views`, `cpm`) so the
     frontend doesn't need to learn a new shape, and tacks on
     API-sourced fields plus a `source`/`stale_since` provenance block.
-    `live_posts` continues to come from creator post counts — that's an
-    operational signal ("Jake checked off these as live"), not a stats
-    number, so it stays scraper-side until RTA-44.
+
+    `live_posts` (the delivery count) comes from the Tides Tracker when the
+    tracker answered (`api`/`api_cached`) — it's the source of truth for
+    what's actually live in Cobrand, including internal-page posts that the
+    scraper never lands in matched_videos. Campaigns without a tracker fall
+    back to scraper-side creator post counts. Also keeps the number accurate
+    through scraper outages.
     """
     active = [c for c in creators if c.get("status", "active") != "removed"]
-    live_posts = sum(int(c.get("posts_done", 0) or 0) for c in active)
+    scraper_live_posts = sum(int(c.get("posts_done", 0) or 0) for c in active)
+    if result.source in ("api", "api_cached"):
+        live_posts = result.post_count
+    else:
+        live_posts = scraper_live_posts
+
+    # What we booked, as the denominator for delivery. Always creator-side:
+    # the tracker knows what came in, only the Hub knows what was owed.
+    posts_expected = sum(int(to_number(c.get("posts_owed", 0))) for c in active)
 
     total_views = result.total_views
     booked = sum(float(c.get("total_rate", 0) or 0) for c in active)
-    cpm = (booked / total_views) * 1_000 if total_views > 0 and booked > 0 else None
+    cpm = calc_cpm(booked, total_views)
 
     return {
         "live_posts": live_posts,
+        "posts_expected": posts_expected,
         "total_views": total_views,
         "total_likes": result.total_likes,
         "total_comments": result.total_comments,
@@ -215,8 +244,16 @@ def _save_meta(slug: str, meta: Dict, campaign_dir=None):
         save_json(campaign_dir / "campaign.json", meta)
 
 
-def get_campaigns() -> List[Dict]:
-    """Return all active campaigns with budget/stats attached.
+def _save_resolved_campaign_field(slug: str, meta: Dict, field: str, campaign_dir=None):
+    """Persist one resolved field; file mode falls back to ``_save_meta``."""
+    if _db.is_active():
+        _db.update_campaign_fields(slug, {field: meta[field]})
+    else:
+        _save_meta(slug, meta, campaign_dir)
+
+
+def get_campaigns(completion: Optional[str] = None) -> List[Dict]:
+    """Return campaigns with budget/stats attached.
 
     Stats come from the Tides Tracker API path (RTA-43) via
     `get_campaign_stats`. Falls back to scraper data per-campaign if a
@@ -225,12 +262,31 @@ def get_campaigns() -> List[Dict]:
     Bulk-loads creators, matched_videos, and tracker_id mappings up
     front so the per-campaign work below is pure-Python + cache lookups
     (no DB roundtrips inside the loop). See CAMP-40.
+
+    `completion` ("active" | "finished" | None) narrows the set BEFORE
+    any of the expensive work happens. Callers that only render live
+    campaigns must pass "active": every campaign in this list costs a
+    `to_meta_dict()`, a dict per creator, a dict per matched_video, a
+    `calc_budget`, and a stats resolution. Filtering the result
+    afterwards pays all of that for rows nobody looks at — with ~285 of
+    ~322 campaigns completed and 90% of matched_videos hanging off
+    them, the default list endpoint was doing roughly 10x the work it
+    needed to.
     """
     if _db.is_active():
+        # Phase timing: post-deploy cold windows have shown 10-30s
+        # requests whose cost we could only guess at. Log the breakdown
+        # whenever a request is slow so the next cold window tells us
+        # exactly which phase to fix instead of theorizing.
+        import time as _time
+        _t0 = _time.monotonic()
         rows = _db.list_campaigns_with_creators(
-            status="active", with_matched_videos=True
+            with_matched_videos=True,
+            completion=completion,
         )
+        _t_rows = _time.monotonic()
         tracker_map = _db.get_campaign_to_tracker_map()
+        _t_map = _time.monotonic()
 
         # Bulk-resolve stats with a parallel cache pre-warm. The previous
         # per-slug loop went serial across the Tides Tracker API on every
@@ -241,12 +297,24 @@ def get_campaigns() -> List[Dict]:
         slugs = [meta["slug"] for meta, _c, _mv in rows]
         matched_videos_by_slug = {meta["slug"]: mv for meta, _c, mv in rows}
         start_date_by_slug = {meta["slug"]: meta.get("start_date", "") for meta, _c, _mv in rows}
+        # Completed campaigns' stats are frozen — never spend the live-fetch
+        # budget on them. Their trackers aren't warmed by the cron (it only
+        # pulls active campaigns), so before this every ?include_finished
+        # load burned the full 10-tracker cold batch at timeout=5s (~6.5s
+        # wall) re-fetching numbers that can't change. They serve from the
+        # durable L2 cache or scraper fallback instead.
+        frozen_slugs = {
+            meta["slug"] for meta, _c, _mv in rows
+            if meta.get("completion_status", "none") == "completed"
+        }
         bulk_results = get_campaign_stats_bulk(
             slugs,
             matched_videos_by_slug=matched_videos_by_slug,
             start_date_by_slug=start_date_by_slug,
             tracker_id_by_slug=tracker_map,
+            frozen_slugs=frozen_slugs,
         )
+        _t_stats = _time.monotonic()
 
         items = []
         for meta, creators, matched_videos in rows:
@@ -272,6 +340,15 @@ def get_campaigns() -> List[Dict]:
                 "stats": stats,
                 "created_dt": parse_sort_datetime(meta),
             })
+        _t_end = _time.monotonic()
+        if _t_end - _t0 > 2.0:
+            logger.warning(
+                "get_campaigns slow (completion=%s, n=%d): total=%.2fs "
+                "rows=%.2fs tracker_map=%.2fs stats_bulk=%.2fs assemble=%.2fs",
+                completion, len(rows), _t_end - _t0,
+                _t_rows - _t0, _t_map - _t_rows,
+                _t_stats - _t_map, _t_end - _t_stats,
+            )
         return items
 
     ensure_dirs()
@@ -281,6 +358,11 @@ def get_campaigns() -> List[Dict]:
             continue
         meta = load_json(d / "campaign.json")
         if not meta:
+            continue
+        # Mirror the DB path's `completion` narrowing so dev-mode and
+        # prod agree on what a filtered list contains.
+        is_done = meta.get("completion_status", "none") == "completed"
+        if (completion == "active" and is_done) or (completion == "finished" and not is_done):
             continue
         creators = load_creators(d)
         budget = calc_budget(meta, creators)
@@ -308,10 +390,26 @@ def _campaign_summary(c: Dict) -> Dict:
         "artist": c["meta"].get("artist", ""),
         "song": c["meta"].get("song", ""),
         "start_date": c["meta"].get("start_date", ""),
-        "status": c["meta"].get("status", "active"),
+        "end_date": c["meta"].get("end_date", ""),
+        "end_date_auto": bool(c["meta"].get("end_date_auto", False)),
+        # The sound a campaign runs on. Already searchable via ?search= but
+        # never returned, so downstream boards could not tell which TikTok
+        # sound a campaign meant — the ShipStream queue went stale because
+        # nothing could build a payload without it.
+        "official_sound": c["meta"].get("official_sound", ""),
+        "sound_id": c["meta"].get("sound_id", ""),
+        # CRM "Content Niche Targets" — which page niches this campaign is for.
+        # Without it a board has no routing signal and can only broadcast every
+        # sound to every page, which is what ShipStream was doing.
+        "content_types": c["meta"].get("content_types", []),
         "budget": c["budget"],
         "stats": c["stats"],
         "completion_status": c["meta"].get("completion_status", "none"),
+        # `active` is the single source of truth for "is this campaign live?"
+        # A campaign is active until it's checked off completed. Agents/scrapers
+        # should source from active campaigns only — filter via ?active=true.
+        # (Replaces the old dead `status` field that was always "active".)
+        "active": c["meta"].get("completion_status", "none") != "completed",
         "creator_count": len([
             cr for cr in c["creators"]
             if cr.get("status", "active") != "removed"
@@ -328,9 +426,42 @@ def _campaign_summary(c: Dict) -> Dict:
 # -------------------------------------------------------------------
 @campaigns_bp.get("/api/campaigns")
 def list_campaigns():
-    """List all campaigns with budget and stats."""
+    """List campaigns with budget and stats.
+
+    DEFAULT IS ACTIVE-ONLY. A campaign is active until it's checked off
+    completed (completion_status != "completed"). We default to active so an
+    agent/script that naively calls GET /api/campaigns gets the ~47 live
+    campaigns, never the ~246 total — grabbing all and treating them as active
+    is a 5x scrape/API-bill blowup. Ask for finished/all explicitly:
+
+    Query params:
+      (omit)                  -> active campaigns only  (the safe default)
+      ?active=false           -> only finished campaigns
+      ?include_finished=true  -> ALL campaigns (the UI uses this for its tabs)
+                                 (alias: ?all=true)
+    """
+    from campaign_manager.services.notion import request_campaign_niche_refresh
+    request_campaign_niche_refresh()
+
     search = (request.args.get("search") or "").strip().lower()
-    campaigns = get_campaigns()
+    active_param = (request.args.get("active") or "").strip().lower()
+    include_finished = (
+        (request.args.get("include_finished") or request.args.get("all") or "")
+        .strip().lower() in ("true", "1", "yes")
+    )
+    # Resolve the active/finished split BEFORE fetching, not after. This
+    # endpoint's cost scales with the number of campaigns it loads, and
+    # the default (active-only) view wants ~37 of ~322 — loading all of
+    # them plus their ~15.7k completed-campaign matched_videos just to
+    # discard them is where the multi-second page load came from.
+    if active_param in ("false", "0", "no"):
+        completion = "finished"
+    elif include_finished:
+        completion = None  # everything (active + finished)
+    else:
+        completion = "active"  # default + ?active=true
+
+    campaigns = get_campaigns(completion=completion)
 
     if search:
         tokens = [t for t in re.split(r"\s+", search) if t]
@@ -353,6 +484,95 @@ def list_campaigns():
 
 
 # -------------------------------------------------------------------
+# 1b. GET /api/campaigns/captions  -- CRM captions per campaign sound
+# -------------------------------------------------------------------
+@campaigns_bp.get("/api/campaigns/captions")
+def list_campaign_captions():
+    """CRM "Internal Captions" for every active campaign that has had them read.
+
+    The posting control plane reads this to keep each campaign sound's
+    caption rows in step with the CRM. `internal_captions` is the CRM text
+    verbatim; an empty string means the CRM explicitly holds none. Finished
+    campaigns, and campaigns whose CRM row has never been read, are left
+    out. Kept off the campaign list so that payload stays small for every
+    other reader.
+    """
+    from campaign_manager.services.notion import request_campaign_niche_refresh
+    request_campaign_niche_refresh()
+
+    if _db.is_active():
+        return jsonify(_db.list_campaign_captions())
+
+    ensure_dirs()
+    rows = []
+    for d in sorted(ACTIVE_DIR.iterdir()) if ACTIVE_DIR.exists() else []:
+        meta = load_json(d / "campaign.json") if d.is_dir() else None
+        if not meta or not isinstance(meta.get("internal_captions"), str):
+            continue
+        if meta.get("completion_status", "none") == "completed":
+            continue
+        rows.append({
+            "slug": d.name,
+            "sound_id": meta.get("sound_id", ""),
+            "official_sound": meta.get("official_sound", ""),
+            "internal_captions": meta["internal_captions"],
+        })
+    return jsonify(rows)
+
+
+# -------------------------------------------------------------------
+# 1c. PUT /api/campaign/<slug>/internal-captions  -- write captions back
+# -------------------------------------------------------------------
+@campaigns_bp.put("/api/campaign/<slug>/internal-captions")
+def write_internal_captions(slug: str):
+    """Save one campaign's CRM captions, from the posting control plane.
+
+    The CRM row is the source of truth, so the text goes to the campaign's
+    CRM page first and is stored here only once that write went through.
+    The caller sends `expected`, the value it last saw (null when it saw
+    none); a stored value that differs answers 409 with the current value,
+    so a stale edit never overwrites a newer one. When HUB_WRITE_KEY is set,
+    the X-Hub-Write-Key header must match it.
+    """
+    from campaign_manager.services.notion import (
+        MAX_INTERNAL_CAPTIONS,
+        write_page_internal_captions,
+    )
+
+    write_key = (os.environ.get("HUB_WRITE_KEY") or "").strip()
+    if write_key and request.headers.get("X-Hub-Write-Key", "") != write_key:
+        return jsonify({"error": "X-Hub-Write-Key does not match"}), 401
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or "expected" not in data:
+        return jsonify({"error": "Send internal_captions and expected (the value you last saw, or null)."}), 400
+    value = data.get("internal_captions")
+    expected = data.get("expected")
+    if not isinstance(value, str) or len(value) > MAX_INTERNAL_CAPTIONS:
+        return jsonify({"error": f"internal_captions must be text of at most {MAX_INTERNAL_CAPTIONS} characters"}), 400
+    if expected is not None and not isinstance(expected, str):
+        return jsonify({"error": "expected must be text or null"}), 400
+
+    if not _db.is_active():
+        return jsonify({"error": "Database not configured"}), 500
+    meta = _db.get_campaign(slug)
+    if not meta:
+        return jsonify({"error": "Campaign not found"}), 404
+    current = meta.get("internal_captions")
+    if current != expected:
+        return jsonify({"error": "internal_captions changed since you read them",
+                        "internal_captions": current}), 409
+
+    page_id = meta.get("notion_page_id") or ""
+    if page_id:
+        reason = write_page_internal_captions(page_id, value)
+        if reason:
+            return jsonify({"error": f"CRM update failed: {reason}", "internal_captions": current}), 502
+    _db.update_campaign_fields(slug, {"internal_captions": value})
+    return jsonify({"slug": slug, "internal_captions": value, "crm": "updated" if page_id else "none"})
+
+
+# -------------------------------------------------------------------
 # 2. POST /api/campaign/create  -- create a new campaign
 # -------------------------------------------------------------------
 @campaigns_bp.post("/api/campaign/create")
@@ -361,7 +581,7 @@ def create_campaign():
 
     title = (data.get("title") or "").strip()
     official_sound = (data.get("official_sound") or "").strip()
-    start_date = (data.get("start_date") or "").strip() or str(date.today())
+    start_date = (data.get("start_date") or "").strip() or datetime.now(_db.EST).date().isoformat()
     budget_raw = (data.get("budget") or "0")
 
     if not title:
@@ -375,6 +595,8 @@ def create_campaign():
     artist, song = "", ""
     if " - " in title:
         artist, song = [x.strip() for x in title.split(" - ", 1)]
+    artist = (data.get("artist") or artist).strip()
+    song = (data.get("song") or song).strip()
 
     slug = slugify(title)
 
@@ -384,7 +606,7 @@ def create_campaign():
         "official_sound": official_sound,
         "sound_id": extract_sound_id(official_sound) if official_sound else "",
         "start_date": start_date, "budget": budget,
-        "status": "active", "platform": "tiktok",
+        "platform": "tiktok",
         "created_at": datetime.now().isoformat(),
         "stats": {"total_views": 0, "total_likes": 0},
     }
@@ -403,6 +625,8 @@ def create_campaign():
         save_json(campaign_dir / "campaign.json", meta)
         save_creators(campaign_dir, [])
 
+    from campaign_manager.services.chartmetric_autolink import request_immediate_resolve
+    request_immediate_resolve(slug)
     return jsonify({"ok": True, "slug": slug, "message": f"Created campaign: {title}"}), 201
 
 
@@ -423,11 +647,58 @@ def edit_campaign(slug: str):
     if not meta:
         return jsonify({"error": "Campaign not found."}), 404
 
+    prior_completion_status = meta.get("completion_status", "none")
+    old_song_fields = {key: meta.get(key, "") for key in ("song", "artist", "sound_id", "tt_artist_label", "tt_track_name")}
     data = request.get_json(silent=True) or {}
 
     title = (data.get("title") or "").strip()
     sound_id_raw = (data.get("sound_id") or "").strip()
-    start_date = (data.get("start_date") or "").strip()
+    start_raw = data.get("start_date", "")
+    if "start_date" in data and not isinstance(start_raw, str):
+        return jsonify({"error": "start_date must be YYYY-MM-DD."}), 400
+    start_date = start_raw.strip() if isinstance(start_raw, str) else ""
+    stored_start = meta.get("start_date", "")
+    effective_start = start_date if "start_date" in data else stored_start
+    effective_end = data.get("end_date", meta.get("end_date", ""))
+    start_changed = "start_date" in data and start_date != stored_start
+    if start_changed and start_date:
+        try:
+            parsed_start = datetime.strptime(start_date, "%Y-%m-%d").date()
+            if parsed_start.isoformat() != start_date:
+                raise ValueError
+        except (TypeError, ValueError):
+            return jsonify({"error": "start_date must be YYYY-MM-DD."}), 400
+    end_changed = "end_date" in data and data.get("end_date") != meta.get("end_date", "")
+    end_involved = end_changed or (start_changed and bool(effective_end))
+    if end_involved and effective_end is None:
+        return jsonify({"error": "end_date must be YYYY-MM-DD or blank."}), 400
+    if end_involved and effective_end and effective_start:
+        try:
+            parsed_start = datetime.strptime(effective_start, "%Y-%m-%d").date()
+            parsed_end = datetime.strptime(effective_end, "%Y-%m-%d").date()
+            if parsed_start.isoformat() != effective_start or parsed_end.isoformat() != effective_end:
+                raise ValueError
+        except (TypeError, ValueError):
+            return jsonify({"error": "start_date and end_date must be valid YYYY-MM-DD dates."}), 400
+        if parsed_end < parsed_start:
+            return jsonify({"error": "end_date must be on or after start_date."}), 400
+    if "end_date" in data:
+        end_date = data.get("end_date")
+        if not isinstance(end_date, str):
+            return jsonify({"error": "end_date must be YYYY-MM-DD or blank."}), 400
+        end_date = end_date.strip()
+        if end_date and end_changed:
+            try:
+                parsed_end = datetime.strptime(end_date, "%Y-%m-%d").date()
+                if parsed_end.isoformat() != end_date:
+                    raise ValueError
+                effective_start = start_date or meta.get("start_date", "")
+                parsed_start = datetime.strptime(effective_start, "%Y-%m-%d").date()
+            except (TypeError, ValueError):
+                return jsonify({"error": "end_date must be YYYY-MM-DD and requires a valid start_date."}), 400
+            if parsed_end < parsed_start:
+                return jsonify({"error": "end_date must be on or after start_date."}), 400
+        meta["end_date"] = end_date
     budget_raw = (data.get("budget") or "").strip() if isinstance(data.get("budget"), str) else data.get("budget")
 
     if title:
@@ -437,14 +708,17 @@ def edit_campaign(slug: str):
             artist, song = [x.strip() for x in title.split(" - ", 1)]
             meta["artist"] = artist
             meta["song"] = song
+    for key in ("song", "artist", "tt_artist_label", "tt_track_name"):
+        if key in data and isinstance(data[key], str):
+            meta[key] = data[key].strip()
 
-    if sound_id_raw:
+    if "sound_id" in data:
         meta["official_sound"] = sound_id_raw
-        meta["sound_id"] = extract_sound_id(sound_id_raw)
+        meta["sound_id"] = extract_sound_id(sound_id_raw) if sound_id_raw else ""
 
     # Save additional sounds
-    additional = data.get("additional_sounds", [])
-    if isinstance(additional, list):
+    additional = data.get("additional_sounds")
+    if "additional_sounds" in data and isinstance(additional, list):
         meta["additional_sounds"] = [s.strip() for s in additional if s and s.strip()]
 
     if start_date:
@@ -465,6 +739,23 @@ def edit_campaign(slug: str):
             "error": f"Invalid completion_status: {completion_status!r}",
             "valid": ["none", "booked", "completed"],
         }), 400
+    today_et = datetime.now(_db.EST).date()
+    if "end_date" in data:
+        meta["end_date_auto"] = False
+    if prior_completion_status != "completed" and completion_status == "completed" and "end_date" not in data and not meta.get("end_date"):
+        try:
+            parsed_start = datetime.strptime(meta.get("start_date", ""), "%Y-%m-%d").date()
+            if today_et < parsed_start:
+                logger.warning("Finishing campaign %s with future start date %s", slug, meta.get("start_date"))
+            else:
+                meta["end_date"] = today_et.isoformat()
+                meta["end_date_auto"] = True
+        except (TypeError, ValueError):
+            meta["end_date"] = today_et.isoformat()
+            meta["end_date_auto"] = True
+    elif prior_completion_status == "completed" and completion_status in ("none", "booked") and meta.get("end_date_auto"):
+        meta["end_date"] = ""
+        meta["end_date_auto"] = False
 
     # Match strategy — controls whether fuzzy fallback is allowed.
     # "strict" = sound_id only (use for original sound campaigns)
@@ -479,13 +770,33 @@ def edit_campaign(slug: str):
                 "valid": ["fuzzy", "strict"],
             }), 400
 
-    cobrand_link = (data.get("cobrand_link") or "").strip()
-    meta["cobrand_link"] = cobrand_link
+    if "cobrand_link" in data:
+        cobrand_link = (data.get("cobrand_link") or "").strip()
+        meta["cobrand_link"] = cobrand_link
 
     if _db.is_active():
         _db.save_campaign(slug, meta)
     else:
         save_json(campaign_dir / "campaign.json", meta)
+
+    # Mirror delivery status onto the client-facing tracker badge. Only when
+    # the caller actually set completion_status, so unrelated edits (budget,
+    # sound id) don't fire a network call. Best-effort: a failed push is
+    # logged inside set_tracker_status and self-heals on the next save or
+    # backfill — a tracker outage must not fail saving the campaign.
+    if completion_status is not None and meta.get("tracker_campaign_id"):
+        from campaign_manager.services.tidestracker import (
+            set_tracker_status,
+            tracker_status_for,
+        )
+        set_tracker_status(
+            meta["tracker_campaign_id"], tracker_status_for(completion_status)
+        )
+
+    new_song_fields = {key: meta.get(key, "") for key in old_song_fields}
+    if old_song_fields != new_song_fields:
+        from campaign_manager.services.chartmetric_autolink import request_immediate_resolve
+        request_immediate_resolve(slug)
 
     return jsonify({"ok": True, "slug": slug, "message": "Campaign updated."})
 
@@ -555,10 +866,11 @@ def campaign_detail(slug: str):
         "cobrand_share_url": meta.get("cobrand_share_url", ""),
         "cobrand_upload_url": meta.get("cobrand_upload_url", ""),
         "start_date": meta.get("start_date", ""),
+        "end_date": meta.get("end_date", ""),
+        "end_date_auto": bool(meta.get("end_date_auto", False)),
         "budget": budget,
         "stats": stats,
         "platform": meta.get("platform", "tiktok"),
-        "status": meta.get("status", "active"),
         "source": meta.get("source", "manual"),
         "label": meta.get("label", ""),
         "round": meta.get("round", ""),
@@ -582,6 +894,7 @@ def campaign_detail(slug: str):
                 "added_date": c.get("added_date", ""),
                 "status": c.get("status", "active"),
                 "notes": c.get("notes", ""),
+                "niches": c.get("niches", []),
             }
             for c in active
         ],
@@ -589,9 +902,8 @@ def campaign_detail(slug: str):
         "cobrand_share_url": meta.get("cobrand_share_url", ""),
         "cobrand_upload_url": meta.get("cobrand_upload_url", ""),
         "tracker_campaign_id": meta.get("tracker_campaign_id", ""),
-        "tracker_url": meta.get("tracker_url", ""),
+        "tracker_url": _canon_tracker_url(meta.get("tracker_url", "")),
         "platform": meta.get("platform", "tiktok"),
-        "status": meta.get("status", "active"),
         "source": meta.get("source", "manual"),
         "label": meta.get("label", ""),
         "round": meta.get("round", ""),
@@ -600,6 +912,7 @@ def campaign_detail(slug: str):
         "client_email": meta.get("client_email", ""),
         "platform_split": meta.get("platform_split", {}),
         "content_types": meta.get("content_types", []),
+        "internal_captions": meta.get("internal_captions"),
     })
 
 
@@ -656,13 +969,13 @@ def _refresh_stats_inner(slug: str):
         if html_id and html_id != sound_id_raw:
             sound_id_raw = html_id
             meta["sound_id"] = html_id
-            _save_meta(slug, meta, campaign_dir)
+            _save_resolved_campaign_field(slug, meta, "sound_id", campaign_dir)
         # Auto-populate artist/song from HTML title if empty
         if not artist or not song:
             if html_title and not song:
                 song = html_title
                 meta["song"] = song
-                _save_meta(slug, meta, campaign_dir)
+                _save_resolved_campaign_field(slug, meta, "song", campaign_dir)
 
     # Resolve the sound ID -- if it's a URL, extract the real numeric ID
     sound_id = sound_id_raw
@@ -672,7 +985,7 @@ def _refresh_stats_inner(slug: str):
         if resolved_id and resolved_id != sound_id_raw:
             sound_id = resolved_id
             meta["sound_id"] = resolved_id
-            _save_meta(slug, meta, campaign_dir)
+            _save_resolved_campaign_field(slug, meta, "sound_id", campaign_dir)
 
     # If sound_id is still a URL (couldn't resolve), try HTML extraction
     if sound_id and "tiktok.com/" in sound_id:
@@ -685,7 +998,7 @@ def _refresh_stats_inner(slug: str):
                 sound_id = html_id
                 ref_song_title = html_title
                 meta["sound_id"] = html_id
-                _save_meta(slug, meta, campaign_dir)
+                _save_resolved_campaign_field(slug, meta, "sound_id", campaign_dir)
 
     # Resolve additional sounds
     additional_sounds = meta.get("additional_sounds", [])
@@ -718,8 +1031,16 @@ def _refresh_stats_inner(slug: str):
         if extra_id and re.match(r"^\d{10,}$", extra_id):
             sound_ids.add(extra_id)
 
-    # Add exact song+artist key
-    if song and artist:
+    # CAMP-90: apply the generic-title guard the shared build_sound_sets uses.
+    # Without it, a fuzzy-mode campaign whose song is an "original sound"/empty
+    # title builds a key like "original sound - <artist>" that matches every
+    # original-sound video on TikTok, scooping unrelated creators' videos into
+    # matched_videos on manual refresh. The cron path (build_sound_sets) skips
+    # song-key + word-overlap matching for generic titles; this mirrors it.
+    from campaign_manager.services.matching import _is_generic_song_title
+
+    # Add exact song+artist key (skip on generic titles)
+    if song and artist and not _is_generic_song_title(song):
         sound_keys.add(f"{song.lower().strip()} - {artist.lower().strip()}")
 
     # Add fuzzy song keys
@@ -731,11 +1052,11 @@ def _refresh_stats_inner(slug: str):
         s = re.sub(r"\s+remix\s*$", "", s, flags=re.IGNORECASE)
         return s.strip().lower()
 
-    if song:
+    if song and not _is_generic_song_title(song):
         core_song = _core_song_name(song)
         if artist:
             sound_keys.add(f"{core_song} - {artist.lower().strip()}")
-    if ref_song_title and artist:
+    if ref_song_title and artist and not _is_generic_song_title(ref_song_title):
         core_ref = _core_song_name(ref_song_title)
         sound_keys.add(f"{core_ref} - {artist.lower().strip()}")
 
@@ -788,16 +1109,33 @@ def _refresh_stats_inner(slug: str):
                 all_videos.extend(videos)
                 accounts_scraped += 1
 
+    # Instagram creators: one batched Apify run (IG blocks yt-dlp/Instaloader).
+    ig_creators = [
+        c.get("username", "") for c in active_creators
+        if c.get("platform") == "instagram" and c.get("username")
+    ]
+    if ig_creators:
+        from campaign_manager.services.apify_instagram import scrape_instagram_reels
+        ig_result = scrape_instagram_reels(ig_creators, start_date=scrape_start)
+        all_videos.extend(ig_result.videos)
+        errors.extend(ig_result.errors)
+        accounts_scraped += sum(
+            1 for o in ig_result.outcomes.values() if o.get("status") != "error"
+        )
+
     # Match videos using shared matching logic
     from campaign_manager.services.matching import (
         core_song_name as _csn, match_videos, merge_matched_videos,
         update_creator_post_counts,
     )
 
+    # CAMP-90: word-overlap matching is unsafe on generic titles too — skip it
+    # for them (mirrors build_sound_sets), so "original sound" doesn't word-match
+    # arbitrary videos.
     core_song_words: set = set()
-    if song:
+    if song and not _is_generic_song_title(song):
         core_song_words = {w for w in _csn(song).split() if len(w) > 2}
-    if ref_song_title:
+    if ref_song_title and not _is_generic_song_title(ref_song_title):
         core_song_words |= {w for w in _csn(ref_song_title).split() if len(w) > 2}
 
     # Honor the campaign's match strategy (strict mode skips fuzzy fallback)
@@ -846,7 +1184,14 @@ def _refresh_stats_inner(slug: str):
     stats["total_likes"] = total_likes
     stats["last_scrape"] = datetime.now().isoformat()
     meta["stats"] = stats
-    _save_meta(slug, meta, campaign_dir)
+    if _db.is_active():
+        _db.update_campaign_fields(slug, {
+            "total_views": total_views,
+            "total_likes": total_likes,
+            "last_scrape": datetime.fromisoformat(stats["last_scrape"]),
+        })
+    else:
+        _save_meta(slug, meta, campaign_dir)
 
     # Update creator post counts using shared logic
     if _db.is_active():
@@ -937,6 +1282,41 @@ def campaign_links(slug: str):
 # -------------------------------------------------------------------
 # 7. POST /api/campaign/<slug>/creator/add  -- add a creator
 # -------------------------------------------------------------------
+VALID_CREATOR_PLATFORMS = frozenset({"tiktok", "instagram"})
+
+
+def _creator_platform(c: dict) -> str:
+    return (c.get("platform") or "tiktok").lower()
+
+
+def _requested_platform() -> Optional[str]:
+    """Platform a creator action targets (?platform= or JSON body). None = unspecified.
+
+    The same handle can be booked once per platform on a campaign (e.g. a
+    creator's TikTok AND Instagram), so username alone can be ambiguous.
+    """
+    body = request.get_json(silent=True) or {}
+    raw = request.args.get("platform") or body.get("platform") or ""
+    return str(raw).strip().lower() or None
+
+
+def _find_active_creator(creators: list, username: str, platform: Optional[str]):
+    """Return (creator, None) or (None, error_response) for an ACTIVE row."""
+    matches = [
+        c for c in creators
+        if c.get("username") == username
+        and c.get("status", "active") != "removed"
+        and (platform is None or _creator_platform(c) == platform)
+    ]
+    if not matches:
+        return None, (jsonify({"error": f"Creator @{username} not found."}), 404)
+    if len(matches) > 1:
+        return None, (jsonify({
+            "error": f"@{username} is booked on more than one platform — specify which one."
+        }), 400)
+    return matches[0], None
+
+
 @campaigns_bp.post("/api/campaign/<slug>/creator/add")
 def add_creator(slug: str):
     if _db.is_active():
@@ -954,8 +1334,18 @@ def add_creator(slug: str):
     posts_owed_raw = data.get("posts_owed", 0)
     total_rate_raw = data.get("total_rate", 0)
     paypal = (data.get("paypal_email") or "").strip()
-    platform = (data.get("platform") or "tiktok").strip() or "tiktok"
+    platform = (data.get("platform") or "tiktok").strip().lower() or "tiktok"
     niches = data.get("niches", [])
+
+    # Pasting an IG profile link is common — pull the handle out and force
+    # the platform so the creator is scraped as Instagram.
+    if "instagram.com/" in username:
+        from campaign_manager.services.apify_instagram import clean_username
+        username = clean_username(username)
+        platform = "instagram"
+
+    if platform not in VALID_CREATOR_PLATFORMS:
+        return jsonify({"error": f"Platform must be one of: {', '.join(sorted(VALID_CREATOR_PLATFORMS))}."}), 400
 
     # Auto-fill PayPal from memory if not provided
     if not paypal and username:
@@ -975,12 +1365,16 @@ def add_creator(slug: str):
     else:
         creators = load_creators(campaign_dir)
 
-    if any(c.get("username") == username and c.get("status", "active") != "removed" for c in creators):
-        return jsonify({"error": f"@{username} already exists."}), 409
+    def _same(c: dict) -> bool:
+        return c.get("username") == username and _creator_platform(c) == platform
 
-    # Remove any previously-removed entries for this username to avoid
-    # unique constraint violations on (campaign_id, username).
-    creators = [c for c in creators if not (c.get("username") == username and c.get("status") == "removed")]
+    if any(_same(c) and c.get("status", "active") != "removed" for c in creators):
+        label = "Instagram" if platform == "instagram" else "TikTok"
+        return jsonify({"error": f"@{username} is already on this campaign for {label}."}), 409
+
+    # Remove any previously-removed entries for this username+platform to
+    # avoid unique constraint violations on (campaign_id, username, platform).
+    creators = [c for c in creators if not (_same(c) and c.get("status") == "removed")]
 
     per_post = round(total_rate / posts_owed, 2) if posts_owed > 0 else 0.0
     creators.append({
@@ -1040,23 +1434,34 @@ def edit_creator(slug: str, username: str):
     except (ValueError, TypeError):
         return jsonify({"error": "Invalid values."}), 400
 
-    found = False
-    for c in creators:
-        if c.get("username") == username and c.get("status", "active") != "removed":
-            if new_username and new_username != username:
-                c["username"] = new_username
-            c["posts_owed"] = posts_owed
-            c["total_rate"] = total_rate
-            c["per_post_rate"] = round(total_rate / posts_owed, 2) if posts_owed > 0 else 0.0
-            c["paypal_email"] = paypal
-            c["notes"] = notes
-            if niches is not None:
-                c["niches"] = niches
-            found = True
-            break
+    # Sweep #4 fix: reject a rename that collides with another ACTIVE creator —
+    # otherwise we create a duplicate (campaign_id, username), which hits the
+    # unique constraint (500 in DB mode) or makes two colliding active rows
+    # that desync every later username-keyed lookup / payout (JSON mode).
+    target, err = _find_active_creator(creators, username, _requested_platform())
+    if err:
+        return err
+    target_platform = _creator_platform(target)
 
-    if not found:
-        return jsonify({"error": f"Creator @{username} not found."}), 404
+    if new_username and new_username != username:
+        clash = any(
+            (o.get("username") == new_username
+             and _creator_platform(o) == target_platform
+             and o.get("status", "active") != "removed")
+            for o in creators
+        )
+        if clash:
+            return jsonify({"error": f"@{new_username} is already a creator on this campaign."}), 409
+
+    if new_username and new_username != username:
+        target["username"] = new_username
+    target["posts_owed"] = posts_owed
+    target["total_rate"] = total_rate
+    target["per_post_rate"] = round(total_rate / posts_owed, 2) if posts_owed > 0 else 0.0
+    target["paypal_email"] = paypal
+    target["notes"] = notes
+    if niches is not None:
+        target["niches"] = niches
 
     if _db.is_active():
         _db.save_creators(slug, creators)
@@ -1083,18 +1488,15 @@ def toggle_paid(slug: str, username: str):
         creators = load_creators(campaign_dir)
 
     new_status = "no"
-    found = False
-    for c in creators:
-        if c.get("username") == username:
-            now_paid = str(c.get("paid", "no")).lower() != "yes"
-            c["paid"] = "yes" if now_paid else "no"
-            c["payment_date"] = str(date.today()) if now_paid else ""
-            new_status = c["paid"]
-            found = True
-            break
-
-    if not found:
-        return jsonify({"error": f"Creator @{username} not found."}), 404
+    # Sweep #4: only ACTIVE rows — flipping a leftover removed entry's paid
+    # flag would desync the live payout.
+    target, err = _find_active_creator(creators, username, _requested_platform())
+    if err:
+        return err
+    now_paid = str(target.get("paid", "no")).lower() != "yes"
+    target["paid"] = "yes" if now_paid else "no"
+    target["payment_date"] = str(date.today()) if now_paid else ""
+    new_status = target["paid"]
 
     if _db.is_active():
         _db.save_creators(slug, creators)
@@ -1116,15 +1518,12 @@ def remove_creator(slug: str, username: str):
         campaign_dir = ACTIVE_DIR / slug
         creators = load_creators(campaign_dir)
 
-    found = False
-    for c in creators:
-        if c.get("username") == username:
-            c["status"] = "removed"
-            found = True
-            break
-
-    if not found:
-        return jsonify({"error": f"Creator @{username} not found."}), 404
+    # Sweep #4: only remove an ACTIVE row — matching a leftover removed
+    # entry first would re-remove it and miss the live one.
+    target, err = _find_active_creator(creators, username, _requested_platform())
+    if err:
+        return err
+    target["status"] = "removed"
 
     if _db.is_active():
         _db.save_creators(slug, creators)
@@ -1152,15 +1551,12 @@ def remove_creator_by_body(slug: str):
         campaign_dir = ACTIVE_DIR / slug
         creators = load_creators(campaign_dir)
 
-    found = False
-    for c in creators:
-        if c.get("username") == username:
-            c["status"] = "removed"
-            found = True
-            break
-
-    if not found:
-        return jsonify({"error": f"Creator @{username} not found."}), 404
+    # Sweep #4: only remove an ACTIVE row — matching a leftover removed
+    # entry first would re-remove it and miss the live one.
+    target, err = _find_active_creator(creators, username, _requested_platform())
+    if err:
+        return err
+    target["status"] = "removed"
 
     if _db.is_active():
         _db.save_creators(slug, creators)
@@ -1176,6 +1572,16 @@ def remove_creator_by_body(slug: str):
 @campaigns_bp.get("/api/paypal/<username>")
 def api_paypal(username: str):
     return jsonify({"paypal": recall_paypal(username)})
+
+
+# -------------------------------------------------------------------
+# 11b. GET /api/last-rate/<username>  -- last booked rate lookup
+# -------------------------------------------------------------------
+@campaigns_bp.get("/api/last-rate/<username>")
+def api_last_rate(username: str):
+    name = username.strip().lstrip("@")
+    last = _db.get_last_rate(name) if _db.is_active() else None
+    return jsonify({"last_rate": last})
 
 
 # -------------------------------------------------------------------
@@ -1247,6 +1653,18 @@ def api_search():
 # -------------------------------------------------------------------
 # Cobrand Integration
 # -------------------------------------------------------------------
+
+@campaigns_bp.get("/api/campaign/<slug>/report")
+def get_campaign_report(slug: str):
+    """Client-facing performance report (CAMP-84): headline reach, top posts,
+    per-creator delivery with Cobrand sound-spread. Excludes budget/financials."""
+    from campaign_manager.services.campaign_report import build_report
+
+    report = build_report(slug)
+    if report is None:
+        return jsonify({"error": "Campaign not found"}), 404
+    return jsonify(report)
+
 
 @campaigns_bp.get("/api/campaign/<slug>/cobrand")
 def get_cobrand_stats(slug: str):
@@ -1382,7 +1800,7 @@ def _get_all_campaigns_data():
 
     if _db.is_active():
         rows = _db.list_campaigns_with_creators(
-            status=None, with_matched_videos=True
+            with_matched_videos=True
         )
         tracker_map = _db.get_campaign_to_tracker_map()
         for meta, creators, matched_videos in rows:
@@ -1431,6 +1849,36 @@ def list_creators():
     """
     all_campaigns = _get_all_campaigns_data()
 
+    # CAMP-72: bulk-fetch every campaign's stats in ONE concurrent wave before
+    # the loop, instead of a serial get_campaign_stats() per campaign (N
+    # sequential 15s-timeout Tides Tracker fetches = the 5-25s cold load on
+    # this page). Mirrors the get_campaigns() list-endpoint fast path.
+    bulk_stats: Dict[str, object] = {}
+    if _db.is_active():
+        try:
+            from campaign_manager.services.campaign_stats import get_campaign_stats_bulk
+            # CAMP-72: only live-refresh stats for NON-completed campaigns.
+            # Completed campaigns' matched_videos already carry their final
+            # stored view counts — a live Tides Tracker fetch for each is the
+            # bulk of the cold-load time (96 of 192 campaigns have trackers).
+            # Their scraper/stored numbers overlay fine without the round-trip.
+            live = [
+                c for c in all_campaigns
+                if c["meta"].get("completion_status") != "completed"
+            ]
+            slugs = [c["slug"] for c in live]
+            mv_by_slug = {c["slug"]: c["matched_videos"] for c in live}
+            start_by_slug = {c["slug"]: c["meta"].get("start_date", "") for c in live}
+            tid_by_slug = {c["slug"]: c.get("tracker_id", "") for c in live}
+            bulk_stats = get_campaign_stats_bulk(
+                slugs,
+                matched_videos_by_slug=mv_by_slug,
+                start_date_by_slug=start_by_slug,
+                tracker_id_by_slug=tid_by_slug,
+            )
+        except Exception:
+            bulk_stats = {}  # fall back to per-campaign overlay below
+
     # Aggregate by username (case-insensitive)
     creator_map: Dict[str, Dict] = {}
 
@@ -1442,29 +1890,41 @@ def list_creators():
         matched_videos = camp["matched_videos"]
 
         # RTA-43: overlay API view/like counts onto matched rows before
-        # aggregating. Falls back to scraper numbers when no API path.
+        # aggregating. CAMP-72: use the bulk pre-warmed result when present
+        # (non-completed campaigns). Completed campaigns aren't in bulk_stats
+        # and intentionally skip the live fetch — their stored matched_videos
+        # already carry final numbers, so no per-campaign Tides Tracker
+        # round-trip (that serial fetch was the 5-25s cold load).
         if _db.is_active():
             try:
-                stats_result = get_campaign_stats(
-                    slug,
-                    matched_videos=matched_videos,
-                    tracker_id=camp.get("tracker_id"),
-                    start_date=meta.get("start_date", ""),
-                )
-                matched_videos = overlay_video_stats(matched_videos, stats_result.submissions)
+                stats_result = bulk_stats.get(slug)
+                if stats_result is not None:
+                    matched_videos = overlay_video_stats(matched_videos, stats_result.submissions)
             except Exception:
                 pass  # leave scraper numbers in place on unexpected failure
 
         # Build a views-by-account map for this campaign. Skip rows the
         # team has dismissed as false-positive matches (issue #32).
+        # Also collect (upload_date, views) tuples per account for the
+        # rolling avg computation.
         views_by_account: Dict[str, int] = {}
+        video_records_by_account: Dict[str, List] = {}
         for v in matched_videos:
             if v.get("dismissed_at"):
                 continue
             acct = (v.get("account", "") or "").lstrip("@").lower()
-            if acct:
-                views_by_account[acct] = views_by_account.get(acct, 0) + int(v.get("views", 0) or 0)
+            if not acct:
+                continue
+            views_by_account[acct] = views_by_account.get(acct, 0) + int(v.get("views", 0) or 0)
+            upload_date = (v.get("upload_date", "") or "").strip()
+            if upload_date:
+                video_records_by_account.setdefault(acct, []).append(
+                    (upload_date, int(v.get("views", 0) or 0))
+                )
 
+        # A creator can hold two bookings on one campaign (TikTok + IG) —
+        # campaign count and views are per person, so add them only once.
+        seen_this_campaign: set = set()
         for c in creators:
             if c.get("status", "active") == "removed":
                 continue
@@ -1487,16 +1947,21 @@ def list_creators():
                     "paypal_email": c.get("paypal_email", ""),
                     "niches": [],
                     "_platforms": [],
+                    "_video_records": [],
                 }
 
             entry = creator_map[key]
-            entry["campaigns_count"] += 1
+            first_booking_here = key not in seen_this_campaign
+            seen_this_campaign.add(key)
+            if first_booking_here:
+                entry["campaigns_count"] += 1
+                entry["total_views"] += views_by_account.get(key, 0)
+                entry["_video_records"].extend(video_records_by_account.get(key, []))
             entry["total_posts_owed"] += int(c.get("posts_owed", 0) or 0)
             entry["total_posts_done"] += int(c.get("posts_done", 0) or 0)
             entry["total_spend"] += float(c.get("total_rate", 0) or 0)
             if str(c.get("paid", "no")).lower() == "yes":
                 entry["total_payout"] += float(c.get("total_rate", 0) or 0)
-            entry["total_views"] += views_by_account.get(key, 0)
             entry["_platforms"].append(c.get("platform", "tiktok"))
 
             # Keep latest non-empty paypal
@@ -1509,19 +1974,29 @@ def list_creators():
                 if n and n not in entry["niches"]:
                     entry["niches"].append(n)
 
-    # Finalize: compute avg_cpm, pick most common platform, remove internals
+    # Finalize: compute avg_cpm, avg_recent_views, pick most common platform
     results = []
     for entry in creator_map.values():
         platforms = entry.pop("_platforms", [])
         if platforms:
             entry["platform"] = max(set(platforms), key=platforms.count)
 
-        if entry["total_views"] > 0:
-            entry["avg_cpm"] = round(
-                (entry["total_spend"] / entry["total_views"]) * 1_000, 2
-            )
+        cpm = calc_cpm(entry["total_spend"], entry["total_views"])
+        if cpm is not None:
+            entry["avg_cpm"] = round(cpm, 2)
         else:
             entry["avg_cpm"] = None
+
+        # Rolling avg views: last 30 matched posts by upload date, newest first.
+        video_records = sorted(
+            entry.pop("_video_records", []),
+            key=lambda x: x[0],
+            reverse=True,
+        )
+        recent = video_records[:30]
+        entry["avg_recent_views"] = (
+            round(sum(v for _, v in recent) / len(recent)) if recent else None
+        )
 
         entry["total_spend"] = round(entry["total_spend"], 2)
         entry["total_payout"] = round(entry["total_payout"], 2)
@@ -1549,27 +2024,42 @@ def creator_profile(username: str):
     platforms = []
     paypal_email = ""
 
-    for camp in all_campaigns:
+    # CAMP-73: filter to the campaigns this creator is actually in FIRST, then
+    # bulk-fetch live stats for the non-completed ones in one concurrent wave.
+    # Previously get_campaign_stats() ran serially for ALL ~192 campaigns
+    # before the membership check — a creator in 93 campaigns paid 93+
+    # sequential 15s-timeout fetches. Now: skip non-members, bulk the rest,
+    # skip completed (their stored numbers are final — same scope as CAMP-72).
+    member_camps = [
+        c for c in all_campaigns
+        if any(
+            (cr.get("username", "") or "").lower() == uname_lower
+            and cr.get("status", "active") != "removed"
+            for cr in c["creators"]
+        )
+    ]
+    bulk_stats: Dict[str, object] = {}
+    if _db.is_active():
+        try:
+            from campaign_manager.services.campaign_stats import get_campaign_stats_bulk
+            live = [c for c in member_camps if c["meta"].get("completion_status") != "completed"]
+            if live:
+                bulk_stats = get_campaign_stats_bulk(
+                    [c["slug"] for c in live],
+                    matched_videos_by_slug={c["slug"]: c["matched_videos"] for c in live},
+                    start_date_by_slug={c["slug"]: c["meta"].get("start_date", "") for c in live},
+                    tracker_id_by_slug={c["slug"]: c.get("tracker_id", "") for c in live},
+                )
+        except Exception:
+            bulk_stats = {}
+
+    for camp in member_camps:
         slug = camp["slug"]
         meta = camp["meta"]
         title = campaign_title(meta)
         creators = camp["creators"]
         matched_videos = camp["matched_videos"]
 
-        # RTA-43: overlay API counts so the creator's per-video table
-        # and per-campaign rollup reflect live numbers.
-        if _db.is_active():
-            try:
-                stats_result = get_campaign_stats(
-                    slug,
-                    matched_videos=matched_videos,
-                    start_date=meta.get("start_date", ""),
-                )
-                matched_videos = overlay_video_stats(matched_videos, stats_result.submissions)
-            except Exception:
-                pass
-
-        # Find this creator in the campaign
         creator_entry = None
         for c in creators:
             if (c.get("username", "") or "").lower() == uname_lower and c.get("status", "active") != "removed":
@@ -1578,6 +2068,15 @@ def creator_profile(username: str):
 
         if not creator_entry:
             continue
+
+        # Overlay live counts from the bulk pre-warm (non-completed only).
+        if _db.is_active():
+            try:
+                stats_result = bulk_stats.get(slug)
+                if stats_result is not None:
+                    matched_videos = overlay_video_stats(matched_videos, stats_result.submissions)
+            except Exception:
+                pass
 
         posts_owed = int(creator_entry.get("posts_owed", 0) or 0)
         posts_done = int(creator_entry.get("posts_done", 0) or 0)
@@ -1641,13 +2140,30 @@ def creator_profile(username: str):
         platform = max(set(platforms), key=platforms.count)
 
     avg_cpm = None
-    if total_views > 0:
-        avg_cpm = round((total_spend / total_views) * 1_000, 2)
+    cpm = calc_cpm(total_spend, total_views)
+    if cpm is not None:
+        avg_cpm = round(cpm, 2)
+
+    # Merge niches from all creator rows for this username
+    niches: List[str] = []
+    if _db.is_active():
+        with _db.get_session() as s:
+            from campaign_manager.models import Creator as _Creator
+            from sqlalchemy import func as _func
+            rows = s.query(_Creator.niches).filter(
+                _func.lower(_Creator.username) == uname_lower,
+                _Creator.niches.isnot(None),
+            ).all()
+        for (row_niches,) in rows:
+            for n in (row_niches or []):
+                if n and n not in niches:
+                    niches.append(n)
 
     return jsonify({
         "username": username,
         "platform": platform,
         "paypal_email": paypal_email,
+        "niches": niches,
         "stats": {
             "campaigns_count": len(campaigns_list),
             "total_posts_owed": total_posts_owed,
@@ -1661,6 +2177,65 @@ def creator_profile(username: str):
         "campaigns": campaigns_list,
         "videos": all_videos,
     })
+
+
+# -------------------------------------------------------------------
+# GET /api/creators/<username>/rollup  -- internal + external union (CAMP-34)
+# -------------------------------------------------------------------
+@campaigns_bp.get("/api/creators/<username>/rollup")
+def creator_rollup_endpoint(username: str):
+    """Unified per-creator activity: internal page videos + external campaign
+    matched videos, in one rollup (the 'All Activity' data)."""
+    if not _db.is_active():
+        return jsonify({"error": "DB not active"}), 503
+    from campaign_manager.services.creator_rollup import creator_rollup
+    try:
+        days = max(1, min(int(request.args.get("days", 90)), 3650))
+    except (TypeError, ValueError):
+        days = 90
+    session = _db.get_session()
+    try:
+        return jsonify(creator_rollup(session, username, days))
+    finally:
+        session.close()
+
+
+# PATCH /api/creators/<username>/niches
+# -------------------------------------------------------------------
+@campaigns_bp.patch("/api/creators/<username>/niches")
+def update_creator_niches(username: str):
+    """Set niches on every Creator row for this username (cross-campaign).
+
+    Body: {"niches": ["trucks", "anime"]}
+    Validates against NICHE_VOCAB but passes through unknown values so
+    the list is extensible without a backend deploy.
+    """
+    data = request.get_json(silent=True) or {}
+    niches = data.get("niches")
+    if niches is None or not isinstance(niches, list):
+        return jsonify({"error": "niches must be a list"}), 400
+
+    cleaned = [str(n).strip().lower() for n in niches if str(n).strip()]
+    cleaned = list(dict.fromkeys(cleaned))  # deduplicate, preserve order
+
+    if not _db.is_active():
+        return jsonify({"error": "Database not available"}), 503
+
+    uname_lower = username.lower()
+    with _db.get_session() as s:
+        from campaign_manager.models import Creator as _Creator
+        from sqlalchemy import func as _func
+        rows = s.query(_Creator).filter(
+            _func.lower(_Creator.username) == uname_lower,
+        ).all()
+        if not rows:
+            return jsonify({"error": f"Creator @{username} not found"}), 404
+        for row in rows:
+            row.niches = cleaned
+        s.commit()
+        updated = len(rows)
+
+    return jsonify({"ok": True, "updated": updated, "niches": cleaned})
 
 
 # ---------------------------------------------------------------------------
@@ -1703,7 +2278,7 @@ def create_tracker(slug: str):
             "ok": True,
             "message": "Tracker already exists",
             "tracker_campaign_id": tracker_id,
-            "tracker_url": meta.get("tracker_url", ""),
+            "tracker_url": _canon_tracker_url(meta.get("tracker_url", "")),
         })
 
     # Build tracker campaign name from campaign metadata

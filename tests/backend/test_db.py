@@ -15,7 +15,6 @@ def _make_campaign(db, slug="my_campaign", title="My Campaign", **extra):
         "sound_id": "1234567890",
         "start_date": "2026-04-01",
         "budget": 1000.0,
-        "status": "active",
         "platform": "tiktok",
         **extra,
     }
@@ -24,6 +23,24 @@ def _make_campaign(db, slug="my_campaign", title="My Campaign", **extra):
 
 
 class TestCampaignCrud:
+    def test_init_runs_chartmetric_column_self_heal(self, monkeypatch):
+        from campaign_manager import db as db_module
+        monkeypatch.setattr(db_module, "_engine", db_module._engine)
+        monkeypatch.setattr(db_module, "_SessionLocal", db_module._SessionLocal)
+        class Session:
+            def __enter__(self): return self
+            def __exit__(self, *_): pass
+            def execute(self, *_): pass
+            def commit(self): pass
+        monkeypatch.setattr(db_module, "create_engine", lambda *a, **k: object())
+        monkeypatch.setattr(db_module, "sessionmaker", lambda **k: Session)
+        monkeypatch.setattr(db_module.Base.metadata, "create_all", lambda *_: None)
+        monkeypatch.setattr(db_module, "_sync_columns", lambda: None)
+        healed = []
+        monkeypatch.setattr(db_module, "_self_heal_chartmetric_columns", lambda: healed.append(True))
+        assert db_module.init("postgresql://example.invalid/campaigns") is True
+        assert healed == [True]
+
     def test_save_and_fetch_campaign(self, db):
         _make_campaign(db)
         meta = db.get_campaign("my_campaign")
@@ -50,10 +67,34 @@ class TestCampaignCrud:
         _make_campaign(db, title="Updated")
         assert db.get_campaign("my_campaign")["title"] == "Updated"
 
+    def test_partial_save_preserves_end_date_and_auto_flag(self, db):
+        _make_campaign(db, end_date="2026-05-01", end_date_auto=True)
+        db.save_campaign("my_campaign", {"title": "Updated"})
+        saved = db.get_campaign("my_campaign")
+        assert saved["end_date"] == "2026-05-01"
+        assert saved["end_date_auto"] is True
+
     def test_update_campaign_fields(self, db):
         _make_campaign(db)
         db.update_campaign_fields("my_campaign", {"completion_status": "completed"})
         assert db.get_campaign("my_campaign")["completion_status"] == "completed"
+
+    def test_chartmetric_self_heal_issues_end_date_auto_statements(self, monkeypatch):
+        from campaign_manager import db as db_module
+        executed = []
+        class Session:
+            def __enter__(self): return self
+            def __exit__(self, *_): pass
+            def execute(self, statement): executed.append(str(statement))
+            def commit(self): pass
+        monkeypatch.setattr(db_module, "_SessionLocal", lambda: Session())
+        db_module._self_heal_chartmetric_columns()
+        assert any("ADD COLUMN IF NOT EXISTS end_date_auto BOOLEAN DEFAULT FALSE" in sql for sql in executed)
+        assert any("UPDATE campaigns SET end_date_auto = FALSE WHERE end_date_auto IS NULL" in sql for sql in executed)
+        assert any("ALTER COLUMN end_date_auto SET DEFAULT FALSE" in sql for sql in executed)
+        assert any("ADD COLUMN IF NOT EXISTS attribution_overrides JSONB DEFAULT '{}'::jsonb" in sql for sql in executed)
+        assert any("UPDATE campaigns SET attribution_overrides = '{}'::jsonb WHERE attribution_overrides IS NULL" in sql for sql in executed)
+        assert any("ALTER COLUMN attribution_overrides SET DEFAULT '{}'::jsonb" in sql for sql in executed)
 
     def test_update_campaign_stats(self, db):
         _make_campaign(db)
@@ -62,12 +103,6 @@ class TestCampaignCrud:
         assert meta["stats"]["total_views"] == 999
         assert meta["stats"]["total_likes"] == 10
         assert meta["stats"]["last_scrape"]
-
-    def test_list_campaigns_filters_by_status(self, db):
-        _make_campaign(db, slug="active1")
-        _make_campaign(db, slug="paused1", status="paused")
-        assert {c["slug"] for c in db.list_campaigns(status="active")} == {"active1"}
-        assert {c["slug"] for c in db.list_campaigns(status="paused")} == {"paused1"}
 
     def test_list_campaigns_can_exclude_completed(self, db):
         _make_campaign(db, slug="a", completion_status="none")
@@ -289,3 +324,59 @@ class TestNetworkCreators:
         assert db.remove_network_creator("alice") is True
         assert db.get_network_creator("alice") is None
         assert db.remove_network_creator("alice") is False
+
+
+class TestListCampaignsWithCreatorsCompletionFilter:
+    """The `completion` narrowing has to happen IN THE QUERY.
+
+    The campaigns list endpoint's cost scales with what this function
+    returns — every campaign costs a meta dict, a dict per creator, a
+    dict per matched_video, a budget calc, and a stats resolution. Prod
+    sits at ~285 completed vs ~37 active campaigns, with ~90% of all
+    matched_videos hanging off the completed ones, so loading the lot
+    and filtering in Python made the default page load do roughly 10x
+    the work it needed to. These tests fail if someone drops the filter
+    back into the caller.
+    """
+
+    def _two_campaigns(self, db):
+        _make_campaign(db, slug="live_one", title="Live One")
+        _make_campaign(db, slug="done_one", title="Done One",
+                       completion_status="completed")
+        db.save_creators("live_one", [{"username": "live_creator", "rate": 100}])
+        db.save_creators("done_one", [{"username": "done_creator", "rate": 100}])
+        db.save_matched_videos("live_one", [
+            {"url": "https://tiktok.com/@live_creator/video/1", "account": "live_creator"},
+        ])
+        db.save_matched_videos("done_one", [
+            {"url": "https://tiktok.com/@done_creator/video/2", "account": "done_creator"},
+            {"url": "https://tiktok.com/@done_creator/video/3", "account": "done_creator"},
+        ])
+
+    def test_active_returns_only_live_campaigns(self, db):
+        self._two_campaigns(db)
+        rows = db.list_campaigns_with_creators(
+            with_matched_videos=True, completion="active")
+        assert [meta["slug"] for meta, _c, _mv in rows] == ["live_one"]
+
+    def test_finished_returns_only_completed_campaigns(self, db):
+        self._two_campaigns(db)
+        rows = db.list_campaigns_with_creators(
+            with_matched_videos=True, completion="finished")
+        assert [meta["slug"] for meta, _c, _mv in rows] == ["done_one"]
+
+    def test_default_still_returns_everything(self, db):
+        self._two_campaigns(db)
+        rows = db.list_campaigns_with_creators(with_matched_videos=True)
+        assert sorted(meta["slug"] for meta, _c, _mv in rows) == ["done_one", "live_one"]
+
+    def test_filter_also_narrows_the_child_fetches(self, db):
+        """The point of filtering here rather than in the caller: the
+        selectinload for creators/matched_videos is driven by the
+        campaign IDs this query returns, so completed campaigns' rows
+        are never pulled out of Postgres at all."""
+        self._two_campaigns(db)
+        rows = db.list_campaigns_with_creators(
+            with_matched_videos=True, completion="active")
+        assert sum(len(c) for _m, c, _mv in rows) == 1     # not 2
+        assert sum(len(mv) for _m, _c, mv in rows) == 1    # not 3

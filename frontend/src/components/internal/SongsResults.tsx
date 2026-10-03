@@ -19,27 +19,27 @@ function SongCard({ song }: { song: InternalSongResult }) {
   }
 
   return (
-    <div className="bg-white border border-[#e8e8ef] rounded-[10px] p-4 mb-3">
+    <div className="bg-rt-bg-card border border-white/8 rounded-[10px] p-4 mb-3">
       {/* Song header */}
       <div className="flex justify-between items-start">
         <div className="min-w-0 flex-1">
-          <div className="text-[16px] font-semibold text-[#1a1a2e] truncate">
+          <div className="text-[16px] font-semibold text-rt-fg truncate">
             {song.song}
           </div>
-          <div className="text-[#888] text-[13px]">{song.artist}</div>
+          <div className="text-rt-fg-tertiary text-[13px]">{song.artist}</div>
         </div>
         <div className="text-right flex-shrink-0 ml-4">
-          <div className="text-[18px] font-bold text-[#1a1a2e]">
+          <div className="text-[18px] font-bold text-rt-fg">
             {(song.total_views ?? 0).toLocaleString()}
           </div>
-          <div className="text-[#888] text-[13px]">
+          <div className="text-rt-fg-tertiary text-[13px]">
             {song.videos.length} video{song.videos.length !== 1 ? "s" : ""}
           </div>
         </div>
       </div>
 
       {/* Accounts */}
-      <div className="mt-2 text-[12px] text-[#888]">
+      <div className="mt-2 text-[12px] text-rt-fg-tertiary">
         Accounts: {(song.accounts ?? []).join(", ") || "—"}
       </div>
 
@@ -47,28 +47,28 @@ function SongCard({ song }: { song: InternalSongResult }) {
       <div className="mt-2.5 overflow-x-auto">
         <table className="w-full text-left">
           <thead>
-            <tr className="border-b border-[#f0f0f5]">
-              <th className="text-[11px] text-[#888] font-semibold uppercase tracking-wide px-2.5 py-1.5">
+            <tr className="border-b border-white/5">
+              <th className="text-[11px] text-rt-fg-tertiary font-semibold uppercase tracking-wide px-2.5 py-1.5">
                 Account
               </th>
-              <th className="text-[11px] text-[#888] font-semibold uppercase tracking-wide px-2.5 py-1.5">
+              <th className="text-[11px] text-rt-fg-tertiary font-semibold uppercase tracking-wide px-2.5 py-1.5">
                 Views
               </th>
-              <th className="text-[11px] text-[#888] font-semibold uppercase tracking-wide px-2.5 py-1.5">
+              <th className="text-[11px] text-rt-fg-tertiary font-semibold uppercase tracking-wide px-2.5 py-1.5">
                 Likes
               </th>
-              <th className="text-[11px] text-[#888] font-semibold uppercase tracking-wide px-2.5 py-1.5">
+              <th className="text-[11px] text-rt-fg-tertiary font-semibold uppercase tracking-wide px-2.5 py-1.5">
                 Link
               </th>
             </tr>
           </thead>
           <tbody>
             {song.videos.map((v, vi) => (
-              <tr key={vi} className="border-b border-[#f0f0f5] last:border-b-0">
+              <tr key={vi} className="border-b border-white/5 last:border-b-0">
                 <td className="px-2.5 py-1 text-[13px]">
                   <Link
                     to={`/internal/${v.account.replace(/^@/, "")}`}
-                    className="text-[#0b62d6] hover:underline"
+                    className="text-rt-magenta hover:underline"
                   >
                     {v.account}
                   </Link>
@@ -84,7 +84,7 @@ function SongCard({ song }: { song: InternalSongResult }) {
                     href={v.url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-[#0b62d6] hover:underline"
+                    className="text-rt-magenta hover:underline"
                   >
                     Open
                   </a>
@@ -100,7 +100,7 @@ function SongCard({ song }: { song: InternalSongResult }) {
         <button
           type="button"
           onClick={() => setLinksOpen(!linksOpen)}
-          className="flex items-center gap-1 text-[13px] text-[#0b62d6] font-medium hover:underline"
+          className="flex items-center gap-1 text-[13px] text-rt-magenta font-medium hover:underline"
         >
           Copy links ({song.videos.length})
           {linksOpen ? (
@@ -114,7 +114,7 @@ function SongCard({ song }: { song: InternalSongResult }) {
             <textarea
               readOnly
               value={linksText}
-              className="w-full font-mono text-[12px] p-2 border border-[#ddd] rounded-md bg-[#f9f9fb] resize-y"
+              className="w-full font-mono text-[12px] p-2 border border-white/10 rounded-md bg-white/[0.03] resize-y"
               style={{
                 height: `${Math.max(60, song.videos.length * 22)}px`,
                 maxHeight: "200px",
@@ -166,13 +166,13 @@ function MasterCopySection({ songs }: { songs: InternalSongResult[] }) {
   }
 
   return (
-    <div className="bg-white border border-[#e8e8ef] rounded-[10px] p-4 mt-5">
+    <div className="bg-rt-bg-card border border-white/8 rounded-[10px] p-4 mt-5">
       <div className="flex items-center justify-between mb-2.5">
         <h3 className="text-[15px] font-semibold">All Links (Copy/Paste)</h3>
         <Button
           type="button"
           size="sm"
-          className="bg-[#0b62d6] hover:bg-[#0951b5] text-white text-xs"
+          className="bg-rt-magenta hover:bg-rt-purple text-white text-xs"
           onClick={copyAll}
         >
           {copied ? (
@@ -189,7 +189,7 @@ function MasterCopySection({ songs }: { songs: InternalSongResult[] }) {
       <textarea
         readOnly
         value={allLinksText}
-        className="w-full h-[300px] font-mono text-[12px] p-2.5 border border-[#ddd] rounded-md bg-[#f9f9fb] resize-y"
+        className="w-full h-[300px] font-mono text-[12px] p-2.5 border border-white/10 rounded-md bg-white/[0.03] resize-y"
       />
     </div>
   )
@@ -205,8 +205,8 @@ interface SongsResultsProps {
 export function SongsResults({ results, isLoading }: SongsResultsProps) {
   if (isLoading) {
     return (
-      <div className="bg-white border border-[#e8e8ef] rounded-[10px] p-10 text-center">
-        <p className="text-[#888] text-sm">Loading results...</p>
+      <div className="bg-rt-bg-card border border-white/8 rounded-[10px] p-10 text-center">
+        <p className="text-rt-fg-tertiary text-sm">Loading results...</p>
       </div>
     )
   }
@@ -219,7 +219,7 @@ export function SongsResults({ results, isLoading }: SongsResultsProps) {
         <div className="flex items-baseline justify-between mb-3">
           <h3 className="text-[15px] font-semibold">
             Sounds Found ({results.songs.length})
-            <span className="text-[#888] font-normal">
+            <span className="text-rt-fg-tertiary font-normal">
               {" "}
               &mdash; {results.hours}h window
             </span>
@@ -240,8 +240,8 @@ export function SongsResults({ results, isLoading }: SongsResultsProps) {
   // Has results but no songs
   if (results && results.scraped_at) {
     return (
-      <div className="bg-white border border-[#e8e8ef] rounded-[10px] p-10 text-center">
-        <p className="text-[#888] text-sm">
+      <div className="bg-rt-bg-card border border-white/8 rounded-[10px] p-10 text-center">
+        <p className="text-rt-fg-tertiary text-sm">
           No videos found in the last {results.hours || 48} hours.
           <br />
           Try increasing the time window.
@@ -252,8 +252,8 @@ export function SongsResults({ results, isLoading }: SongsResultsProps) {
 
   // No results at all
   return (
-    <div className="bg-white border border-[#e8e8ef] rounded-[10px] p-10 text-center">
-      <p className="text-[#888] text-sm">
+    <div className="bg-rt-bg-card border border-white/8 rounded-[10px] p-10 text-center">
+      <p className="text-rt-fg-tertiary text-sm">
         Click <strong>Run Scrape</strong> to scan internal creator accounts.
         <br />
         Results will appear here grouped by song.

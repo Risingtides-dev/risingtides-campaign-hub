@@ -1,4 +1,6 @@
+import { useState } from "react"
 import { Link, useLocation } from "react-router-dom"
+import { ChevronRight } from "lucide-react"
 
 const navItems = [
   {
@@ -10,28 +12,32 @@ const navItems = [
   },
   {
     section: "Creators",
-    links: [{ label: "Creator Database", path: "/creators" }],
-  },
-  {
-    section: "Internal",
-    links: [{ label: "Internal TikTok", path: "/internal" }],
+    links: [
+      { label: "Creator Library", path: "/library" },
+      { label: "Creator Database", path: "/creators" },
+      { label: "Creator Intelligence", path: "/intelligence" },
+      { label: "Booking Wizard", path: "/booking-wizard" },
+      { label: "Booking Efficiency", path: "/efficiency" },
+    ],
   },
   {
     section: "Outreach",
     links: [{ label: "Outreach Hub", path: "/network" }],
   },
   {
-    section: "Intake",
-    links: [{ label: "Slack Inbox", path: "/inbox" }],
-  },
-  {
     section: "Tracking",
     links: [{ label: "TidesTrackers", path: "/trackers" }],
   },
-  {
-    section: "Distribution",
-    links: [{ label: "Sound Assignments", path: "/sound-assignments" }],
-  },
+]
+
+// Low-traffic sections tucked behind a collapsed "Other" group so they
+// don't clutter the sidebar (john, 08-07). They render only when the
+// group is expanded.
+const otherItems = [
+  { label: "Rising Tides Tracker", path: "/rt-tracker" },
+  { label: "Internal TikTok", path: "/internal" },
+  { label: "Slack Inbox", path: "/inbox" },
+  { label: "Sound Assignments", path: "/sound-assignments" },
 ]
 
 interface SidebarProps {
@@ -47,6 +53,27 @@ export function Sidebar({ open, onClose }: SidebarProps) {
     return location.pathname.startsWith(path)
   }
 
+  // Start expanded when the current route lives inside "Other", so the
+  // active link is never invisible.
+  const [showOther, setShowOther] = useState(() =>
+    otherItems.some((l) => isActive(l.path))
+  )
+
+  const renderLink = (link: { label: string; path: string }) => (
+    <Link
+      key={link.path}
+      to={link.path}
+      onClick={onClose}
+      className={`flex items-center gap-2.5 px-6 py-2.5 text-sm transition-colors ${
+        isActive(link.path)
+          ? "bg-rt-magenta/10 text-rt-fg font-semibold border-l-[3px] border-rt-magenta pl-[21px]"
+          : "text-rt-fg-secondary hover:bg-white/5 hover:text-rt-fg"
+      }`}
+    >
+      {link.label}
+    </Link>
+  )
+
   return (
     <>
       {/* Mobile overlay */}
@@ -58,35 +85,37 @@ export function Sidebar({ open, onClose }: SidebarProps) {
       )}
 
       <nav
-        className={`fixed top-0 left-0 bottom-0 z-50 w-[220px] bg-white border-r border-[#e8e8ef] py-6 overflow-y-auto transition-transform duration-200 md:translate-x-0 ${
+        className={`fixed top-0 left-0 bottom-0 z-50 w-[220px] bg-rt-bg-raised border-r border-white/8 py-6 overflow-y-auto transition-transform duration-200 md:translate-x-0 ${
           open ? "translate-x-0" : "-translate-x-full"
         }`}
       >
-        <div className="px-6 pb-6 border-b border-[#e8e8ef]">
-          <span className="text-xl font-bold text-[#1a1a2e]">Campaign Tracker</span>
+        <div className="px-6 pb-6 border-b border-white/8">
+          <span className="text-xl font-bold font-display rt-gradient-text">Campaign Hub</span>
         </div>
 
         {navItems.map((group) => (
           <div key={group.section}>
-            <div className="pt-4 pb-1 px-6 text-[11px] font-semibold uppercase tracking-[0.5px] text-[#999]">
+            <div className="pt-4 pb-1 px-6 text-[11px] font-semibold uppercase tracking-[0.12em] text-rt-fg-tertiary">
               {group.section}
             </div>
-            {group.links.map((link) => (
-              <Link
-                key={link.path}
-                to={link.path}
-                onClick={onClose}
-                className={`flex items-center gap-2.5 px-6 py-2.5 text-sm transition-colors ${
-                  isActive(link.path)
-                    ? "bg-[#eef2ff] text-[#0b62d6] font-semibold border-l-[3px] border-[#0b62d6] pl-[21px]"
-                    : "text-[#555] hover:bg-[#f0f0f5]"
-                }`}
-              >
-                {link.label}
-              </Link>
-            ))}
+            {group.links.map(renderLink)}
           </div>
         ))}
+
+        {/* Collapsed "Other" group */}
+        <div>
+          <button
+            type="button"
+            onClick={() => setShowOther((v) => !v)}
+            className="w-full flex items-center gap-1 pt-4 pb-1 px-6 text-[11px] font-semibold uppercase tracking-[0.12em] text-rt-fg-tertiary hover:text-rt-fg transition-colors"
+          >
+            Other
+            <ChevronRight
+              className={`size-3 transition-transform ${showOther ? "rotate-90" : ""}`}
+            />
+          </button>
+          {showOther && otherItems.map(renderLink)}
+        </div>
       </nav>
     </>
   )

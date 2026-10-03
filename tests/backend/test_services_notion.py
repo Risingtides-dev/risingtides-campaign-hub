@@ -3,6 +3,9 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from campaign_manager.services import notion as notion_module
 from campaign_manager.services.notion import (
     _get_date,
     _get_email,
@@ -15,6 +18,7 @@ from campaign_manager.services.notion import (
     _get_url,
     _parse_platform_split,
     query_new_clients,
+    resolve_data_source_id,
 )
 
 
@@ -87,10 +91,63 @@ class TestParsePlatformSplit:
         assert result["instagram"] == 50
 
 
+class TestResolveDataSourceId:
+    @pytest.fixture(autouse=True)
+    def _clean_cache(self, monkeypatch):
+        monkeypatch.setattr(notion_module, "_data_source_cache", {})
+        monkeypatch.delenv("MY_DS_OVERRIDE", raising=False)
+
+    def test_env_override_wins_without_http(self, monkeypatch):
+        monkeypatch.setenv("MY_DS_OVERRIDE", "ds-pinned")
+        with patch("campaign_manager.services.notion.requests.get") as get:
+            assert resolve_data_source_id("db-1", env_override="MY_DS_OVERRIDE") == "ds-pinned"
+            get.assert_not_called()
+
+    def test_picks_first_listed_source_and_caches(self):
+        resp = MagicMock(status_code=200)
+        resp.json.return_value = {
+            "data_sources": [
+                {"id": "ds-real", "name": "Rising Tides CRM"},
+                {"id": "ds-empty", "name": "New data source"},
+            ]
+        }
+        with patch("campaign_manager.services.notion.requests.get", return_value=resp) as get:
+            assert resolve_data_source_id("db-1") == "ds-real"
+            # Second call hits the cache, not the API
+            assert resolve_data_source_id("db-1") == "ds-real"
+            assert get.call_count == 1
+
+    def test_returns_empty_on_http_error(self):
+        resp = MagicMock(status_code=404, text="not found")
+        with patch("campaign_manager.services.notion.requests.get", return_value=resp):
+            assert resolve_data_source_id("db-1") == ""
+
+    def test_returns_empty_when_no_sources(self):
+        resp = MagicMock(status_code=200)
+        resp.json.return_value = {"data_sources": []}
+        with patch("campaign_manager.services.notion.requests.get", return_value=resp):
+            assert resolve_data_source_id("db-1") == ""
+
+
 class TestQueryNewClients:
+    @pytest.fixture(autouse=True)
+    def _pin_data_source(self, monkeypatch):
+        # Pin the CRM data source so query_new_clients never issues the
+        # resolution GET — these tests only stub requests.post.
+        monkeypatch.setenv("NOTION_CRM_DATA_SOURCE_ID", "ds-crm-test")
+        monkeypatch.setattr(notion_module, "_data_source_cache", {})
+
     def test_returns_empty_when_no_api_key(self, monkeypatch):
         monkeypatch.delenv("NOTION_API_KEY", raising=False)
         assert query_new_clients(set()) == []
+
+    def test_queries_the_pinned_data_source(self, monkeypatch):
+        monkeypatch.setenv("NOTION_API_KEY", "test-key")
+        resp = MagicMock(status_code=200)
+        resp.json.return_value = {"results": []}
+        with patch("campaign_manager.services.notion.requests.post", return_value=resp) as post:
+            query_new_clients(set())
+        assert post.call_args[0][0].endswith("/data_sources/ds-crm-test/query")
 
     def test_returns_empty_on_non_200(self, monkeypatch):
         monkeypatch.setenv("NOTION_API_KEY", "test-key")

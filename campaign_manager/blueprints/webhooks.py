@@ -95,6 +95,8 @@ def notion_webhook():
         "project_lead": data.get("project_lead", []),
         "client_email": data.get("client_email", ""),
         "content_types": data.get("content_types", []),
+        "internal_captions": data["internal_captions"]
+            if isinstance(data.get("internal_captions"), str) else None,
         "platform_split": data.get("platform_split", {}),
     }
 
@@ -121,25 +123,39 @@ def notion_sync():
 
     from campaign_manager.services.notion import query_new_clients
 
-    synced_ids = _db.get_synced_notion_ids()
-    new_entries = query_new_clients(synced_ids)
-
-    if not new_entries:
-        return jsonify({
-            "ok": True,
-            "created": [],
-            "skipped": [],
-            "message": "No new campaigns to sync from Notion",
-        })
+    # Fetch ALL client rows, not just unsynced ones: the sync is add-only by
+    # design, but content_types was empty for every campaign imported before
+    # the property-name fix (0 of 326 populated while 286 of 300 CRM rows
+    # carry tags). Existing campaigns are REFRESHED (content_types only —
+    # operator-edited Hub fields are never touched), new ones are created.
+    new_entries = query_new_clients(set())
 
     created = []
     skipped = []
+    refreshed = []
 
     for entry in new_entries:
         slug = entry["slug"]
 
         if _db.campaign_exists(slug):
-            skipped.append({"slug": slug, "reason": "already exists"})
+            entry_types = sorted(entry.get("content_types") or [])
+            existing = _db.get_campaign(slug) or {}
+            existing_types = sorted(existing.get("content_types") or [])
+            changes = {}
+            if entry_types != existing_types:
+                changes["content_types"] = entry.get("content_types") or []
+            # Captions follow the CRM row this campaign was imported from; a
+            # same-titled row that is not its row never overwrites them.
+            entry_captions = entry.get("internal_captions")
+            if (entry_captions is not None
+                    and existing.get("notion_page_id") == entry["notion_page_id"]
+                    and entry_captions != existing.get("internal_captions")):
+                changes["internal_captions"] = entry_captions
+            if changes:
+                _db.update_campaign_fields(slug, changes)
+                refreshed.append({"slug": slug, **changes})
+            else:
+                skipped.append({"slug": slug, "reason": "already exists"})
             continue
 
         meta = {
@@ -167,6 +183,7 @@ def notion_sync():
             "project_lead": entry.get("project_lead", []),
             "client_email": entry.get("client_email", ""),
             "content_types": entry.get("content_types", []),
+            "internal_captions": entry.get("internal_captions"),
             "platform_split": entry.get("platform_split", {}),
         }
 
@@ -174,10 +191,35 @@ def notion_sync():
         _db.save_creators(slug, [])
         created.append({"slug": slug, "title": entry["title"]})
 
+    # Refresh pass for the EXISTING fleet, keyed by stored notion_page_id —
+    # independent of Pipeline Status. The client-import funnel above only
+    # sees 'Client' rows, but 782 of 783 CRM rows are 'Lead', and a
+    # campaign's niche targets must keep syncing wherever the row lives.
+    # A page we cannot read is skipped (never emptied); only actual changes
+    # are written.
+    from campaign_manager.services.notion import fetch_page_campaign_fields
+
+    for link in _db.get_campaign_notion_links():
+        fields = fetch_page_campaign_fields(link["notion_page_id"])
+        if fields is None:
+            continue
+        changes = {}
+        fresh = fields["content_types"]
+        if fresh is not None and sorted(fresh) != sorted(link["content_types"]):
+            changes["content_types"] = fresh
+        captions = fields["internal_captions"]
+        if captions is not None and captions != link["internal_captions"]:
+            changes["internal_captions"] = captions
+        if changes:
+            _db.update_campaign_fields(link["slug"], changes)
+            refreshed.append({"slug": link["slug"], **changes})
+
     return jsonify({
         "ok": True,
         "created": created,
         "skipped": skipped,
+        "refreshed": refreshed,
         "message": f"Synced {len(created)} new campaign(s) from Notion"
+            + (f", {len(refreshed)} refreshed" if refreshed else "")
             + (f", {len(skipped)} skipped" if skipped else ""),
     })

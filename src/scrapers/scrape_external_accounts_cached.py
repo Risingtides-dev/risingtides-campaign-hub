@@ -127,7 +127,12 @@ def scrape_account_videos(account, start_date=None, limit=500, use_cache=True):
         scrape_from_date = start_date
     
     # Hardened yt-dlp command (cookies / proxy / impersonation / retries)
-    from src.scrapers.yt_dlp_runner import build_tiktok_cmd, diagnose_failure
+    from src.scrapers.yt_dlp_runner import (
+        NativeSubprocessCrash,
+        build_tiktok_cmd,
+        diagnose_failure,
+        raise_for_native_crash,
+    )
     cmd = build_tiktok_cmd(
         profile_url,
         flat_playlist=True,
@@ -137,6 +142,7 @@ def scrape_account_videos(account, start_date=None, limit=500, use_cache=True):
 
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        raise_for_native_crash(result, context=f"yt-dlp for @{username}")
 
         if result.returncode != 0:
             reason = diagnose_failure(result.stderr)
@@ -225,6 +231,9 @@ def scrape_account_videos(account, start_date=None, limit=500, use_cache=True):
         
         return all_videos
         
+    except NativeSubprocessCrash as e:
+        print(f"    [ERROR] Native crash scraping @{username}: {e}")
+        raise
     except subprocess.TimeoutExpired:
         print(f"    [ERROR] Timeout scraping @{username}")
         return cached_videos if cached_videos else []

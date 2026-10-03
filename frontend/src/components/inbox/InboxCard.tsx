@@ -65,11 +65,11 @@ function PendingCard({ item, campaigns }: InboxCardProps) {
   const timestamp = item.created_at ? item.created_at.slice(0, 16).replace("T", " ") : ""
 
   return (
-    <div className="bg-white border border-[#e8e8ef] rounded-[10px] p-4 mb-3 border-l-4 border-l-[#4f8ff7]">
+    <div className="bg-rt-bg-card border border-white/8 rounded-[10px] p-4 mb-3 border-l-4 border-l-rt-magenta">
       {/* Top row: campaign selector + meta */}
       <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
         <div className="flex flex-wrap items-center gap-2">
-          <label className="text-[13px] text-[#888] font-medium">Campaign:</label>
+          <label className="text-[13px] text-rt-fg-tertiary font-medium">Campaign:</label>
           <Select value={selectedSlug} onValueChange={setSelectedSlug}>
             <SelectTrigger className="min-w-[220px] h-8 text-[13px]">
               <SelectValue placeholder="-- Select Campaign --" />
@@ -83,18 +83,18 @@ function PendingCard({ item, campaigns }: InboxCardProps) {
             </SelectContent>
           </Select>
           {item.campaign_suggested && (
-            <span className="text-[11px] text-[#f59e0b] bg-[#fef3c7] px-2 py-0.5 rounded">
+            <span className="text-[11px] text-rt-amber bg-rt-amber/10 px-2 py-0.5 rounded">
               Suggested
             </span>
           )}
-          <span className="text-[12px] text-[#888]">from {item.source || "slack"}</span>
+          <span className="text-[12px] text-rt-fg-tertiary">from {item.source || "slack"}</span>
         </div>
-        <div className="text-[12px] text-[#aaa]">{timestamp}</div>
+        <div className="text-[12px] text-white/15">{timestamp}</div>
       </div>
 
       {/* Raw message */}
       {item.raw_message && (
-        <div className="text-[13px] text-[#666] bg-[#f7f7f9] px-3 py-2 rounded-md mb-2">
+        <div className="text-[13px] text-rt-fg-tertiary bg-white/[0.03] px-3 py-2 rounded-md mb-2">
           {item.raw_message}
         </div>
       )}
@@ -105,10 +105,10 @@ function PendingCard({ item, campaigns }: InboxCardProps) {
           <table className="w-full text-[13px]">
             <thead>
               <tr className="text-left">
-                <th className="px-3 py-1 font-medium text-[#888]">Creator</th>
-                <th className="px-3 py-1 font-medium text-[#888]">Posts</th>
-                <th className="px-3 py-1 font-medium text-[#888]">Rate</th>
-                <th className="px-3 py-1 font-medium text-[#888]">PayPal</th>
+                <th className="px-3 py-1 font-medium text-rt-fg-tertiary">Creator</th>
+                <th className="px-3 py-1 font-medium text-rt-fg-tertiary">Posts</th>
+                <th className="px-3 py-1 font-medium text-rt-fg-tertiary">Rate</th>
+                <th className="px-3 py-1 font-medium text-rt-fg-tertiary">PayPal</th>
               </tr>
             </thead>
             <tbody>
@@ -166,7 +166,7 @@ function PendingCard({ item, campaigns }: InboxCardProps) {
         <Button
           onClick={handleApprove}
           disabled={!selectedSlug || approve.isPending}
-          className="bg-[#0b62d6] hover:bg-[#0951b5] text-white text-[13px] h-8"
+          className="bg-rt-magenta hover:bg-rt-purple text-white text-[13px] h-8"
         >
           {approve.isPending ? (
             <>
@@ -205,20 +205,20 @@ function ApprovedCard({ item }: { item: InboxItem }) {
     .replace("T", " ")
 
   return (
-    <div className="bg-white border border-[#e8e8ef] rounded-[10px] p-4 mb-2 opacity-70 border-l-4 border-l-[#22c55e]">
+    <div className="bg-rt-bg-card border border-white/8 rounded-[10px] p-4 mb-2 opacity-70 border-l-4 border-l-rt-green">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2 flex-wrap">
           <span className="font-semibold text-[14px]">
             {item.campaign_name || item.campaign_slug}
           </span>
-          <span className="text-[12px] text-[#22c55e] font-medium">Approved</span>
+          <span className="text-[12px] text-rt-green font-medium">Approved</span>
           {item.creators_added && item.creators_added.length > 0 && (
-            <span className="text-[12px] text-[#888]">
+            <span className="text-[12px] text-rt-fg-tertiary">
               -- added {item.creators_added.length} creator(s)
             </span>
           )}
         </div>
-        <div className="text-[12px] text-[#aaa]">{timestamp}</div>
+        <div className="text-[12px] text-white/15">{timestamp}</div>
       </div>
     </div>
   )
@@ -232,12 +232,12 @@ function DismissedCard({ item }: { item: InboxItem }) {
     .replace("T", " ")
 
   return (
-    <div className="bg-white border border-[#e8e8ef] rounded-[10px] p-4 mb-2 opacity-40">
+    <div className="bg-rt-bg-card border border-white/8 rounded-[10px] p-4 mb-2 opacity-40">
       <div className="flex items-center justify-between">
         <span className="text-[14px]">
           {item.campaign_name || item.campaign_slug || "Unknown"}
         </span>
-        <span className="text-[12px] text-[#aaa]">{timestamp}</span>
+        <span className="text-[12px] text-white/15">{timestamp}</span>
       </div>
     </div>
   )

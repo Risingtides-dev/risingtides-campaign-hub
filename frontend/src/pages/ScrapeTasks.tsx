@@ -7,8 +7,11 @@ import {
   useUnmarkVideosTracked,
   useMarkCampaignTracked,
   useDismissVideos,
-  useTriggerCron,
+  useTriggerScrape,
+  useScrapeJobStatus,
 } from "@/lib/queries"
+import { useQueryClient } from "@tanstack/react-query"
+import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -35,7 +38,43 @@ export default function ScrapeTasks() {
   const unmarkMut = useUnmarkVideosTracked()
   const markCampaignMut = useMarkCampaignTracked()
   const dismissMut = useDismissVideos()
-  const triggerMut = useTriggerCron()
+  const queryClient = useQueryClient()
+  // CAMP-22: job-tracked scrape trigger (all-active + per-campaign Run Now)
+  const scrapeMut = useTriggerScrape()
+  const [runningSlug, setRunningSlug] = useState<string | null>(null)
+  // CAMP-21: live progress — poll the trigger job while it runs.
+  const [activeJobId, setActiveJobId] = useState<string | null>(null)
+  const jobQ = useScrapeJobStatus(activeJobId)
+
+  // When the polled job finishes, toast the outcome + refresh the queue.
+  useEffect(() => {
+    const s = jobQ.data?.state
+    if (s === "done") {
+      toast.success("Scrape finished — queue refreshed.")
+      queryClient.invalidateQueries({ queryKey: ["scrape-tasks"] })
+      setTimeout(() => setActiveJobId(null), 0)
+    } else if (s === "error") {
+      toast.error(`Scrape failed: ${jobQ.data?.error ?? "unknown error"}`)
+      setTimeout(() => setActiveJobId(null), 0)
+    }
+  }, [jobQ.data?.state, jobQ.data?.error, queryClient])
+
+  function runScrape(body: { all_active?: boolean; campaign_id?: string }) {
+    setRunningSlug(body.campaign_id ?? "__all__")
+    scrapeMut.mutate(body, {
+      onSuccess: (res) => {
+        if (res.job_id) setActiveJobId(res.job_id)
+        toast.success(
+          res.already_running
+            ? "A scrape is already running — watching that one."
+            : `Scrape started${body.campaign_id ? ` for ${body.campaign_id}` : " (all active)"}.`
+        )
+      },
+      onError: (e) =>
+        toast.error(e instanceof Error ? e.message : "Couldn't start the scrape."),
+      onSettled: () => setRunningSlug(null),
+    })
+  }
 
   const filtered = useMemo(() => {
     if (!queueQ.data) return [] as ScrapeTaskCampaign[]
@@ -60,8 +99,8 @@ export default function ScrapeTasks() {
     <div className="px-6 py-6 max-w-[1400px] mx-auto">
       <div className="flex items-baseline justify-between mb-4">
         <div>
-          <h1 className="text-2xl font-bold text-[#1a1a2e]">Scrape Tasks</h1>
-          <p className="text-sm text-[#666] mt-1">
+          <h1 className="text-2xl font-bold text-rt-fg">Scrape Tasks</h1>
+          <p className="text-sm text-rt-fg-tertiary mt-1">
             New matched links to copy into Cobrand. Organized by campaign.
           </p>
         </div>
@@ -87,63 +126,85 @@ export default function ScrapeTasks() {
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div className="flex items-center gap-3">
             {lastRunDegraded ? (
-              <Badge className="bg-[#fff1c8] text-[#a16100] border-[#f4d169] gap-1">
+              <Badge className="bg-rt-amber/10 text-rt-amber border-rt-amber gap-1">
                 <AlertTriangle size={14} />
                 DEGRADED
               </Badge>
             ) : (
-              <Badge className="bg-[#dcf6dc] text-[#226e22] border-[#9ad59a]">
+              <Badge className="bg-rt-bg-card text-rt-green border-rt-green">
                 Healthy
               </Badge>
             )}
-            <span className="text-sm text-[#444]">
+            <span className="text-sm text-rt-fg">
               Last run: {lastRunStarted ? new Date(lastRunStarted).toLocaleString() : "—"}
             </span>
-            <span className="text-sm text-[#666]">
+            <span className="text-sm text-rt-fg-tertiary">
               {lastRunMatches} new matches • {Math.round(lastRunEmptyRate * 100)}% empty rate
             </span>
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-sm text-[#444] font-medium">
+            <span className="text-sm text-rt-fg font-medium">
               {totalUntracked} untracked
             </span>
             <Button
               variant="outline"
               size="sm"
-              disabled={triggerMut.isPending}
-              onClick={() => triggerMut.mutate("campaign_refresh")}
-              title="Trigger a campaign refresh now (yt-dlp profile scrape)"
+              disabled={scrapeMut.isPending}
+              onClick={() => runScrape({ all_active: true })}
+              title="Scrape every active campaign now (job-tracked, non-blocking)"
             >
-              <RefreshCw size={14} className={triggerMut.isPending ? "animate-spin" : ""} />
-              {triggerMut.isPending ? "Running…" : "Run cron now"}
+              <RefreshCw size={14} className={runningSlug === "__all__" ? "animate-spin" : ""} />
+              {runningSlug === "__all__" ? "Starting…" : "Run all active"}
             </Button>
           </div>
         </div>
         {lastRunDegraded && (
-          <div className="mt-3 px-3 py-2 bg-[#fff8e8] border border-[#f4d169] rounded text-sm text-[#7a4a00]">
+          <div className="mt-3 px-3 py-2 bg-rt-bg-card border border-rt-amber rounded text-sm text-rt-red">
             The last cron run produced no useful data — TikTok likely
             rate-limited the scraper. Today's queue may be incomplete. Re-run
             cron or wait for tomorrow's scheduled run.
+          </div>
+        )}
+        {/* CAMP-21: live scrape progress */}
+        {activeJobId && jobQ.data?.state === "running" && (
+          <div className="mt-3">
+            <div className="flex items-center justify-between text-[13px] mb-1.5">
+              <span className="flex items-center gap-2 text-rt-fg">
+                <RefreshCw size={13} className="animate-spin text-rt-magenta" />
+                Scraping{jobQ.data.progress?.last_account ? ` — @${jobQ.data.progress.last_account}` : "…"}
+              </span>
+              <span className="text-rt-fg-tertiary">
+                {jobQ.data.progress
+                  ? `${jobQ.data.progress.done}/${jobQ.data.progress.total} accounts`
+                  : "starting…"}
+              </span>
+            </div>
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/5">
+              <div
+                className="h-full rt-heat transition-all duration-500"
+                style={{ width: `${jobQ.data.progress?.pct ?? 4}%` }}
+              />
+            </div>
           </div>
         )}
       </Card>
 
       {/* Queue */}
       {queueQ.isLoading && (
-        <div className="text-sm text-[#666] py-12 text-center">Loading…</div>
+        <div className="text-sm text-rt-fg-tertiary py-12 text-center">Loading…</div>
       )}
       {queueQ.isError && (
-        <div className="text-sm text-red-600 py-12 text-center">
+        <div className="text-sm text-rt-red py-12 text-center">
           Failed to load queue. Try refreshing.
         </div>
       )}
       {!queueQ.isLoading && filtered.length === 0 && (
-        <Card className="p-12 text-center text-[#666]">
+        <Card className="p-12 text-center text-rt-fg-tertiary">
           {search ? (
             <>No campaigns match "{search}".</>
           ) : (
             <>
-              <div className="text-base font-medium text-[#444] mb-1">
+              <div className="text-base font-medium text-rt-fg mb-1">
                 Queue is clear.
               </div>
               <div className="text-sm">
@@ -179,6 +240,8 @@ export default function ScrapeTasks() {
             }
             isMarking={markMut.isPending || markCampaignMut.isPending}
             isDismissing={dismissMut.isPending}
+            onRunNow={() => runScrape({ campaign_id: camp.slug })}
+            isRunning={runningSlug === camp.slug}
           />
         ))}
       </div>
@@ -194,6 +257,8 @@ function CampaignBlock({
   onDismiss,
   isMarking,
   isDismissing,
+  onRunNow,
+  isRunning,
 }: {
   camp: ScrapeTaskCampaign
   trackedBy: string
@@ -203,6 +268,8 @@ function CampaignBlock({
   onDismiss: (ids: number[], reason?: string) => void
   isMarking: boolean
   isDismissing: boolean
+  onRunNow: () => void
+  isRunning: boolean
 }) {
   const [open, setOpen] = useState(true)
   const [selected, setSelected] = useState<Set<number>>(new Set())
@@ -215,17 +282,10 @@ function CampaignBlock({
     () => new Set(camp.videos.map((v) => v.id)),
     [camp.videos]
   )
-  useEffect(() => {
-    setLocallyTicked((prev) => {
-      let changed = false
-      const next = new Set<number>()
-      for (const id of prev) {
-        if (videoIdSet.has(id)) next.add(id)
-        else changed = true
-      }
-      return changed ? next : prev
-    })
-  }, [videoIdSet])
+  const visibleLocallyTicked = useMemo(
+    () => new Set([...locallyTicked].filter((id) => videoIdSet.has(id))),
+    [locallyTicked, videoIdSet]
+  )
 
   const addToTicked = (ids: number[]) =>
     setLocallyTicked((prev) => {
@@ -278,24 +338,24 @@ function CampaignBlock({
     <Card className="overflow-hidden">
       {/* Campaign header */}
       <div
-        className="px-4 py-3 flex items-center justify-between cursor-pointer hover:bg-[#fafafd]"
+        className="px-4 py-3 flex items-center justify-between cursor-pointer hover:bg-white/[0.03]"
         onClick={() => setOpen(!open)}
       >
         <div className="flex items-center gap-3 min-w-0">
-          <span className="text-base font-semibold text-[#1a1a2e] truncate">
+          <span className="text-base font-semibold text-rt-fg truncate">
             {camp.title}
           </span>
           <Badge variant="outline" className="text-xs">
             {camp.untracked_count} untracked
           </Badge>
           {camp.match_strategy === "strict" && (
-            <Badge className="bg-[#dee9ff] text-[#0b62d6] border-[#a5c0f0] text-xs">
+            <Badge className="bg-rt-magenta/10 text-rt-magenta border-rt-magenta text-xs">
               strict
             </Badge>
           )}
           {fuzzyCount > 0 && camp.match_strategy !== "strict" && (
             <Badge
-              className="bg-[#fff1c8] text-[#a16100] border-[#f4d169] text-xs"
+              className="bg-rt-amber/10 text-rt-amber border-rt-amber text-xs"
               title="These matches came from fuzzy fallback — verify each one"
             >
               {fuzzyCount} fuzzy
@@ -308,13 +368,26 @@ function CampaignBlock({
           )}
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
-          <span className="text-sm text-[#666]">
+          <span className="text-sm text-rt-fg-tertiary">
             {totalViews.toLocaleString()} views
           </span>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={isRunning}
+            onClick={(e) => {
+              e.stopPropagation()
+              onRunNow()
+            }}
+            title={`Scrape "${camp.title}" now (yt-dlp profile scrape of its booked creators)`}
+          >
+            <RefreshCw size={13} className={isRunning ? "animate-spin" : ""} />
+            {isRunning ? "Starting…" : "Run now"}
+          </Button>
           <Link
             to={`/campaign/${camp.slug}`}
             onClick={(e) => e.stopPropagation()}
-            className="text-xs text-[#0b62d6] hover:underline"
+            className="text-xs text-rt-magenta hover:underline"
           >
             open campaign
           </Link>
@@ -322,11 +395,11 @@ function CampaignBlock({
       </div>
 
       {open && (
-        <div className="border-t border-[#e8e8ef]">
+        <div className="border-t border-white/8">
           {/* Bulk action bar */}
-          <div className="px-4 py-2 bg-[#fafafd] border-b border-[#e8e8ef] flex items-center justify-between">
+          <div className="px-4 py-2 bg-white/[0.03] border-b border-white/8 flex items-center justify-between">
             <div className="flex items-center gap-3 text-sm">
-              <span className="text-[#666]">
+              <span className="text-rt-fg-tertiary">
                 {selected.size > 0
                   ? `${selected.size} selected`
                   : `${camp.videos.length} link(s)`}
@@ -347,7 +420,7 @@ function CampaignBlock({
                   <Button
                     size="sm"
                     variant="outline"
-                    className="border-[#f1c8c8] text-[#a13434] hover:bg-[#fceaea]"
+                    className="border-rt-amber text-rt-red bg-rt-bg-card"
                     onClick={() => {
                       const reason = window.prompt(
                         `Dismiss ${selected.size} match(es) as bad? Optional reason:`,
@@ -408,7 +481,7 @@ function CampaignBlock({
 
           {/* Video rows */}
           <table className="w-full text-sm">
-            <thead className="bg-[#fafafd] border-b border-[#e8e8ef] text-[11px] uppercase tracking-wide text-[#888]">
+            <thead className="bg-white/[0.03] border-b border-white/8 text-[11px] uppercase tracking-wide text-rt-fg-tertiary">
               <tr>
                 <th className="w-8 px-2 py-2"></th>
                 <th className="text-left px-2 py-2">Creator</th>
@@ -430,7 +503,7 @@ function CampaignBlock({
                   onDismissOne={(reason) => onDismiss([v.id], reason)}
                   isMarking={isMarking}
                   isDismissing={isDismissing}
-                  isLocallyTicked={locallyTicked.has(v.id)}
+                  isLocallyTicked={visibleLocallyTicked.has(v.id)}
                 />
               ))}
             </tbody>
@@ -473,7 +546,7 @@ function VideoRow({
   return (
     <tr
       className={
-        "border-b border-[#f0f0f5] hover:bg-[#fafafd]" +
+        "border-b border-white/5 hover:bg-white/[0.03]" +
         (isLocallyTicked ? " opacity-50 line-through" : "")
       }
     >
@@ -486,13 +559,13 @@ function VideoRow({
           className="cursor-pointer disabled:cursor-not-allowed"
         />
       </td>
-      <td className="px-2 py-2 font-medium text-[#1a1a2e]">{video.account || "—"}</td>
+      <td className="px-2 py-2 font-medium text-rt-fg">{video.account || "—"}</td>
       <td className="px-2 py-2 max-w-0">
         <a
           href={video.url}
           target="_blank"
           rel="noreferrer"
-          className="text-[#0b62d6] hover:underline truncate inline-block max-w-full align-middle"
+          className="text-rt-magenta hover:underline truncate inline-block max-w-full align-middle"
           title={video.url}
         >
           {video.url}
@@ -508,32 +581,32 @@ function VideoRow({
           </Badge>
         )}
         {video.match_strategy === "internal_creator" && (
-          <Badge className="bg-[#e7f0ff] text-[#0b62d6] border-[#bcd1f5] text-xs">
+          <Badge className="bg-rt-bg-card text-rt-magenta border-rt-magenta text-xs">
             internal
           </Badge>
         )}
         {video.match_strategy === "fuzzy_word_overlap" && (
           <Badge
-            className="bg-[#fff1c8] text-[#a16100] border-[#f4d169] text-xs"
+            className="bg-rt-amber/10 text-rt-amber border-rt-amber text-xs"
             title="Matched on fuzzy word overlap — verify before tracking"
           >
             fuzzy
           </Badge>
         )}
         {video.match_strategy === "discovered_original_sound" && (
-          <Badge className="bg-[#f1e8ff] text-[#5a32b8] border-[#cdb5f4] text-xs">
+          <Badge className="bg-rt-bg-card text-rt-magenta border-rt-magenta text-xs">
             discovered
           </Badge>
         )}
         {!video.match_strategy && (
-          <span className="text-xs text-[#888]">—</span>
+          <span className="text-xs text-rt-fg-tertiary">—</span>
         )}
       </td>
       <td className="px-2 py-2">
         <div className="flex items-center justify-end gap-1">
           <button
             onClick={copyLink}
-            className="p-1 rounded hover:bg-[#eef2ff] text-[#666] hover:text-[#0b62d6]"
+            className="p-1 rounded hover:bg-rt-magenta/10 text-rt-fg-tertiary hover:text-rt-magenta"
             title="Copy link"
           >
             {copied ? <Check size={14} /> : <Copy size={14} />}
@@ -542,7 +615,7 @@ function VideoRow({
             href={video.url}
             target="_blank"
             rel="noreferrer"
-            className="p-1 rounded hover:bg-[#eef2ff] text-[#666] hover:text-[#0b62d6]"
+            className="p-1 rounded hover:bg-rt-magenta/10 text-rt-fg-tertiary hover:text-rt-magenta"
             title="Open in TikTok"
           >
             <ExternalLink size={14} />
@@ -551,7 +624,7 @@ function VideoRow({
             <button
               onClick={onUndoOne}
               disabled={isMarking}
-              className="p-1 rounded hover:bg-[#fff5e6] text-[#a16100] hover:text-[#7a4a00] disabled:opacity-50"
+              className="p-1 rounded bg-rt-bg-card text-rt-amber hover:text-rt-red disabled:opacity-50"
               title="Undo — restore to the queue"
             >
               <Undo2 size={14} />
@@ -561,7 +634,7 @@ function VideoRow({
               <button
                 onClick={onMarkOne}
                 disabled={isMarking}
-                className="p-1 rounded hover:bg-[#dcf6dc] text-[#666] hover:text-[#226e22] disabled:opacity-50"
+                className="p-1 rounded bg-rt-bg-card text-rt-fg-tertiary hover:text-rt-green disabled:opacity-50"
                 title="Mark this link as tracked"
               >
                 <Check size={14} />
@@ -576,7 +649,7 @@ function VideoRow({
                   onDismissOne(reason.trim() || undefined)
                 }}
                 disabled={isDismissing}
-                className="p-1 rounded hover:bg-[#fceaea] text-[#666] hover:text-[#a13434] disabled:opacity-50"
+                className="p-1 rounded bg-rt-bg-card text-rt-fg-tertiary hover:text-rt-red disabled:opacity-50"
                 title="Dismiss as false-positive — excluded from totals"
               >
                 <X size={14} />

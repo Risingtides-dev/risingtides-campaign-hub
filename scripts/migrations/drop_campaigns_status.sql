@@ -1,0 +1,21 @@
+-- One-time migration: drop the dead `campaigns.status` column.
+--
+-- WHY: `status` always defaulted to 'active' and was never written or read for
+-- real logic. Active campaigns are `completion_status != 'completed'`. The column
+-- is dead weight.
+--
+-- ORDER MATTERS — run this ONLY AFTER the code that removes every
+-- Campaign.status reference is deployed:
+--   1. Merge the status-removal PR to main  -> Railway auto-deploys the app
+--   2. Confirm the prod app is up (GET /api/campaigns returns 200) and the
+--      local-scraper worktree (~/dev/rt-scraper-prod) has reset to the new main
+--   3. THEN run this migration
+-- Dropping the column while older code still does `filter_by(status=...)` would
+-- raise UndefinedColumn and 500 the app. (We do NOT auto-run this in db.init();
+-- auto-running a schema DROP on every connect broke prod once already.)
+--
+-- RUN:  psql "$DATABASE_URL" -f scripts/migrations/drop_campaigns_status.sql
+-- The ALTER takes a brief ACCESS EXCLUSIVE lock on `campaigns`; run it at a quiet
+-- moment (not during a scrape).
+
+ALTER TABLE campaigns DROP COLUMN IF EXISTS status;

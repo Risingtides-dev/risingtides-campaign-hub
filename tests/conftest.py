@@ -107,7 +107,6 @@ def seeded_campaign(app):
             title="Test Campaign",
             artist="Test Artist",
             song="Test Song",
-            status="active",
         )
         s.add(camp)
         s.commit()

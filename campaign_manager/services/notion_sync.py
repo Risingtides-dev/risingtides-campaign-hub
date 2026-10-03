@@ -55,9 +55,11 @@ from campaign_manager.models import (
 from campaign_manager.services.notion import (
     NOTION_API_BASE,
     NOTION_VERSION,
+    resolve_data_source_id,
     _get_api_key,
     _get_date,
     _get_email,
+    _get_multi_select,
     _get_rich_text,
     _get_select,
     _get_title,
@@ -77,6 +79,13 @@ MASTER_PAGES_DATABASE_ID = os.environ.get(
 # Notion paginates database query results. 100 is the API max page size.
 _PAGE_SIZE = 100
 _HTTP_TIMEOUT = 30
+
+# CAMP-94 delete-floor: refuse a sync that would delete more than this fraction
+# of the existing mirror in one pass (only when there are at least
+# _DELETE_FLOOR_MIN_ROWS rows, so small/empty mirrors aren't blocked). A normal
+# sync deletes 0-few rows; a mass delete signals a truncated/anomalous fetch.
+_MAX_DELETE_FRACTION = 0.5
+_DELETE_FLOOR_MIN_ROWS = 10
 
 
 @dataclass
@@ -150,7 +159,15 @@ def _headers() -> Dict[str, str]:
 
 def _fetch_all_pages(database_id: str) -> List[Dict[str, Any]]:
     """Query every page in the master database, following pagination cursors."""
-    url = f"{NOTION_API_BASE}/databases/{database_id}/query"
+    ds_id = resolve_data_source_id(
+        database_id, env_override="NOTION_MASTER_PAGES_DATA_SOURCE_ID"
+    )
+    if not ds_id:
+        raise RuntimeError(
+            f"Could not resolve a Notion data source for database {database_id} "
+            "— aborting sync (see warning logs for the API error)."
+        )
+    url = f"{NOTION_API_BASE}/data_sources/{ds_id}/query"
     pages: List[Dict[str, Any]] = []
     cursor: Optional[str] = None
 
@@ -171,7 +188,15 @@ def _fetch_all_pages(database_id: str) -> List[Dict[str, Any]]:
             break
         cursor = body.get("next_cursor")
         if not cursor:
-            break
+            # CAMP-94: has_more=True but no cursor is a TRUNCATED fetch, not a
+            # clean end. Returning the partial list silently would make the
+            # caller treat every un-fetched page as a DELETE (mass wipe of the
+            # mirror + group memberships). Fail loudly so the sync aborts
+            # instead of deleting.
+            raise RuntimeError(
+                "Notion pagination truncated: has_more=true but next_cursor is empty "
+                "— aborting to avoid a partial fetch driving mass deletes."
+            )
 
     return pages
 
@@ -209,11 +234,19 @@ def _map_page_to_row(page: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Op
     row: Dict[str, Any] = {
         "notion_page_id": page_uuid,
         "account_username": account_username,
-        "notion_group": _get_select(props.get("Group", {})) or None,
-        # Trailing space is intentional — Notion has two distinct properties
-        # called "Group" (group) and "Group " (subgroup). Confirmed in spec.
-        "notion_subgroup": _get_select(props.get("Group ", {})) or None,
-        "poster": _get_rich_text(props.get("Poster", {})) or None,
+        # Notion renamed "Group" -> "Label" and "Group " (trailing space,
+        # the subgroup/cluster) -> "Account Group". The old names are kept as
+        # fallbacks so a re-rename can't silently zero the mirror again —
+        # which is exactly what happened: with both reads returning None,
+        # resolve_memberships attested nothing and wiped every cluster
+        # group's members on each 15-minute run.
+        "notion_group": _get_select(props.get("Label", {}))
+        or _get_select(props.get("Group", {})) or None,
+        "notion_subgroup": _get_select(props.get("Account Group", {}))
+        or _get_select(props.get("Group ", {})) or None,
+        # "Poster" is a multi_select now (was rich_text).
+        "poster": ", ".join(_get_multi_select(props.get("Poster", {})))
+        or _get_rich_text(props.get("Poster", {})) or None,
         "account_type": _get_select(props.get("Account Type", {})) or None,
         "page_type": _get_select(props.get("Page Type", {})) or None,
         "content_engine": _get_select(props.get("ContentEngine", {})) or None,
@@ -232,6 +265,29 @@ def _map_page_to_row(page: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Op
 # ---------------------------------------------------------------------------
 # Diff + persist
 # ---------------------------------------------------------------------------
+
+def _row_differs(existing_row: "NotionMasterPage", row: Dict[str, Any]) -> bool:
+    """True when any mapped field in ``row`` differs from the mirror row.
+
+    Content comparison, NOT timestamp comparison. Notion does not bump a
+    page's ``last_edited_time`` for every change that alters property
+    values — renaming a select option rewrites the value on every page
+    using it with no timestamp change. A pure timestamp diff therefore
+    froze stale values in the mirror forever (seen live 2026-06-09:
+    backroaddriver's cluster said 'Warner Test UGC' while Notion said
+    'Gannon Fremin', both stamped 2026-05-15T19:47Z).
+    """
+    for field_name, new_value in row.items():
+        if field_name == "notion_page_id":
+            continue
+        old_value = getattr(existing_row, field_name)
+        if field_name == "notion_last_edited_at":
+            old_value = _normalize_to_utc(old_value)
+            new_value = _normalize_to_utc(new_value)
+        if old_value != new_value:
+            return True
+    return False
+
 
 def _apply_diff(
     session,
@@ -257,25 +313,41 @@ def _apply_diff(
         session.add(NotionMasterPage(**row))
         added += 1
 
-    # UPDATE (both sides, Notion edit is newer or timestamps don't match)
+    # UPDATE (both sides, any mapped field differs). Content diff, not
+    # timestamp diff — see _row_differs for why timestamps can't be trusted.
     for shared_id in incoming_ids & existing_ids:
         row = incoming_by_id[shared_id]
         existing_row = existing_by_id[shared_id]
-        new_ts = _normalize_to_utc(row.get("notion_last_edited_at"))
-        old_ts = _normalize_to_utc(existing_row.notion_last_edited_at)
-        # Update if Notion's edit timestamp is strictly newer, OR if either side
-        # is missing a timestamp (defensive — old mirror rows may pre-date the
-        # column). Equal timestamps are no-ops.
-        if new_ts is None or old_ts is None or new_ts > old_ts:
+        if _row_differs(existing_row, row):
             for field_name, value in row.items():
                 setattr(existing_row, field_name, value)
             existing_row.synced_at = datetime.now(timezone.utc)
             updated += 1
 
-    # DELETE (mirror-only)
-    for stale_id in existing_ids - incoming_ids:
-        session.delete(existing_by_id[stale_id])
-        deleted += 1
+    # DELETE (mirror-only) — with a CAMP-94 safety floor.
+    stale_ids = existing_ids - incoming_ids
+    # Guardrail: if a single sync would delete more than _MAX_DELETE_FRACTION of
+    # the existing mirror (and there's a meaningful number of rows), that's
+    # almost certainly a truncated/anomalous fetch, not a real bulk-unassign.
+    # Skip the delete pass and log it loudly rather than wipe attribution data;
+    # the INSERT/UPDATE work above still applies. (The _fetch_all_pages
+    # truncation guard above catches the cursor case; this catches any OTHER
+    # path that returns an anomalously small set without raising.)
+    if (
+        len(existing_ids) >= _DELETE_FLOOR_MIN_ROWS
+        and len(stale_ids) > _MAX_DELETE_FRACTION * len(existing_ids)
+    ):
+        logger.error(
+            "notion_sync: REFUSING to delete %d/%d mirror rows in one sync "
+            "(> %.0f%% — likely a partial/anomalous fetch). Skipping delete pass; "
+            "added=%d updated=%d. Investigate the Notion fetch.",
+            len(stale_ids), len(existing_ids), _MAX_DELETE_FRACTION * 100,
+            added, updated,
+        )
+    else:
+        for stale_id in stale_ids:
+            session.delete(existing_by_id[stale_id])
+            deleted += 1
 
     return added, updated, deleted
 
@@ -548,8 +620,21 @@ def _apply_membership_diff(
     to_add = desired - existing
     to_remove = existing - desired
 
-    for group_id, username in to_add:
-        session.add(InternalCreatorGroupMember(group_id=group_id, username=username))
+    # ON CONFLICT DO NOTHING instead of blind session.add: the resolver
+    # cron can race a manual add_group_members call in another gunicorn
+    # worker for the same (group_id, username) pair, which used to abort
+    # the whole resolve transaction with IntegrityError. RETURNING keeps
+    # the added-count honest when the other writer wins.
+    added_count = 0
+    if to_add:
+        member_t = InternalCreatorGroupMember.__table__
+        stmt = _db.dialect_insert(member_t).values([
+            {"group_id": group_id, "username": username}
+            for group_id, username in sorted(to_add)
+        ]).on_conflict_do_nothing(
+            index_elements=["group_id", "username"],
+        ).returning(member_t.c.username)
+        added_count = len(session.execute(stmt).all())
 
     for group_id, username in to_remove:
         session.query(InternalCreatorGroupMember).filter(
@@ -557,7 +642,7 @@ def _apply_membership_diff(
             InternalCreatorGroupMember.username == username,
         ).delete(synchronize_session=False)
 
-    return len(to_add), len(to_remove)
+    return added_count, len(to_remove)
 
 
 def resolve_memberships(

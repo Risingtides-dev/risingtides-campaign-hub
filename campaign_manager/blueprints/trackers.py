@@ -149,7 +149,7 @@ def list_trackers():
     names = _db.get_tracker_names()
     campaign_links = _db.get_tracker_campaign_links()
     archives = _db.get_tracker_archives()
-    all_campaigns = _db.list_campaigns(status="")  # all statuses
+    all_campaigns = _db.list_campaigns()
     campaigns_by_slug = {
         c.get("slug"): {
             "slug": c.get("slug"),
@@ -376,7 +376,12 @@ def create_tracker_group():
     data = request.get_json(silent=True) or {}
     title = (data.get("title") or "").strip()
     slug = (data.get("slug") or _slugify(title)).strip().lower()
-    sort_order = int(data.get("sort_order") or 0)
+    # Guard the cast — a non-numeric sort_order should be a clean 400, not an
+    # unhandled 500 (mirrors update_tracker's guarded parse).
+    try:
+        sort_order = int(data.get("sort_order") or 0)
+    except (TypeError, ValueError):
+        return jsonify({"error": "sort_order must be an integer"}), 400
     if not title:
         return jsonify({"error": "title is required"}), 400
 
@@ -394,3 +399,59 @@ def delete_tracker_group(group_id: int):
     if not _db.delete_tracker_group(group_id):
         return jsonify({"error": "Group not found"}), 404
     return jsonify({"ok": True})
+
+# ---------------------------------------------------------------------------
+# Delivery status backfill (CAMP-STATUS)
+# ---------------------------------------------------------------------------
+
+@trackers_bp.post("/api/trackers/sync-status")
+def sync_tracker_status():
+    """Push every linked campaign's delivery status to its tracker.
+
+    The per-save hook in `edit_campaign` keeps status current going forward,
+    but the ~278 trackers that already exist have never been told. This
+    walks them once. Safe to re-run: it writes the same value every time.
+
+    Concurrent, because it is one PATCH per tracker and a serial walk would
+    approach the request timeout the way the library refresh did.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from campaign_manager.services.tidestracker import (
+        set_tracker_status,
+        tracker_status_for,
+    )
+
+    err = _require_db()
+    if err:
+        return err
+
+    targets = []
+    for meta in _db.list_campaigns():
+        tracker_id = (meta.get("tracker_campaign_id") or "").strip()
+        if tracker_id:
+            targets.append(
+                (tracker_id, tracker_status_for(meta.get("completion_status", "none")))
+            )
+
+    if not targets:
+        return jsonify({"ok": True, "pushed": 0, "failed": 0, "total": 0})
+
+    def push(item):
+        tracker_id, status = item
+        try:
+            return set_tracker_status(tracker_id, status)
+        except Exception:
+            return False
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(push, targets))
+
+    pushed = sum(1 for ok in results if ok)
+    return jsonify({
+        "ok": True,
+        "pushed": pushed,
+        "failed": len(results) - pushed,
+        "total": len(results),
+    })
+

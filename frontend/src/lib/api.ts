@@ -1,10 +1,14 @@
 import type {
   CampaignSummary,
+  CreatorRef,
+  PopScore,
   CampaignDetail,
   MatchedVideo,
   CobrandStats,
+  CampaignReport,
   CreatorSummary,
   CreatorProfile,
+  LastRate,
   InternalCreator,
   InternalGroup,
   InternalGroupDetail,
@@ -27,17 +31,41 @@ import type {
   ShareToken,
   ScrapeTaskQueue,
   ScrapeTaskHealth,
+  BreakerLens,
+  BreakerResponse,
+  CreatorDrilldown,
+  TargetSound,
+  RebookSuggestion,
+  LabelStats,
+  BookerSummary,
+  PosterSummary,
+  BookerStats,
+  CreatorRollup,
+  LibraryResponse,
+  LibraryNiche,
+  LibraryCreator,
+  LibraryRate,
+  LibraryRefreshStatus,
+  LibraryWindow,
+  SoundFitResponse,
 } from "./types"
 
 const API_BASE = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? "http://localhost:5055" : "")
 
 class ApiError extends Error {
   status: number
-  constructor(message: string, status: number) {
+  body: unknown
+  constructor(message: string, status: number, body: unknown) {
     super(message)
     this.status = status
+    this.body = body
     this.name = "ApiError"
   }
+}
+
+function creatorActionPath(slug: string, creator: CreatorRef, action: string) {
+  const platform = encodeURIComponent(creator.platform || "tiktok")
+  return `/api/campaign/${slug}/creator/${creator.username}/${action}?platform=${platform}`
 }
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -47,14 +75,25 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   })
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: res.statusText }))
-    throw new ApiError(body.error || res.statusText, res.status)
+    throw new ApiError(body.error || res.statusText, res.status, body)
   }
   return res.json()
 }
 
 export const api = {
   // Campaigns
-  getCampaigns: () => request<CampaignSummary[]>("/api/campaigns"),
+  // Fetches ALL campaigns (active + finished) — kept for pages that want the
+  // full set in one call (tracker mapping, dropdowns). Note: /api/campaigns
+  // defaults to active-only, so the finished set must be requested explicitly.
+  getCampaigns: () => request<CampaignSummary[]>("/api/campaigns?include_finished=true"),
+
+  // Split fetches for the campaigns list page: the Active tab is ~37 rows and
+  // returns in ~200ms; the finished set is ~285 rows and pays the big query.
+  // Loading them separately lets the page paint active campaigns immediately
+  // instead of blocking first render on the slowest set (which is what made
+  // the list page take seconds to show any data).
+  getActiveCampaigns: () => request<CampaignSummary[]>("/api/campaigns"),
+  getFinishedCampaigns: () => request<CampaignSummary[]>("/api/campaigns?active=false"),
 
   getCampaign: (slug: string) =>
     request<CampaignDetail>(`/api/campaign/${slug}`),
@@ -74,6 +113,20 @@ export const api = {
     request<ApiOk>(`/api/campaign/${slug}/edit`, {
       method: "POST",
       body: JSON.stringify(data),
+    }),
+
+  getPopScore: (slug: string) =>
+    request<PopScore>(`/api/campaign/${slug}/pop-score`),
+
+  setPopScoreTrack: (slug: string, link: string) =>
+    request<ApiOk & { chartmetric_track_id: number | null; link: string }>(
+      `/api/campaign/${slug}/pop-score/track`,
+      { method: "POST", body: JSON.stringify({ link }) },
+    ),
+
+  overridePopScore: (slug: string, body: { metric: "streams" | "ugc"; date: string; action: "include" | "exclude" | "auto" }) =>
+    request<ApiOk>(`/api/campaign/${slug}/pop-score/override`, {
+      method: "POST", body: JSON.stringify(body),
     }),
 
   refreshStats: (slug: string) =>
@@ -111,33 +164,58 @@ export const api = {
 
   editCreator: (
     slug: string,
-    username: string,
+    creator: CreatorRef,
     data: Record<string, unknown>
   ) =>
-    request<ApiOk>(`/api/campaign/${slug}/creator/${username}/edit`, {
+    request<ApiOk>(creatorActionPath(slug, creator, "edit"), {
       method: "POST",
       body: JSON.stringify(data),
     }),
 
-  togglePaid: (slug: string, username: string) =>
+  togglePaid: (slug: string, creator: CreatorRef) =>
     request<{ ok: boolean; paid: string; username: string }>(
-      `/api/campaign/${slug}/creator/${username}/toggle-paid`,
+      creatorActionPath(slug, creator, "toggle-paid"),
       { method: "POST" }
     ),
 
-  removeCreator: (slug: string, username: string) =>
-    request<ApiOk>(
-      `/api/campaign/${slug}/creator/${username}/remove`,
-      { method: "POST" }
-    ),
+  removeCreator: (slug: string, creator: CreatorRef) =>
+    request<ApiOk>(creatorActionPath(slug, creator, "remove"), {
+      method: "POST",
+    }),
 
   getPaypal: (username: string) =>
     request<{ paypal: string }>(`/api/paypal/${username}`),
+
+  getLastRate: (username: string) =>
+    request<{ last_rate: LastRate | null }>(`/api/last-rate/${username}`),
 
   // Creator Database
   getCreators: () => request<CreatorSummary[]>("/api/creators"),
   getCreatorProfile: (username: string) =>
     request<CreatorProfile>(`/api/creators/${username}`),
+
+  // Creator Intelligence (sound-breaking analytics)
+  getBreakers: (lens: BreakerLens = "balanced", limit = 100, minPosts = 5) =>
+    request<BreakerResponse>(
+      `/api/intelligence/breakers?lens=${lens}&limit=${limit}&min_posts=${minPosts}`
+    ),
+  getCreatorIntel: (account: string, withOutcomes = false) =>
+    request<CreatorDrilldown>(
+      `/api/intelligence/creator/${encodeURIComponent(account)}${withOutcomes ? "?outcomes=1" : ""}`
+    ),
+  getSounds: () =>
+    request<{ sounds: TargetSound[] }>("/api/intelligence/sounds"),
+  getRebookSuggestions: () =>
+    request<{ suggestions: RebookSuggestion[] }>("/api/intelligence/rebook-suggestions"),
+  getSoundFit: (soundId: string) =>
+    request<SoundFitResponse>(
+      `/api/intelligence/sound-fit/${encodeURIComponent(soundId)}`
+    ),
+  updateCreatorNiches: (username: string, niches: string[]) =>
+    request<ApiOk & { updated: number; niches: string[] }>(
+      `/api/creators/${username}/niches`,
+      { method: "PATCH", body: JSON.stringify({ niches }) }
+    ),
 
   // TidesTracker
   createTracker: (slug: string) =>
@@ -149,6 +227,19 @@ export const api = {
   // Cobrand
   getCobrandStats: (slug: string) =>
     request<CobrandStats>(`/api/campaign/${slug}/cobrand`),
+  getCampaignReport: (slug: string) =>
+    request<CampaignReport>(`/api/campaign/${slug}/report`),
+  getCreatorRollup: (username: string, days = 90) =>
+    request<CreatorRollup>(`/api/creators/${encodeURIComponent(username)}/rollup?days=${days}`),
+  // Attribution rollups (CAMP-34 / CAMP-38)
+  getLabelStats: (days = 3650) =>
+    request<{ labels: LabelStats[] }>(`/api/internal/labels?days=${days}`),
+  getBookers: (days = 3650) =>
+    request<{ bookers: BookerSummary[] }>(`/api/internal/bookers?days=${days}`),
+  getPosters: (days = 3650) =>
+    request<{ bookers: PosterSummary[] }>(`/api/internal/posters?days=${days}`),
+  getBookerStats: (slug: string, days = 3650) =>
+    request<BookerStats>(`/api/internal/bookers/${encodeURIComponent(slug)}/stats?days=${days}`),
 
   setCobrandLinks: (
     slug: string,
@@ -204,6 +295,14 @@ export const api = {
 
   getInternalGroupStats: (slug: string, days = 30) =>
     request<InternalGroupStats>(`/api/internal/groups/${slug}/stats?days=${days}`),
+
+  getInternalFreshness: () =>
+    request<{
+      total_videos: number
+      newest_upload_date: string | null
+      newest_cached_at: string | null
+      days_since_newest_upload: number | null
+    }>("/api/internal/freshness"),
 
   triggerInternalScrapeAdvanced: (params: {
     hours?: number
@@ -480,6 +579,89 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ job_type }),
     }),
+  // CAMP-24/22: on-demand scrape trigger (job-tracked, non-blocking)
+  triggerScrape: (body: { all_active?: boolean; campaign_id?: string }) =>
+    request<{ job_id?: string; state: string; scope?: string; already_running?: boolean }>(
+      "/api/scrape-tasks/trigger",
+      { method: "POST", body: JSON.stringify(body) }
+    ),
+  scrapeTriggerStatus: (job_id?: string) =>
+    request<{
+      job_id?: string
+      state: string
+      scope?: string
+      result?: unknown
+      error?: string
+      progress?: { done: number; total: number; last_account: string; pct: number }
+    }>(
+      `/api/scrape-tasks/trigger/status${job_id ? `?job_id=${encodeURIComponent(job_id)}` : ""}`
+    ),
+  // ── Creator Library ──────────────────────────────────────────────────
+  // `key` (lowercased username) is the join key everywhere below; it is
+  // encoded because handles legitimately contain dots and underscores.
+  getLibrary: (window: LibraryWindow = "w60") =>
+    request<LibraryResponse>(`/api/library/creators?window=${window}`),
+  addLibraryCreator: (data: {
+    username: string
+    rate?: number | null
+    niches?: string[]
+    paypal_email?: string
+  }) =>
+    request<ApiOk & { username: string }>("/api/library/creators", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  updateLibraryCreator: (
+    username: string,
+    data: { rate?: number | null; slow?: boolean; note?: string; paypal_email?: string }
+  ) =>
+    request<ApiOk & { creator: LibraryCreator }>(
+      `/api/library/creators/${encodeURIComponent(username)}`,
+      { method: "PATCH", body: JSON.stringify(data) }
+    ),
+  setLibraryNiches: (username: string, niches: string[]) =>
+    request<ApiOk & { niches: string[] }>(
+      `/api/library/creators/${encodeURIComponent(username)}/niches`,
+      { method: "PUT", body: JSON.stringify({ niches }) }
+    ),
+  getLibraryRate: (username: string) =>
+    request<LibraryRate>(
+      `/api/library/creators/${encodeURIComponent(username)}/rate`
+    ),
+
+  getNiches: () =>
+    request<{ count: number; niches: LibraryNiche[] }>("/api/library/niches"),
+  createNiche: (name: string) =>
+    request<LibraryNiche>("/api/library/niches", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    }),
+  renameNiche: (id: number, name: string) =>
+    request<LibraryNiche>(`/api/library/niches/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    }),
+  deleteNiche: (id: number) =>
+    request<ApiOk>(`/api/library/niches/${id}`, { method: "DELETE" }),
+  mergeNiche: (id: number, into: number) =>
+    request<LibraryNiche>(`/api/library/niches/${id}/merge`, {
+      method: "POST",
+      body: JSON.stringify({ into }),
+    }),
+  /** Tag many creators at once — the bulk path for working the backlog. */
+  applyNiche: (id: number, usernames: string[]) =>
+    request<ApiOk & { tagged: number; requested: number }>(
+      `/api/library/niches/${id}/apply`,
+      { method: "POST", body: JSON.stringify({ usernames }) }
+    ),
+  /** Returns 202 immediately; the walk runs server-side. Poll
+   *  getLibraryRefreshStatus for completion. */
+  refreshLibraryStats: () =>
+    request<{ status: string }>("/api/library/refresh-stats", {
+      method: "POST",
+    }),
+  getLibraryRefreshStatus: () =>
+    request<LibraryRefreshStatus>("/api/library/refresh-status"),
 }
 
 export { ApiError }

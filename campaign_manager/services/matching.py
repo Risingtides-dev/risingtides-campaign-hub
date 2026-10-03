@@ -90,6 +90,21 @@ def build_sound_sets(meta: dict) -> Tuple[Set[str], Set[str], Set[str]]:
     return sound_ids, sound_keys, core_song_words
 
 
+# Splits multi-artist credits ("Wynne, Conductor Williams", "A & B",
+# "A feat. B", "A x B") so a campaign artist matches when it's any one of them.
+# " and " is deliberately NOT a separator — it's part of many band names.
+_ARTIST_SEPARATORS = re.compile(r"\s*(?:,|&|\+|\bx\b|\bfeat\.?|\bft\.?|\bfeaturing\b|\bwith\b)\s*", re.IGNORECASE)
+
+
+def artist_names(raw: str) -> Set[str]:
+    """Lowercased full credit plus each individual credited artist."""
+    full = (raw or "").lower().strip()
+    if not full:
+        return set()
+    parts = {p.strip() for p in _ARTIST_SEPARATORS.split(full) if p and p.strip()}
+    return {full} | parts
+
+
 def match_videos(
     all_videos: List[Dict],
     sound_ids: Set[str],
@@ -147,11 +162,11 @@ def match_videos(
 
         # Strategy 3: fuzzy word overlap + artist match (LAST RESORT)
         v_song = video.get("song", "") or ""
-        v_artist = (video.get("artist", "") or "").lower().strip()
+        v_artists = artist_names(video.get("artist", ""))
         if core_song_words and v_song:
             v_words = set(core_song_name(v_song).split())
             overlap = core_song_words & v_words
-            if overlap and artist_variants and v_artist in artist_variants:
+            if overlap and artist_variants and v_artists & artist_variants:
                 v = dict(video)
                 v["match_strategy"] = "fuzzy_word_overlap"
                 matched.append(v)
@@ -248,10 +263,18 @@ def merge_matched_videos(
         url = v.get("url", "")
         if url in fresh_by_url:
             fresh = fresh_by_url.pop(url)
-            # Create updated copy with fresh stats but keep existing metadata
+            # Create updated copy with fresh stats but keep existing metadata.
             updated = dict(v)
-            updated["views"] = fresh.get("views", v.get("views", 0))
-            updated["likes"] = fresh.get("likes", v.get("likes", 0))
+            # Data-integrity fix (sweep #4): take the MAX of fresh vs existing
+            # for views/likes, never blindly overwrite. A re-scrape that came
+            # back 0/None (rate-limited, partial page, momentary 404 on a
+            # still-live post) was clobbering a real recorded count down to 0
+            # and persisting it to Postgres — silently deflating campaign
+            # totals / client-facing numbers. Views & likes are monotonic on
+            # TikTok, so max() is the correct merge: a real increase wins, a
+            # transient zero can't lower a count.
+            updated["views"] = max(int(v.get("views", 0) or 0), int(fresh.get("views", 0) or 0))
+            updated["likes"] = max(int(v.get("likes", 0) or 0), int(fresh.get("likes", 0) or 0))
             # Also update sound info if we now have it
             if fresh.get("extracted_sound_id") and not v.get("extracted_sound_id"):
                 updated["extracted_sound_id"] = fresh["extracted_sound_id"]
@@ -272,19 +295,25 @@ def update_creator_post_counts(
     creators: List[Dict],
     matched_videos: List[Dict],
 ) -> List[Dict]:
-    """Update posts_matched and posts_done for each creator based on matched videos."""
-    account_counts: Dict[str, int] = {}
+    """Update posts_matched and posts_done for each creator based on matched videos.
+
+    Counts are per (handle, platform): a creator booked for both TikTok and
+    Instagram on one campaign gets TikToks credited to the TikTok booking and
+    reels to the Instagram booking.
+    """
+    account_counts: Dict[Tuple[str, str], int] = {}
     for v in matched_videos:
         acct = (v.get("account", "") or "").lstrip("@").lower()
         if acct:
-            account_counts[acct] = account_counts.get(acct, 0) + 1
+            key = (acct, (v.get("platform") or "tiktok").lower())
+            account_counts[key] = account_counts.get(key, 0) + 1
 
     updated = []
     for c in creators:
         c = dict(c)  # immutable — new copy
-        uname = c.get("username", "").lower()
-        c["posts_matched"] = account_counts.get(uname, 0)
-        c["posts_done"] = account_counts.get(uname, 0)
+        key = (c.get("username", "").lower(), (c.get("platform") or "tiktok").lower())
+        c["posts_matched"] = account_counts.get(key, 0)
+        c["posts_done"] = account_counts.get(key, 0)
         updated.append(c)
 
     return updated

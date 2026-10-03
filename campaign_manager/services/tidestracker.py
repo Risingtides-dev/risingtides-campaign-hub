@@ -7,10 +7,13 @@ maintains a local "folder" overlay (groups + assignments).
 """
 from __future__ import annotations
 
+import logging
 from typing import Dict, List, Optional, Tuple
 
 import requests as _requests
 from flask import current_app
+
+log = logging.getLogger(__name__)
 
 
 class TidesTrackerError(Exception):
@@ -55,6 +58,34 @@ def tracker_url_for(tracker_id: str) -> str:
     if not tracker_id:
         return ""
     return f"{TIDESTRACKER_PUBLIC_URL.rstrip('/')}/{tracker_id}"
+
+
+# Stale tracker_url values stored on campaigns point at the raw Vercel
+# subdomain, which pins to old deployments and breaks "View Tracker" links.
+_STALE_TRACKER_HOSTS = (
+    "frontend-tidestracker.vercel.app",
+    "tidestracker.vercel.app",
+)
+
+
+def canonicalize_tracker_url(url: str) -> str:
+    """Force a stored tracker_url onto the canonical domain, preserving the
+    UUID path. Stored values historically baked in the stale Vercel host;
+    "View Tracker" must always resolve to the live dashboard. No-op for
+    already-canonical or empty URLs.
+    """
+    if not url:
+        return ""
+    for stale in _STALE_TRACKER_HOSTS:
+        if stale in url:
+            # keep the path (the UUID) after the host, swap the host
+            tail = url.split(stale, 1)[1].lstrip("/")
+            # No UUID after the host → don't manufacture a bare dashboard-root
+            # link (that's a different broken link). Leave it untouched.
+            if not tail:
+                return url
+            return f"{TIDESTRACKER_PUBLIC_URL.rstrip('/')}/{tail}"
+    return url
 
 
 def create_tracker_campaign(
@@ -265,3 +296,61 @@ def list_tracker_campaigns(client_id: Optional[str] = None) -> List[Dict]:
         raise TidesTrackerError(f"Failed to list trackers: {e}", status_code=502)
 
     return result.get("campaigns") or []
+
+# Campaign Hub owns delivery status — it is where a campaign gets marked
+# complete — and pushes it to TidesTracker so the client-facing report can
+# show a badge. Deliberately status-only: tracker *names* sync from Cobrand
+# on the TidesTracker side, and a second writer would fight that sync.
+TRACKER_STATUS_IN_PROGRESS = "in_progress"
+TRACKER_STATUS_COMPLETE = "complete"
+
+
+def tracker_status_for(completion_status: str) -> str:
+    """Map a Hub completion_status onto the tracker's public badge.
+
+    The Hub distinguishes "none" (booked nothing yet) from "booked", but a
+    client only cares whether their campaign is still running or finished,
+    so both collapse to in_progress.
+    """
+    return (
+        TRACKER_STATUS_COMPLETE
+        if (completion_status or "").strip().lower() == "completed"
+        else TRACKER_STATUS_IN_PROGRESS
+    )
+
+
+def set_tracker_status(tracker_id: str, status: Optional[str]) -> bool:
+    """PATCH a tracker's delivery status. Returns True when it landed.
+
+    Best-effort by design: this runs inside the request that saves a
+    campaign, and TidesTracker being down must not fail the save. A missed
+    push self-heals on the next edit or backfill, and the badge simply shows
+    its previous value in the meantime.
+    """
+    tid = (tracker_id or "").strip()
+    if not tid:
+        return False
+    if status is not None and status not in (
+        TRACKER_STATUS_IN_PROGRESS, TRACKER_STATUS_COMPLETE
+    ):
+        raise ValueError(f"Invalid tracker status: {status!r}")
+
+    try:
+        api, key, _base = _config()
+    except TidesTrackerError as e:
+        log.warning("tracker status push skipped — not configured: %s", e)
+        return False
+
+    try:
+        resp = _requests.patch(
+            f"{api}/campaigns/{tid}",
+            json={"status": status},
+            headers={"Content-Type": "application/json", "x-service-key": key},
+            timeout=10,
+        )
+        resp.raise_for_status()
+    except _requests.RequestException as e:
+        log.warning("tracker status push failed for %s: %s", tid, e)
+        return False
+
+    return True

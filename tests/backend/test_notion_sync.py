@@ -59,6 +59,41 @@ def patch_fetch():
 
 
 # ---------------------------------------------------------------------------
+# Renamed-property regression (2026-07-31)
+# ---------------------------------------------------------------------------
+# Notion renamed "Group" -> "Label", "Group " -> "Account Group", and turned
+# "Poster" into a multi_select. The sync silently read None for every row and
+# resolve_memberships wiped all cluster-group members each run. These tests
+# pin the new names; _page() above still pins the old-name fallbacks.
+
+class TestRenamedProperties:
+    def _new_schema_page(self):
+        page = _page("11111111-1111-1111-1111-111111111111", account="renamed_acct")
+        props = page["properties"]
+        del props["Group"], props["Group "]
+        props["Label"] = {"select": {"name": "WARNER"}}
+        props["Account Group"] = {"select": {"name": "Warner Test UGC"}}
+        props["Poster"] = {"multi_select": [{"name": "Johnny Balik"}, {"name": "Sam Hudgens"}]}
+        return page
+
+    def test_new_names_map(self):
+        row, err = notion_sync._map_page_to_row(self._new_schema_page())
+        assert err is None
+        assert row["notion_group"] == "WARNER"
+        assert row["notion_subgroup"] == "Warner Test UGC"
+        assert row["poster"] == "Johnny Balik, Sam Hudgens"
+
+    def test_old_names_still_map(self):
+        row, err = notion_sync._map_page_to_row(
+            _page("22222222-2222-2222-2222-222222222222", subgroup="Internal Page")
+        )
+        assert err is None
+        assert row["notion_group"] == "WARNER"
+        assert row["notion_subgroup"] == "Internal Page"
+        assert row["poster"] == "jake"
+
+
+# ---------------------------------------------------------------------------
 # Property extractor unit tests
 # ---------------------------------------------------------------------------
 
@@ -183,6 +218,24 @@ class TestSyncMasterPages:
         with db.get_session() as s:
             row = s.query(NotionMasterPage).one()
             assert row.account_username == "alice_renamed"
+
+    def test_value_change_with_same_timestamp_triggers_update(self, db, patch_fetch):
+        """Notion select-option renames rewrite page values WITHOUT bumping
+        last_edited_time. The sync must catch the content change anyway —
+        the old timestamp-only diff froze stale values forever."""
+        page = _page(_PAGE_ID_A, account="alice", last_edited="2026-05-15T19:47:00Z")
+        page["properties"]["Group "] = {"select": {"name": "Warner Test UGC"}}
+        patch_fetch.return_value = [page]
+        notion_sync.sync_master_pages()
+
+        page2 = _page(_PAGE_ID_A, account="alice", last_edited="2026-05-15T19:47:00Z")
+        page2["properties"]["Group "] = {"select": {"name": "Gannon Fremin"}}
+        patch_fetch.return_value = [page2]
+        result = notion_sync.sync_master_pages()
+        assert result.pages_updated == 1
+        with db.get_session() as s:
+            row = s.query(NotionMasterPage).one()
+            assert row.notion_subgroup == "Gannon Fremin"
 
     def test_mirror_only_row_gets_deleted(self, db, patch_fetch):
         patch_fetch.return_value = [

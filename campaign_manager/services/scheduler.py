@@ -40,6 +40,29 @@ def _import_scraper():
     return scrape_tiktok_account, match_video_to_sounds
 
 
+def _shared_key(platform: str, username: str) -> str:
+    """Key into the cron's shared video cache.
+
+    TikTok keeps the bare lowercase handle (existing behavior); Instagram is
+    namespaced so a creator with the same handle on both platforms can't have
+    their TikToks matched as reels or vice versa.
+    """
+    handle = (username or "").lstrip("@").strip().lower()
+    return f"instagram:{handle}" if platform == "instagram" else handle
+
+
+def _scrape_instagram(usernames, start_date=None):
+    from campaign_manager.services.apify_instagram import (
+        SCHEDULER_WAIT_BUDGET_SECS,
+        scrape_instagram_reels,
+    )
+    return scrape_instagram_reels(
+        usernames,
+        start_date=start_date,
+        wait_budget_secs=SCHEDULER_WAIT_BUDGET_SECS,
+    )
+
+
 # Concurrency caps — kept low to avoid burst-rate-limit from TikTok.
 # 216 creators × parallelism × 500-video pulls used to mean ~108k metadata
 # requests in a few minutes from one Railway IP, which TikTok responded to
@@ -48,6 +71,54 @@ def _import_scraper():
 # burst out further.
 DEFAULT_MAX_WORKERS = 2
 DEFAULT_VIDEO_LIMIT = 50
+
+
+def _save_discovered_sounds(slug: str, meta: dict, discovered_sound_ids: list[str]) -> None:
+    """Union newly discovered sounds with the campaign's current sound list."""
+    current = _db.get_campaign(slug) or {}
+    additional = list(current.get("additional_sounds") or [])
+    snapshot = set(meta.get("additional_sounds") or [])
+    for sound_id in discovered_sound_ids:
+        if sound_id not in snapshot and sound_id not in additional:
+            additional.append(sound_id)
+    _db.update_campaign_fields(slug, {"additional_sounds": additional})
+
+
+# A native subprocess crash (SIGABRT etc.) kills one creator's yt-dlp, not the
+# fleet. Only a widespread crash rate means the environment itself is broken.
+NATIVE_CRASH_PREFIX = "native subprocess crash: "
+NATIVE_CRASH_FATAL_RATE = 0.5
+NATIVE_CRASH_MIN_FLEET = 5
+
+
+def _scrape_run_is_degraded(
+    outcome_counts: dict,
+    *,
+    total_creators: int,
+    campaigns_refreshed: int,
+    total_new_matches: int,
+    total_videos_checked: int,
+) -> bool:
+    """Return whether scrape results are unsafe to report as healthy."""
+    empty_rate = (
+        outcome_counts.get("empty", 0) / total_creators
+        if total_creators > 0
+        else 0.0
+    )
+    native_crash_rate = (
+        outcome_counts.get("native_crash", 0) / total_creators
+        if total_creators > 0
+        else 0.0
+    )
+    return bool(
+        (empty_rate > 0.7 and total_creators > 5)
+        or (native_crash_rate > 0.2 and total_creators > 5)
+        or (
+            campaigns_refreshed > 5
+            and total_new_matches == 0
+            and total_videos_checked == 0
+        )
+    )
 
 
 def _scrape_creator_accounts(usernames, start_date=None, max_workers=DEFAULT_MAX_WORKERS):
@@ -63,8 +134,12 @@ def _scrape_creator_accounts(usernames, start_date=None, max_workers=DEFAULT_MAX
     return all_videos, accounts_scraped, errors
 
 
-def _scrape_creator_accounts_v2(usernames, start_date=None, max_workers=DEFAULT_MAX_WORKERS):
+def _scrape_creator_accounts_v2(usernames, start_date=None, max_workers=DEFAULT_MAX_WORKERS, on_progress=None):
     """Scrape creator accounts and report per-creator outcomes.
+
+    on_progress: optional callable(done, total, last_username) invoked after
+    each account finishes — used by the on-demand trigger (CAMP-21) to report
+    live progress. Best-effort; a raising callback never breaks the scrape.
 
     Returns (all_videos, accounts_scraped, errors, outcomes) where outcomes is
     a dict {username: {"status": str, "video_count": int, "error": str|None}}.
@@ -85,6 +160,7 @@ def _scrape_creator_accounts_v2(usernames, start_date=None, max_workers=DEFAULT_
     distribution so a run dominated by `empty` is visibly degraded.
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
+    from src.scrapers.yt_dlp_runner import NativeSubprocessCrash
 
     scrape_tiktok_account, _ = _import_scraper()
 
@@ -92,6 +168,7 @@ def _scrape_creator_accounts_v2(usernames, start_date=None, max_workers=DEFAULT_
     accounts_scraped = 0
     errors = []
     outcomes: dict = {}
+    native_crashes: list = []
 
     def _scrape_one(username):
         # Per-creator jitter (0.5-2s) to spread the burst — 216 creators
@@ -111,6 +188,13 @@ def _scrape_creator_accounts_v2(usernames, start_date=None, max_workers=DEFAULT_
                     use_cache=True,
                 )
                 return username, videos, None
+            except NativeSubprocessCrash as e:
+                # Native allocator corruption is not a network retry, so this
+                # creator is done — but one bad subprocess out of ~216 must not
+                # cancel the fleet. Report it as a per-creator failure; the
+                # systemic guard below still fails the run if crashes are
+                # widespread rather than isolated.
+                return username, [], f"{NATIVE_CRASH_PREFIX}{e}"
             except Exception as e:
                 last_err = str(e)
                 if attempt == 0:
@@ -120,14 +204,19 @@ def _scrape_creator_accounts_v2(usernames, start_date=None, max_workers=DEFAULT_
                 return username, [], last_err
         return username, [], last_err or "max_retries"
 
+    total = len(usernames)
+    done = 0
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(_scrape_one, u): u for u in usernames}
         for future in as_completed(futures):
             username, videos, error = future.result()
             if error:
                 errors.append(f"@{username}: {error}")
+                is_native = error.startswith(NATIVE_CRASH_PREFIX)
+                if is_native:
+                    native_crashes.append(username)
                 outcomes[username] = {
-                    "status": "error",
+                    "status": "native_crash" if is_native else "error",
                     "video_count": 0,
                     "error": error,
                 }
@@ -139,6 +228,27 @@ def _scrape_creator_accounts_v2(usernames, start_date=None, max_workers=DEFAULT_
                     "video_count": len(videos),
                     "error": None,
                 }
+            done += 1
+            if on_progress is not None:
+                try:
+                    on_progress(done, total, username)
+                except Exception:
+                    log.debug("on_progress callback raised (ignored)", exc_info=True)
+
+    if native_crashes:
+        crash_rate = len(native_crashes) / total if total else 0.0
+        log.warning(
+            "CRON: %d/%d creator(s) died on a native subprocess crash (%.0f%%): %s",
+            len(native_crashes), total, crash_rate * 100,
+            ", ".join(f"@{u}" for u in native_crashes[:10]),
+        )
+        # Isolated crashes are creator-level noise. A fleet-wide crash rate is
+        # real allocator corruption and must still fail the run loudly.
+        if total > NATIVE_CRASH_MIN_FLEET and crash_rate > NATIVE_CRASH_FATAL_RATE:
+            raise NativeSubprocessCrash(
+                f"{len(native_crashes)}/{total} creators died on native signals",
+                -6,
+            )
 
     return all_videos, accounts_scraped, errors, outcomes
 
@@ -167,6 +277,9 @@ def init_scheduler(database_url: str, hour: int = 6, minute: int = 0):
     url = database_url
     if url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql://", 1)
+    # Same driver pin as db.init — SQLAlchemy 2.1+ defaults to psycopg v3.
+    if url.startswith("postgresql://"):
+        url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
 
     jobstores = {
         "default": SQLAlchemyJobStore(url=url),
@@ -224,6 +337,29 @@ def init_scheduler(database_url: str, hour: int = 6, minute: int = 0):
         misfire_grace_time=300,
     )
 
+    # Conservative Chartmetric campaign linking. Delayed on boot and omitted
+    # entirely when credentials are unavailable.
+    if os.environ.get("CHARTMETRIC_REFRESH_TOKEN"):
+        from campaign_manager.services.chartmetric_autolink import (
+            autolink_campaigns, get_autolink_interval_minutes,
+        )
+        from datetime import datetime as _datetime
+        cm_interval = get_autolink_interval_minutes()
+        _scheduler.add_job(
+            autolink_campaigns, "interval", minutes=cm_interval,
+            next_run_time=_datetime.now(EST) + timedelta(minutes=10),
+            id="chartmetric_autolink", replace_existing=True,
+            coalesce=True, max_instances=1, misfire_grace_time=300,
+        )
+
+    # Preserve CRM-declared niche demand for the D1 playlist consumer.
+    from campaign_manager.services.notion import request_campaign_niche_refresh
+    _scheduler.add_job(
+        request_campaign_niche_refresh, "interval", minutes=15,
+        id="campaign_niche_refresh", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=300,
+    )
+
     # Tides Tracker pull (RTA-42): hit the public stats API for every
     # tracker in `tracker_names` every N minutes (default 30). Same
     # cron knobs as notion_sync — `coalesce=True` + `max_instances=1`,
@@ -243,6 +379,27 @@ def init_scheduler(database_url: str, hour: int = 6, minute: int = 0):
         coalesce=True,
         max_instances=1,
         misfire_grace_time=300,
+    )
+
+    # Creator Library stats (CAMP-LIB): rebuild per-creator performance
+    # windows from every Tides Tracker, completed campaigns included. The
+    # read-time overlay deliberately skips completed campaigns, so without
+    # this their view counts stay frozen at whatever the last scrape caught
+    # — measured at roughly a 4x undercount across the roster.
+    from campaign_manager.services.creator_library_refresh import (
+        get_library_stats_interval_minutes,
+        run_library_stats_refresh,
+    )
+    library_interval = get_library_stats_interval_minutes()
+    _scheduler.add_job(
+        run_library_stats_refresh,
+        "interval",
+        minutes=library_interval,
+        id="library_stats",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=600,
     )
 
     # Cron-log janitor: reaps cron_log rows stuck in 'running' beyond
@@ -340,9 +497,19 @@ def trigger_job(job_type: str):
 
 # ── Job 1: Campaign Refresh ──────────────────────────────────────────
 
-def run_campaign_refresh():
-    """Refresh all active campaigns: scrape creators via yt-dlp, run matching, update stats."""
-    log.info("CRON: starting campaign_refresh")
+def run_campaign_refresh(only_slugs=None, on_progress=None) -> dict:
+    """Refresh active campaigns: scrape creators via yt-dlp, run matching, update stats.
+
+    only_slugs: optional iterable of campaign slugs to limit the refresh to
+    (CAMP-24 single/selected-campaign trigger). None = all active campaigns.
+    The smart-scraper rule (active + not-completed only) still applies — a
+    completed campaign passed in only_slugs is filtered out below.
+
+    on_progress: optional callable(done, total, last_username) reported as each
+    account finishes scraping (CAMP-21 live progress). Best-effort.
+    """
+    log.info("CRON: starting campaign_refresh%s",
+             f" (scoped to {list(only_slugs)})" if only_slugs else "")
     log_id = _db.create_cron_log("campaign_refresh")
 
     campaigns_total = 0
@@ -355,19 +522,26 @@ def run_campaign_refresh():
     per_campaign = {}
 
     try:
-        campaigns = _db.list_campaigns(status="active", exclude_completed=True)
+        campaigns = _db.list_campaigns(exclude_completed=True)
+        if only_slugs:
+            wanted = {s for s in only_slugs}
+            campaigns = [c for c in campaigns if c.get("slug", "") in wanted]
         campaigns_total = len(campaigns)
 
         # Improvement #4: Deduplicate creators across campaigns
         # Scrape each unique creator once, share results across all their campaigns
         all_usernames = set()
+        ig_usernames = set()
         for meta in campaigns:
             campaign_creators = _db.get_creators(meta.get("slug", ""))
             for c in campaign_creators:
-                if c.get("platform", "tiktok") == "tiktok" and c.get("status") == "active":
-                    uname = c.get("username", "")
-                    if uname:
-                        all_usernames.add(uname)
+                if c.get("status") != "active" or not c.get("username"):
+                    continue
+                platform = c.get("platform", "tiktok")
+                if platform == "tiktok":
+                    all_usernames.add(c["username"])
+                elif platform == "instagram":
+                    ig_usernames.add(c["username"])
 
         # Bound the pre-scrape by the earliest active campaign start_date.
         # Previously this passed start_date=None which pulled full video history
@@ -397,16 +571,30 @@ def run_campaign_refresh():
                 len(all_usernames), campaigns_total,
                 earliest_start.date().isoformat() if earliest_start else "none",
             )
-            all_scraped, _, _, scrape_outcomes = _scrape_creator_accounts_v2(
+            all_scraped, _, scrape_errors, scrape_outcomes = _scrape_creator_accounts_v2(
                 list(all_usernames),
                 start_date=earliest_start,
                 max_workers=DEFAULT_MAX_WORKERS,
+                on_progress=on_progress,
             )
+            errors.extend(scrape_errors)
             # Index by account
             for v in all_scraped:
                 acct = (v.get("account", "") or "").lstrip("@").lower()
                 if acct:
                     shared_videos.setdefault(acct, []).append(v)
+
+        # Instagram creators go through Apify in one batched run. Their
+        # outcomes are kept out of scrape_outcomes so a quiet IG roster can't
+        # trip the TikTok rate-limit (empty-rate) anomaly.
+        ig_outcomes: dict = {}
+        if ig_usernames:
+            ig_result = _scrape_instagram(ig_usernames, earliest_start)
+            errors.extend(ig_result.errors)
+            ig_outcomes = ig_result.outcomes
+            for v in ig_result.videos:
+                key = _shared_key("instagram", v.get("account", ""))
+                shared_videos.setdefault(key, []).append(v)
 
         # Roll up scrape outcome distribution
         outcome_counts = {"ok": 0, "empty": 0, "error": 0}
@@ -487,13 +675,12 @@ def run_campaign_refresh():
             if total_creators_scraped > 0
             else 0.0
         )
-        is_degraded = (
-            (empty_rate > 0.7 and total_creators_scraped > 5)
-            or (
-                campaigns_refreshed > 5
-                and total_new_matches == 0
-                and total_videos_checked == 0
-            )
+        is_degraded = _scrape_run_is_degraded(
+            outcome_counts,
+            total_creators=total_creators_scraped,
+            campaigns_refreshed=campaigns_refreshed,
+            total_new_matches=total_new_matches,
+            total_videos_checked=total_videos_checked,
         )
 
         summary = {
@@ -507,6 +694,10 @@ def run_campaign_refresh():
             "per_campaign": per_campaign,
             # New observability fields
             "scrape_outcome_counts": outcome_counts,
+            "instagram_outcome_counts": {
+                st: sum(1 for o in ig_outcomes.values() if o.get("status") == st)
+                for st in ("ok", "empty", "error")
+            },
             "creators_scraped_total": total_creators_scraped,
             "empty_creator_rate": round(empty_rate, 3),
             "degraded": is_degraded,
@@ -523,11 +714,22 @@ def run_campaign_refresh():
             campaigns_refreshed, campaigns_total, total_new_matches,
             outcome_counts, is_degraded,
         )
+        return _db.get_cron_log_by_id(log_id) or {
+            "id": log_id,
+            "status": "completed",
+            "summary": summary,
+        }
 
     except Exception as e:
-        _db.finish_cron_log(log_id, "failed", {"error": str(e), "errors": errors[:10]})
+        failure_summary = {"error": str(e), "errors": errors[:10]}
+        _db.finish_cron_log(log_id, "failed", failure_summary)
         _post_failure_slack("campaign_refresh", str(e))
         log.error("CRON: campaign_refresh failed: %s", e)
+        return _db.get_cron_log_by_id(log_id) or {
+            "id": log_id,
+            "status": "failed",
+            "summary": failure_summary,
+        }
 
 
 def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None) -> dict:
@@ -556,11 +758,11 @@ def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None) 
     sound_ids, sound_keys, core_song_words = build_sound_sets(meta)
     artist = meta.get("artist", "")
 
-    # Collect TikTok creator usernames
-    tiktok_creators = [c for c in creators if c.get("platform", "tiktok") == "tiktok" and c.get("status") == "active"]
-    usernames = [c.get("username", "") for c in tiktok_creators if c.get("username")]
+    active = [c for c in creators if c.get("status") == "active" and c.get("username")]
+    usernames = [c["username"] for c in active if c.get("platform", "tiktok") == "tiktok"]
+    ig_usernames = [c["username"] for c in active if c.get("platform") == "instagram"]
 
-    if not usernames:
+    if not usernames and not ig_usernames:
         return {"new_matches": 0, "total_matches": len(existing_videos), "videos_checked": 0}
 
     # Step 1: Get videos — use shared cache if available, otherwise scrape
@@ -568,8 +770,11 @@ def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None) 
         # Pull this campaign's creators from the pre-scraped cache
         all_videos = []
         misses = []
-        for uname in usernames:
-            hits = shared_videos.get(uname.lower(), [])
+        lookups = [_shared_key("tiktok", u) for u in usernames] + [
+            _shared_key("instagram", u) for u in ig_usernames
+        ]
+        for uname in lookups:
+            hits = shared_videos.get(uname, [])
             if hits:
                 all_videos.extend(hits)
             else:
@@ -592,9 +797,15 @@ def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None) 
                 scrape_start = datetime.strptime(start_date_str, "%Y-%m-%d")
             except ValueError:
                 pass
-        all_videos, _, scrape_errors = _scrape_creator_accounts(
-            usernames, start_date=scrape_start, max_workers=DEFAULT_MAX_WORKERS
-        )
+        all_videos, scrape_errors = [], []
+        if usernames:
+            all_videos, _, scrape_errors = _scrape_creator_accounts(
+                usernames, start_date=scrape_start, max_workers=DEFAULT_MAX_WORKERS
+            )
+        if ig_usernames:
+            ig_result = _scrape_instagram(ig_usernames, scrape_start)
+            all_videos = all_videos + ig_result.videos
+            scrape_errors = list(scrape_errors) + ig_result.errors
         if scrape_errors:
             for err in scrape_errors[:5]:
                 log.warning("CRON: scrape error for %s: %s", slug, err)
@@ -621,8 +832,11 @@ def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None) 
     )
 
     # Step 4: Auto-discover original sounds — fuzzy mode only
+    # TikTok-only: discovered IDs are saved as TikTok additional_sounds, and
+    # IG audio IDs aren't resolvable as TikTok sounds downstream.
+    tiktok_videos = [v for v in all_videos if v.get("platform", "tiktok") == "tiktok"]
     extra_matched, discovered_sound_ids = discover_original_sounds(
-        all_videos, matched, sound_ids, usernames, artist,
+        tiktok_videos, matched, sound_ids, usernames, artist,
         tt_artist_label=tt_artist_label,
         match_strategy=match_strategy,
     )
@@ -630,13 +844,7 @@ def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None) 
 
     # Auto-add discovered sounds to campaign (only happens in fuzzy mode now)
     if discovered_sound_ids:
-        current_additional = list(meta.get("additional_sounds") or [])
-        for sid in discovered_sound_ids:
-            if sid not in current_additional:
-                current_additional.append(sid)
-        updated_meta = dict(meta)
-        updated_meta["additional_sounds"] = current_additional
-        _db.save_campaign(slug, updated_meta)
+        _save_discovered_sounds(slug, meta, discovered_sound_ids)
 
     # Cobrand cross-check — for every tracker that covers any of this
     # campaign's sound IDs, fetch its submitted-videos list and pre-mark
@@ -733,7 +941,7 @@ def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None) 
     _db.update_campaign_stats(slug, total_views, total_likes)
 
     _db.save_scrape_log(slug, {
-        "accounts_scraped": len(usernames),
+        "accounts_scraped": len(usernames) + len(ig_usernames),
         "videos_checked": len(all_videos),
         "new_matches": new_count,
         "total_matches": len(all_matched),
@@ -827,20 +1035,29 @@ def run_internal_scrape():
             for err in scrape_errors[:5]:
                 log.warning("CRON: internal scrape error: %s", err)
 
-        # Filter to last 48 hours
-        cutoff = datetime.now(EST) - timedelta(hours=48)
+        # Filter to last 48 hours.
+        # Sweep #5 fix: the scraper stores `timestamp` as a datetime OBJECT
+        # (master_tracker sets 'timestamp': video_dt), but this guarded only
+        # `isinstance(ts, str)` — so the check never fired and EVERY video fell
+        # through, making `filtered` == full history. The "last 48h" results +
+        # Slack summary were silently reporting the entire back-catalogue.
+        # Normalize both datetime and str forms.
+        cutoff = (datetime.now(EST) - timedelta(hours=48)).astimezone(timezone.utc)
         filtered = []
         for v in all_videos:
             ts = v.get("timestamp", "")
-            if ts and isinstance(ts, str):
+            vdt = None
+            if isinstance(ts, datetime):
+                vdt = ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+            elif ts and isinstance(ts, str):
                 try:
                     vdt = datetime.fromisoformat(ts)
                     if vdt.tzinfo is None:
                         vdt = vdt.replace(tzinfo=timezone.utc)
-                    if vdt < cutoff.astimezone(timezone.utc):
-                        continue
                 except Exception:
-                    pass
+                    vdt = None
+            if vdt is not None and vdt < cutoff:
+                continue
             filtered.append(v)
 
         # Group by account
@@ -936,6 +1153,7 @@ def run_internal_scrape():
             "total_videos_unfiltered": len(all_videos),
             "unique_songs": unique_songs,
             "songs": sanitized_songs,  # cap at 100 to avoid bloating DB
+            "scope": "full",
         })
 
         summary = {
@@ -1017,7 +1235,7 @@ def _attach_internal_to_campaigns(internal_videos: list) -> dict:
         }
 
     # Build sound_id -> winning campaign lookup
-    campaigns = _db.list_campaigns(status="active", exclude_completed=True)
+    campaigns = _db.list_campaigns(exclude_completed=True)
     sound_to_campaign: dict = {}  # sound_id -> meta
 
     for meta in campaigns:

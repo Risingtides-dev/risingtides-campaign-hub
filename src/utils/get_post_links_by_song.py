@@ -13,6 +13,15 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from src.scrapers.yt_dlp_runner import (
+    NativeSubprocessCrash,
+    raise_for_native_crash,
+)
+
 # Scraping configuration
 IMPERSONATE_TARGETS = ['chrome', 'safari', None]  # Fallback chain
 REQUEST_DELAY = 2.5  # Seconds between accounts to avoid rate limiting
@@ -86,6 +95,7 @@ def scrape_account_videos(account, start_datetime=None, end_datetime=None, limit
 
             try:
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                raise_for_native_crash(result, context=f"yt-dlp for @{username}")
 
                 # Check for rate limiting (429)
                 if '429' in result.stderr or 'Too Many Requests' in result.stderr:
@@ -115,6 +125,8 @@ def scrape_account_videos(account, start_datetime=None, end_datetime=None, limit
                 last_error = result.stderr[:300] if result.stderr else "yt-dlp returned no output (likely blocked)"
                 break  # Move to next impersonation target
 
+            except NativeSubprocessCrash:
+                raise
             except subprocess.TimeoutExpired:
                 last_error = f"Timeout after 120s"
                 print(f"    [TIMEOUT] Attempt {attempt + 1}/{MAX_RETRIES} with impersonate={target_name}")

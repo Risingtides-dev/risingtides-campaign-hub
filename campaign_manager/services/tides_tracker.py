@@ -59,7 +59,7 @@ from uuid import UUID
 import requests
 
 from campaign_manager import db as _db
-from campaign_manager.models import TidesTrackerSyncLog, TrackerName
+from campaign_manager.models import TidesTrackerSyncLog
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +75,20 @@ def _extract_tiktok_video_id(url: str) -> str:
         return ""
     m = _TIKTOK_VIDEO_ID_RE.search(url)
     return m.group(1) if m else ""
+
+
+# Instagram posts are identified by shortcode; /p/, /reel/ and /reels/ all
+# point at the same post. Case-sensitive — shortcodes are base64-ish.
+_INSTAGRAM_SHORTCODE_RE = re.compile(r"instagram\.com/(?:[^/?#]+/)?(?:p|reels?|tv)/([A-Za-z0-9_-]{5,})")
+
+
+def _extract_post_id(url: str) -> str:
+    """Platform-namespaced post ID for dedupe: TikTok video id or 'ig:<shortcode>'."""
+    tiktok_id = _extract_tiktok_video_id(url)
+    if tiktok_id:
+        return tiktok_id
+    m = _INSTAGRAM_SHORTCODE_RE.search(url or "")
+    return f"ig:{m.group(1)}" if m else ""
 
 
 # Pinned to the canonical Tides Tracker domain. The auth-free public
@@ -230,7 +244,9 @@ def _parse_submission(v: Dict[str, Any]) -> Submission:
     )
 
 
-def fetch_campaign_submissions(tracker_id: str) -> TidesTrackerFetchResult:
+def fetch_campaign_submissions(
+    tracker_id: str, *, timeout: float = _HTTP_TIMEOUT_SECONDS,
+) -> TidesTrackerFetchResult:
     """Fetch every submission for one tracker from the public API.
 
     Never raises. Always returns a result — `ok=False` paths populate
@@ -243,7 +259,7 @@ def fetch_campaign_submissions(tracker_id: str) -> TidesTrackerFetchResult:
         - ``request_error``      — any other `requests.RequestException`
         - ``http_4xx`` / ``http_5xx`` — non-200 response
         - ``bad_json``           — 200 but body wasn't JSON
-        - ``bad_payload``        — JSON returned but no `videos` array
+        - ``bad_payload``        — JSON returned but `videos` was not an array
 
     The cron caller (`pull_all_trackers`) buckets these in the audit
     log; this lets us tell "tracker doesn't exist anymore (404)" from
@@ -273,7 +289,7 @@ def fetch_campaign_submissions(tracker_id: str) -> TidesTrackerFetchResult:
     try:
         resp = requests.get(
             url,
-            timeout=_HTTP_TIMEOUT_SECONDS,
+            timeout=timeout,
             headers={"Accept": "application/json"},
         )
     except requests.Timeout as exc:
@@ -310,15 +326,15 @@ def fetch_campaign_submissions(tracker_id: str) -> TidesTrackerFetchResult:
             status_code=resp.status_code,
         )
 
-    if not isinstance(payload, dict) or "videos" not in payload:
+    if not isinstance(payload, dict) or not isinstance(payload.get("videos"), list):
         return TidesTrackerFetchResult(
             ok=False, tracker_id=tid,
             error_kind="bad_payload",
-            detail="response missing `videos` array",
+            detail="response missing a `videos` array",
             status_code=resp.status_code,
         )
 
-    videos = payload.get("videos") or []
+    videos = payload["videos"]
     submissions = [_parse_submission(v) for v in videos if isinstance(v, dict)]
 
     return TidesTrackerFetchResult(
@@ -347,15 +363,45 @@ class PullResult:
 
 
 def _list_tracker_ids() -> List[str]:
-    """All tracker UUIDs we know about, sourced from `tracker_names`.
+    """Tracker UUIDs to pull, sourced from `tracker_names`, EXCLUDING any whose
+    linked campaign is completed.
 
-    RTA-41 made this table the single source of truth post-link
-    creation (every link writes a name row atomically). Reading from
-    here avoids a join against `tracker_campaign_links` and naturally
-    skips trackers that haven't been adopted by Campaign Hub yet.
+    RTA-41 made this table the single source of truth post-link creation
+    (every link writes a name row atomically), so it naturally skips trackers
+    not yet adopted by Campaign Hub.
+
+    CAMP-1 (Gap 1): the pull cron used to fetch EVERY tracker every tick — and
+    ~68% of prod trackers (71/104) link to a `completed` campaign whose numbers
+    are final and won't change. Those were wasted Tides Tracker API calls each
+    tick. We now exclude a tracker ONLY when its linked campaign is explicitly
+    `completion_status = 'completed'`. Trackers that are unlinked, or linked to
+    a 'booked'/'none' campaign, still pull (a tracker with no completion signal
+    must NOT be silently dropped). A tracker linked to BOTH a completed and a
+    live campaign still pulls (the live one wins via the NOT-completed match).
     """
+    import sqlalchemy as sa
     with _db.get_session() as s:
-        rows = s.query(TrackerName.tracker_id).all()
+        rows = s.execute(sa.text("""
+            SELECT tn.tracker_id
+            FROM tracker_names tn
+            WHERE tn.tracker_id IS NOT NULL
+              AND NOT EXISTS (
+                    SELECT 1
+                    FROM tracker_campaign_links tcl
+                    JOIN campaigns c ON c.slug = tcl.campaign_slug
+                    WHERE tcl.tracker_id = tn.tracker_id
+                      AND c.completion_status = 'completed'
+              )
+              -- but DO keep a tracker that also links a non-completed campaign
+              OR EXISTS (
+                    SELECT 1
+                    FROM tracker_campaign_links tcl2
+                    JOIN campaigns c2 ON c2.slug = tcl2.campaign_slug
+                    WHERE tcl2.tracker_id = tn.tracker_id
+                      AND (c2.completion_status IS NULL
+                           OR c2.completion_status <> 'completed')
+              )
+        """)).fetchall()
         return [r[0] for r in rows if r[0]]
 
 
@@ -420,6 +466,18 @@ def pull_all_trackers(triggered_by: str = "cron") -> PullResult:
                 "error_kind": "ok",
                 "detail": f"{fetch.count} submissions",
             })
+            # CAMP-74: warm the REQUEST-PATH stats cache the cron used to skip.
+            # Before this, the cron only fetched submissions for the audit log;
+            # the in-process cache get_campaign_stats() reads stayed cold after
+            # every redeploy, so the first user request paid a full round-trip.
+            # Writing through here means the cron's 30-min tick keeps the read
+            # cache warm. (Still per-worker — the durable cross-worker Postgres
+            # cache is the larger follow-up half of CAMP-74.)
+            try:
+                from campaign_manager.services import campaign_stats as _cs
+                _cs.warm_cache(tid, fetch.submissions, fetch.fetched_at)
+            except Exception:
+                logger.debug("tides_tracker pull: cache warm skipped for %s", tid, exc_info=True)
         else:
             result.trackers_failed += 1
             result.errors.append({
@@ -610,7 +668,7 @@ def auto_track_submitted_videos(triggered_by: str = "cron") -> AutoTrackResult:
                 })
                 continue
             for sub in fres.submissions:
-                vid = _extract_tiktok_video_id(sub.video_url)
+                vid = _extract_post_id(sub.video_url)
                 if vid:
                     submitted.add(vid)
 
@@ -630,7 +688,7 @@ def auto_track_submitted_videos(triggered_by: str = "cron") -> AutoTrackResult:
             )).fetchall()
             matching_ids: List[int] = []
             for row_id, url in rows:
-                vid = _extract_tiktok_video_id(url or "")
+                vid = _extract_post_id(url or "")
                 if vid and vid in submitted:
                     matching_ids.append(int(row_id))
 

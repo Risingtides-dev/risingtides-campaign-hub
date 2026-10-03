@@ -1,0 +1,1030 @@
+"""Chartmetric pop-score client + campaign endpoints (HTTP fully faked)."""
+from __future__ import annotations
+
+from datetime import date, datetime, timedelta, timezone
+from unittest.mock import ANY, MagicMock, patch
+
+import pytest
+
+from campaign_manager.services import chartmetric as cm
+
+
+def _resp(status=200, body=None):
+    r = MagicMock()
+    r.status_code = status
+    r.json.return_value = body or {}
+    r.text = str(body)
+    return r
+
+
+TRACK_OBJ = {
+    "name": "Espresso",
+    "artists": [{"name": "Sabrina Carpenter"}],
+    "image_url": "img",
+    "cm_statistics": {"sp_popularity": 87, "score": 99.3, "sp_streams": 3196473434},
+}
+HISTORY_OBJ = [
+    {"track_domain_id": "old", "data": [
+        {"timestp": "2026-09-01T00:00:00.000Z", "value": 40},
+    ]},
+    {"track_domain_id": "main", "data": [
+        {"timestp": "2026-08-20T00:00:00.000Z", "value": 80},
+        {"timestp": "2026-09-01T00:00:00.000Z", "value": 82},
+        {"timestp": "2026-09-20T00:00:00.000Z", "value": 87},
+    ]},
+]
+
+
+def _client_with(routes):
+    """routes: path-substring -> response; token exchange always succeeds."""
+    http = MagicMock()
+    http.post.return_value = _resp(200, {"token": "acc", "expires_in": 3600})
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        for key, res in routes.items():
+            if key in url:
+                return res
+        return _resp(404)
+
+    http.get.side_effect = fake_get
+    return cm.ChartmetricClient("refresh", session=http), http
+
+
+@pytest.fixture(autouse=True)
+def no_throttle():
+    with patch.object(cm, "MIN_REQUEST_INTERVAL_S", 0), patch.object(cm.time, "sleep"):
+        yield
+
+
+class TestParseTrackLink:
+    @pytest.mark.parametrize("raw,kind,value", [
+        ("https://open.spotify.com/track/2qSkIjg1o9h3YT9RAgYN75?si=abc", "spotify", "2qSkIjg1o9h3YT9RAgYN75"),
+        ("https://open.spotify.com/intl-de/track/2qSkIjg1o9h3YT9RAgYN75", "spotify", "2qSkIjg1o9h3YT9RAgYN75"),
+        ("spotify:track:2qSkIjg1o9h3YT9RAgYN75", "spotify", "2qSkIjg1o9h3YT9RAgYN75"),
+        ("https://app.chartmetric.com/track?id=118981138", "chartmetric", "118981138"),
+        ("https://app.chartmetric.com/track/118981138/", "chartmetric", "118981138"),
+        ("USUM72403305", "isrc", "USUM72403305"),
+        ("us-um7-24-03305", "isrc", "USUM72403305"),
+    ])
+    def test_accepted_formats(self, raw, kind, value):
+        assert cm.parse_track_link(raw) == cm.TrackRef(kind, value)
+
+    @pytest.mark.parametrize("raw", ["", "https://open.spotify.com/album/abc", "espresso"])
+    def test_rejects_unknown(self, raw):
+        with pytest.raises(cm.ChartmetricError):
+            cm.parse_track_link(raw)
+
+def test_deadline_clamps_request_timeout_and_expired_deadline_skips_http():
+    client, http = _client_with({"/track/12": _resp(200, {"obj": TRACK_OBJ})})
+    now = cm.time.monotonic()
+    client.track_snapshot(12, deadline=now + 0.25)
+    assert http.get.call_args.kwargs["timeout"] <= 0.25
+    with pytest.raises(TimeoutError):
+        client.track_snapshot(13, deadline=cm.time.monotonic() - 1)
+    assert http.get.call_count == 1
+
+
+class TestClient:
+    def test_resolves_spotify_to_chartmetric_id(self):
+        client, _ = _client_with({"/get-ids": _resp(200, {"obj": [{"chartmetric_ids": [118981138]}]})})
+        assert client.resolve_track_id(cm.TrackRef("spotify", "x" * 22)) == 118981138
+
+    def test_unknown_track_raises(self):
+        client, _ = _client_with({"/get-ids": _resp(200, {"obj": [{"chartmetric_ids": []}]})})
+        with pytest.raises(cm.ChartmetricError):
+            client.resolve_track_id(cm.TrackRef("isrc", "USUM72403305"))
+
+    def test_snapshot_reads_popularity(self):
+        client, _ = _client_with({"/track/118981138": _resp(200, {"obj": TRACK_OBJ})})
+        snap = client.track_snapshot(118981138)
+        assert snap.spotify_popularity == 87
+        assert snap.artists == ("Sabrina Carpenter",)
+
+    def test_history_picks_primary_series_and_filters_since(self):
+        client, _ = _client_with({"most-history": _resp(200, {"obj": HISTORY_OBJ})})
+        hist = client.popularity_history(1, since=date(2026, 8, 25))
+        assert hist == [{"date": "2026-09-01", "value": 82}, {"date": "2026-09-20", "value": 87}]
+        assert client._http.get.call_args.kwargs["params"] == {"type": "popularity", "since": "2026-08-25"}
+
+    def test_reading_on_exact_since_date_is_retained_and_empty_payloads_are_safe(self):
+        exact = [{"track_domain_id": "x", "data": [{"timestp": "2026-08-25", "value": 4}]}]
+        client, _ = _client_with({"most-history": _resp(200, {"obj": exact})})
+        assert client.streams_history(1, since=date(2026, 8, 25)) == [{"date": "2026-08-25", "value": 4}]
+        for payload in (None, [], {"obj": None}, {"obj": [{"data": []}]}, {"obj": [{"data": [{"timestp": "bad", "value": "x"}]}]}):
+            empty, _ = _client_with({"most-history": _resp(200, payload)})
+            assert empty.streams_history(1) == []
+
+    def test_streams_history_selects_primary_and_passes_since(self):
+        client, _ = _client_with({"most-history": _resp(200, {"obj": HISTORY_OBJ})})
+        hist = client.streams_history(1, since=date(2026, 8, 25), track_domain_id="main")
+        assert hist == [{"date": "2026-09-01", "value": 82}, {"date": "2026-09-20", "value": 87}]
+        assert client._http.get.call_args.kwargs["params"] == {"type": "streams", "since": "2026-08-25"}
+
+    def test_popularity_track_domain_id_uses_real_client_series_selection(self):
+        client, _ = _client_with({"most-history": _resp(200, {"obj": HISTORY_OBJ})})
+        assert client.popularity_track_domain_id(1) == "main"
+
+    def test_streams_keeps_repeated_cumulative_points_and_skips_invalid_values(self):
+        series = [{"track_domain_id": "x", "data": [
+            {"timestp": "2026-08-07", "value": "3126151554"},
+            {"timestp": "2026-08-08", "value": "3126151554.0"},
+            {"timestp": "2026-08-09", "value": "3129082729"},
+            {"timestp": "bad-date", "value": 8},
+            {"timestp": "2026-08-10", "value": "oops"},
+        ]}]
+        client, _ = _client_with({"most-history": _resp(200, {"obj": series})})
+        assert client.streams_history(1) == [{"date": "2026-08-07", "value": 3126151554}, {"date": "2026-08-08", "value": 3126151554}, {"date": "2026-08-09", "value": 3129082729}]
+
+    def test_tiktok_posts_history_picks_newest_valid_series_and_filters_since(self):
+        rows = [
+            {"track_domain_id": None, "data": [{"timestp": "2026-08-01", "value": 4}]},
+            {"track_domain_id": None, "data": [{"timestp": "2026-08-10", "value": 8}, {"timestp": "bad", "value": 9}]},
+        ]
+        client, _ = _client_with({"most-history": _resp(200, {"obj": rows})})
+        assert client.tiktok_posts_history(1, since=date(2026, 8, 5)) == [{"date": "2026-08-10", "value": 8}]
+
+    def test_all_history_types_skip_non_dict_rows(self):
+        mixed = [None, "x", ["bad"], {"timestp": "2026-09-01", "value": 7}]
+        series = [{"track_domain_id": "main", "data": mixed}]
+        client, _ = _client_with({"most-history": _resp(200, {"obj": series})})
+        expected = [{"date": "2026-09-01", "value": 7}]
+        def safely_matches(call):
+            try:
+                return call() == expected
+            except Exception:
+                return False
+        assert safely_matches(lambda: client.popularity_history(1))
+        assert safely_matches(lambda: client.streams_history(1))
+        assert safely_matches(lambda: client.tiktok_posts_history(1))
+
+    def test_streams_keeps_entire_repeat_runs(self):
+        rows = [{"track_domain_id": "x", "data": [
+            {"timestp": "2026-09-24", "value": 3191203786},
+            {"timestp": "2026-09-25", "value": 3193825920},
+            {"timestp": "2026-09-26", "value": 3193825920},
+            {"timestp": "2026-09-27", "value": 3195168217},
+        ]}]
+        client, _ = _client_with({"most-history": _resp(200, {"obj": rows})})
+        assert client.streams_history(1) == [
+            {"date": "2026-09-24", "value": 3191203786}, {"date": "2026-09-25", "value": 3193825920},
+            {"date": "2026-09-26", "value": 3193825920}, {"date": "2026-09-27", "value": 3195168217}]
+
+    def test_streams_tail_repeat_run_keeps_every_reading(self):
+        rows = [{"track_domain_id": "x", "data": [
+            {"timestp": "2026-09-24", "value": 10}, {"timestp": "2026-09-25", "value": 12},
+            {"timestp": "2026-09-26", "value": 12}, {"timestp": "2026-09-27", "value": 12}]}]
+        client, _ = _client_with({"most-history": _resp(200, {"obj": rows})})
+        assert client.streams_history(1) == [{"date": "2026-09-24", "value": 10}, {"date": "2026-09-25", "value": 12}, {"date": "2026-09-26", "value": 12}, {"date": "2026-09-27", "value": 12}]
+
+    def test_series_selection_tolerates_one_day_gap_and_streams_follow_popularity_release(self):
+        rows = [
+            {"track_domain_id": "pop", "data": [{"timestp": "2026-09-10", "value": 900}]},
+            {"track_domain_id": "stream", "data": [{"timestp": "2026-09-11", "value": 1000}]},
+        ]
+        client, _ = _client_with({"most-history": _resp(200, {"obj": rows})})
+        assert cm._pick_primary_series(rows) is rows[1]["data"]
+        client.popularity_history(1)
+        assert client.streams_history(1, track_domain_id="pop") == [{"date": "2026-09-10", "value": 900}]
+
+    @pytest.mark.parametrize("lag,eligible", [(3, True), (4, False)])
+    def test_series_selection_recency_window_boundary(self, lag, eligible):
+        newest = date(2026, 9, 10)
+        rows = [
+            {"track_domain_id": "latest", "data": [{"timestp": newest.isoformat(), "value": 50}]},
+            {"track_domain_id": "strong", "data": [{"timestp": (newest - timedelta(days=lag)).isoformat(), "value": 99}]},
+        ]
+        selected = cm._pick_primary_object(rows)
+        assert selected["track_domain_id"] == ("strong" if eligible else "latest")
+
+    def test_token_reused_and_responses_cached(self):
+        client, http = _client_with({"/track/1": _resp(200, {"obj": TRACK_OBJ})})
+        client.track_snapshot(1)
+        client.track_snapshot(1)
+        assert http.post.call_count == 1
+        assert http.get.call_count == 1
+
+
+def test_pop_score_override_endpoint_validates_and_persists_campaign_field(client, db):
+    assert client.post("/api/campaign/create", json={"title": "Override Artist - Song"}).status_code == 201
+    assert client.post("/api/campaign/create", json={"title": "Other Artist - Song"}).status_code == 201
+    db.update_campaign_fields("override_artist_song", {"chartmetric_track_id": 12345})
+    db.update_campaign_fields("other_artist_song", {"chartmetric_track_id": 12345})
+    url = "/api/campaign/override_artist_song/pop-score/override"
+    missing = client.post("/api/campaign/missing/pop-score/override",
+        json={"metric": "ugc", "date": "2026-01-01", "action": "include"})
+    assert missing.status_code == 404
+    for body in ({}, {"metric": "popularity", "date": "2026-01-01", "action": "include"},
+                 {"metric": "ugc", "date": "2026-1-1", "action": "include"},
+                 {"metric": "ugc", "date": "20260101", "action": "include"},
+                 {"metric": "streams", "date": "2026-01-01", "action": "ignore"}):
+        assert client.post(url, json=body).status_code == 400
+    resp = client.post(url, json={"metric": "ugc", "date": "2026-01-01", "action": "exclude"})
+    assert resp.status_code == 200
+    assert resp.get_json()["attribution_overrides"] == {"ugc": {"2026-01-01": "exclude"}}
+    assert db.get_campaign("override_artist_song")["attribution_overrides"] == {"ugc": {"2026-01-01": "exclude"}}
+    second = client.post(url, json={"metric": "streams", "date": "2026-01-02", "action": "include"})
+    assert second.status_code == 200
+    assert db.get_campaign("override_artist_song")["attribution_overrides"] == {
+        "ugc": {"2026-01-01": "exclude"}, "streams": {"2026-01-02": "include"}}
+    other = client.post("/api/campaign/other_artist_song/pop-score/override",
+        json={"metric": "ugc", "date": "2026-01-01", "action": "include"})
+    assert other.get_json()["attribution_overrides"] == {"ugc": {"2026-01-01": "include"}}
+    assert db.get_campaign("override_artist_song")["attribution_overrides"] == {
+        "ugc": {"2026-01-01": "exclude"}, "streams": {"2026-01-02": "include"}}
+    resp = client.post(url, json={"metric": "ugc", "date": "2026-01-01", "action": "auto"})
+    assert resp.get_json()["attribution_overrides"] == {
+        "ugc": {}, "streams": {"2026-01-02": "include"}}
+
+    @pytest.mark.parametrize("status", [401, 429])
+    def test_retryable_status_retries_and_succeeds(self, status):
+        client, http = _client_with({})
+        http.get.side_effect = [_resp(status), _resp(200, {"obj": TRACK_OBJ})]
+        sleeps = []
+        with patch.object(cm.time, "sleep", side_effect=lambda seconds: sleeps.append(seconds)):
+            assert client.track_snapshot(1).spotify_popularity == 87
+        assert http.get.call_count == 2
+        if status == 401:
+            assert http.post.call_count == 2
+        else:
+            assert sleeps == [2.0]
+
+    @pytest.mark.parametrize("status", [401, 429])
+    def test_retryable_status_short_circuits_when_deadline_cannot_cover_retry(self, status):
+        client, http = _client_with({})
+        http.get.side_effect = [_resp(status), _resp(200, {"obj": TRACK_OBJ})]
+        # A request can fit in the 0.5s budget, but the retry interval cannot.
+        with patch.object(client, "_throttle"), \
+             patch.object(cm, "MIN_REQUEST_INTERVAL_S", 1), \
+             patch.object(cm.time, "monotonic", return_value=100), \
+             pytest.raises(cm.ChartmetricError):
+            client.track_snapshot(1, deadline=100.5)
+        assert http.get.call_count == 1
+
+    def test_429_retry_cutoff_reserves_both_two_second_sleep_and_throttle_interval(self):
+        client, http = _client_with({})
+        http.get.side_effect = None
+        http.get.return_value = _resp(429)
+        sleeps = []
+        with patch.object(client, "_throttle"), \
+             patch.object(cm, "MIN_REQUEST_INTERVAL_S", 0.1), \
+             patch.object(cm.time, "monotonic", return_value=100.0), \
+             patch.object(cm.time, "sleep", side_effect=lambda seconds: sleeps.append(seconds)), \
+             pytest.raises(cm.ChartmetricError):
+            client.track_snapshot(1, deadline=102.05)
+        assert http.get.call_count == 1
+        assert sleeps == []
+
+    def test_lock_wait_uses_deadline_with_fake_clock(self):
+        client, http = _client_with({})
+        client._lock.acquire()
+        try:
+            with patch.object(cm.time, "monotonic", return_value=100), \
+                 pytest.raises(TimeoutError, match="deadline"):
+                client.track_snapshot(1, deadline=100.01)
+        finally:
+            client._lock.release()
+        http.get.assert_not_called()
+
+    def test_token_request_skips_http_when_deadline_is_expired(self):
+        client, http = _client_with({})
+        with patch.object(cm.time, "monotonic", return_value=100), \
+             pytest.raises(TimeoutError, match="deadline"):
+            client.track_snapshot(1, deadline=99)
+        http.post.assert_not_called()
+
+    def test_token_http_timeout_is_clamped_to_deadline(self):
+        client, http = _client_with({})
+        with patch.object(cm.time, "monotonic", return_value=100):
+            client._token(deadline=100.25)
+        assert http.post.call_args.kwargs["timeout"] == pytest.approx(0.25)
+
+    def test_bad_refresh_token_raises_friendly_error(self):
+        client, http = _client_with({})
+        http.post.return_value = _resp(401, {"error": "bad"})
+        with pytest.raises(cm.ChartmetricError, match="refresh token"):
+            client.track_snapshot(1)
+
+    def test_missing_refresh_token(self):
+        with pytest.raises(cm.ChartmetricError):
+            cm.ChartmetricClient("")
+
+
+@pytest.mark.integration
+class TestPopScoreEndpoints:
+    def _campaign(self, client, start="2026-09-01", title="Pop Test"):
+        res = client.post("/api/campaign/create", json={"title": title, "budget": 1000})
+        slug = res.get_json()["slug"]
+        client.post(f"/api/campaign/{slug}/edit", json={"title": "Pop Test", "start_date": start})
+        return slug
+
+    def _fake(self):
+        fake = MagicMock()
+        fake.resolve_track_id.return_value = 118981138
+        fake.track_snapshot.return_value = cm.TrackSnapshot(
+            118981138, "Espresso", ("Sabrina Carpenter",), 87, 99.3, 3196473434, "img")
+        fake.popularity_history.return_value = [
+            {"date": "2026-08-20", "value": 80},
+            {"date": "2026-09-01", "value": 82},
+            {"date": "2026-09-20", "value": 87},
+        ]
+        fake.popularity_track_domain_id.return_value = "main"
+        fake.streams_history.return_value = [
+            {"date": "2026-08-18", "value": 100},
+            {"date": "2026-09-01", "value": 170},
+            {"date": "2026-09-20", "value": 360},
+        ]
+        return fake
+
+    def test_unlinked_campaign(self, client):
+        slug = self._campaign(client)
+        body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
+        assert body["linked"] is False
+        assert body["link_status"] == "no_song_info"
+        assert "link_detail" in body and "next_check" in body
+
+    def test_null_status_with_song_info_is_pending(self, client):
+        from campaign_manager import db
+        slug = self._campaign(client)
+        db.update_campaign_fields(slug, {"song": "Song", "artist": "Artist",
+                                         "chartmetric_autolink_checked_at": datetime.now() - timedelta(hours=1)})
+        body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
+        assert body == {"linked": False, "link_status": "pending",
+                        "link_detail": "Checking Chartmetric soon.", "next_check": body["next_check"]}
+        assert body["next_check"]
+
+    def test_missing_song_metadata_is_no_song_info_without_chartmetric(self, client):
+        from campaign_manager import db
+        slug = self._campaign(client)
+        db.update_campaign_fields(slug, {"song": "", "artist": "Artist"})
+        with patch("campaign_manager.blueprints.chartmetric.chartmetric.get_client") as get_client:
+            body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
+        assert body["link_status"] == "no_song_info"
+        assert body["next_check"] is None
+        get_client.assert_not_called()
+
+    def test_pop_score_endpoint_skips_malformed_history_objects(self, client):
+        from campaign_manager import db
+        slug = self._campaign(client)
+        db.update_campaign_fields(slug, {"chartmetric_track_id": 118981138,
+            "chartmetric_link": "https://open.spotify.com/track/example"})
+        http = MagicMock()
+        http.post.return_value = _resp(200, {"token": "acc", "expires_in": 3600})
+        valid = {"track_domain_id": "main", "data": [
+            {"timestp": "2026-08-30", "value": 100},
+            {"timestp": "2026-09-01", "value": 120},
+            {"timestp": "2026-09-20", "value": 300},
+        ]}
+        def get(url, params=None, **kwargs):
+            if url.endswith("/track/118981138"):
+                return _resp(200, {"obj": TRACK_OBJ})
+            return _resp(200, {"obj": [None, "bad", ["bad"], valid]})
+        http.get.side_effect = get
+        real_client = cm.ChartmetricClient("refresh", session=http)
+        with patch.object(cm, "get_client", return_value=real_client):
+            response = client.get(f"/api/campaign/{slug}/pop-score")
+        assert response.status_code == 200
+        body = response.get_json()
+        assert body["history"][-1] == {"date": "2026-09-20", "value": 300}
+        assert body["streams_history"]
+        assert body["ugc_history"]
+
+    def test_link_then_read_score_with_lift(self, client):
+        slug = self._campaign(client)
+        fake = self._fake()
+        with patch.object(cm, "get_client", return_value=fake):
+            res = client.post(f"/api/campaign/{slug}/pop-score/track",
+                              json={"link": "https://open.spotify.com/track/2qSkIjg1o9h3YT9RAgYN75"})
+            assert res.status_code == 200
+            body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
+        assert body["spotify_popularity"] == 87
+        assert body["baseline"] == 82
+        assert body["change_since_start"] == 5
+        assert len(body["history"]) == 3
+        assert body["end_date"] == ""
+        assert body["end_date_auto"] is False
+        assert body["followup_days"] == 28
+        assert body["phase"] == "live"
+        assert body["streams"]["start_total"] == 170
+        assert body["streams_history"][1]["daily"] == 5.0
+
+    def test_get_pop_score_applies_stored_override(self, client):
+        from campaign_manager import db
+        slug = self._campaign(client)
+        fake = self._fake()
+        db.update_campaign_fields(slug, {"chartmetric_track_id": 118981138,
+            "chartmetric_link": "https://open.spotify.com/track/example",
+            "attribution_overrides": {"streams": {"2026-09-20": "include"}}})
+        with patch.object(cm, "get_client", return_value=fake):
+            body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
+        assert {"date": "2026-09-20", "change": 190, "source": "manual"} in body["streams"]["unusual"]
+
+    def test_refresh_resolved_field_preserves_finish_end_date_and_budget_edits(self, client):
+        from campaign_manager import db
+        from campaign_manager.blueprints.campaigns import _save_resolved_campaign_field
+        slug = self._campaign(client)
+        stale = db.get_campaign(slug)
+        client.post(f"/api/campaign/{slug}/edit", json={"completion_status": "completed"})
+        client.post(f"/api/campaign/{slug}/edit", json={"budget": 2500})
+        finished = db.get_campaign(slug)
+        stale["sound_id"] = "resolved-123"
+        _save_resolved_campaign_field(slug, stale, "sound_id")
+        current = db.get_campaign(slug)
+        assert current["sound_id"] == "resolved-123"
+        assert current["completion_status"] == "completed"
+        assert current["end_date"] == finished["end_date"]
+        assert current["budget"] == 2500
+
+    @pytest.mark.parametrize("case", ["html_id", "html_title", "sound_url", "video_html"])
+    def test_refresh_resolution_sites_preserve_concurrent_campaign_edits(self, client, monkeypatch, case):
+        from campaign_manager import db
+        from campaign_manager.blueprints import campaigns as bp
+        from src.scrapers import master_tracker
+
+        slug = self._campaign(client, title=f"Resolution {case}")
+        meta = db.get_campaign(slug)
+        if case in ("html_id", "html_title"):
+            meta["sound_id"] = "1234567890"
+            meta["official_sound"] = "https://www.tiktok.com/music/original-1234567890"
+            if case == "html_title":
+                meta["song"] = ""
+                meta["artist"] = ""
+            db.save_campaign(slug, meta)
+        elif case == "sound_url":
+            meta["sound_id"] = "https://www.tiktok.com/music/original-1234567890"
+            db.save_campaign(slug, meta)
+        else:
+            meta["sound_id"] = "https://www.tiktok.com/video/1234567890123456789"
+            db.save_campaign(slug, meta)
+        db.save_creators(slug, [{"username": "creator", "platform": "tiktok"}])
+
+        monkeypatch.setattr(master_tracker, "scrape_tiktok_account", lambda *a, **k: [])
+        monkeypatch.setattr(master_tracker, "match_video_to_sounds", lambda *a, **k: False)
+        def concurrent_edit_during_resolution():
+            db.update_campaign_fields(slug, {
+                "completion_status": "completed", "end_date": "2026-09-30",
+                "end_date_auto": True, "budget": 4321,
+            })
+        def resolve_sound_id(*_):
+            if case == "sound_url":
+                concurrent_edit_during_resolution()
+                return "9876543210"
+            return None
+        def resolve_html(*_):
+            concurrent_edit_during_resolution()
+            return (("1234567890", "Resolved Song") if case == "html_title" else
+                    ("9876543210", "Resolved Song"))
+        monkeypatch.setattr(bp, "extract_sound_id", resolve_sound_id)
+        monkeypatch.setattr(bp, "extract_sound_id_from_html", resolve_html)
+        response = client.post(f"/api/campaign/{slug}/refresh")
+        assert response.status_code == 200, response.get_json()
+        current = db.get_campaign(slug)
+        assert current["completion_status"] == "completed"
+        assert current["end_date"] == "2026-09-30"
+        assert current["end_date_auto"] is True
+        assert current["budget"] == 4321
+
+    @pytest.mark.parametrize("failure", [__import__("requests").Timeout("slow"), __import__("requests").ConnectionError("offline")])
+    def test_stream_transport_errors_use_slow_message(self, client, failure):
+        from campaign_manager.blueprints import chartmetric as endpoint
+        slug = self._campaign(client)
+        fake = self._fake()
+        fake.streams_history.side_effect = failure
+        with patch.object(cm, "get_client", return_value=fake), patch.object(endpoint, "datetime") as clock:
+            clock.now.return_value = datetime(2026, 9, 29, tzinfo=timezone.utc)
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403305"})
+            body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
+        assert body["streams_error"] == "Chartmetric is slow — try again shortly"
+
+    def test_chartmetric_call_receives_a_real_deadline(self, client):
+        from campaign_manager.blueprints import chartmetric as endpoint
+        slug = self._campaign(client)
+        fake = self._fake()
+        deadlines = []
+        def snapshot(track_id, *, deadline):
+            deadlines.append(deadline)
+            return cm.TrackSnapshot(118981138, "Espresso", ("Sabrina Carpenter",), 87, 99.3, 3196473434, "img")
+        fake.track_snapshot.side_effect = snapshot
+        with patch.object(cm, "get_client", return_value=fake), patch.object(endpoint.time, "monotonic", return_value=100.0):
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403305"})
+            response = client.get(f"/api/campaign/{slug}/pop-score")
+        assert response.status_code == 200
+        assert isinstance(deadlines[0], float)
+        assert deadlines[0] == pytest.approx(175.0)
+
+    def test_history_uses_21_day_lead_and_retains_baseline_before_14_day_window(self, client):
+        slug = self._campaign(client, start="2026-09-01")
+        fake = self._fake()
+        fake.popularity_history.return_value = [{"date": "2026-08-11", "value": 50}, {"date": "2026-09-01", "value": 60}]
+        fake.streams_history.return_value = [{"date": "2026-08-11", "value": 100}, {"date": "2026-09-01", "value": 310}]
+        with patch.object(cm, "get_client", return_value=fake):
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403305"})
+            body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
+        expected_since = date(2026, 8, 11)
+        fake.popularity_history.assert_called_once_with(118981138, since=expected_since, deadline=ANY)
+        fake.streams_history.assert_called_once_with(118981138, since=expected_since, track_domain_id="main", deadline=ANY)
+        fake.tiktok_posts_history.assert_called_once_with(118981138, since=expected_since, deadline=ANY)
+        assert body["streams"]["baseline_daily"] == 10.0
+
+    def test_calculation_exception_is_json_502(self, client):
+        slug = self._campaign(client)
+        with patch.object(cm, "get_client", return_value=self._fake()), patch("campaign_manager.blueprints.chartmetric.calculate_attribution", side_effect=RuntimeError("bad")):
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403305"})
+            response = client.get(f"/api/campaign/{slug}/pop-score")
+        assert response.status_code == 502
+        assert response.get_json() == {"linked": True, "link": "USUM72403305", "error": "Couldn't calculate song attribution."}
+
+    def test_real_client_streams_follow_the_popularity_release_end_to_end(self, client):
+        slug = self._campaign(client)
+        series = [
+            {"track_domain_id": "old", "data": [{"timestp": "2026-09-01", "value": 1}]},
+            {"track_domain_id": "main", "data": [{"timestp": "2026-09-01", "value": 80}]},
+        ]
+        http_routes = {
+            "/track/118981138/spotify/stats/most-history": _resp(200, {"obj": series}),
+            "/track/118981138": _resp(200, {"obj": TRACK_OBJ}),
+        }
+        real, http = _client_with(http_routes)
+        with patch.object(cm, "get_client", return_value=real):
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "https://app.chartmetric.com/track/118981138"})
+            body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
+        stream_calls = [call for call in http.get.call_args_list if (call.kwargs.get("params") or {}).get("type") == "streams"]
+        assert stream_calls and stream_calls[-1].kwargs["params"] == {"type": "streams", "since": "2026-08-11"}
+        assert body["linked"] is True
+        assert body["streams"]["start_total"] == 80
+
+    def test_real_endpoint_skips_mixed_history_rows_and_returns_200(self, client):
+        slug = self._campaign(client)
+        real, http = _client_with({})
+        mixed_series = [{"track_domain_id": "main", "data": [None, "x", {"timestp": "2026-09-01", "value": 82}]}]
+        def fake_get(url, params=None, headers=None, timeout=None):
+            if url.endswith("/track/118981138"):
+                return _resp(200, {"obj": TRACK_OBJ})
+            if "most-history" in url:
+                return _resp(200, {"obj": mixed_series})
+            return _resp(404)
+        http.get.side_effect = fake_get
+        with patch.object(cm, "get_client", return_value=real):
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "https://chartmetric.com/track/118981138"})
+            response = client.get(f"/api/campaign/{slug}/pop-score")
+        assert response.status_code == 200
+        body = response.get_json()
+        assert body["history"] == [{"date": "2026-09-01", "value": 82}]
+        assert body["streams_history"] == [{"date": "2026-09-01", "total": 82, "daily": None}]
+        assert body["ugc_history"] == [{"date": "2026-09-01", "total": 82, "daily": None}]
+
+    def test_release_selection_when_popularity_track_is_not_highest_stream_series(self, client):
+        slug = self._campaign(client, title="release-selection pin")
+        def get(url, params=None, headers=None, timeout=None):
+            if url.endswith("/track/118981138"):
+                return _resp(200, {"obj": TRACK_OBJ})
+            kind = (params or {}).get("type")
+            if kind == "popularity":
+                rows = [
+                    {"track_domain_id": "pop-release", "data": [{"timestp": "2026-09-01", "value": 80}]},
+                    {"track_domain_id": "alt-release", "data": [{"timestp": "2026-09-01", "value": 20}]},
+                ]
+            else:
+                rows = [
+                    {"track_domain_id": "pop-release", "data": [{"timestp": "2026-09-01", "value": 5}]},
+                    {"track_domain_id": "alt-release", "data": [{"timestp": "2026-09-01", "value": 900}]},
+                ]
+            return _resp(200, {"obj": rows})
+        http = MagicMock()
+        http.post.return_value = _resp(200, {"token": "acc", "expires_in": 3600})
+        http.get.side_effect = get
+        real = cm.ChartmetricClient("refresh", session=http)
+        with patch.object(cm, "get_client", return_value=real):
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "https://app.chartmetric.com/track/118981138"})
+            body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
+        assert body["popularity"]["start"] == 80
+        assert body["streams"]["start_total"] == 5
+        assert body["streams"]["start_total"] != 900
+
+    def test_end_date_endpoint_returns_followup_lift_and_gains(self, client):
+        slug = self._campaign(client)
+        fake = self._fake()
+        with patch.object(cm, "get_client", return_value=fake):
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403305"})
+            client.post(f"/api/campaign/{slug}/edit", json={"end_date": "2026-09-20"})
+            body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
+        assert body["followup_end"] == "2026-10-18"
+        assert body["streams"]["gained_campaign"] == 190
+        assert body["streams"]["lift_pct_campaign"] is not None
+
+    def test_finished_without_end_has_distinct_phase(self, client):
+        from campaign_manager import db
+        slug = self._campaign(client)
+        fake = self._fake()
+        with patch.object(cm, "get_client", return_value=fake):
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403305"})
+            db.update_campaign_fields(slug, {"completion_status": "completed", "end_date": ""})
+            body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
+        assert body["phase"] == "finished_no_end"
+        assert body["end_date"] == ""
+
+    def test_completed_campaign_with_end_is_not_finished_no_end(self, client):
+        slug = self._campaign(client)
+        fake = self._fake()
+        with patch.object(cm, "get_client", return_value=fake):
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403305"})
+            client.post(f"/api/campaign/{slug}/edit", json={"end_date": "2026-09-20", "completion_status": "completed"})
+            assert client.get(f"/api/campaign/{slug}/pop-score").get_json()["phase"] != "finished_no_end"
+
+    def test_ugc_fetch_sends_since_and_surfaces_chartmetric_error(self, client):
+        slug = self._campaign(client, start="2026-09-01")
+        fake = self._fake()
+        fake.tiktok_posts_history.side_effect = cm.ChartmetricError("ugc endpoint failed")
+        with patch.object(cm, "get_client", return_value=fake):
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403305"})
+            body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
+        fake.tiktok_posts_history.assert_called_once_with(118981138, since=date(2026, 8, 11), deadline=ANY)
+        assert body.get("ugc_error") == "TikTok video history is temporarily unavailable."
+
+    @pytest.mark.parametrize("failure", [__import__("requests").Timeout("slow"), __import__("requests").ConnectionError("offline")])
+    def test_ugc_transport_errors_use_slow_message(self, client, failure):
+        slug = self._campaign(client, start="2026-09-01")
+        fake = self._fake()
+        fake.tiktok_posts_history.side_effect = failure
+        with patch.object(cm, "get_client", return_value=fake):
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403305"})
+            body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
+        assert body["ugc_error"] == "Chartmetric is slow — try again shortly"
+
+    def test_series_fetches_are_skipped_after_overall_latency_budget(self, client):
+        from campaign_manager.blueprints import chartmetric as chartmetric_bp
+        from types import SimpleNamespace
+        slug = self._campaign(client)
+        fake = self._fake()
+        ticks = iter([0, 1, 76, 77, 78])
+        with patch.object(cm, "get_client", return_value=fake), patch.object(chartmetric_bp, "time", SimpleNamespace(monotonic=lambda: next(ticks))):
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403305"})
+            body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
+        assert body.get("streams_error") == "Chartmetric is slow — try again shortly"
+        assert body.get("ugc_error") == "Chartmetric is slow — try again shortly"
+        fake.streams_history.assert_not_called()
+        fake.tiktok_posts_history.assert_not_called()
+
+    def test_post_events_are_campaign_scoped_and_dates_normalized(self, client):
+        from campaign_manager import db
+        today_et = datetime.now(db.EST).date().isoformat()
+        first, second = self._campaign(client), self._campaign(client, title="Second Pop Test")
+        db.save_matched_videos(first, [
+            {"url": "https://tiktok/a", "upload_date": "20260901"},
+            {"url": "https://tiktok/b", "upload_date": "2026-09-01T12:00:00"},
+            {"url": "https://tiktok/today", "upload_date": today_et},
+            {"url": "https://tiktok/blank", "upload_date": ""},
+            {"url": "https://tiktok/old", "upload_date": "2026-08-01"},
+            {"url": "https://tiktok/future", "upload_date": (datetime.now(db.EST).date() + timedelta(days=1)).isoformat()},
+        ])
+        db.save_matched_videos(second, [{"url": "https://tiktok/other", "upload_date": "2026-09-01"}])
+        fake = self._fake()
+        with patch.object(cm, "get_client", return_value=fake):
+            client.post(f"/api/campaign/{first}/pop-score/track", json={"link": "USUM72403305"})
+            client.post(f"/api/campaign/{second}/pop-score/track", json={"link": "USUM72403305"})
+            events = client.get(f"/api/campaign/{first}/pop-score").get_json()["post_events"]
+        assert events == [{"date": "2026-09-01", "count": 2}, {"date": today_et, "count": 1}]
+
+    def test_post_events_exclude_dismissed_and_pre_campaign_videos(self, client):
+        from campaign_manager import db
+        from campaign_manager.models import Campaign, MatchedVideo
+        slug = self._campaign(client, start="2026-09-01")
+        db.save_matched_videos(slug, [
+            {"url": "https://tiktok/pre", "upload_date": "20260830"},
+            {"url": "https://tiktok/dismissed", "upload_date": "20260905"},
+            {"url": "https://tiktok/valid", "upload_date": "20260906"},
+        ])
+        with db.get_session() as session:
+            campaign = session.query(Campaign).filter_by(slug=slug).one()
+            dismissed = session.query(MatchedVideo).filter_by(campaign_id=campaign.id, url="https://tiktok/dismissed").one()
+            dismissed.dismissed_at = datetime.now()
+            session.commit()
+        fake = self._fake()
+        with patch.object(cm, "get_client", return_value=fake):
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403305"})
+            events = client.get(f"/api/campaign/{slug}/pop-score").get_json()["post_events"]
+        assert events == [{"date": "2026-09-06", "count": 1}]
+
+    def test_two_campaigns_alternating_through_one_real_client_stay_segmented(self, client):
+        from campaign_manager import db
+        a, b = self._campaign(client, "2026-09-01"), self._campaign(client, "2026-09-01", title="Second Pop Test")
+        db.save_matched_videos(a, [{"url": "https://tiktok/a", "upload_date": "2026-09-02"}])
+        db.save_matched_videos(b, [{"url": "https://tiktok/b", "upload_date": "2026-09-11"}])
+        snapshots = {
+            111: {"obj": {**TRACK_OBJ, "name": "Track 111", "cm_statistics": {"sp_popularity": 11, "sp_streams": 111}}},
+            222: {"obj": {**TRACK_OBJ, "name": "Track 222", "cm_statistics": {"sp_popularity": 22, "sp_streams": 222}}},
+        }
+        calls = []
+        http = MagicMock()
+        http.post.return_value = _resp(200, {"token": "acc", "expires_in": 3600})
+        def get(url, params=None, headers=None, timeout=None):
+            track_id = 111 if "/111" in url else 222
+            calls.append((track_id, params or {}))
+            if url.endswith(f"/track/{track_id}"):
+                return _resp(200, snapshots[track_id])
+            kind = (params or {}).get("type")
+            base = "2026-08-15" if track_id == 111 else "2026-08-20"
+            value = track_id
+            body = {"obj": [{"track_domain_id": "release", "data": [
+                {"timestp": base, "value": value},
+                {"timestp": "2026-09-01" if track_id == 111 else "2026-09-10", "value": value + 10},
+            ]}]}
+            if kind == "posts":
+                body["obj"][0]["track_domain_id"] = None
+            return _resp(200, body)
+        http.get.side_effect = get
+        real = cm.ChartmetricClient("refresh", session=http)
+        with patch.object(cm, "get_client", return_value=real):
+            for slug, track_id in ((a, 111), (b, 222), (a, 111), (b, 222)):
+                client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": f"https://app.chartmetric.com/track/{track_id}"})
+                # track linking does not fetch histories; endpoint fetches each independently.
+                body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
+                assert body["chartmetric_track_id"] == track_id
+                assert body["track"]["name"] == f"Track {track_id}"
+                assert body["streams"]["start_total"] == (track_id + 10 if track_id == 111 else track_id)
+                assert body["streams"]["now"] == track_id + 10
+                assert body["streams_history"][0]["total"] == track_id
+                assert body["post_events"] == [{"date": "2026-09-02" if track_id == 111 else "2026-09-11", "count": 1}]
+                expected_since = date(2026, 8, 11)
+                assert any(t == track_id and p.get("since") == expected_since.isoformat() for t, p in calls)
+                assert any(t == track_id and p.get("type") == "posts" and p.get("since") == "2026-08-11" for t, p in calls)
+
+    def test_invalid_link_rejected(self, client):
+        slug = self._campaign(client)
+        res = client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "not a link"})
+        assert res.status_code == 400
+
+    def test_empty_link_unlinks(self, client):
+        from campaign_manager import db
+        slug = self._campaign(client)
+        with patch.object(cm, "get_client", return_value=self._fake()):
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403305"})
+        assert db.get_campaign(slug)["chartmetric_link_status"] == "manual"
+        db.update_campaign_fields(slug, {"attribution_overrides": {"ugc": {"2026-09-20": "exclude"}}})
+        changed_song = self._fake()
+        changed_song.resolve_track_id.return_value = 998877
+        with patch.object(cm, "get_client", return_value=changed_song):
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403306"})
+        assert db.get_campaign(slug)["attribution_overrides"] == {}
+        db.update_campaign_fields(slug, {"attribution_overrides": {"ugc": {"2026-09-20": "exclude"}}})
+        client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": ""})
+        assert db.get_campaign(slug)["attribution_overrides"] == {}
+        body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
+        assert body["linked"] is False and body["link_status"] == "no_song_info"
+        assert db.get_campaign(slug)["chartmetric_link_status"] == ""
+
+    def test_resaving_same_resolved_track_by_link_or_isrc_preserves_choices(self, client):
+        from campaign_manager import db
+        slug = self._campaign(client)
+        fake = self._fake()
+        with patch.object(cm, "get_client", return_value=fake):
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "https://open.spotify.com/track/2qSkIjg1o9h3YT9RAgYN75"})
+            for link in ("https://open.spotify.com/track/2qSkIjg1o9h3YT9RAgYN75", "USUM72403305"):
+                db.update_campaign_fields(slug, {"attribution_overrides": {"ugc": {"2026-09-20": "include"}}})
+                client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": link})
+                assert db.get_campaign(slug)["attribution_overrides"] == {"ugc": {"2026-09-20": "include"}}
+            assert db.get_campaign(slug)["attribution_overrides"] == {"ugc": {"2026-09-20": "include"}}
+
+    def test_chartmetric_outage_returns_502_with_message(self, client):
+        slug = self._campaign(client)
+        fake = self._fake()
+        with patch.object(cm, "get_client", return_value=fake):
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403305"})
+            fake.track_snapshot.side_effect = cm.ChartmetricError("Chartmetric request failed (500).")
+            res = client.get(f"/api/campaign/{slug}/pop-score")
+        assert res.status_code == 502
+        assert "Chartmetric" in res.get_json()["error"]
+
+    def test_streams_outage_keeps_popularity_response(self, client):
+        slug = self._campaign(client)
+        fake = self._fake()
+        fake.streams_history.side_effect = cm.ChartmetricError("unavailable")
+        with patch.object(cm, "get_client", return_value=fake):
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403305"})
+            body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
+        assert body["linked"] is True
+        assert body["popularity"]["start"] == 82
+        assert body["streams"]["start_total"] is None
+        assert body["streams"]["end_total"] is None
+        assert body["streams"]["gained_campaign"] is None
+        assert body["streams"]["baseline_daily"] is None
+        assert body["streams_history"] == []
+        assert body["streams_error"] == "Streams history is temporarily unavailable."
+
+    def test_empty_or_invalid_chartmetric_series_returns_200_with_null_metrics(self, client):
+        slug = self._campaign(client, title="empty history pin")
+        fake = self._fake()
+        fake.streams_history.return_value = []
+        fake.tiktok_posts_history.return_value = []
+        with patch.object(cm, "get_client", return_value=fake):
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403305"})
+            response = client.get(f"/api/campaign/{slug}/pop-score")
+        assert response.status_code == 200
+        body = response.get_json()
+        assert body["streams_history"] == body["ugc_history"] == []
+        assert body["streams"]["now"] is None and body["ugc"]["now"] is None
+
+    def test_edit_end_date_set_clear_and_validate(self, client):
+        slug = self._campaign(client, start="2026-09-01")
+        assert client.post(f"/api/campaign/{slug}/edit", json={"end_date": "2026-09-30"}).status_code == 200
+        assert client.get(f"/api/campaign/{slug}").get_json()["end_date"] == "2026-09-30"
+        assert client.post(f"/api/campaign/{slug}/edit", json={"end_date": ""}).status_code == 200
+        for value in ("2026-9-30", "2026-08-31"):
+            assert client.post(f"/api/campaign/{slug}/edit", json={"end_date": value}).status_code == 400
+
+    def test_finish_sets_today_and_reopen_clears_only_automatic_end_date(self, client):
+        slug = self._campaign(client, start="2026-09-01")
+        response = client.post(f"/api/campaign/{slug}/edit", json={"completion_status": "completed"})
+        assert response.status_code == 200
+        assert client.get(f"/api/campaign/{slug}").get_json()["end_date"]
+        client.post(f"/api/campaign/{slug}/edit", json={"completion_status": "none"})
+        assert client.get(f"/api/campaign/{slug}").get_json()["end_date"] == ""
+        client.post(f"/api/campaign/{slug}/edit", json={"completion_status": "booked"})
+        client.post(f"/api/campaign/{slug}/edit", json={"completion_status": "completed"})
+        assert client.get(f"/api/campaign/{slug}").get_json()["end_date"]
+
+    def test_future_start_is_not_auto_stamped(self, client):
+        from datetime import datetime, timedelta
+        start = (datetime.now().date() + timedelta(days=10)).isoformat()
+        slug = self._campaign(client, start=start)
+        response = client.post(f"/api/campaign/{slug}/edit", json={"completion_status": "completed"})
+        assert response.status_code == 200
+        assert client.get(f"/api/campaign/{slug}").get_json()["end_date"] == ""
+
+    def test_completion_uses_eastern_date_at_0200_utc(self, client):
+        from campaign_manager.blueprints import campaigns as campaigns_bp
+        from datetime import datetime as RealDateTime
+        from datetime import date as RealDate
+        class FrozenDateTime(RealDateTime):
+            @classmethod
+            def now(cls, tz=None):
+                frozen = RealDateTime(2026, 10, 1, 2, 0, tzinfo=timezone.utc)
+                return frozen.astimezone(tz) if tz else frozen.replace(tzinfo=None)
+        class FrozenDate(RealDate):
+            @classmethod
+            def today(cls):
+                return cls(2026, 10, 1)
+        slug = self._campaign(client, start="2026-09-30")
+        with patch.object(campaigns_bp, "datetime", FrozenDateTime), patch.object(campaigns_bp, "date", FrozenDate):
+            client.post(f"/api/campaign/{slug}/edit", json={"completion_status": "completed"})
+        body = client.get(f"/api/campaign/{slug}").get_json()
+        assert body["meta"]["end_date"] == "2026-09-30"
+
+    def test_attribution_phase_uses_eastern_day_at_0200_utc(self, client):
+        from campaign_manager.blueprints import chartmetric as chartmetric_bp
+        from datetime import datetime as RealDateTime
+        class FrozenDateTime(RealDateTime):
+            @classmethod
+            def now(cls, tz=None):
+                frozen = RealDateTime(2026, 10, 1, 2, 0, tzinfo=timezone.utc)
+                return frozen.astimezone(tz) if tz else frozen.replace(tzinfo=None)
+        slug = self._campaign(client, start="2026-10-01")
+        fake = self._fake()
+        with patch.object(cm, "get_client", return_value=fake), patch.object(chartmetric_bp, "datetime", FrozenDateTime):
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403305"})
+            body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
+        assert body["phase"] == "not_started"
+
+    def test_followup_day_uses_eastern_date_at_0200_utc(self, client):
+        from campaign_manager.blueprints import chartmetric as chartmetric_bp
+        from datetime import datetime as RealDateTime
+        class FrozenDateTime(RealDateTime):
+            @classmethod
+            def now(cls, tz=None):
+                frozen = RealDateTime(2026, 10, 1, 2, 0, tzinfo=timezone.utc)
+                return frozen.astimezone(tz) if tz else frozen.replace(tzinfo=None)
+        slug = self._campaign(client, start="2026-09-01")
+        fake = self._fake()
+        with patch.object(cm, "get_client", return_value=fake), patch.object(chartmetric_bp, "datetime", FrozenDateTime):
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403305"})
+            client.post(f"/api/campaign/{slug}/edit", json={"end_date": "2026-09-29"})
+            body = client.get(f"/api/campaign/{slug}/pop-score").get_json()
+        assert body["phase"] == "followup"
+        assert body["followup_day"] == 1
+
+    def test_manual_date_survives_completion_reopen(self, client):
+        slug = self._campaign(client, start="2026-09-01")
+        client.post(f"/api/campaign/{slug}/edit", json={"end_date": "2026-09-20"})
+        client.post(f"/api/campaign/{slug}/edit", json={"completion_status": "completed"})
+        client.post(f"/api/campaign/{slug}/edit", json={"completion_status": "none"})
+        assert client.get(f"/api/campaign/{slug}").get_json()["end_date"] == "2026-09-20"
+
+    def test_manual_date_is_never_marked_automatic(self, client):
+        slug = self._campaign(client, start="2026-09-01")
+        client.post(f"/api/campaign/{slug}/edit", json={"end_date": "2026-09-20"})
+        client.post(f"/api/campaign/{slug}/edit", json={"completion_status": "completed"})
+        client.post(f"/api/campaign/{slug}/edit", json={"completion_status": "none"})
+        meta = client.get(f"/api/campaign/{slug}").get_json()["meta"]
+        assert meta["end_date_auto"] is False
+        assert meta["end_date"] == "2026-09-20"
+        detail = client.get(f"/api/campaign/{slug}").get_json()
+        assert detail["end_date_auto"] is False
+        summary = next(row for row in client.get("/api/campaigns").get_json() if row["slug"] == slug)
+        assert summary["end_date_auto"] is False
+
+    def test_automatic_end_date_flag_is_exposed_on_popscore_detail_and_list(self, client):
+        slug = self._campaign(client, start="2026-09-01")
+        client.post(f"/api/campaign/{slug}/edit", json={"completion_status": "completed"})
+        fake = self._fake()
+        with patch.object(cm, "get_client", return_value=fake):
+            client.post(f"/api/campaign/{slug}/pop-score/track", json={"link": "USUM72403305"})
+            score = client.get(f"/api/campaign/{slug}/pop-score").get_json()
+        detail = client.get(f"/api/campaign/{slug}").get_json()
+        summary = next(row for row in client.get("/api/campaigns?active=false").get_json() if row["slug"] == slug)
+        assert score["end_date_auto"] is True
+        assert detail["end_date_auto"] is True
+        assert detail["meta"]["end_date_auto"] is True
+        assert summary["end_date_auto"] is True
+
+    def test_sound_refresh_interleaving_preserves_new_completion_fields(self, client):
+        from campaign_manager import db
+        from campaign_manager.services.scheduler import _save_discovered_sounds
+        slug = self._campaign(client, start="2026-09-01")
+        stale_snapshot = db.get_campaign(slug)
+        client.post(f"/api/campaign/{slug}/edit", json={"completion_status": "completed"})
+        finished = client.get(f"/api/campaign/{slug}").get_json()
+        _save_discovered_sounds(slug, stale_snapshot, ["refreshed-sound"])
+        current = client.get(f"/api/campaign/{slug}").get_json()
+        assert current["meta"]["additional_sounds"] == ["refreshed-sound"]
+        assert current["meta"]["completion_status"] == "completed"
+        assert current["meta"]["end_date"] == finished["meta"]["end_date"]
+        assert current["meta"]["end_date_auto"] is True
+
+    def test_discovery_does_not_resurrect_sound_removed_after_snapshot(self, client):
+        from campaign_manager import db
+        from campaign_manager.services.scheduler import _save_discovered_sounds
+        slug = self._campaign(client, start="2026-09-01")
+        db.update_campaign_fields(slug, {"additional_sounds": ["removed"]})
+        snapshot = db.get_campaign(slug)
+        db.update_campaign_fields(slug, {"additional_sounds": []})
+        _save_discovered_sounds(slug, snapshot, ["removed", "new"])
+        assert client.get(f"/api/campaign/{slug}").get_json()["meta"]["additional_sounds"] == ["new"]
+
+    @pytest.mark.parametrize("legacy_start", ["", "not-a-date", "2026-09-01T00:00:00"])
+    def test_finish_with_blank_or_unparseable_legacy_start_succeeds(self, client, legacy_start):
+        slug = self._campaign(client)
+        from campaign_manager.blueprints import campaigns as campaigns_bp
+        legacy = {"title": "Legacy", "name": "Legacy", "start_date": legacy_start, "end_date": ""}
+        with patch.object(campaigns_bp._db, "is_active", return_value=True), \
+             patch.object(campaigns_bp._db, "get_campaign", return_value=legacy), \
+             patch.object(campaigns_bp._db, "save_campaign") as save:
+            response = client.post(f"/api/campaign/{slug}/edit", json={"completion_status": "completed"})
+        assert response.status_code == 200
+        assert save.call_args.args[1]["end_date"] == datetime.now(campaigns_bp._db.EST).date().isoformat()
+
+    def test_legacy_edit_shape_pins(self, client):
+        from campaign_manager.blueprints import campaigns as campaigns_bp
+        slug = self._campaign(client, title="Legacy edit test")
+        legacy = {"title": "Preserve me", "name": "Preserve me", "start_date": "legacy-time", "end_date": "also-legacy", "additional_sounds": ["keep"]}
+        with patch.object(campaigns_bp._db, "is_active", return_value=True), \
+             patch.object(campaigns_bp._db, "get_campaign", return_value=legacy), \
+             patch.object(campaigns_bp._db, "save_campaign") as save:
+            assert client.post(f"/api/campaign/{slug}/edit", json={"budget": 20}).status_code == 200
+            saved = save.call_args.args[1]
+            assert saved["title"] == "Preserve me" and saved["additional_sounds"] == ["keep"]
+            assert client.post(f"/api/campaign/{slug}/edit", json={"end_date": 7}).status_code == 400
+            assert client.post(f"/api/campaign/{slug}/edit", json={"start_date": "2026-9-1"}).status_code == 400
+            assert client.post(f"/api/campaign/{slug}/edit", json={"start_date": "2026-10-01"}).status_code == 400
+            assert client.post(f"/api/campaign/{slug}/edit", json=None).status_code == 200
+            assert client.post(f"/api/campaign/{slug}/edit", json=[]).status_code == 200
+        saved["additional_sounds"] = ["keep"]
+        with patch.object(campaigns_bp._db, "is_active", return_value=True), \
+             patch.object(campaigns_bp._db, "get_campaign", return_value=saved), \
+             patch.object(campaigns_bp._db, "save_campaign") as save:
+            assert client.post(f"/api/campaign/{slug}/edit", json={"additional_sounds": "wrong-shape"}).status_code == 200
+            assert save.call_args.args[1]["additional_sounds"] == ["keep"]
+
+    def test_moving_start_past_stored_end_is_rejected(self, client):
+        slug = self._campaign(client, title="End boundary pin")
+        client.post(f"/api/campaign/{slug}/edit", json={"end_date": "2026-09-20"})
+        response = client.post(f"/api/campaign/{slug}/edit", json={"start_date": "2026-09-21"})
+        assert response.status_code == 400
+
+    def test_finish_never_overwrites_existing_end_date(self, client):
+        slug = self._campaign(client, start="2026-09-01")
+        client.post(f"/api/campaign/{slug}/edit", json={"end_date": "2026-09-20"})
+        client.post(f"/api/campaign/{slug}/edit", json={"completion_status": "completed"})
+        assert client.get(f"/api/campaign/{slug}").get_json()["end_date"] == "2026-09-20"
+
+    def test_edit_header_payload_and_bad_start_date_shapes(self, client):
+        slug = self._campaign(client)
+        from campaign_manager.blueprints import campaigns as campaigns_bp
+        legacy = {"title": "Old", "name": "Old", "start_date": "2026-09-01T00:00:00", "end_date": "2026-09-20", "budget": 10}
+        with patch.object(campaigns_bp._db, "is_active", return_value=True), \
+             patch.object(campaigns_bp._db, "get_campaign", return_value=legacy), \
+             patch.object(campaigns_bp._db, "save_campaign"):
+            unchanged = client.post(f"/api/campaign/{slug}/edit", json={"title": "Old", "start_date": legacy["start_date"], "end_date": legacy["end_date"], "additional_sounds": []})
+            assert unchanged.status_code == 200
+        for value in (None, 123):
+            response = client.post(f"/api/campaign/{slug}/edit", json={"start_date": value})
+            assert response.status_code == 400
+        assert client.post(f"/api/campaign/{slug}/edit", json={"start_date": ""}).status_code == 200
+        with patch.object(campaigns_bp._db, "is_active", return_value=True), \
+             patch.object(campaigns_bp._db, "get_campaign", return_value={"title": "No start", "start_date": "", "end_date": ""}), \
+             patch.object(campaigns_bp._db, "save_campaign"):
+            missing_start = client.post(f"/api/campaign/{slug}/edit", json={"end_date": "2026-09-20"})
+        assert missing_start.status_code == 400
+        assert "start_date" in missing_start.get_json()["error"]
+        assert client.post(f"/api/campaign/{slug}/edit", json={"additional_sounds": "not a list"}).status_code == 200
+
+    def test_unknown_campaign_404(self, client):
+        assert client.get("/api/campaign/nope/pop-score").status_code == 404

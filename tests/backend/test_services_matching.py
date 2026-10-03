@@ -52,10 +52,23 @@ class TestBuildSoundSets:
         _, keys, _ = build_sound_sets({
             "song": "Fever Dream",
             "artist": "Sam Barber",
+            "tt_track_name": "Fever Dream (Sped Up)",
+            "tt_artist_label": "Music for the Soul",
+        })
+        assert "fever dream (sped up) - music for the soul" in keys
+        assert "fever dream - sam barber" in keys
+
+    def test_generic_tt_track_name_is_not_a_sound_key(self):
+        # #140: a generic TikTok title like "Original Sound" would match every
+        # original-sound video on TikTok, so it must never become a key.
+        _, keys, _ = build_sound_sets({
+            "song": "Fever Dream",
+            "artist": "Sam Barber",
             "tt_track_name": "Original Sound",
             "tt_artist_label": "Music for the Soul",
         })
-        assert "original sound - music for the soul" in keys
+        assert "original sound - music for the soul" not in keys
+        assert keys == {"fever dream - sam barber"}
 
     def test_core_song_words_drops_short_tokens(self):
         _, _, words = build_sound_sets({"song": "I Am In Love"})
@@ -235,3 +248,31 @@ class TestUpdateCreatorPostCounts:
         original = [{"username": "alice"}]
         update_creator_post_counts(original, [{"account": "@alice"}])
         assert "posts_matched" not in original[0]
+
+
+class TestMultiArtistCredits:
+    def test_artist_names_splits_common_separators(self):
+        from campaign_manager.services.matching import artist_names
+        assert artist_names("Wynne, Conductor Williams") >= {"wynne", "conductor williams"}
+        assert "b" in artist_names("A feat. B") and "b" in artist_names("A x B")
+        assert artist_names("Simon and Garfunkel") == {"simon and garfunkel"}
+        assert artist_names("") == set()
+
+    def test_ig_reel_with_co_credited_artist_matches(self):
+        from campaign_manager.services.matching import build_sound_sets, match_videos
+        from src.scrapers.master_tracker import match_video_to_sounds
+        meta = {"song": "Hold My Purse", "artist": "Wynne",
+                "sound_id": "7681621526072821776", "additional_sounds": [],
+                "match_strategy": "fuzzy"}
+        ids, keys, words = build_sound_sets(meta)
+        reel = {"url": "https://www.instagram.com/reel/Dd2l3pWO0Oi/",
+                "account": "@iamavagraceee", "song": "hold my purse",
+                "artist": "Wynne, Conductor Williams", "music_id": "1622444062627668",
+                "platform": "instagram"}
+        assert match_videos([reel], ids, keys, words, "Wynne",
+                            match_fn=match_video_to_sounds)
+
+    def test_unrelated_artist_still_rejected(self):
+        from campaign_manager.services.matching import match_videos
+        v = {"url": "u", "song": "hold my purse", "artist": "Someone Else, Another"}
+        assert not match_videos([v], set(), set(), {"hold", "purse"}, "Wynne")

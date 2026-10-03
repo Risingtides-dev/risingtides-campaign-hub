@@ -3,7 +3,7 @@ import os
 
 
 class Config:
-    SECRET_KEY = os.environ.get("SECRET_KEY", "campaign-dashboard-local")
+    SECRET_KEY = os.environ.get("SECRET_KEY") or os.urandom(24).hex()
     DATABASE_URL = os.environ.get("DATABASE_URL", "")
     CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "http://localhost:5173").split(",")
     NOTION_API_KEY = os.environ.get("NOTION_API_KEY", "")

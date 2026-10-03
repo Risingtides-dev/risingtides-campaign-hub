@@ -304,6 +304,16 @@ def most_recent_job_status() -> Dict:
         return _legacy_status_from_job(_most_recent_job_locked())
 
 
+def _legacy_job_running_locked() -> bool:
+    """Lock-free check — caller MUST hold _jobs_lock. Used inside the atomic
+    check-and-claim in trigger_scrape (CAMP-89) so the single-flight guard and
+    the job insert can't race."""
+    for job in _jobs.values():
+        if job.get("kind") == "legacy" and job.get("state") == "running":
+            return True
+    return False
+
+
 def _most_recent_legacy_job_running() -> bool:
     """Is there a running job that was kicked off via the legacy entrypoint?
 
@@ -314,10 +324,7 @@ def _most_recent_legacy_job_running() -> bool:
     legacy-kind jobs gate the legacy entrypoint.
     """
     with _jobs_lock:
-        for job in _jobs.values():
-            if job.get("kind") == "legacy" and job.get("state") == "running":
-                return True
-        return False
+        return _legacy_job_running_locked()
 
 
 def _patch_legacy_status(job_id: str, **fields) -> None:
@@ -469,10 +476,31 @@ def merge_into_cache(username: str, new_videos: List[Dict]) -> List[Dict]:
 # Background scrape worker
 # ---------------------------------------------------------------------------
 
+# Manual-scrape concurrency defaults. Mirrors services/scheduler.py's
+# DEFAULT_MAX_WORKERS / DEFAULT_VIDEO_LIMIT rationale: 8 workers pulling
+# 500 videos each from one Railway IP is exactly the burst pattern TikTok
+# answers with silent empty-200s (IP block). Overridable per request via
+# the "max_workers" / "video_limit" payload keys.
+MANUAL_SCRAPE_MAX_WORKERS = 2
+MANUAL_SCRAPE_VIDEO_LIMIT = 50
+
+
+def _clamp_int(raw, default: int, lo: int, hi: int) -> int:
+    """Parse an optional int override from a request payload, clamped."""
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(hi, val))
+
+
 def _run_internal_scrape(hours: int, creators: List[str], *,
                          start_date_str: str = "", end_date_str: str = "",
                          job_id: Optional[str] = None,
-                         group_slug: Optional[str] = None):
+                         group_slug: Optional[str] = None,
+                         scope: str = "",
+                         max_workers: int = MANUAL_SCRAPE_MAX_WORKERS,
+                         video_limit: int = MANUAL_SCRAPE_VIDEO_LIMIT):
     """Background scrape worker -- runs in a thread.
 
     When start_date_str / end_date_str are provided (YYYY-MM-DD), they
@@ -602,7 +630,7 @@ def _run_internal_scrape(hours: int, creators: List[str], *,
         def _scrape_one(account):
             _add_inflight(account)
             try:
-                videos = scrape_account_videos(account, start_datetime=start_dt, end_datetime=end_dt, limit=500)
+                videos = scrape_account_videos(account, start_datetime=start_dt, end_datetime=end_dt, limit=video_limit)
                 return account, videos or [], None
             except ScrapeError as e:
                 return account, [], str(e)
@@ -610,7 +638,7 @@ def _run_internal_scrape(hours: int, creators: List[str], *,
                 return account, [], f"Unexpected error: {e}"
 
         completed_count = 0
-        with ThreadPoolExecutor(max_workers=8) as executor:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(_scrape_one, c): c for c in creators}
             for future in as_completed(futures):
                 account, videos, error = future.result()
@@ -708,6 +736,7 @@ def _run_internal_scrape(hours: int, creators: List[str], *,
             "total_videos_unfiltered": len(all_videos),
             "unique_songs": len(songs_list),
             "songs": songs_list,
+            "scope": scope,
         }
         save_internal_results(results)
 
@@ -831,9 +860,11 @@ def trigger_scrape():
     ``POST /api/internal/scrape/start`` do not block this endpoint and
     vice versa — the two entrypoints have independent in-flight semantics.
     """
-    if _most_recent_legacy_job_running():
-        return jsonify({"error": "A scrape is already running. Please wait."}), 409
-
+    # CAMP-89: the single-flight check is done ATOMICALLY with the job insert
+    # below (inside _jobs_lock), NOT here — checking here then inserting later
+    # under a separate lock is a TOCTOU race where two concurrent requests both
+    # pass the check and both spawn full scrapes. (Sibling scrape_start already
+    # does check-and-claim atomically; this mirrors it.)
     data = request.get_json(silent=True) or {}
     hours = int(data.get("hours", 48))
 
@@ -844,6 +875,7 @@ def trigger_scrape():
     if single_username:
         creators = [single_username]
         scope_label = f"@{single_username}"
+        scope = f"partial:@{single_username}"
     elif group_slug:
         if _db.is_active():
             group = _db.get_internal_group(group_slug)
@@ -853,11 +885,13 @@ def trigger_scrape():
             if not creators:
                 return jsonify({"error": f"Group '{group_slug}' has no members."}), 400
             scope_label = f"group:{group_slug} ({len(creators)} accounts)"
+            scope = f"partial:group:{group_slug}"
         else:
             return jsonify({"error": "Groups require database. Use 'hours' for flat scrape."}), 503
     else:
         creators = load_internal_creators()
         scope_label = f"all ({len(creators)} accounts)"
+        scope = "full"
 
     if not creators:
         return jsonify({"error": "No creators to scrape."}), 400
@@ -866,28 +900,44 @@ def trigger_scrape():
     start_date_str = (data.get("start_date") or "").strip()
     end_date_str = (data.get("end_date") or "").strip()
 
+    # Optional aggressiveness overrides — default to the scheduler-safe
+    # 2 workers / 50 videos (see MANUAL_SCRAPE_* rationale above).
+    max_workers = _clamp_int(data.get("max_workers"), MANUAL_SCRAPE_MAX_WORKERS, 1, 8)
+    video_limit = _clamp_int(data.get("video_limit"), MANUAL_SCRAPE_VIDEO_LIMIT, 1, 500)
+
     # RTA-45: create a _jobs entry so the worker can write progress + the
     # legacy-shape status to its own slot, not a module-global. Tagged
     # ``kind="legacy"`` so the in-flight guard above can identify it.
+    job_id = None
     with _jobs_lock:
-        # Prune terminal entries on insert (mirrors scrape_start; keeps the
-        # registry bounded across the dyno's lifetime).
-        _prune_jobs()
-        job_id = uuid.uuid4().hex
-        started_at = datetime.now(EST).isoformat()
-        legacy_status = _empty_legacy_status()
-        legacy_status["running"] = True
-        legacy_status["accounts_total"] = len(creators)
-        _jobs[job_id] = {
-            "group": group_slug or None,
-            "started_at": started_at,
-            "state": "running",
-            "progress": {"n": 0, "m": len(creators)},
-            "last_log": "",
-            "error": None,
-            "kind": "legacy",
-            "legacy_status": legacy_status,
-        }
+        # CAMP-89: atomic check-and-claim. If a legacy scrape is already running
+        # we must bail BEFORE inserting — and the check + insert must be in the
+        # same lock acquisition so two concurrent requests can't both pass.
+        if _legacy_job_running_locked():
+            already_running = True
+        else:
+            already_running = False
+            # Prune terminal entries on insert (mirrors scrape_start; keeps the
+            # registry bounded across the dyno's lifetime).
+            _prune_jobs()
+            job_id = uuid.uuid4().hex
+            started_at = datetime.now(EST).isoformat()
+            legacy_status = _empty_legacy_status()
+            legacy_status["running"] = True
+            legacy_status["accounts_total"] = len(creators)
+            _jobs[job_id] = {
+                "group": group_slug or None,
+                "started_at": started_at,
+                "state": "running",
+                "progress": {"n": 0, "m": len(creators)},
+                "last_log": "",
+                "error": None,
+                "kind": "legacy",
+                "legacy_status": legacy_status,
+            }
+
+    if already_running:
+        return jsonify({"error": "A scrape is already running. Please wait."}), 409
 
     # Launch scrape in background thread. RTA-45: if thread launch
     # fails (e.g. RuntimeError under OS thread-limit pressure), roll
@@ -901,6 +951,9 @@ def trigger_scrape():
             "start_date_str": start_date_str,
             "end_date_str": end_date_str,
             "job_id": job_id,
+            "scope": scope,
+            "max_workers": max_workers,
+            "video_limit": video_limit,
             # group_slug intentionally NOT passed: this is the legacy
             # entrypoint and doesn't participate in per-group debounce
             # (_current_job_by_group) regardless of whether a group filter
@@ -994,6 +1047,11 @@ def scrape_start():
     start_date_str = (data.get("start_date") or "").strip()
     end_date_str = (data.get("end_date") or "").strip()
 
+    # Optional aggressiveness overrides — default to the scheduler-safe
+    # 2 workers / 50 videos (see MANUAL_SCRAPE_* rationale above).
+    max_workers = _clamp_int(data.get("max_workers"), MANUAL_SCRAPE_MAX_WORKERS, 1, 8)
+    video_limit = _clamp_int(data.get("video_limit"), MANUAL_SCRAPE_VIDEO_LIMIT, 1, 500)
+
     # Debounce: if a job for this group is still running, return it.
     with _jobs_lock:
         existing_id = _current_job_by_group.get(group_slug)
@@ -1052,6 +1110,9 @@ def scrape_start():
             "end_date_str": end_date_str,
             "job_id": job_id,
             "group_slug": group_slug,
+            "scope": f"partial:group:{group_slug}",
+            "max_workers": max_workers,
+            "video_limit": video_limit,
         },
         daemon=True,
     )
@@ -1185,6 +1246,91 @@ def create_group():
 
 
 # -------------------------------------------------------------------
+# 10b. GET /api/internal/labels/<slug>/stats  -- LABEL-axis rollup (CAMP-38)
+# -------------------------------------------------------------------
+# Eric's P0 acceptance: warner views vs atlantic views, by Notion label tag,
+# with no cross-contamination. The clusters above bucket by subgroup; this
+# rolls strictly by the WARNER/ATLANTIC/INTERNAL label.
+@internal_bp.get("/api/internal/labels/<slug>/stats")
+def get_label_stats(slug: str):
+    err = _require_db()
+    if err:
+        return err
+    from campaign_manager.services.label_attribution import label_stats
+    try:
+        days = max(1, min(int(request.args.get("days", 30)), 3650))
+    except (TypeError, ValueError):
+        days = 30
+    session = _db.get_session()
+    try:
+        stats = label_stats(session, slug, days)
+        if stats is None:
+            return jsonify({"error": f"Unknown label '{slug}' (use warner|atlantic|internal)"}), 404
+        return jsonify(stats)
+    finally:
+        session.close()
+
+
+@internal_bp.get("/api/internal/labels")
+def get_all_label_stats():
+    """Cross-label comparison — every label rolled up side by side."""
+    err = _require_db()
+    if err:
+        return err
+    from campaign_manager.services.label_attribution import all_label_stats
+    try:
+        days = max(1, min(int(request.args.get("days", 30)), 3650))
+    except (TypeError, ValueError):
+        days = 30
+    session = _db.get_session()
+    try:
+        return jsonify({"labels": all_label_stats(session, days)})
+    finally:
+        session.close()
+
+
+# 10c. Booker-axis rollups (CAMP-34) — "what did booker X's roster do?"
+# The poster field is free-text; the service canonicalizes name variants
+# (Eric Cromartie / eric / Eric -> eric_cromartie) before aggregating.
+# -------------------------------------------------------------------
+@internal_bp.get("/api/internal/bookers/<slug>/stats")
+def get_booker_stats(slug: str):
+    err = _require_db()
+    if err:
+        return err
+    from campaign_manager.services.booker_attribution import booker_stats
+    try:
+        days = max(1, min(int(request.args.get("days", 30)), 3650))
+    except (TypeError, ValueError):
+        days = 30
+    session = _db.get_session()
+    try:
+        stats = booker_stats(session, slug, days)
+        if stats is None:
+            return jsonify({"error": f"No pages found for booker '{slug}'"}), 404
+        return jsonify(stats)
+    finally:
+        session.close()
+
+
+@internal_bp.get("/api/internal/bookers")
+def get_all_bookers():
+    """Every booker ranked by roster views — the unified RT-tracker rollup."""
+    err = _require_db()
+    if err:
+        return err
+    from campaign_manager.services.booker_attribution import list_bookers
+    try:
+        days = max(1, min(int(request.args.get("days", 30)), 3650))
+    except (TypeError, ValueError):
+        days = 30
+    session = _db.get_session()
+    try:
+        return jsonify({"bookers": list_bookers(session, days)})
+    finally:
+        session.close()
+
+
 # 11. GET /api/internal/groups/<identifier>  -- group detail + members
 # -------------------------------------------------------------------
 @internal_bp.get("/api/internal/groups/<identifier>")
@@ -1290,3 +1436,32 @@ def creator_stats(username: str):
         return err
     days = int(request.args.get("days", 30))
     return jsonify(_db.get_creator_stats(username, days=days))
+
+
+# -------------------------------------------------------------------
+# 18. GET /api/internal/freshness  -- scrape-corpus staleness signal
+# Added after the June-3 silent-zero incident: the stats pages surface
+# this so an empty window reads as "data is stale" instead of zeros.
+# -------------------------------------------------------------------
+@internal_bp.get("/api/internal/freshness")
+def internal_freshness():
+    err = _require_db()
+    if err:
+        return err
+    return jsonify(_db.get_internal_freshness())
+
+
+# -------------------------------------------------------------------
+# 19. Poster-axis aliases — the canonical name for what /bookers serves.
+# "Posters" are internal team members who run our pages (the Notion
+# `Poster` column); "creators" are external people we book. The
+# /bookers routes were a misnomer and are kept only for compatibility.
+# -------------------------------------------------------------------
+@internal_bp.get("/api/internal/posters")
+def get_all_posters():
+    return get_all_bookers()
+
+
+@internal_bp.get("/api/internal/posters/<slug>/stats")
+def get_poster_stats(slug: str):
+    return get_booker_stats(slug)

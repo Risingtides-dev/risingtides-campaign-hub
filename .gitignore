@@ -44,6 +44,10 @@ output/
 cache/
 *.pkl
 
+# Local Slack CLI generated project/cache data
+tools/scrape-reporter/.slack/
+tools/scrape-reporter/node_modules/
+
 # Virtual environment
 venv/
 .venv/
@@ -81,6 +85,9 @@ backups/
 
 # MkDocs build output
 /site/
+
+# stitchpad runtime (isolated history)
+.stitchpad/
 
 # Claude Code
 .claude/
