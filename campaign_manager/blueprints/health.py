@@ -1,24 +1,22 @@
 """Health check endpoint."""
 import os
-from urllib.parse import urlsplit
 
 from flask import Blueprint, jsonify
+from sqlalchemy.engine import make_url
 from campaign_manager import db as _db
 
 health_bp = Blueprint("health", __name__)
 
 
 def _safe_db_target(db_url: str) -> str:
-    """Scheme + host only, credentials stripped — safe to expose publicly.
-
-    The old `db_url[:30]` leaked the user and the start of the password
-    (e.g. `postgresql://postgres:GQmtAI...`). Never echo credentials.
-    """
+    """Return the runtime URL's scheme/host without credentials or path/query."""
     if not db_url:
         return ""
     try:
-        p = urlsplit(db_url)
-        return f"{p.scheme}://{p.hostname}" if p.hostname else (p.scheme or "set")
+        target = make_url(db_url)
+        if db_url.count("@") > 1:
+            return "set"
+        return f"{target.drivername}://{target.host}" if target.host else (target.drivername or "set")
     except Exception:
         return "set"
 

@@ -12,6 +12,8 @@ Campaign CRM integration, campaign delivery reporting, and creator operations.
 
 ## Local Contracts
 
+- Public `/health` reports `db_target` using the same SQLAlchemy URL grammar as database initialization, exposing only the scheme and host. Credentials, port, path and query stay private; absent URLs return an empty target; unparseable URLs or URLs containing multiple raw `@` separators return `set` because the parsed host may contain a password fragment. This conservative diagnostic fallback also applies when the extra `@` is in a query; it never changes the database connection.
+
 - CRM `Content Niche Targets` supplies the declared campaign niches consumed by ShipStream's D1 playlist flow.
 - Campaign reads request a background refresh at most every 15 minutes, independent of the scraping scheduler. The refresh reads exact stored Notion page links for existing active campaigns, updates only `content_types` and `internal_captions`, and neither creates campaigns nor sends notifications.
 - An unreadable or missing CRM property preserves stored categories; an explicitly empty multi-select clears them.
@@ -24,5 +26,6 @@ Campaign CRM integration, campaign delivery reporting, and creator operations.
 ## Verification
 
 - Backend checks run with `pytest tests/backend`.
+- Run `pytest -q tests/backend/test_health_db_target.py tests/backend/test_smoke.py` for synthetic credential redaction and existing app health contracts; only test-owned SQLite fixtures are used.
 
 ## Child devlog Index
