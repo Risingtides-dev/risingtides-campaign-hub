@@ -302,6 +302,27 @@ class TestEditCampaign:
         assert result == "conflict"
         assert events[0][0] == "lock"
 
+    def test_legacy_edit_surfaces_missing_revision_after_interleaved_url_change(self, client, db, monkeypatch):
+        original_url = "https://www.tiktok.com/music/original-123"
+        concurrent_url = "https://www.tiktok.com/music/concurrent-456"
+        _create(client, official_sound=original_url)
+        original_save = db.save_campaign
+
+        def interleaved_save(slug, meta, **kwargs):
+            # Another request commits after this route's initial read.
+            db.update_campaign_fields(slug, {"official_sound": concurrent_url})
+            return original_save(slug, meta, **kwargs)
+
+        monkeypatch.setattr(db, "save_campaign", interleaved_save)
+        response = client.post(
+            "/api/campaign/sam_barber_fever_dream/edit",
+            json={"sound_id": original_url},
+        )
+
+        assert response.status_code == 409
+        assert response.get_json()["code"] == "missing_revision"
+        assert db.get_campaign("sam_barber_fever_dream")["official_sound"] == concurrent_url
+
 
 class TestCreatorNichesRoundtrip:
     """Regression: niches field was omitted from campaign_detail creator response,

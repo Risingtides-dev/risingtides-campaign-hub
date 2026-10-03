@@ -713,6 +713,7 @@ def edit_campaign(slug: str):
         if key in data and isinstance(data[key], str):
             meta[key] = data[key].strip()
 
+    canonical_url = None
     if "sound_id" in data:
         canonical_url = _db._canonical_sound_url(sound_id_raw)
         is_http_url = sound_id_raw.lower().startswith(("http://", "https://"))
@@ -724,8 +725,8 @@ def edit_campaign(slug: str):
             canonical_url is not None
             and canonical_url != _db._canonical_sound_url(original_official_sound)
         )
+        expected_official_sound = data.get("expected_official_sound")
         if changed_sound_url:
-            expected_official_sound = data.get("expected_official_sound")
             if not isinstance(expected_official_sound, str):
                 return jsonify({
                     "error": "Reload the campaign before changing its sound link.",
@@ -736,8 +737,14 @@ def edit_campaign(slug: str):
                     "error": "This campaign changed. Reload it before saving the link.",
                     "code": "conflict",
                 }), 409
-        else:
-            expected_official_sound = None
+        elif expected_official_sound is not None:
+            if not isinstance(expected_official_sound, str):
+                return jsonify({"error": "Reload the campaign and try again.", "code": "conflict"}), 409
+            if original_official_sound != expected_official_sound:
+                return jsonify({
+                    "error": "This campaign changed. Reload it before saving the link.",
+                    "code": "conflict",
+                }), 409
     else:
         changed_sound_url = False
         expected_official_sound = None
@@ -801,16 +808,18 @@ def edit_campaign(slug: str):
         meta["cobrand_link"] = cobrand_link
 
     if _db.is_active():
-        if changed_sound_url:
+        if canonical_url is not None and isinstance(expected_official_sound, str):
             result = _db.save_campaign(
                 slug, meta, expected_official_sound=expected_official_sound,
             )
-            if result == "conflict":
-                return jsonify({"error": "This campaign changed. Reload it before saving the link.", "code": "conflict"}), 409
-            if result == "duplicate":
-                return jsonify({"error": "That link already belongs to another campaign.", "code": "duplicate"}), 409
         else:
-            _db.save_campaign(slug, meta)
+            result = _db.save_campaign(slug, meta)
+        if result == "missing_revision":
+            return jsonify({"error": "Reload the campaign before saving its sound link.", "code": "missing_revision"}), 409
+        if result == "conflict":
+            return jsonify({"error": "This campaign changed. Reload it before saving the link.", "code": "conflict"}), 409
+        if result == "duplicate":
+            return jsonify({"error": "That link already belongs to another campaign.", "code": "duplicate"}), 409
     else:
         if changed_sound_url:
             if any(

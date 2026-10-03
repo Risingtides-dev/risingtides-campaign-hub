@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { CampaignHeader } from '@/components/campaigns/CampaignHeader'
 import { MemoryRouter } from 'react-router-dom'
@@ -26,6 +26,52 @@ describe('<CampaignHeader />', () => {
     fireEvent.change(screen.getAllByDisplayValue(/2026-/)[1], { target: { value: '2026-08-24' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     expect(onEdit).toHaveBeenCalledWith(expect.objectContaining({ start_date: '2026-08-01', end_date: '2026-08-24' }))
+  })
+
+  it('sends the current official sound as the revision when editing a URL', async () => {
+    const onEdit = vi.fn().mockResolvedValue(undefined)
+    const campaign = {
+      slug: 'song', title: 'Artist - Song', artist: 'Artist', song: 'Song',
+      sound_id: '1234567890', official_sound: 'https://www.tiktok.com/music/current-1234567890',
+      tt_artist_label: '', tt_track_name: '', additional_sounds: [], cobrand_link: '',
+      start_date: '2026-08-01', end_date: '',
+      budget: { total: 0, booked: 0, paid: 0, left: 0, pct: 0 },
+      stats: {}, creators: [], matched_videos: [], platform: '', status: '', source: '',
+      label: '', round: '', campaign_stage: '', project_lead: [], client_email: '',
+      platform_split: {}, content_types: [],
+    } as unknown as CampaignDetail
+    render(<MemoryRouter><CampaignHeader campaign={campaign} onEdit={onEdit} onRefresh={vi.fn()} isEditing={false} isRefreshing={false} /></MemoryRouter>)
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    fireEvent.change(screen.getByDisplayValue('1234567890'), {
+      target: { value: 'https://www.tiktok.com/music/new-9876543210' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(onEdit).toHaveBeenCalledWith(expect.objectContaining({
+      sound_id: 'https://www.tiktok.com/music/new-9876543210',
+      expected_official_sound: 'https://www.tiktok.com/music/current-1234567890',
+    })))
+  })
+
+  it('does not add a URL revision when saving a numeric sound ID', async () => {
+    const onEdit = vi.fn().mockResolvedValue(undefined)
+    const campaign = {
+      slug: 'song', title: 'Artist - Song', artist: 'Artist', song: 'Song',
+      sound_id: '1234567890', official_sound: '1234567890',
+      tt_artist_label: '', tt_track_name: '', additional_sounds: [], cobrand_link: '',
+      start_date: '2026-08-01', end_date: '',
+      budget: { total: 0, booked: 0, paid: 0, left: 0, pct: 0 },
+      stats: {}, creators: [], matched_videos: [], platform: '', status: '', source: '',
+      label: '', round: '', campaign_stage: '', project_lead: [], client_email: '',
+      platform_split: {}, content_types: [],
+    } as unknown as CampaignDetail
+    render(<MemoryRouter><CampaignHeader campaign={campaign} onEdit={onEdit} onRefresh={vi.fn()} isEditing={false} isRefreshing={false} /></MemoryRouter>)
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(onEdit).toHaveBeenCalled())
+    expect(onEdit.mock.calls[0][0]).toMatchObject({ sound_id: '1234567890' })
+    expect(onEdit.mock.calls[0][0]).not.toHaveProperty('expected_official_sound')
   })
 
   it('seeds the current end date on open and omits unchanged end_date', () => {

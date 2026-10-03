@@ -52,6 +52,11 @@ import type {
 
 const API_BASE = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? "http://localhost:5055" : "")
 
+export type CampaignEditRequest = Record<string, unknown> & {
+  sound_id?: string
+  expected_official_sound?: string
+}
+
 class ApiError extends Error {
   status: number
   body: unknown
@@ -109,11 +114,13 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
-  editCampaign: (slug: string, data: Record<string, unknown>) =>
-    request<ApiOk>(`/api/campaign/${slug}/edit`, {
+  editCampaign: (slug: string, data: Record<string, unknown>) => {
+    const requestBody = data as CampaignEditRequest
+    return request<ApiOk>(`/api/campaign/${slug}/edit`, {
       method: "POST",
-      body: JSON.stringify(data),
-    }),
+      body: JSON.stringify(requestBody),
+    })
+  },
 
   getPopScore: (slug: string) =>
     request<PopScore>(`/api/campaign/${slug}/pop-score`),

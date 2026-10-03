@@ -169,3 +169,12 @@ area:      [review]
 
 Published the isolated sound URL invariant repair as Campaign Hub PR #236 from commit 72e7669. The PR is open for review; no merge or deployment performed.
 _________________________________________________________________________________
+_________________________________________________________________________________
+time:      [12:39pm] [10-03-26]
+agent:     [codex] [gpt-6]
+worktree:  codex/campaign-sound-invariant-20261003
+type:      [bug report]
+area:      [backend]
+
+Fixed PR #236 review regressions: CampaignHeader now sends the displayed official_sound as expected_official_sound for URL edits, and the API preserves the typed token in the POST body; numeric sound IDs send no revision token. The legacy edit route now returns 409 when save_campaign reports missing_revision, conflict, or duplicate; a deterministic interleaving test proves a competing URL write is preserved and the stale edit is rejected. Backend checks: focused sound regressions 4 passed; full campaign endpoint file 28 passed and the existing hard-coded 2026-09-30 end-date fixture failed against 2026-10-03 default start. Frontend tests were added but not run because node_modules is absent and the host volume is full; no dependency installation or cleanup was attempted. No merge or deployment.
+_________________________________________________________________________________
