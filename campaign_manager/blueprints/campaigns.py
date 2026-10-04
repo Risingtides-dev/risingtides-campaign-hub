@@ -14,6 +14,7 @@ import requests as _requests
 from datetime import date, datetime
 from pathlib import Path
 from typing import Dict, List, Optional
+from urllib.parse import urlsplit
 
 from flask import Blueprint, current_app, jsonify, request
 
@@ -817,17 +818,21 @@ def edit_campaign(slug: str):
         if result == "missing_revision":
             return jsonify({"error": "Reload the campaign before saving its sound link.", "code": "missing_revision"}), 409
         if result == "conflict":
-            return jsonify({"error": "This campaign changed. Reload it before saving the link.", "code": "conflict"}), 409
+            return jsonify({
+            "error": "This campaign changed. Reload it before saving the link.",
+            "code": "conflict",
+        }), 409
         if result == "duplicate":
-            return jsonify({"error": "That link already belongs to another campaign.", "code": "duplicate"}), 409
+            return jsonify({
+            "error": "That link already belongs to another campaign.",
+            "code": "duplicate",
+        }), 409
     else:
         if changed_sound_url:
-            if any(
-                row["slug"] != slug
-                and _db._canonical_sound_url(row["meta"].get("official_sound") or "") == canonical_url
-                for row in get_campaigns()
-            ):
-                return jsonify({"error": "That link already belongs to another campaign.", "code": "duplicate"}), 409
+            return jsonify({
+                "error": "Database-backed storage is required to safely change a campaign sound link.",
+                "code": "database_required",
+            }), 503
         save_json(campaign_dir / "campaign.json", meta)
 
     # Mirror delivery status onto the client-facing tracker badge. Only when
@@ -850,6 +855,60 @@ def edit_campaign(slug: str):
         request_immediate_resolve(slug)
 
     return jsonify({"ok": True, "slug": slug, "message": "Campaign updated."})
+
+def _sound_id_for_official_url(url: str) -> str:
+    """Keep the scheduler's ID aligned when a TikTok music URL supplies one."""
+    parsed = urlsplit(url)
+    host = (parsed.hostname or "").lower()
+    if host != "tiktok.com" and not host.endswith(".tiktok.com"):
+        return ""
+    if not parsed.path.startswith("/music/"):
+        return ""
+    match = re.search(r"(?:-|/)(\d{10,})$", parsed.path)
+    return match.group(1) if match else ""
+
+
+@campaigns_bp.put("/api/campaign/<slug>/sound-link")
+def set_campaign_sound_link(slug: str):
+    """Store one unique HTTP(S) link in the campaign's official sound field."""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({
+            "error": "Send a JSON object containing url and expected_url.",
+            "code": "invalid_payload",
+        }), 400
+    url = _db._canonical_sound_url(data.get("url"))
+    expected_url = data.get("expected_url")
+    if url is None:
+        return jsonify({"error": "Paste a valid HTTP(S) URL.", "code": "invalid_url"}), 400
+    if not isinstance(expected_url, str):
+        return jsonify({
+            "error": "Reload the campaign and try again.",
+            "code": "missing_revision",
+        }), 409
+
+    if not _db.is_active():
+        return jsonify({
+            "error": "Database-backed storage is required to safely assign a unique campaign sound link.",
+            "code": "database_required",
+        }), 503
+
+    sound_id = _sound_id_for_official_url(url)
+    result = _db.set_unique_campaign_sound_url(slug, url, expected_url, sound_id)
+
+    if result == "missing":
+        return jsonify({"error": "Campaign not found.", "code": "not_found"}), 404
+    if result == "conflict":
+        return jsonify({
+            "error": "This campaign changed. Reload it before saving the link.",
+            "code": "conflict",
+        }), 409
+    if result == "duplicate":
+        return jsonify({
+            "error": "That link already belongs to another campaign.",
+            "code": "duplicate",
+        }), 409
+    return jsonify({"ok": True, "slug": slug, "official_sound": url, "sound_id": sound_id})
 
 
 # -------------------------------------------------------------------

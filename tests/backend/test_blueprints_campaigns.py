@@ -325,6 +325,156 @@ class TestEditCampaign:
         assert db.get_campaign("sam_barber_fever_dream")["official_sound"] == concurrent_url
 
 
+class TestCampaignSoundLink:
+    def test_stores_canonical_url_and_replaces_stale_sound_id(self, client, db):
+        old_url = "https://www.tiktok.com/music/old-1234567890123456789"
+        new_url = "https://www.tiktok.com/music/new-9876543210987654321"
+        _create(client, official_sound=old_url, title="First - Song")
+        assert db.get_campaign("first_song")["sound_id"] == "1234567890123456789"
+        response = client.put("/api/campaign/first_song/sound-link", json={
+            "url": f" {new_url}#details ", "expected_url": old_url,
+        })
+        assert response.status_code == 200
+        assert response.get_json()["official_sound"] == new_url
+        assert response.get_json()["sound_id"] == "9876543210987654321"
+        saved = db.get_campaign("first_song")
+        assert saved["official_sound"] == new_url
+        assert saved["sound_id"] == "9876543210987654321"
+
+    def test_sound_link_write_uses_shared_postgres_advisory_lock(self, client, db, monkeypatch):
+        from types import SimpleNamespace
+
+        _create(client)
+        original_get_session = db.get_session
+        events = []
+
+        class SessionProxy:
+            def __init__(self):
+                self.session = original_get_session()
+                self.bind = SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self.session.close()
+
+            def execute(self, statement, *args, **kwargs):
+                sql = str(statement)
+                events.append(("lock", sql))
+                assert "pg_advisory_xact_lock(hashtext('campaign-sound-url'))" in sql
+                return None
+
+            def query(self, *args, **kwargs):
+                events.append(("query", ""))
+                return self.session.query(*args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(self.session, name)
+
+        monkeypatch.setattr(db, "get_session", SessionProxy)
+        response = client.put("/api/campaign/sam_barber_fever_dream/sound-link", json={
+            "url": "https://www.tiktok.com/music/new-9876543210987654321", "expected_url": "",
+        })
+        assert response.status_code == 200
+        assert events[0][0] == "lock"
+        assert all(event[0] == "query" for event in events[1:])
+
+    def test_non_tiktok_url_clears_old_sound_id(self, client, db):
+        _create(client, official_sound="https://www.tiktok.com/music/old-1234567890123456789")
+        response = client.put("/api/campaign/sam_barber_fever_dream/sound-link", json={
+            "url": "https://example.com/new-sound",
+            "expected_url": "https://www.tiktok.com/music/old-1234567890123456789",
+        })
+        assert response.status_code == 200
+        saved = db.get_campaign("sam_barber_fever_dream")
+        assert saved["official_sound"] == "https://example.com/new-sound"
+        assert saved["sound_id"] == ""
+
+    def test_rejects_non_object_payload(self, client):
+        response = client.put(
+            "/api/campaign/sam_barber_fever_dream/sound-link",
+            json=["https://example.com"],
+        )
+        assert response.status_code == 400
+        assert response.get_json()["code"] == "invalid_payload"
+
+    def test_refuses_file_fallback_for_unique_sound_link(self, client, db, monkeypatch, tmp_path):
+        import json
+        from campaign_manager.blueprints import campaigns
+
+        campaign_dir = tmp_path / "sam_barber_fever_dream"
+        campaign_dir.mkdir()
+        campaign_file = campaign_dir / "campaign.json"
+        original = {
+            "official_sound": "https://old.example/sound",
+            "sound_id": "1234567890123456789",
+        }
+        campaign_file.write_text(json.dumps(original))
+        monkeypatch.setattr(campaigns, "ACTIVE_DIR", tmp_path)
+        monkeypatch.setattr(db, "is_active", lambda: False)
+
+        response = client.put("/api/campaign/sam_barber_fever_dream/sound-link", json={
+            "url": "https://www.tiktok.com/music/new-9876543210987654321",
+            "expected_url": original["official_sound"],
+        })
+        assert response.status_code == 503
+        assert response.get_json()["code"] == "database_required"
+        assert json.loads(campaign_file.read_text()) == original
+
+    def test_refuses_legacy_url_change_in_file_fallback(self, client, db, monkeypatch, tmp_path):
+        import json
+        from campaign_manager.blueprints import campaigns
+
+        campaign_dir = tmp_path / "sam_barber_fever_dream"
+        campaign_dir.mkdir()
+        campaign_file = campaign_dir / "campaign.json"
+        original = {
+            "title": "Sam Barber - Fever Dream",
+            "official_sound": "https://old.example/sound",
+            "sound_id": "1234567890123456789",
+            "start_date": "2026-01-01",
+        }
+        campaign_file.write_text(json.dumps(original))
+        monkeypatch.setattr(campaigns, "ACTIVE_DIR", tmp_path)
+        monkeypatch.setattr(db, "is_active", lambda: False)
+
+        response = client.post("/api/campaign/sam_barber_fever_dream/edit", json={
+            "sound_id": "https://www.tiktok.com/music/new-9876543210987654321",
+            "expected_official_sound": original["official_sound"],
+        })
+        assert response.status_code == 503
+        assert response.get_json()["code"] == "database_required"
+        assert json.loads(campaign_file.read_text()) == original
+
+    @pytest.mark.parametrize("url", ["", "not a link", "ftp://example.com/x", "https://user:pass@example.com/x"])
+    def test_rejects_non_http_urls(self, client, url):
+        _create(client)
+        response = client.put("/api/campaign/sam_barber_fever_dream/sound-link", json={
+            "url": url, "expected_url": "",
+        })
+        assert response.status_code == 400
+        assert response.get_json()["code"] == "invalid_url"
+
+    def test_rejects_a_link_already_used_by_another_campaign(self, client):
+        _create(client, title="First - Song", official_sound="https://EXAMPLE.com:443/music/123#old")
+        _create(client, title="Second - Song")
+        response = client.put("/api/campaign/second_song/sound-link", json={
+            "url": "https://example.com/music/123", "expected_url": "",
+        })
+        assert response.status_code == 409
+        assert response.get_json()["code"] == "duplicate"
+
+    def test_rejects_a_stale_browser_edit_without_overwriting(self, client, db):
+        _create(client, official_sound="https://example.com/current")
+        response = client.put("/api/campaign/sam_barber_fever_dream/sound-link", json={
+            "url": "https://example.com/new", "expected_url": "https://example.com/old",
+        })
+        assert response.status_code == 409
+        assert response.get_json()["code"] == "conflict"
+        assert db.get_campaign("sam_barber_fever_dream")["official_sound"] == "https://example.com/current"
+
+
 class TestCreatorNichesRoundtrip:
     """Regression: niches field was omitted from campaign_detail creator response,
     causing the frontend to silently overwrite stored niches with [] on every edit."""

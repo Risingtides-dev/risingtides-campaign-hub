@@ -990,6 +990,32 @@ def save_campaign(slug: str, meta: Dict, *, expected_official_sound: Optional[st
         return "updated" if guarded_sound_write else None
 
 
+def set_unique_campaign_sound_url(slug: str, url: str, expected_url: str, sound_id: str) -> str:
+    """CAS one canonical sound URL onto a campaign.
+
+    Returns ``updated``, ``missing``, ``conflict``, or ``duplicate``. Postgres
+    takes one transaction-scoped advisory lock so two simultaneous drop-ins
+    cannot both pass the cross-row uniqueness check.
+    """
+    with get_session() as s:
+        if s.bind and s.bind.dialect.name == "postgresql":
+            s.execute(text("SELECT pg_advisory_xact_lock(hashtext('campaign-sound-url'))"))
+        campaign = s.query(Campaign).filter_by(slug=slug).with_for_update().first()
+        if campaign is None:
+            return "missing"
+        current = campaign.official_sound or ""
+        if current != expected_url:
+            return "conflict"
+        for other in s.query(Campaign.slug, Campaign.official_sound).filter(Campaign.slug != slug):
+            if _canonical_sound_url(other.official_sound or "") == url:
+                return "duplicate"
+        campaign.official_sound = url
+        campaign.sound_id = sound_id
+        campaign.updated_at = datetime.now()
+        s.commit()
+        return "updated"
+
+
 def update_campaign_fields(slug: str, fields: Dict):
     """Update specific fields on a campaign by slug."""
     with get_session() as s:

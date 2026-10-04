@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { Link } from "react-router-dom"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -16,6 +16,8 @@ interface CampaignHeaderProps {
   onToggleCobrand?: () => void
   onCreateTracker?: () => void
   isCreatingTracker?: boolean
+  onDropLink?: (url: string, expectedUrl: string) => Promise<unknown>
+  isDroppingLink?: boolean
 }
 
 export function CampaignHeader({
@@ -29,12 +31,16 @@ export function CampaignHeader({
   onToggleCobrand,
   onCreateTracker,
   isCreatingTracker,
+  onDropLink,
+  isDroppingLink = false,
 }: CampaignHeaderProps) {
   const [isEditing, setIsEditing] = useState(false)
+  const [droppedLink, setDroppedLink] = useState("")
+  const [dropResult, setDropResult] = useState<{ ok: boolean; message: string } | null>(null)
 
   // Edit form state
   const [title, setTitle] = useState(campaign.title || "")
-  const [soundId, setSoundId] = useState(campaign.sound_id || campaign.official_sound || "")
+  const [soundId, setSoundId] = useState(campaign.official_sound || campaign.sound_id || "")
   const [ttArtistLabel, setTtArtistLabel] = useState(campaign.tt_artist_label || "")
   const [ttTrackName, setTtTrackName] = useState(campaign.tt_track_name || "")
   const [additionalSounds, setAdditionalSounds] = useState<string[]>(
@@ -51,6 +57,26 @@ export function CampaignHeader({
     (campaign.additional_sounds?.length || 0)
 
   const budgetPct = campaign.budget?.pct ?? 0
+
+  useEffect(() => {
+    if (!isEditing) setSoundId(campaign.official_sound || campaign.sound_id || "")
+  }, [campaign.official_sound, campaign.sound_id, isEditing])
+
+  async function handleDropLink(e: React.FormEvent) {
+    e.preventDefault()
+    setDropResult(null)
+    try {
+      if (!onDropLink) return
+      await onDropLink(droppedLink, campaign.official_sound || "")
+      setDroppedLink("")
+      setDropResult({ ok: true, message: "Link saved to this campaign." })
+    } catch (error) {
+      setDropResult({
+        ok: false,
+        message: error instanceof Error ? error.message : "Could not save that link. Try again.",
+      })
+    }
+  }
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault()
@@ -93,7 +119,7 @@ export function CampaignHeader({
     onResetEdit?.()
     // Reset form state to current campaign values
     setTitle(campaign.title || "")
-    setSoundId(campaign.sound_id || campaign.official_sound || "")
+    setSoundId(campaign.official_sound || campaign.sound_id || "")
     setTtArtistLabel(campaign.tt_artist_label || "")
     setTtTrackName(campaign.tt_track_name || "")
     setAdditionalSounds(campaign.additional_sounds || [])
@@ -360,6 +386,41 @@ export function CampaignHeader({
           </Button>
         </div>
       </div>
+      {onDropLink && <form onSubmit={handleDropLink} className="mt-4 border-t border-white/15 pt-4">
+        <label htmlFor="campaign-sound-link" className="block text-xs font-medium mb-1.5">
+          Drop a campaign link
+        </label>
+        <div className="flex flex-col sm:flex-row gap-2">
+          <Input
+            id="campaign-sound-link"
+            type="url"
+            value={droppedLink}
+            onChange={(e) => {
+              setDroppedLink(e.target.value)
+              setDropResult(null)
+            }}
+            placeholder="Paste a unique https:// link"
+            required
+            className="flex-1 bg-white/10 border-white/30 text-white placeholder:text-white/40"
+          />
+          <Button
+            type="submit"
+            disabled={isDroppingLink}
+            className="bg-rt-magenta hover:bg-rt-purple text-white"
+          >
+            {isDroppingLink ? <Loader2 className="size-3.5 animate-spin" /> : null}
+            {isDroppingLink ? "Saving..." : "Save link"}
+          </Button>
+        </div>
+        <p className="mt-1.5 text-xs opacity-60">
+          Saves only this campaign’s official sound URL. Duplicate links are rejected.
+        </p>
+        {dropResult && (
+          <p role="status" className={`mt-2 text-sm ${dropResult.ok ? "text-green-300" : "text-red-300"}`}>
+            {dropResult.message}
+          </p>
+        )}
+      </form>}
     </div>
   )
 }

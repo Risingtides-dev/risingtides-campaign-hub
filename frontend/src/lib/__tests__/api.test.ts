@@ -184,6 +184,21 @@ describe('api client', () => {
       expect(JSON.parse(String(init?.body))).toEqual(edit)
     })
 
+    it('setCampaignSoundLink uses a scoped PUT with its CAS value', async () => {
+      const fetchMock = mockFetchOk({ ok: true, official_sound: 'https://example.com/' })
+      await api.setCampaignSoundLink('my-slug', {
+        url: 'https://example.com',
+        expected_url: 'https://old.example/',
+      })
+      const [url, init] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/campaign/my-slug/sound-link')
+      expect(init?.method).toBe('PUT')
+      expect(JSON.parse(init?.body as string)).toEqual({
+        url: 'https://example.com',
+        expected_url: 'https://old.example/',
+      })
+    })
+
     it('removeCreator uses POST', async () => {
       const fetchMock = mockFetchOk({ ok: true })
       await api.removeCreator('slug', { username: 'alice', platform: 'instagram' })
