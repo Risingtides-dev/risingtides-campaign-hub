@@ -100,7 +100,13 @@ def notion_webhook():
         "platform_split": data.get("platform_split", {}),
     }
 
-    _db.save_campaign(slug, meta)
+    sound_url = _db._canonical_sound_url(tiktok_sound)
+    result = _db.save_campaign(
+        slug, meta, expected_official_sound="" if sound_url is not None else None,
+    )
+    if result == "duplicate":
+        return jsonify({"error": "That link already belongs to another campaign", "slug": slug,
+                        "code": "duplicate"}), 409
     _db.save_creators(slug, [])
 
     return jsonify({
@@ -187,7 +193,13 @@ def notion_sync():
             "platform_split": entry.get("platform_split", {}),
         }
 
-        _db.save_campaign(slug, meta)
+        sound_url = _db._canonical_sound_url(meta["official_sound"])
+        result = _db.save_campaign(
+            slug, meta, expected_official_sound="" if sound_url is not None else None,
+        )
+        if result == "duplicate":
+            skipped.append({"slug": slug, "reason": "duplicate sound URL"})
+            continue
         _db.save_creators(slug, [])
         created.append({"slug": slug, "title": entry["title"]})
 

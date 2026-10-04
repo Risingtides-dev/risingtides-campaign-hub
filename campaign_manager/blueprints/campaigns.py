@@ -578,10 +578,18 @@ def write_internal_captions(slug: str):
 # -------------------------------------------------------------------
 @campaigns_bp.post("/api/campaign/create")
 def create_campaign():
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Send a JSON object.", "code": "invalid_payload"}), 400
 
     title = (data.get("title") or "").strip()
     official_sound = (data.get("official_sound") or "").strip()
+    sound_url = _db._canonical_sound_url(official_sound)
+    is_http_url = official_sound.lower().startswith(("http://", "https://"))
+    if is_http_url and sound_url is None:
+        return jsonify({"error": "Paste a valid HTTP(S) URL.", "code": "invalid_url"}), 400
+    if sound_url is not None:
+        official_sound = sound_url
     start_date = (data.get("start_date") or "").strip() or datetime.now(_db.EST).date().isoformat()
     budget_raw = (data.get("budget") or "0")
 
@@ -615,9 +623,18 @@ def create_campaign():
     if _db.is_active():
         if _db.campaign_exists(slug):
             return jsonify({"error": f"Campaign '{slug}' already exists."}), 409
-        _db.save_campaign(slug, meta)
+        result = _db.save_campaign(
+            slug, meta, expected_official_sound="" if sound_url is not None else None,
+        )
+        if result == "duplicate":
+            return jsonify({"error": "That link already belongs to another campaign.", "code": "duplicate"}), 409
         _db.save_creators(slug, [])
     else:
+        if sound_url is not None:
+            return jsonify({
+                "error": "Database-backed storage is required to safely assign a unique campaign sound link.",
+                "code": "database_required",
+            }), 503
         campaign_dir = ACTIVE_DIR / slug
         if campaign_dir.exists():
             return jsonify({"error": f"Campaign '{slug}' already exists."}), 409

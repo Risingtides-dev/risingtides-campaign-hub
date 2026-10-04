@@ -52,8 +52,38 @@ class TestNotionWebhook:
         resp = client.post("/api/webhooks/notion", json=body)
         assert resp.status_code == 409
 
+    def test_rejects_duplicate_official_sound_url(self, client):
+        body = {
+            "artist": "A", "song": "One",
+            "tiktok_sound_link": "https://www.tiktok.com/music/shared-1234567890123456789",
+        }
+        assert client.post("/api/webhooks/notion", json=body).status_code == 201
+        duplicate = client.post("/api/webhooks/notion", json={
+            **body, "artist": "B", "song": "Two",
+            "tiktok_sound_link": "HTTPS://WWW.TIKTOK.COM:443/music/shared-1234567890123456789#share",
+        })
+        assert duplicate.status_code == 409
+        assert duplicate.get_json()["code"] == "duplicate"
+
 
 class TestNotionSync:
+    def test_duplicate_sound_url_is_skipped_without_creating_campaign(self, client, db):
+        url = "https://www.tiktok.com/music/shared-1234567890123456789"
+        db.save_campaign("existing", {"title": "Existing", "official_sound": url})
+        entries = [{
+            "notion_page_id": "page-duplicate", "title": "New - Track", "slug": "new_track",
+            "artist": "New", "song": "Track", "official_sound": url, "sound_id": "1234567890123456789",
+            "start_date": "", "budget": 0,
+        }]
+        with patch("campaign_manager.services.notion.query_new_clients", return_value=entries):
+            resp = client.post("/api/webhooks/notion/sync")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["created"] == []
+        assert {item["slug"] for item in body["skipped"]} == {"new_track"}
+        assert body["skipped"][0]["reason"] == "duplicate sound URL"
+        assert db.get_campaign("new_track") is None
+
     def test_returns_empty_when_no_new_entries(self, client):
         with patch(
             "campaign_manager.services.notion.query_new_clients",

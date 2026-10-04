@@ -870,6 +870,16 @@ def _canonical_sound_url(value: str) -> Optional[str]:
     return urlunsplit((scheme, host, parsed.path or "/", parsed.query, ""))
 
 
+def _has_duplicate_campaign_sound_url(session, canonical_url: str, *, exclude_slug: Optional[str] = None) -> bool:
+    query = session.query(Campaign.slug, Campaign.official_sound)
+    if exclude_slug is not None:
+        query = query.filter(Campaign.slug != exclude_slug)
+    return any(
+        _canonical_sound_url(other.official_sound or "") == canonical_url
+        for other in query
+    )
+
+
 def _check_sound_url_write(session, campaign: Campaign, meta: Dict, expected_official_sound: Optional[str]) -> Optional[str]:
     """Validate a legacy whole-campaign sound URL write inside its transaction."""
     current = campaign.official_sound or ""
@@ -884,9 +894,8 @@ def _check_sound_url_write(session, campaign: Campaign, meta: Dict, expected_off
         return None
     if not isinstance(expected_official_sound, str):
         return "missing_revision"
-    for other in session.query(Campaign.slug, Campaign.official_sound).filter(Campaign.slug != campaign.slug):
-        if _canonical_sound_url(other.official_sound or "") == canonical:
-            return "duplicate"
+    if _has_duplicate_campaign_sound_url(session, canonical, exclude_slug=campaign.slug):
+        return "duplicate"
     meta["official_sound"] = canonical
     return None
 
@@ -917,6 +926,12 @@ def save_campaign(slug: str, meta: Dict, *, expected_official_sound: Optional[st
             campaign_query = campaign_query.with_for_update().populate_existing()
         c = campaign_query.first()
         if not c:
+            if guarded_sound_write:
+                if expected_official_sound != "":
+                    return "conflict"
+                if _has_duplicate_campaign_sound_url(s, candidate_url):
+                    return "duplicate"
+                meta["official_sound"] = candidate_url
             c = Campaign(slug=slug)
             s.add(c)
             # Captions are set when the campaign is created and after that

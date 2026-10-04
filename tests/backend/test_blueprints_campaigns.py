@@ -94,6 +94,134 @@ class TestCreateCampaign:
         resp = _create(client)
         assert resp.status_code == 409
 
+    def test_rejects_duplicate_official_sound_url_on_create(self, client):
+        url = "https://www.tiktok.com/music/song-1234567890123456789"
+        first = _create(client, title="First Artist - Track", official_sound=url)
+        assert first.status_code == 201
+        duplicate = _create(
+            client,
+            title="Second Artist - Track",
+            official_sound="HTTPS://WWW.TIKTOK.COM:443/music/song-1234567890123456789#share",
+        )
+        assert duplicate.status_code == 409
+        assert duplicate.get_json()["code"] == "duplicate"
+
+    def test_concurrent_creates_with_same_sound_are_serialized(self, app, db, monkeypatch):
+        from concurrent.futures import ThreadPoolExecutor
+        import threading
+
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from sqlalchemy.pool import StaticPool
+        from types import SimpleNamespace
+
+        from campaign_manager.models import Base
+        from campaign_manager.services import chartmetric_autolink
+
+        engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        old_engine, old_sessions = db._engine, db._SessionLocal
+        db._engine = engine
+        db._SessionLocal = sessionmaker(bind=engine)
+
+        advisory_lock = threading.Lock()
+        barrier = threading.Barrier(2)
+        observed_locks = []
+        observed_locks_guard = threading.Lock()
+        real_get_session = db.get_session
+        real_save_campaign = db.save_campaign
+
+        class SerializedPostgresSession:
+            def __init__(self):
+                self.session = real_get_session()
+                self.bind = SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+                self.owns_lock = False
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                try:
+                    return self.session.__exit__(*args)
+                finally:
+                    if self.owns_lock:
+                        self.owns_lock = False
+                        advisory_lock.release()
+
+            def execute(self, statement, *args, **kwargs):
+                sql = str(statement)
+                if "pg_advisory_xact_lock(hashtext('campaign-sound-url'))" in sql:
+                    advisory_lock.acquire()
+                    self.owns_lock = True
+                    with observed_locks_guard:
+                        observed_locks.append(sql)
+                    return None
+                return self.session.execute(statement, *args, **kwargs)
+
+            def commit(self):
+                try:
+                    return self.session.commit()
+                finally:
+                    if self.owns_lock:
+                        self.owns_lock = False
+                        advisory_lock.release()
+
+            def __getattr__(self, name):
+                return getattr(self.session, name)
+
+        def simultaneous_save(slug, meta, **kwargs):
+            barrier.wait(timeout=5)
+            return real_save_campaign(slug, meta, **kwargs)
+
+        monkeypatch.setattr(db, "get_session", SerializedPostgresSession)
+        monkeypatch.setattr(db, "save_campaign", simultaneous_save)
+        monkeypatch.setattr(db, "campaign_exists", lambda slug: False)
+        monkeypatch.setattr(db, "save_creators", lambda slug, creators: None)
+        monkeypatch.setattr(chartmetric_autolink, "request_immediate_resolve", lambda slug: None)
+        url = "https://www.tiktok.com/music/shared-1234567890123456789"
+
+        def create(title):
+            with app.test_client() as thread_client:
+                response = thread_client.post(
+                    "/api/campaign/create",
+                    json={"title": title, "official_sound": url},
+                )
+                return response.status_code, response.get_json()
+
+        try:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = list(pool.map(create, ["Concurrent A - Track", "Concurrent B - Track"]))
+            assert sorted(status for status, _body in results) == [201, 409]
+            assert [body.get("code") for status, body in results if status == 409] == ["duplicate"]
+            assert len(observed_locks) == 2
+            session = db._SessionLocal()
+            try:
+                rows = session.query(db.Campaign.slug).filter(db.Campaign.official_sound == url).all()
+            finally:
+                session.close()
+            assert len(rows) == 1
+        finally:
+            db._engine, db._SessionLocal = old_engine, old_sessions
+            engine.dispose()
+
+    def test_refuses_file_fallback_for_url_campaign_create(self, client, db, monkeypatch, tmp_path):
+        from campaign_manager.blueprints import campaigns
+
+        monkeypatch.setattr(campaigns, "ACTIVE_DIR", tmp_path)
+        monkeypatch.setattr(db, "is_active", lambda: False)
+        response = _create(
+            client,
+            title="File-backed Artist - Track",
+            official_sound="https://www.tiktok.com/music/song-1234567890123456789",
+        )
+        assert response.status_code == 503
+        assert response.get_json()["code"] == "database_required"
+        assert not (tmp_path / "file_backed_artist_track").exists()
+
     def test_parses_artist_and_song_from_title(self, client, db):
         _create(client, title="Foo - Bar")
         meta = db.get_campaign("foo_bar")
