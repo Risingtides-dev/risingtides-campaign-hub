@@ -188,3 +188,13 @@ area:      [backend]
 
 Fixed false-success handling for campaign create, Notion webhook create, and Notion sync when save_campaign reports a duplicate, conflict, or other non-success result. Create/webhook now return 409 for known races and fail closed on unexpected statuses before saving creators; sync skips known conflicts and reports unexpected save failures without marking campaigns created. Added focused outcome regressions. Verification: campaign and webhook backend test files, 66 passed; Python compileall and git diff --check passed. Candidate is based on PR #240 head b1972436813892e2fb47a641d78e4dfc84a93e16; independent review and push pending. Non-ASCII X-Hub-Write-Key TypeError remains a separate P3 finding.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time:      [05:16am] [10-04-26]
+agent:     [codex] [gpt-6]
+worktree:  codex/campaign240-merge-event-20261004
+type:      [gh actions]
+area:      [release]
+
+PR #240 fix commit db3601a5e2ba2d37a347b9c0e8e6c5cc9a537e2c passed the hosted backend check and was squash-merged as 878c2f16bb6e7c446a01e1b20d10b8bb152838a4. The merge-commit backend workflow 37191619980 is pending. Production deployment is unverified: the documented Railway hostname returned 404 Application not found and the Railway CLI is unauthenticated. No live write was attempted. The P3 non-ASCII HUB_WRITE_KEY case remains open.
+_________________________________________________________________________________
