@@ -8,6 +8,7 @@ def test_health_endpoint_returns_ok(client):
     body = resp.get_json()
     assert body["ok"] is True
     assert "db_active" in body
+    assert body["schema_repair"] == "ok"
 
 
 def test_database_fixture_creates_tables(db):

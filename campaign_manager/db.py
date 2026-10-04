@@ -6,6 +6,8 @@ Falls back to file-based storage if DATABASE_URL is not set.
 from __future__ import annotations
 
 import os
+import threading
+import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlsplit, urlunsplit
@@ -31,6 +33,16 @@ from campaign_manager.models import (
 
 _engine = None
 _SessionLocal = None
+_completion_status_repair_ok: Optional[bool] = None
+_completion_status_retry_lock = threading.Lock()
+_completion_status_retry_count = 0
+_completion_status_retry_after = 0.0
+_completion_status_verify_after = 0.0
+_COMPLETION_STATUS_LOCK_WAIT_SECONDS = 5.0
+_COMPLETION_STATUS_LOCK_POLL_SECONDS = 0.1
+_COMPLETION_STATUS_RETRY_BASE_SECONDS = 1.0
+_COMPLETION_STATUS_RETRY_MAX_SECONDS = 60.0
+_COMPLETION_STATUS_VERIFY_INTERVAL_SECONDS = 30.0
 
 
 def _sync_columns():
@@ -50,6 +62,11 @@ def _sync_columns():
             continue  # create_all already made it with the full current schema
         have = {col["name"] for col in insp.get_columns(table.name)}
         for col in table.columns:
+            # This column has a data-preserving, versioned repair below. The
+            # generic sync would add it nullable and prevent that migration's
+            # ADD COLUMN DEFAULT from backfilling existing rows.
+            if table.name == "campaigns" and col.name == "completion_status":
+                continue
             if col.name in have:
                 continue
             ddl = col.type.compile(_engine.dialect)
@@ -121,6 +138,189 @@ def _self_heal_chartmetric_columns():
         pass
 
 
+def _self_heal_completion_status() -> bool:
+    """Restore the active-campaign invariant with a bounded Postgres migration.
+
+    The generic additive column sync deliberately excludes this field: adding
+    it nullable first would make ``ADD COLUMN IF NOT EXISTS ... DEFAULT`` a
+    no-op, leaving old rows NULL and invisible to ``!= 'completed'`` queries.
+    The migration is serialized across app workers, transactional, repeatable
+    even after later schema drift, and records its allowlisted version.
+    """
+    global _completion_status_repair_ok, _completion_status_retry_count
+    global _completion_status_retry_after, _completion_status_verify_after
+    if not _engine or _engine.dialect.name != "postgresql":
+        _completion_status_repair_ok = True
+        _completion_status_retry_count = 0
+        _completion_status_retry_after = 0.0
+        _completion_status_verify_after = 0.0
+        return True
+
+    import logging
+    from sqlalchemy import text
+
+    logger = logging.getLogger(__name__)
+    lock_key = 1685289074  # stable application lock namespace
+    version = "2026_10_04_campaign_completion_status_v1"
+    acquired = False
+    last_error = None
+    try:
+        # PostgreSQL's transaction advisory lock has no timeout setting. Poll
+        # try-lock instead, with a hard five-second budget, so a wedged boot
+        # cannot wait forever behind another worker.
+        attempts = max(1, int(_COMPLETION_STATUS_LOCK_WAIT_SECONDS /
+                              _COMPLETION_STATUS_LOCK_POLL_SECONDS))
+        for _attempt in range(attempts):
+            with _SessionLocal() as s:
+                acquired = bool(s.execute(
+                    text("SELECT pg_try_advisory_xact_lock(:key)"),
+                    {"key": lock_key},
+                ).scalar())
+                if acquired:
+                    try:
+                        s.execute(text("SET LOCAL lock_timeout = '5s'"))
+                        s.execute(text(
+                            "CREATE TABLE IF NOT EXISTS campaign_schema_migrations ("
+                            "version VARCHAR(100) PRIMARY KEY, "
+                            "applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"
+                        ))
+                        s.execute(text(
+                            "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS "
+                            "completion_status VARCHAR(20) DEFAULT 'none'"
+                        ))
+                        s.execute(text(
+                            "UPDATE campaigns SET completion_status = 'none' "
+                            "WHERE completion_status IS NULL"
+                        ))
+                        s.execute(text(
+                            "ALTER TABLE campaigns ALTER COLUMN completion_status "
+                            "SET DEFAULT 'none'"
+                        ))
+                        s.execute(text(
+                            "INSERT INTO campaign_schema_migrations (version) "
+                            "VALUES (:version) ON CONFLICT (version) DO NOTHING"
+                        ), {"version": version})
+                        schema = s.execute(text(
+                            "SELECT column_default, is_nullable "
+                            "FROM information_schema.columns "
+                            "WHERE table_schema = current_schema() "
+                            "AND table_name = 'campaigns' "
+                            "AND column_name = 'completion_status'"
+                        )).mappings().one_or_none()
+                        nulls = s.execute(text(
+                            "SELECT COUNT(*) FROM campaigns "
+                            "WHERE completion_status IS NULL"
+                        )).scalar_one()
+                        if (not schema or "'none'" not in (schema["column_default"] or "")
+                                or schema["is_nullable"] != "YES" or nulls):
+                            raise RuntimeError("completion_status schema verification failed")
+                        s.commit()
+                    except Exception:
+                        s.rollback()
+                        raise
+                    _completion_status_repair_ok = True
+                    _completion_status_retry_count = 0
+                    _completion_status_retry_after = 0.0
+                    _completion_status_verify_after = (
+                        time.monotonic() + _COMPLETION_STATUS_VERIFY_INTERVAL_SECONDS
+                    )
+                    return True
+                s.rollback()
+            time.sleep(_COMPLETION_STATUS_LOCK_POLL_SECONDS)
+        last_error = RuntimeError(
+            "completion_status migration lock unavailable after "
+            f"{_COMPLETION_STATUS_LOCK_WAIT_SECONDS:g} seconds"
+        )
+    except Exception as exc:
+        last_error = exc
+
+    _completion_status_repair_ok = False
+    _completion_status_retry_count += 1
+    retry_delay = min(
+        _COMPLETION_STATUS_RETRY_BASE_SECONDS * (2 ** (_completion_status_retry_count - 1)),
+        _COMPLETION_STATUS_RETRY_MAX_SECONDS,
+    )
+    _completion_status_retry_after = time.monotonic() + retry_delay
+    logger.error(
+        "campaign completion_status schema repair failed: %s",
+        last_error,
+        exc_info=(type(last_error), last_error, last_error.__traceback__),
+    )
+    return False
+
+
+def completion_status_repair_ok() -> bool:
+    """Verify and repair schema with bounded cadence and retry backoff.
+
+    A process-local non-blocking guard prevents simultaneous readiness probes
+    from stampeding PostgreSQL after a transient startup/DDL failure. Successful
+    state is re-verified periodically so later out-of-band drift is repaired.
+    """
+    global _completion_status_repair_ok, _completion_status_retry_after
+    global _completion_status_verify_after
+    now = time.monotonic()
+    if (_completion_status_repair_ok is False and now < _completion_status_retry_after):
+        return False
+    if (_completion_status_repair_ok is not False
+            and now < _completion_status_verify_after):
+        return True
+    if not _completion_status_retry_lock.acquire(blocking=False):
+        # The cached result is stale when its verification deadline has passed.
+        # Fail closed while the owning probe reconciles drift so a sibling
+        # health request cannot start scheduled work on an unverified schema.
+        return (_completion_status_repair_ok is not False
+                and time.monotonic() < _completion_status_verify_after)
+    try:
+        now = time.monotonic()
+        if (_completion_status_repair_ok is False
+                and now < _completion_status_retry_after):
+            return False
+        if (_completion_status_repair_ok is not False
+                and now < _completion_status_verify_after):
+            return True
+        if _completion_status_repair_ok is not False:
+            try:
+                if _verify_completion_status_schema():
+                    _completion_status_verify_after = (
+                        time.monotonic() + _COMPLETION_STATUS_VERIFY_INTERVAL_SECONDS
+                    )
+                    return True
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "campaign completion_status drift verification failed: %s", exc
+                )
+            # Drift or failed verification enters the repair path immediately.
+            _completion_status_repair_ok = False
+            _completion_status_retry_after = 0.0
+        _self_heal_completion_status()
+        return _completion_status_repair_ok is not False
+    finally:
+        _completion_status_retry_lock.release()
+
+
+def _verify_completion_status_schema() -> bool:
+    """Cheap, read-only check used to detect drift between repair runs."""
+    if not _engine or _engine.dialect.name != "postgresql":
+        return True
+    from sqlalchemy import text
+    with _SessionLocal() as s:
+        schema = s.execute(text(
+            "SELECT column_default, is_nullable "
+            "FROM information_schema.columns "
+            "WHERE table_schema = current_schema() "
+            "AND table_name = 'campaigns' "
+            "AND column_name = 'completion_status'"
+        )).mappings().one_or_none()
+        if (not schema or "'none'" not in (schema["column_default"] or "")
+                or schema["is_nullable"] != "YES"):
+            return False
+        return s.execute(text(
+            "SELECT NOT EXISTS (SELECT 1 FROM campaigns "
+            "WHERE completion_status IS NULL)"
+        )).scalar_one()
+
+
 def init(database_url: Optional[str] = None):
     """Initialize the database connection and create tables."""
     global _engine, _SessionLocal
@@ -161,6 +361,10 @@ def init(database_url: Optional[str] = None):
         else:
             raise
 
+    # Repair the one field whose NULL state hides active campaigns. This runs
+    # before generic column reconciliation and is skipped there intentionally.
+    _self_heal_completion_status()
+
     # Reconcile columns. create_all() creates missing *tables* but NEVER adds a
     # new column to a table that already exists — and it can't restore a column
     # that was dropped out-of-band. Any model column the live table lacks makes
@@ -173,18 +377,6 @@ def init(database_url: Optional[str] = None):
     # NOT here. Auto-running schema DROPs on every db.init() broke prod once
     # already — see scripts/migrations/drop_campaigns_status.sql.
     _sync_columns()
-
-    # Add completion_status column if missing (create_all won't add columns to existing tables)
-    try:
-        with _SessionLocal() as s:
-            s.execute(
-                __import__("sqlalchemy").text(
-                    "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS completion_status VARCHAR(20) DEFAULT 'none'"
-                )
-            )
-            s.commit()
-    except Exception:
-        pass
 
     # Add tracker columns if missing
     try:

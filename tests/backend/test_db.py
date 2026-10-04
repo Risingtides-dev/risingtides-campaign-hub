@@ -36,6 +36,7 @@ class TestCampaignCrud:
         monkeypatch.setattr(db_module, "sessionmaker", lambda **k: Session)
         monkeypatch.setattr(db_module.Base.metadata, "create_all", lambda *_: None)
         monkeypatch.setattr(db_module, "_sync_columns", lambda: None)
+        monkeypatch.setattr(db_module, "_self_heal_completion_status", lambda: True)
         healed = []
         monkeypatch.setattr(db_module, "_self_heal_chartmetric_columns", lambda: healed.append(True))
         assert db_module.init("postgresql://example.invalid/campaigns") is True

@@ -37,6 +37,44 @@ def _configure_app_logging():
 
 # Frontend build directory (built by Vite into frontend/dist)
 FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+_SCHEDULER_LOCK_PATH = "/tmp/.scheduler.lock"
+
+
+def _maybe_start_scheduler(app):
+    """Start the single process-owned scheduler once database readiness returns.
+
+    Health checks call this after schema repair, allowing a worker that booted
+    during a transient migration failure to recover without a process restart.
+    The file lock remains the cross-worker ownership boundary.
+    """
+    if (not app.config.get("SCHEDULER_ENABLED") or not db.is_active()
+            or not db.completion_status_repair_ok()
+            or getattr(app, "_scheduler_lock", None) is not None):
+        return False
+
+    import fcntl
+    logger = logging.getLogger("campaign_manager.scheduler_init")
+    lock_file = None
+    try:
+        lock_file = open(_SCHEDULER_LOCK_PATH, "w")
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        from campaign_manager.services.scheduler import init_scheduler
+        init_scheduler(
+            database_url=app.config["DATABASE_URL"],
+            hour=app.config.get("CRON_HOUR", 6),
+            minute=app.config.get("CRON_MINUTE", 0),
+        )
+        # Keep the descriptor open for the process lifetime to retain the lock.
+        app._scheduler_lock = lock_file
+        logger.info("Scheduler initialized successfully")
+        return True
+    except (IOError, OSError) as exc:
+        logger.info("Scheduler lock not acquired (another worker has it): %s", exc)
+    except Exception as exc:
+        logger.error("Scheduler init failed: %s", exc, exc_info=True)
+    if lock_file is not None:
+        lock_file.close()
+    return False
 
 
 def _materialize_tiktok_cookies():
@@ -134,32 +172,17 @@ def create_app(config=None):
                 "Slack bot initialization failed (app will continue without Slack): %s", e
             )
 
-    # Initialize scheduler (only if enabled and DB is active).
-    # Use a file lock so only one gunicorn worker runs the scheduler.
+    # Start the scheduler only after required schema repair succeeds. Health
+    # checks retry this helper after a transient startup repair failure.
     import logging as _logging
     _sched_log = _logging.getLogger("campaign_manager.scheduler_init")
-    _sched_log.info("Scheduler check: SCHEDULER_ENABLED=%s, db_active=%s",
-                    app.config.get("SCHEDULER_ENABLED"), db.is_active())
-    if app.config.get("SCHEDULER_ENABLED") and db.is_active():
-        import fcntl
-        try:
-            _lock_file = open("/tmp/.scheduler.lock", "w")
-            fcntl.flock(_lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            _sched_log.info("Got scheduler lock, initializing...")
-            # Got the lock — this worker runs the scheduler
-            from campaign_manager.services.scheduler import init_scheduler
-            init_scheduler(
-                database_url=app.config["DATABASE_URL"],
-                hour=app.config.get("CRON_HOUR", 6),
-                minute=app.config.get("CRON_MINUTE", 0),
-            )
-            # Keep _lock_file open (holds the lock for process lifetime)
-            app._scheduler_lock = _lock_file
-            _sched_log.info("Scheduler initialized successfully")
-        except (IOError, OSError) as e:
-            _sched_log.info("Scheduler lock not acquired (another worker has it): %s", e)
-        except Exception as e:
-            _sched_log.error("Scheduler init failed: %s", e, exc_info=True)
+    schema_ready = db.completion_status_repair_ok()
+    _sched_log.info(
+        "Scheduler check: SCHEDULER_ENABLED=%s, db_active=%s, schema_repair_ok=%s",
+        app.config.get("SCHEDULER_ENABLED"), db.is_active(), schema_ready,
+    )
+    if app.config.get("SCHEDULER_ENABLED") and db.is_active() and schema_ready:
+        _maybe_start_scheduler(app)
 
     # --- Serve frontend SPA from frontend/dist ---
     if FRONTEND_DIST.is_dir():
