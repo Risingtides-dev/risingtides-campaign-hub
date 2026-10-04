@@ -59,11 +59,42 @@ def migrate_campaign_full():
     if not campaign_meta.get("name"):
         campaign_meta["name"] = campaign_meta.get("title", slug)
 
+    sound_url = _db._canonical_sound_url(campaign_meta.get("official_sound") or "")
+    sound_value = campaign_meta.get("official_sound") or ""
+    if sound_value and not isinstance(sound_value, str):
+        return jsonify({
+            "error": "Campaign official_sound must be a valid HTTP(S) URL.",
+            "code": "invalid_url",
+        }), 400
+    if (isinstance(sound_value, str)
+            and sound_value.lower().startswith(("http://", "https://"))
+            and sound_url is None):
+        return jsonify({
+            "error": "Campaign official_sound must be a valid HTTP(S) URL.",
+            "code": "invalid_url",
+        }), 400
+
     try:
         # Save campaign metadata. With ?overwrite=1 this replaces the stored
         # metadata, except that an import omitting end_date / end_date_auto
         # keeps the stored end date and its auto flag.
-        _db.save_campaign(slug, campaign_meta)
+        expected_sound = None
+        if sound_url is not None:
+            existing = _db.get_campaign(slug) if overwrite else None
+            expected_sound = existing.get("official_sound") or "" if existing else ""
+        result = _db.save_campaign(
+            slug, campaign_meta, expected_official_sound=expected_sound,
+        )
+        if result == "duplicate":
+            return jsonify({
+                "error": "That link already belongs to another campaign.",
+                "code": "duplicate",
+            }), 409
+        if result in ("conflict", "missing_revision"):
+            return jsonify({
+                "error": "Campaign sound link changed during import; reload and retry.",
+                "code": "conflict",
+            }), 409
 
         # Save creators
         if creators:
