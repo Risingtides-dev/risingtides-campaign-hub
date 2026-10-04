@@ -178,3 +178,13 @@ area:      [backend]
 
 Fixed PR #236 review regressions: CampaignHeader now sends the displayed official_sound as expected_official_sound for URL edits, and the API preserves the typed token in the POST body; numeric sound IDs send no revision token. The legacy edit route now returns 409 when save_campaign reports missing_revision, conflict, or duplicate; a deterministic interleaving test proves a competing URL write is preserved and the stale edit is rejected. Backend checks: focused sound regressions 4 passed; full campaign endpoint file 28 passed and the existing hard-coded 2026-09-30 end-date fixture failed against 2026-10-03 default start. Frontend tests were added but not run because node_modules is absent and the host volume is full; no dependency installation or cleanup was attempted. No merge or deployment.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time:      [05:18am] [10-04-26]
+agent:     [codex] [gpt-6]
+worktree:  codex/repair-campaign-save-conflicts
+type:      [bug report]
+area:      [backend]
+
+Fixed false-success handling for campaign create, Notion webhook create, and Notion sync when save_campaign reports a duplicate, conflict, or other non-success result. Create/webhook now return 409 for known races and fail closed on unexpected statuses before saving creators; sync skips known conflicts and reports unexpected save failures without marking campaigns created. Added focused outcome regressions. Verification: campaign and webhook backend test files, 66 passed; Python compileall and git diff --check passed. Candidate is based on PR #240 head b1972436813892e2fb47a641d78e4dfc84a93e16; independent review and push pending. Non-ASCII X-Hub-Write-Key TypeError remains a separate P3 finding.
+_________________________________________________________________________________

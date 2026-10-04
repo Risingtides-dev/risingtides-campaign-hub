@@ -21,7 +21,6 @@ def slugify(text: str) -> str:
     text = re.sub(r"[\s\-_]+", "_", text)
     return text.strip("_")
 
-
 def load_json(path: Path) -> Dict:
     if not path.exists():
         return {}
