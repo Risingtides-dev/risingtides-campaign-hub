@@ -192,7 +192,7 @@ def test_post_success_schema_drift_is_repaired_on_periodic_health_verification(
         )).scalar_one()
 
 
-def test_scheduler_starts_once_after_schema_repair_recovers(monkeypatch, tmp_path):
+def test_scheduler_starts_once_after_schema_repair_recovers_across_apps(monkeypatch, tmp_path):
     import campaign_manager
     from campaign_manager import create_app
     from campaign_manager import db as app_db
@@ -214,11 +214,21 @@ def test_scheduler_starts_once_after_schema_repair_recovers(monkeypatch, tmp_pat
     })
     assert app is not None
     assert starts == []
+    second_app = create_app({
+        "DATABASE_URL": "postgresql://synthetic.invalid/campaigns",
+        "SCHEDULER_ENABLED": True,
+        "TESTING": True,
+        "SECRET_KEY": "test-secret",
+    })
+    assert second_app is not None
+    assert starts == []
 
     ready["value"] = True
-    client = app.test_client()
-    assert client.get("/health").status_code == 200
-    assert client.get("/health").status_code == 200
+    assert app.test_client().get("/health").status_code == 200
+    assert app.test_client().get("/health").status_code == 200
+    # A second app instance has no per-app lock marker, so only the shared
+    # fcntl file lock can prevent a second scheduler initialization.
+    assert second_app.test_client().get("/health").status_code == 200
     assert starts == [{
         "database_url": "postgresql://synthetic.invalid/campaigns",
         "hour": 6,
