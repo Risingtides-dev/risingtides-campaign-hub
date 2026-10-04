@@ -374,6 +374,82 @@ class TestEditCampaign:
         )
         assert resp.status_code == 200
 
+    def test_editor_unchanged_url_preserves_sound_authority(self, client, db, monkeypatch):
+        requests = []
+        monkeypatch.setattr(
+            "campaign_manager.services.chartmetric_autolink.request_immediate_resolve",
+            lambda slug: requests.append(slug),
+        )
+        old_url = "https://www.tiktok.com/music/current-1234567890123456789"
+        assert _create(client, official_sound=old_url).status_code == 201
+        slug = "sam_barber_fever_dream"
+        requests.clear()
+
+        response = client.post(f"/api/campaign/{slug}/edit", json={
+            "budget": 1500,
+        })
+
+        assert response.status_code == 200
+        saved = db.get_campaign(slug)
+        assert saved["official_sound"] == old_url
+        assert saved["sound_id"] == "1234567890123456789"
+        assert saved["budget"] == 1500
+        assert requests == []
+
+    def test_editor_unchanged_unresolved_url_does_not_invent_sound_id(self, client, db, monkeypatch):
+        requests = []
+        monkeypatch.setattr(
+            "campaign_manager.services.chartmetric_autolink.request_immediate_resolve",
+            lambda slug: requests.append(slug),
+        )
+        old_url = "https://example.com/unresolved-sound"
+        assert _create(client, official_sound=old_url).status_code == 201
+        slug = "sam_barber_fever_dream"
+        with db.get_session() as session:
+            row = session.query(db.Campaign).filter_by(slug=slug).one()
+            row.sound_id = None
+            session.commit()
+        assert db.get_campaign(slug)["sound_id"] == ""
+        requests.clear()
+
+        response = client.post(f"/api/campaign/{slug}/edit", json={"budget": 1500})
+
+        assert response.status_code == 200
+        saved = db.get_campaign(slug)
+        assert saved["official_sound"] == old_url
+        assert saved["sound_id"] == ""
+        assert saved["budget"] == 1500
+        assert requests == []
+
+    def test_editor_url_change_keeps_cas_and_immediate_resolution(self, client, db, monkeypatch):
+        requests = []
+        monkeypatch.setattr(
+            "campaign_manager.services.chartmetric_autolink.request_immediate_resolve",
+            lambda slug: requests.append(slug),
+        )
+        old_url = "https://www.tiktok.com/music/current-1234567890123456789"
+        new_url = "https://www.tiktok.com/music/new-9876543210987654321"
+        assert _create(client, official_sound=old_url).status_code == 201
+        slug = "sam_barber_fever_dream"
+        requests.clear()
+
+        stale = client.post(f"/api/campaign/{slug}/edit", json={
+            "sound_id": new_url, "expected_official_sound": "https://stale.example/sound",
+        })
+        assert stale.status_code == 409
+        assert stale.get_json()["code"] == "conflict"
+        assert db.get_campaign(slug)["official_sound"] == old_url
+        assert requests == []
+
+        changed = client.post(f"/api/campaign/{slug}/edit", json={
+            "sound_id": new_url, "expected_official_sound": old_url,
+        })
+        assert changed.status_code == 200
+        saved = db.get_campaign(slug)
+        assert saved["official_sound"] == new_url
+        assert saved["sound_id"] == "9876543210987654321"
+        assert requests == [slug]
+
     def test_legacy_sound_url_edit_rejects_canonical_duplicate_and_stale_revision(self, client, db):
         canonical = "https://www.tiktok.com/music/example-123"
         _create(client, title="First Artist - First Song", official_sound=canonical)

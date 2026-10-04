@@ -51,6 +51,10 @@ export function CampaignHeader({
   const [budget, setBudget] = useState(campaign.budget?.total?.toString() || "0")
   const [cobrandLink, setCobrandLink] = useState(campaign.cobrand_link || "")
   const [editEndDateOriginal, setEditEndDateOriginal] = useState(campaign.end_date || "")
+  const [editSoundOriginal, setEditSoundOriginal] = useState({
+    value: campaign.official_sound || campaign.sound_id || "",
+    revision: campaign.official_sound || "",
+  })
 
   const soundCount =
     (campaign.sound_id || campaign.official_sound ? 1 : 0) +
@@ -82,7 +86,6 @@ export function CampaignHeader({
     e.preventDefault()
     const payload: Record<string, unknown> = {
       title,
-      sound_id: soundId,
       tt_artist_label: ttArtistLabel,
       tt_track_name: ttTrackName,
       additional_sounds: additionalSounds.filter((s) => s.trim()),
@@ -90,8 +93,11 @@ export function CampaignHeader({
       budget: parseFloat(budget),
       cobrand_link: cobrandLink,
     }
-    if (/^https?:\/\//i.test(soundId.trim())) {
-      payload.expected_official_sound = campaign.official_sound || ""
+    if (soundId !== editSoundOriginal.value || !/^https?:\/\//i.test(editSoundOriginal.value.trim())) {
+      payload.sound_id = soundId
+      if (/^https?:\/\//i.test(soundId.trim())) {
+        payload.expected_official_sound = editSoundOriginal.revision
+      }
     }
     if (endDate !== editEndDateOriginal) payload.end_date = endDate
     try {
@@ -103,7 +109,11 @@ export function CampaignHeader({
   function openEdit() {
     onResetEdit?.()
     setTitle(campaign.title || "")
-    setSoundId(campaign.sound_id || campaign.official_sound || "")
+    setSoundId(campaign.official_sound || campaign.sound_id || "")
+    setEditSoundOriginal({
+      value: campaign.official_sound || campaign.sound_id || "",
+      revision: campaign.official_sound || "",
+    })
     setTtArtistLabel(campaign.tt_artist_label || "")
     setTtTrackName(campaign.tt_track_name || "")
     setAdditionalSounds(campaign.additional_sounds || [])

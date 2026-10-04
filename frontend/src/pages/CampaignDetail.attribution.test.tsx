@@ -15,7 +15,7 @@ vi.mock('@/lib/queries', () => {
     useCobrandStats: () => ({ data: null, isLoading: false, isError: false }),
     useEditCampaign: () => mocks.editMutation,
     useRefreshStats: mutation, useAddCreator: mutation, useEditCreator: mutation, useTogglePaid: mutation,
-    useRemoveCreator: mutation, useCreateTracker: mutation, useSetCobrandLinks: mutation,
+    useRemoveCreator: mutation, useCreateTracker: mutation, useSetCobrandLinks: mutation, useSetCampaignSoundLink: mutation,
   }
 })
 vi.mock('@/components/campaigns/CampaignHeader', () => ({ CampaignHeader: (props: typeof mocks.headerProps) => { mocks.headerProps = props; return null } }))
