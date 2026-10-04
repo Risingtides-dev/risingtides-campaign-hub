@@ -3,6 +3,9 @@
 These endpoints accept bulk data payloads and write them directly to the database.
 Intended for one-time data migration, not ongoing use. Remove after migration is complete.
 """
+import hmac
+import os
+
 from flask import Blueprint, jsonify, request
 
 from campaign_manager import db as _db
@@ -23,6 +26,19 @@ def migrate_campaign_full():
         "scrape_log": { ...scrape_log.json contents... }
     }
     """
+    write_key = (os.environ.get("HUB_WRITE_KEY") or "").strip()
+    if not write_key:
+        return jsonify({
+            "error": "Campaign migration is disabled until HUB_WRITE_KEY is configured.",
+            "code": "migration_auth_unconfigured",
+        }), 503
+    supplied_key = request.headers.get("X-Hub-Write-Key", "")
+    if not hmac.compare_digest(supplied_key, write_key):
+        return jsonify({
+            "error": "X-Hub-Write-Key does not match.",
+            "code": "unauthorized",
+        }), 401
+
     data = request.get_json()
     if not data:
         return jsonify({"error": "JSON body required"}), 400
@@ -31,12 +47,9 @@ def migrate_campaign_full():
     if not slug:
         return jsonify({"error": "slug is required"}), 400
 
-    # CAMP-96 hardening: this is a one-time import endpoint (docstring: "Remove
-    # after migration is complete") that does an unauthenticated save_campaign
-    # UPSERT — i.e. it silently OVERWRITES any existing campaign's full metadata
-    # (budget, creators, matched_videos) by slug. Guard it: refuse to clobber an
-    # existing campaign unless ?overwrite=1 is explicit (mirrors create_campaign,
-    # which 409s on an existing slug). Re-imports pass the flag deliberately.
+    # This is a one-time import endpoint (docstring: "Remove after migration is
+    # complete") that can replace a campaign's full metadata. Require an
+    # explicit overwrite flag in addition to the migration key for existing rows.
     overwrite = request.args.get("overwrite") in ("1", "true", "yes")
     if not overwrite and _db.is_active() and _db.campaign_exists(slug):
         return jsonify({

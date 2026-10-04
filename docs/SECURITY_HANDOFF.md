@@ -22,7 +22,7 @@ These were the *standalone-dangerous* endpoints — each patched narrowly withou
 |---|---|---|
 | **notion_sync delete-floor** (CAMP-94) | A truncated Notion fetch could mass-delete the attribution mirror + group memberships. Now aborts on truncation + refuses to delete >50% of rows. | #186 |
 | **/api/cron/diag gate** | Fired a live scrape + proxy fetch on every unauthenticated GET (cost DoS) and leaked proxy stderr. Now the live tests + stderr need `?run=1`; cheap diagnostics stay always-on. | #187 |
-| **/api/migrate/campaign-full overwrite guard** | Unauthenticated `save_campaign` UPSERT — anyone could silently overwrite any campaign's budget/creators by slug. Now 409s unless `?overwrite=1`. | #188 |
+| **/api/migrate/campaign-full** | Privileged campaign import requires `HUB_WRITE_KEY` in `X-Hub-Write-Key`; missing configuration fails closed with 503, bad/missing credentials return 401, and `?overwrite=1` does not bypass auth. Authorized writes retain duplicate-sound checks. | PR #240 |
 
 ## STAGED but NOT enabled — the umbrella fix (needs John)
 
