@@ -1,7 +1,7 @@
 """Health check endpoint."""
 import os
 
-from flask import Blueprint, jsonify
+from flask import Blueprint, current_app, jsonify
 from sqlalchemy.engine import make_url
 from campaign_manager import db as _db
 
@@ -24,9 +24,17 @@ def _safe_db_target(db_url: str) -> str:
 @health_bp.get("/health")
 def health():
     db_url = os.environ.get("DATABASE_URL", "")
-    return jsonify({
-        "ok": True,
+    schema_ok = _db.completion_status_repair_ok()
+    if schema_ok:
+        # A worker may have skipped scheduler startup while a transient schema
+        # repair failed at boot. Reconcile after every recovered health probe.
+        from campaign_manager import _maybe_start_scheduler
+        _maybe_start_scheduler(current_app._get_current_object())
+    response = jsonify({
+        "ok": schema_ok,
         "db_active": _db.is_active(),
         "db_url_set": bool(db_url),
         "db_target": _safe_db_target(db_url),
+        "schema_repair": "ok" if schema_ok else "failed",
     })
+    return response, (200 if schema_ok else 503)

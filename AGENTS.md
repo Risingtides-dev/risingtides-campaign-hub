@@ -13,6 +13,7 @@ Campaign CRM integration, campaign delivery reporting, and creator operations.
 ## Local Contracts
 
 - Public `/health` reports `db_target` using the same SQLAlchemy URL grammar as database initialization, exposing only the scheme and host. Credentials, port, path and query stay private; absent URLs return an empty target; unparseable URLs or URLs containing multiple raw `@` separators return `set` because the parsed host may contain a password fragment. This conservative diagnostic fallback also applies when the extra `@` is in a query; it never changes the database connection.
+- `/health` reports `schema_repair: "ok"` after the required PostgreSQL `campaigns.completion_status` repair succeeds. A failed repair returns `ok: false` with HTTP 503; it does not expose raw database errors, and the campaign scheduler must not start until repair succeeds. Health probes retry repair with bounded exponential backoff and a per-process nonblocking guard, so transient boot-lock contention can recover without a process restart or probe stampede. During expired schema verification, concurrent probes fail closed until reconciliation finishes. When readiness recovers, the health path reconciles scheduler startup under the existing process-wide file lock. Successful state is checked read-only every 30 seconds; detected column/default/NULL drift triggers the migration again. The narrow versioned migration backfills NULL values to `none` and restores the database default so active-campaign exclusions retain existing rows.
 
 - CRM `Content Niche Targets` supplies the declared campaign niches consumed by ShipStream's D1 playlist flow.
 - Campaign reads request a background refresh at most every 15 minutes, independent of the scraping scheduler. The refresh reads exact stored Notion page links for existing active campaigns, updates only `content_types` and `internal_captions`, and neither creates campaigns nor sends notifications.
@@ -28,5 +29,6 @@ Campaign CRM integration, campaign delivery reporting, and creator operations.
 
 - Backend checks run with `pytest tests/backend`; `.github/workflows/backend-tests.yml` runs the same suite on pull requests and pushes to `main`.
 - Run `pytest -q tests/backend/test_health_db_target.py tests/backend/test_smoke.py` for synthetic credential redaction and existing app health contracts; only test-owned SQLite fixtures are used.
+- Run `TEST_POSTGRES_DATABASE_URL=... pytest -q tests/backend/test_completion_status_schema.py` against a disposable PostgreSQL database to verify the populated-table repair and readiness failure path. The fixture creates and drops an isolated schema.
 
 ## Child devlog Index

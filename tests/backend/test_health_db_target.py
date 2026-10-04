@@ -41,6 +41,7 @@ def test_db_target_redacts_credentials(database_url, expected):
 def test_public_health_redacts_runtime_accepted_password(monkeypatch, password, expected_target):
     monkeypatch.setenv("DATABASE_URL", f"postgresql://synthetic-user:{password}@db.example.test/hub")
     monkeypatch.setattr(health_module._db, "is_active", lambda: True)
+    monkeypatch.setattr(health_module._db, "completion_status_repair_ok", lambda: True)
     app = Flask(__name__)
     app.register_blueprint(health_module.health_bp)
     response = app.test_client().get("/health")
@@ -50,4 +51,5 @@ def test_public_health_redacts_runtime_accepted_password(monkeypatch, password, 
         "db_active": True,
         "db_url_set": True,
         "db_target": expected_target,
+        "schema_repair": "ok",
     }
