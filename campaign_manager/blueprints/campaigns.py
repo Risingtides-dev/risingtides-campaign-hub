@@ -626,8 +626,13 @@ def create_campaign():
         result = _db.save_campaign(
             slug, meta, expected_official_sound="" if sound_url is not None else None,
         )
-        if result == "duplicate":
-            return jsonify({"error": "That link already belongs to another campaign.", "code": "duplicate"}), 409
+        if result not in (None, "updated"):
+            if result == "duplicate":
+                return jsonify({"error": "That link already belongs to another campaign.", "code": "duplicate"}), 409
+            if result in ("conflict", "missing_revision"):
+                return jsonify({"error": "Campaign changed while it was being created; reload and retry.", "code": "conflict"}), 409
+            logger.error("Campaign create save returned unexpected result %r for %s", result, slug)
+            return jsonify({"error": "Campaign could not be saved.", "code": "save_failed"}), 500
         _db.save_creators(slug, [])
     else:
         if sound_url is not None:

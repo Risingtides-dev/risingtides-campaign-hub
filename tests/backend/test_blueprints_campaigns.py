@@ -44,6 +44,44 @@ class TestListCampaigns:
         items = client.get("/api/campaigns?search=zzzzz").get_json()
         assert items == []
 
+
+class TestCampaignCreateSaveOutcomes:
+    def test_does_not_report_conflicted_save_as_created(self, client, monkeypatch):
+        from campaign_manager import db
+
+        creator_writes = []
+        resolve_requests = []
+        monkeypatch.setattr(db, "save_campaign", lambda *args, **kwargs: "conflict")
+        monkeypatch.setattr(db, "save_creators", lambda *args, **kwargs: creator_writes.append(args))
+        monkeypatch.setattr(
+            "campaign_manager.services.chartmetric_autolink.request_immediate_resolve",
+            lambda slug: resolve_requests.append(slug),
+        )
+
+        response = _create(
+            client,
+            title="Concurrent Artist - Track",
+            official_sound="https://www.tiktok.com/music/track-1234567890123456789",
+        )
+
+        assert response.status_code == 409
+        assert response.get_json()["code"] == "conflict"
+        assert creator_writes == []
+        assert resolve_requests == []
+
+    def test_unexpected_save_result_fails_closed(self, client, monkeypatch):
+        from campaign_manager import db
+
+        creator_writes = []
+        monkeypatch.setattr(db, "save_campaign", lambda *args, **kwargs: "unexpected")
+        monkeypatch.setattr(db, "save_creators", lambda *args, **kwargs: creator_writes.append(args))
+
+        response = _create(client, title="Unexpected Save Result")
+
+        assert response.status_code == 500
+        assert response.get_json()["code"] == "save_failed"
+        assert creator_writes == []
+
     def test_summary_exposes_active_boolean_not_dead_status(self, client):
         _create(client)
         item = client.get("/api/campaigns").get_json()[0]

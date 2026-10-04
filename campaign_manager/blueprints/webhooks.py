@@ -104,9 +104,15 @@ def notion_webhook():
     result = _db.save_campaign(
         slug, meta, expected_official_sound="" if sound_url is not None else None,
     )
-    if result == "duplicate":
-        return jsonify({"error": "That link already belongs to another campaign", "slug": slug,
-                        "code": "duplicate"}), 409
+    if result not in (None, "updated"):
+        if result == "duplicate":
+            return jsonify({"error": "That link already belongs to another campaign", "slug": slug,
+                            "code": "duplicate"}), 409
+        if result in ("conflict", "missing_revision"):
+            return jsonify({"error": "Campaign changed while it was being created; retry the sync", "slug": slug,
+                            "code": "conflict"}), 409
+        return jsonify({"error": "Campaign could not be saved", "slug": slug,
+                        "code": "save_failed"}), 500
     _db.save_creators(slug, [])
 
     return jsonify({
@@ -138,6 +144,7 @@ def notion_sync():
 
     created = []
     skipped = []
+    errors = []
     refreshed = []
 
     for entry in new_entries:
@@ -197,8 +204,13 @@ def notion_sync():
         result = _db.save_campaign(
             slug, meta, expected_official_sound="" if sound_url is not None else None,
         )
-        if result == "duplicate":
-            skipped.append({"slug": slug, "reason": "duplicate sound URL"})
+        if result not in (None, "updated"):
+            if result == "duplicate":
+                skipped.append({"slug": slug, "reason": "duplicate sound URL"})
+            elif result in ("conflict", "missing_revision"):
+                skipped.append({"slug": slug, "reason": "campaign changed during creation"})
+            else:
+                errors.append({"slug": slug, "reason": "campaign save failed"})
             continue
         _db.save_creators(slug, [])
         created.append({"slug": slug, "title": entry["title"]})
@@ -227,9 +239,10 @@ def notion_sync():
             refreshed.append({"slug": link["slug"], **changes})
 
     return jsonify({
-        "ok": True,
+        "ok": not errors,
         "created": created,
         "skipped": skipped,
+        "errors": errors,
         "refreshed": refreshed,
         "message": f"Synced {len(created)} new campaign(s) from Notion"
             + (f", {len(refreshed)} refreshed" if refreshed else "")

@@ -65,6 +65,23 @@ class TestNotionWebhook:
         assert duplicate.status_code == 409
         assert duplicate.get_json()["code"] == "duplicate"
 
+    def test_save_conflict_does_not_save_creators_or_report_success(self, client, monkeypatch):
+        from campaign_manager import db
+
+        creator_writes = []
+        monkeypatch.setattr(db, "campaign_exists", lambda slug: False)
+        monkeypatch.setattr(db, "save_campaign", lambda *args, **kwargs: "conflict")
+        monkeypatch.setattr(db, "save_creators", lambda *args, **kwargs: creator_writes.append(args))
+
+        response = client.post("/api/webhooks/notion", json={
+            "artist": "Concurrent", "song": "Track",
+            "tiktok_sound_link": "https://www.tiktok.com/music/track-1234567890123456789",
+        })
+
+        assert response.status_code == 409
+        assert response.get_json()["code"] == "conflict"
+        assert creator_writes == []
+
 
 class TestNotionSync:
     def test_duplicate_sound_url_is_skipped_without_creating_campaign(self, client, db):
@@ -83,6 +100,51 @@ class TestNotionSync:
         assert {item["slug"] for item in body["skipped"]} == {"new_track"}
         assert body["skipped"][0]["reason"] == "duplicate sound URL"
         assert db.get_campaign("new_track") is None
+
+    def test_conflicted_save_is_skipped_without_creators_or_created_report(self, client, monkeypatch):
+        from campaign_manager import db
+
+        entries = [{
+            "notion_page_id": "page-race", "title": "Race - Track", "slug": "race_track",
+            "artist": "Race", "song": "Track", "official_sound": "", "sound_id": "",
+            "start_date": "", "budget": 0,
+        }]
+        creator_writes = []
+        monkeypatch.setattr(db, "save_campaign", lambda *args, **kwargs: "conflict")
+        monkeypatch.setattr(db, "save_creators", lambda *args, **kwargs: creator_writes.append(args))
+        with patch("campaign_manager.services.notion.query_new_clients", return_value=entries), patch(
+            "campaign_manager.services.notion.fetch_page_campaign_fields", return_value=None,
+        ):
+            response = client.post("/api/webhooks/notion/sync")
+
+        body = response.get_json()
+        assert response.status_code == 200
+        assert body["created"] == []
+        assert body["skipped"] == [{"slug": "race_track", "reason": "campaign changed during creation"}]
+        assert creator_writes == []
+
+    def test_unexpected_save_result_is_reported_as_error_not_created(self, client, monkeypatch):
+        from campaign_manager import db
+
+        entries = [{
+            "notion_page_id": "page-error", "title": "Error - Track", "slug": "error_track",
+            "artist": "Error", "song": "Track", "official_sound": "", "sound_id": "",
+            "start_date": "", "budget": 0,
+        }]
+        creator_writes = []
+        monkeypatch.setattr(db, "save_campaign", lambda *args, **kwargs: "unexpected")
+        monkeypatch.setattr(db, "save_creators", lambda *args, **kwargs: creator_writes.append(args))
+        with patch("campaign_manager.services.notion.query_new_clients", return_value=entries), patch(
+            "campaign_manager.services.notion.fetch_page_campaign_fields", return_value=None,
+        ):
+            response = client.post("/api/webhooks/notion/sync")
+
+        body = response.get_json()
+        assert response.status_code == 200
+        assert body["ok"] is False
+        assert body["created"] == []
+        assert body["errors"] == [{"slug": "error_track", "reason": "campaign save failed"}]
+        assert creator_writes == []
 
     def test_returns_empty_when_no_new_entries(self, client):
         with patch(
