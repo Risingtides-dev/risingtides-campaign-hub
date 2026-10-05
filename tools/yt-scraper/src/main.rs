@@ -438,7 +438,11 @@ fn scrape_account(account: &str, config: &RunConfig) -> AccountResult {
             let output = child.wait_with_output();
             let stderr = output
                 .ok()
-                .map(|o| String::from_utf8_lossy(&o.stderr).trim().to_string())
+                .map(|o| {
+                    redact_proxy_values(&String::from_utf8_lossy(&o.stderr), &args)
+                        .trim()
+                        .to_string()
+                })
                 .unwrap_or_default();
             return AccountResult {
                 account: account.to_string(),
@@ -482,7 +486,9 @@ fn scrape_account(account: &str, config: &RunConfig) -> AccountResult {
         }
     };
 
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stderr = redact_proxy_values(&String::from_utf8_lossy(&output.stderr), &args)
+        .trim()
+        .to_string();
     if !output.status.success() {
         return AccountResult {
             account: account.to_string(),
@@ -900,6 +906,28 @@ fn format_number(n: u64) -> String {
     out.chars().rev().collect()
 }
 
+fn redact_proxy_values(message: &str, args: &[String]) -> String {
+    let mut proxies = args
+        .iter()
+        .enumerate()
+        .filter_map(|(index, arg)| {
+            if arg == "--proxy" {
+                args.get(index + 1).map(String::as_str)
+            } else {
+                arg.strip_prefix("--proxy=")
+            }
+        })
+        .filter(|proxy| !proxy.is_empty())
+        .collect::<Vec<_>>();
+    // Longer values first so a shorter proxy cannot expose a longer one's query.
+    proxies.sort_unstable_by_key(|proxy| std::cmp::Reverse(proxy.len()));
+    proxies
+        .into_iter()
+        .fold(message.to_string(), |message, proxy| {
+            message.replace(proxy, "[redacted]")
+        })
+}
+
 fn first_line(input: &str) -> String {
     input
         .lines()
@@ -1050,5 +1078,141 @@ mod tests {
             shell_join(&args),
             "--dump-json --user-agent 'two words' --socket-timeout 30 https://www.tiktok.com/@synthetic-account"
         );
+    }
+    fn fake_scrape(
+        script: &str,
+        proxy: Option<&str>,
+        extra_args: &[&str],
+        timeout: u64,
+    ) -> AccountResult {
+        let dir = env::temp_dir().join(format!(
+            "rt-yt-scraper-error-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&dir).unwrap();
+        let script_path = dir.join("fake-yt-dlp.py");
+        let argv_path = dir.join("actual-argv.json");
+        let header = "import json, pathlib, sys, time\npathlib.Path(sys.argv[1]).write_text(json.dumps(sys.argv[1:]), encoding='utf-8')\n";
+        fs::write(&script_path, format!("{header}{script}")).unwrap();
+        if let Some(proxy) = proxy {
+            env::set_var("TIKTOK_PROXY", proxy);
+        } else {
+            env::remove_var("TIKTOK_PROXY");
+        }
+        let mut prefix_args = vec![
+            "-B".to_string(),
+            script_path.to_string_lossy().to_string(),
+            argv_path.to_string_lossy().to_string(),
+        ];
+        prefix_args.extend(extra_args.iter().map(|arg| arg.to_string()));
+        let config = RunConfig {
+            yt_dlp: YtDlp {
+                program: "/usr/bin/python3".to_string(),
+                prefix_args,
+            },
+            start: Local::now() - Duration::hours(1),
+            end: Local::now() + Duration::hours(1),
+            limit: 50,
+            timeout_seconds: timeout,
+            sound_ids: BTreeSet::new(),
+        };
+        let expected_args = build_yt_dlp_args(&config, "synthetic-account");
+        let result = scrape_account("synthetic-account", &config);
+        env::remove_var("TIKTOK_PROXY");
+        let actual_args: Vec<String> =
+            serde_json::from_str(&fs::read_to_string(&argv_path).unwrap()).unwrap();
+        fs::remove_dir_all(dir).unwrap();
+        assert_eq!(
+            actual_args,
+            expected_args[2..],
+            "actual child argv must remain exact"
+        );
+        result
+    }
+
+    const SYNTHETIC_ERROR_PROXY: &str = "http://synthetic-error-user:synthetic-error-pass@proxy.invalid:10001/path?token=synthetic-error-query#synthetic-error-fragment";
+
+    fn assert_error_redacted(result: &AccountResult, expected: &str) {
+        assert_eq!(result.error, expected);
+        let json = serde_json::to_string(result).unwrap();
+        for private in [
+            "synthetic-error-user",
+            "synthetic-error-pass",
+            "proxy.invalid",
+            "synthetic-error-query",
+            "synthetic-error-fragment",
+        ] {
+            assert!(!json.contains(private), "{json}");
+        }
+    }
+
+    #[test]
+    fn failed_process_redacts_proxy_before_display_and_serialization() {
+        let result = fake_scrape("proxy = sys.argv[sys.argv.index('--proxy') + 1]\nsys.stderr.write('failure via ' + proxy + '; retry later\\nsecondary detail\\n')\nsys.exit(7)\n", Some(SYNTHETIC_ERROR_PROXY), &[], 5);
+        assert_eq!(result.status, "error");
+        assert_eq!((result.fetched, result.kept), (0, 0));
+        assert_error_redacted(&result, "failure via [redacted]; retry later");
+    }
+
+    #[test]
+    fn timeout_redacts_proxy_and_retains_multiline_context() {
+        let result = fake_scrape("proxy = sys.argv[sys.argv.index('--proxy') + 1]\nsys.stderr.write('timeout via ' + proxy + '\\nretry context\\n')\nsys.stderr.flush()\ntime.sleep(5)\n", Some(SYNTHETIC_ERROR_PROXY), &[], 1);
+        assert_eq!(result.status, "timeout");
+        assert_eq!((result.fetched, result.kept), (0, 0));
+        assert_error_redacted(&result, "timeout via [redacted]\nretry context");
+    }
+
+    #[test]
+    fn empty_success_redacts_proxy_warning_without_changing_status() {
+        let result = fake_scrape("proxy = sys.argv[sys.argv.index('--proxy') + 1]\nsys.stderr.write('warning via ' + proxy + '\\nsecond detail\\n')\n", Some(SYNTHETIC_ERROR_PROXY), &[], 5);
+        assert_eq!(result.status, "empty");
+        assert_eq!((result.fetched, result.kept), (0, 0));
+        assert_error_redacted(&result, "warning via [redacted]");
+    }
+
+    #[test]
+    fn failed_process_redacts_complete_proxy_before_first_line_limit() {
+        let proxy = format!("{SYNTHETIC_ERROR_PROXY}{}", "x".repeat(400));
+        let result = fake_scrape("proxy = sys.argv[sys.argv.index('--proxy') + 1]\nsys.stderr.write('failure via ' + proxy + '; retry later\\n')\nsys.exit(7)\n", Some(&proxy), &[], 5);
+        assert_eq!(result.status, "error");
+        assert_error_redacted(&result, "failure via [redacted]; retry later");
+    }
+
+    #[test]
+    fn repeated_inline_proxy_values_redact_longest_first_and_skip_empty() {
+        let result = fake_scrape("sys.stderr.write('using http://synthetic-error-user:synthetic-error-pass@proxy.invalid/path?token=synthetic-error-query and http://synthetic-error-user:synthetic-error-pass@proxy.invalid/path; retry later\\n')\nsys.exit(7)\n", None, &["--proxy=http://synthetic-error-user:synthetic-error-pass@proxy.invalid/path", "--proxy", "http://synthetic-error-user:synthetic-error-pass@proxy.invalid/path?token=synthetic-error-query", "--proxy="], 5);
+        assert_eq!(result.status, "error");
+        assert_error_redacted(&result, "using [redacted] and [redacted]; retry later");
+    }
+
+    #[test]
+    fn no_proxy_failure_preserves_useful_error_and_empty_proxy_does_not_replace() {
+        let result = fake_scrape("sys.stderr.write('connection refused; retry later\\nsecondary detail\\n')\nsys.exit(7)\n", None, &["--proxy=", "--proxy", ""], 5);
+        assert_eq!(result.status, "error");
+        assert_eq!(result.error, "connection refused; retry later");
+    }
+
+    #[test]
+    fn no_proxy_timeout_preserves_existing_timeout_fallback() {
+        let result = fake_scrape("time.sleep(5)\n", None, &[], 1);
+        assert_eq!(result.status, "timeout");
+        assert_eq!(result.error, "timed out after 1s");
+    }
+
+    #[test]
+    fn successful_rows_preserve_data_and_ignore_proxy_warning() {
+        let result = fake_scrape("proxy = sys.argv[sys.argv.index('--proxy') + 1]\nsys.stderr.write('warning via ' + proxy + '\\n')\nprint(json.dumps({'webpage_url': 'https://www.tiktok.com/@synthetic-account/video/12345', 'title': 'Synthetic song', 'artist': 'Synthetic artist', 'timestamp': int(time.time()), 'view_count': 12}))\n", Some(SYNTHETIC_ERROR_PROXY), &[], 5);
+        assert_eq!(result.status, "ok");
+        assert_eq!((result.fetched, result.kept), (1, 1));
+        assert!(result.error.is_empty());
+        assert_eq!(
+            result.videos[0].url,
+            "https://www.tiktok.com/@synthetic-account/video/12345"
+        );
+        assert_eq!(result.videos[0].views, 12);
     }
 }
