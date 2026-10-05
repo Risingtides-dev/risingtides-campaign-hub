@@ -27,10 +27,17 @@ def _lab_url(path: str, query: dict | None = None) -> str:
 def _proxy(method: str, path: str, *, json_body=None, query=None, timeout=30):
     """Forward an HTTP call to the lab. Always returns a (Flask response, status) tuple."""
     url = _lab_url(path, query=query)
+    api_key = current_app.config.get("CONTENT_LAB_HUB_API_KEY")
+    options = {"json": json_body, "timeout": timeout}
+    if api_key:
+        options["headers"] = {"X-API-Key": api_key}
+        options["allow_redirects"] = False
     try:
-        resp = requests.request(method, url, json=json_body, timeout=timeout)
+        resp = requests.request(method, url, **options)
     except requests.RequestException as exc:
-        return jsonify({"error": "lab_unreachable", "detail": str(exc)}), 502
+        # Invalid-header errors may contain the configured credential.
+        detail = "Content Lab request failed" if api_key else str(exc)
+        return jsonify({"error": "lab_unreachable", "detail": detail}), 502
 
     content_type = resp.headers.get("Content-Type", "")
     if "application/json" in content_type:
