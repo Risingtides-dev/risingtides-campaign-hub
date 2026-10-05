@@ -2,8 +2,17 @@
 import os
 
 
+def _secret_key() -> str:
+    key = os.environ.get("SECRET_KEY")
+    if key is not None and key.strip():
+        return key
+    if os.environ.get("RAILWAY_ENVIRONMENT") is not None:
+        raise RuntimeError("SECRET_KEY must be set in production (Railway)")
+    return os.urandom(24).hex()
+
+
 class Config:
-    SECRET_KEY = os.environ.get("SECRET_KEY") or os.urandom(24).hex()
+    SECRET_KEY = _secret_key()
     DATABASE_URL = os.environ.get("DATABASE_URL", "")
     CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "http://localhost:5173").split(",")
     NOTION_API_KEY = os.environ.get("NOTION_API_KEY", "")
