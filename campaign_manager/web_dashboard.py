@@ -41,6 +41,9 @@ os.environ["CACHE_DIR"] = str(CACHE_DIR)
 # ── Database setup ────────────────────────────────────────────────────
 # If DATABASE_URL is set, use Postgres; otherwise fall back to file I/O.
 from campaign_manager import db as _db
+from campaign_manager.utils.budget import (
+    calc_cpm, creator_rates_complete, rate_is_known, to_number,
+)
 
 USE_DB = _db.init()  # returns True if DATABASE_URL was found and connected
 
@@ -121,7 +124,7 @@ def save_json(path: Path, data: Dict) -> None:
         json.dump(data, f, indent=2, default=str)
 
 
-def load_creators(campaign_dir: Path) -> List[Dict]:
+def load_creators(campaign_dir: Path, *, include_rate_quality: bool = False) -> List[Dict]:
     csv_path = campaign_dir / "creators.csv"
     if not csv_path.exists():
         return []
@@ -132,7 +135,10 @@ def load_creators(campaign_dir: Path) -> List[Dict]:
             row["posts_owed"] = int(row.get("posts_owed") or 0)
             row["posts_done"] = int(row.get("posts_done") or 0)
             row["posts_matched"] = int(row.get("posts_matched") or 0)
-            row["total_rate"] = float(row.get("total_rate") or 0)
+            raw_rate = row.get("total_rate")
+            if include_rate_quality:
+                row["_total_rate_known"] = rate_is_known(raw_rate)
+            row["total_rate"] = to_number(raw_rate)
             row["per_post_rate"] = float(row.get("per_post_rate") or 0)
             rows.append(row)
     return rows
@@ -148,10 +154,10 @@ def save_creators(campaign_dir: Path, creators: List[Dict]) -> None:
 
 
 def calc_budget(meta: Dict, creators: List[Dict]) -> Dict:
-    total = float(meta.get("budget", 0))
+    total = to_number(meta.get("budget", 0))
     active = [c for c in creators if c.get("status", "active") != "removed"]
-    booked = sum(float(c.get("total_rate", 0)) for c in active)
-    paid = sum(float(c.get("total_rate", 0)) for c in active if str(c.get("paid", "")).lower() == "yes")
+    booked = sum(to_number(c.get("total_rate", 0)) for c in active)
+    paid = sum(to_number(c.get("total_rate", 0)) for c in active if str(c.get("paid", "")).lower() == "yes")
     left = total - booked
     pct = round(booked / total * 100) if total > 0 else 0
     return {"total": total, "booked": booked, "paid": paid, "left": left, "pct": pct}
@@ -166,9 +172,10 @@ def calc_stats(meta: Dict, creators: List[Dict]) -> Dict:
     total_views = int(stored.get("total_views", 0))
 
     budget_info = calc_budget(meta, creators)
-    cpm = None
-    if total_views > 0 and budget_info["booked"] > 0:
-        cpm = (budget_info["booked"] / total_views) * 1_000
+    cpm = calc_cpm(
+        budget_info["booked"], total_views,
+        spend_complete=creator_rates_complete(active),
+    )
 
     return {
         "live_posts": live_posts,
@@ -298,7 +305,7 @@ def get_campaigns() -> List[Dict]:
         items = []
         for meta in metas:
             slug = meta["slug"]
-            creators = _db.get_creators(slug)
+            creators = _db.get_creators(slug, include_rate_quality=True)
             budget = calc_budget(meta, creators)
             stats = calc_stats(meta, creators)
             items.append({
@@ -320,7 +327,7 @@ def get_campaigns() -> List[Dict]:
         meta = load_json(d / "campaign.json")
         if not meta:
             continue
-        creators = load_creators(d)
+        creators = load_creators(d, include_rate_quality=True)
         budget = calc_budget(meta, creators)
         stats = calc_stats(meta, creators)
 
@@ -478,7 +485,7 @@ def campaign_detail(slug: str):
         if not meta:
             flash("Campaign not found.", "error")
             return redirect(url_for("index"))
-        creators = _db.get_creators(slug)
+        creators = _db.get_creators(slug, include_rate_quality=True)
         matched_videos = _db.get_matched_videos(slug)
     else:
         campaign_dir = ACTIVE_DIR / slug
@@ -486,7 +493,7 @@ def campaign_detail(slug: str):
             flash("Campaign not found.", "error")
             return redirect(url_for("index"))
         meta = load_json(campaign_dir / "campaign.json")
-        creators = load_creators(campaign_dir)
+        creators = load_creators(campaign_dir, include_rate_quality=True)
         matched_videos = load_matched_videos(campaign_dir)
 
     active_creators = [c for c in creators if c.get("status", "active") != "removed"]

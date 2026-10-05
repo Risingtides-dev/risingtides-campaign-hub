@@ -18,6 +18,7 @@ EST = ZoneInfo("America/New_York")
 from sqlalchemy import create_engine, desc, func, text
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
+from campaign_manager.utils.budget import rate_is_known
 from campaign_manager.models import (
     Base, Campaign, Creator, MatchedVideo, ScrapeLog,
     InboxItem, PaypalMemory, InternalCreator, InternalVideoCache,
@@ -1076,6 +1077,7 @@ def list_campaigns_with_creators(
     *,
     with_matched_videos: bool = False,
     completion: Optional[str] = None,
+    include_rate_quality: bool = False,
 ) -> List[Tuple[Dict, List[Dict], List[Dict]]]:
     """List campaigns with their creators (and optionally matched_videos)
     eagerly loaded.
@@ -1099,6 +1101,9 @@ def list_campaigns_with_creators(
     IDs this query returns, so filtering here shrinks the child fetches
     too. See CAMP-40 for the original N+1 pass.
 
+    `include_rate_quality` adds a private `_total_rate_known` marker before
+    `Creator.to_dict()` normalizes NULL rates for legacy API compatibility.
+
     Returns a list of (meta_dict, creators_list, matched_videos_list)
     tuples. When `with_matched_videos=False`, the third element is an
     empty list.
@@ -1116,7 +1121,11 @@ def list_campaigns_with_creators(
         return [
             (
                 c.to_meta_dict(),
-                [cr.to_dict() for cr in c.creators],
+                [
+                    ({**cr.to_dict(), "_total_rate_known": rate_is_known(cr.total_rate)}
+                     if include_rate_quality else cr.to_dict())
+                    for cr in c.creators
+                ],
                 [mv.to_dict() for mv in c.matched_videos] if with_matched_videos else [],
             )
             for c in campaigns
@@ -1136,13 +1145,17 @@ def get_campaign_id(slug: str) -> Optional[int]:
 
 # ── Creators ──────────────────────────────────────────────────────────
 
-def get_creators(slug: str) -> List[Dict]:
+def get_creators(slug: str, *, include_rate_quality: bool = False) -> List[Dict]:
     """Get all creators for a campaign as a list of dicts."""
     with get_session() as s:
         c = s.query(Campaign).filter_by(slug=slug).first()
         if not c:
             return []
-        return [cr.to_dict() for cr in c.creators]
+        return [
+            ({**cr.to_dict(), "_total_rate_known": rate_is_known(cr.total_rate)}
+             if include_rate_quality else cr.to_dict())
+            for cr in c.creators
+        ]
 
 
 def save_creators(slug: str, creators_data: List[Dict]):

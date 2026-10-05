@@ -109,6 +109,11 @@ Campaign Hub calculates CPM automatically. You'll see it on:
 - The Creator Database (per creator, averaged across all campaigns)
 - The Creator Profile page (per campaign and overall)
 
+CPM is left blank when any active creator booking in its spend total has a
+missing or non-numeric rate. A numeric zero remains a known rate; unknown
+rates continue to count as zero in the existing budget and spend totals until
+the underlying booking is corrected.
+
 ---
 
 *Next: [The Scrapers](./07-scrapers.md)*
