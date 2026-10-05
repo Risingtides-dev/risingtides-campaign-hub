@@ -6,10 +6,12 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::env;
 use std::fs;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
-use std::time::Duration as StdDuration;
+use std::time::{Duration as StdDuration, Instant};
 use wait_timeout::ChildExt;
 
 mod gui;
@@ -406,6 +408,124 @@ where
     Ok(results)
 }
 
+// Reading only after wait_timeout can fill either pipe and prevent child exit.
+// Each reader checks readiness instead of blocking in read_to_end, so inherited
+// descendant handles cannot keep a reader alive beyond the account deadline.
+trait OutputPipe: Read + Send + 'static {
+    fn read_ready(&self) -> io::Result<bool>;
+}
+
+#[cfg(unix)]
+impl<T: Read + Send + std::os::fd::AsRawFd + 'static> OutputPipe for T {
+    fn read_ready(&self) -> io::Result<bool> {
+        #[repr(C)]
+        struct PollFd {
+            fd: std::os::raw::c_int,
+            events: std::os::raw::c_short,
+            revents: std::os::raw::c_short,
+        }
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        type Nfds = std::os::raw::c_ulong;
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        type Nfds = std::os::raw::c_uint;
+        extern "C" {
+            fn poll(fds: *mut PollFd, nfds: Nfds, timeout: std::os::raw::c_int)
+                -> std::os::raw::c_int;
+        }
+        let mut fd = PollFd {
+            fd: self.as_raw_fd(),
+            events: 1, // POLLIN; poll also reports EOF/error readiness.
+            revents: 0,
+        };
+        // The descriptor remains owned by this reader; poll does not change it.
+        let result = unsafe { poll(&mut fd, 1, 0) };
+        if result < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(result > 0)
+        }
+    }
+}
+
+#[cfg(windows)]
+impl<T: Read + Send + std::os::windows::io::AsRawHandle + 'static> OutputPipe for T {
+    fn read_ready(&self) -> io::Result<bool> {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn PeekNamedPipe(
+                handle: *mut std::ffi::c_void,
+                buffer: *mut std::ffi::c_void,
+                buffer_size: u32,
+                read: *mut u32,
+                available: *mut u32,
+                remaining: *mut u32,
+            ) -> i32;
+        }
+        let mut available = 0;
+        // Peek only; Read owns consumption. A broken pipe is EOF-ready.
+        let result = unsafe {
+            PeekNamedPipe(
+                self.as_raw_handle(),
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                &mut available,
+                std::ptr::null_mut(),
+            )
+        };
+        if result != 0 {
+            Ok(available > 0)
+        } else {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(109) {
+                Ok(true)
+            } else {
+                Err(error)
+            }
+        }
+    }
+}
+
+fn drain_pipe(
+    mut pipe: impl OutputPipe,
+    deadline: Instant,
+    cancelled: Arc<AtomicBool>,
+) -> mpsc::Receiver<io::Result<(Vec<u8>, bool)>> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let mut buffer = [0u8; 8192];
+        let result = loop {
+            if cancelled.load(Ordering::Relaxed) || Instant::now() >= deadline {
+                break Ok((bytes, false));
+            }
+            match pipe.read_ready() {
+                Ok(false) => std::thread::sleep(StdDuration::from_millis(10)),
+                Ok(true) => match pipe.read(&mut buffer) {
+                    Ok(0) => break Ok((bytes, true)),
+                    Ok(count) => bytes.extend_from_slice(&buffer[..count]),
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(error) => break Err(error),
+                },
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => break Err(error),
+            }
+        };
+        let _ = tx.send(result);
+    });
+    rx
+}
+
+fn receive_pipe(
+    rx: mpsc::Receiver<io::Result<(Vec<u8>, bool)>>,
+    deadline: Instant,
+) -> io::Result<(Vec<u8>, bool)> {
+    rx.recv_timeout(
+        deadline.saturating_duration_since(Instant::now()) + StdDuration::from_millis(100),
+    )
+    .map_err(|error| io::Error::new(io::ErrorKind::TimedOut, error))?
+}
+
 fn scrape_account(account: &str, config: &RunConfig) -> AccountResult {
     let profile_url = format!("https://www.tiktok.com/@{account}");
     let args = build_yt_dlp_args(config, account);
@@ -431,34 +551,30 @@ fn scrape_account(account: &str, config: &RunConfig) -> AccountResult {
     };
 
     let timeout = StdDuration::from_secs(config.timeout_seconds);
-    match child.wait_timeout(timeout) {
-        Ok(Some(_)) => {}
+    let deadline = Instant::now() + timeout;
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let stdout_rx = drain_pipe(
+        child.stdout.take().expect("stdout is piped"),
+        deadline,
+        Arc::clone(&cancelled),
+    );
+    let stderr_rx = drain_pipe(
+        child.stderr.take().expect("stderr is piped"),
+        deadline,
+        Arc::clone(&cancelled),
+    );
+    let status = match child.wait_timeout(timeout) {
+        Ok(Some(status)) => Some(status),
         Ok(None) => {
             let _ = child.kill();
-            let output = child.wait_with_output();
-            let stderr = output
-                .ok()
-                .map(|o| {
-                    redact_proxy_values(&String::from_utf8_lossy(&o.stderr), &args)
-                        .trim()
-                        .to_string()
-                })
-                .unwrap_or_default();
-            return AccountResult {
-                account: account.to_string(),
-                profile_url,
-                status: "timeout".to_string(),
-                fetched: 0,
-                kept: 0,
-                error: if stderr.is_empty() {
-                    format!("timed out after {}s", config.timeout_seconds)
-                } else {
-                    stderr
-                },
-                videos: Vec::new(),
-            };
+            // Reap the owned child without waiting on descendant pipe handles.
+            let _ = child.wait_timeout(StdDuration::from_secs(1));
+            None
         }
         Err(err) => {
+            cancelled.store(true, Ordering::Relaxed);
+            let _ = child.kill();
+            let _ = child.wait_timeout(StdDuration::from_secs(1));
             return AccountResult {
                 account: account.to_string(),
                 profile_url,
@@ -469,9 +585,42 @@ fn scrape_account(account: &str, config: &RunConfig) -> AccountResult {
                 videos: Vec::new(),
             };
         }
-    }
+    };
 
-    let output = match child.wait_with_output() {
+    let stdout = receive_pipe(stdout_rx, deadline);
+    let stderr = receive_pipe(stderr_rx, deadline);
+    cancelled.store(true, Ordering::Relaxed);
+    let incomplete = matches!(&stdout, Ok((_, false))) || matches!(&stderr, Ok((_, false)));
+    if status.is_none() || incomplete {
+        let stderr = stderr
+            .ok()
+            .map(|(bytes, _)| {
+                redact_proxy_values(&String::from_utf8_lossy(&bytes), &args)
+                    .trim()
+                    .to_string()
+            })
+            .unwrap_or_default();
+        return AccountResult {
+            account: account.to_string(),
+            profile_url,
+            status: "timeout".to_string(),
+            fetched: 0,
+            kept: 0,
+            error: if stderr.is_empty() {
+                format!("timed out after {}s", config.timeout_seconds)
+            } else {
+                stderr
+            },
+            videos: Vec::new(),
+        };
+    }
+    let output = match stdout.and_then(|(stdout, _)| {
+        stderr.map(|(stderr, _)| std::process::Output {
+            status: status.expect("completed child"),
+            stdout,
+            stderr,
+        })
+    }) {
         Ok(output) => output,
         Err(err) => {
             return AccountResult {
@@ -1215,4 +1364,49 @@ mod tests {
         );
         assert_eq!(result.videos[0].views, 12);
     }
+
+    #[test]
+    fn large_stdout_is_drained_before_waiting_for_child_exit() {
+        let result = fake_scrape("print(json.dumps({'webpage_url': 'https://www.tiktok.com/@synthetic-account/video/12345', 'title': 'x' * 1048576, 'timestamp': int(time.time()), 'view_count': 12}))\n", None, &[], 1);
+        assert_eq!(result.status, "ok", "a successful child must not time out on a full stdout pipe");
+        assert_eq!((result.fetched, result.kept), (1, 1));
+        assert!(result.error.is_empty());
+        assert_eq!(result.videos[0].url, "https://www.tiktok.com/@synthetic-account/video/12345");
+        assert_eq!(result.videos[0].views, 12);
+    }
+
+    #[test]
+    fn large_stderr_is_drained_before_waiting_for_child_exit() {
+        let result = fake_scrape("sys.stderr.write('warning via ' + sys.argv[sys.argv.index('--proxy') + 1] + '\\n' + 'x' * 1048576)\nsys.stderr.flush()\nprint(json.dumps({'webpage_url': 'https://www.tiktok.com/@synthetic-account/video/12345', 'timestamp': int(time.time()), 'view_count': 12}))\n", Some(SYNTHETIC_ERROR_PROXY), &[], 1);
+        assert_eq!(result.status, "ok", "a successful child must not time out on a full stderr pipe");
+        assert_eq!((result.fetched, result.kept), (1, 1));
+        assert!(result.error.is_empty());
+        assert_eq!(result.videos[0].url, "https://www.tiktok.com/@synthetic-account/video/12345");
+        assert_eq!(result.videos[0].views, 12);
+    }
+
+
+    #[cfg(unix)]
+    #[test]
+    fn inherited_descendant_pipes_do_not_extend_the_account_deadline() {
+        let started = Instant::now();
+        let result = fake_scrape("import os\nif os.fork() == 0:\n    time.sleep(3)\n    os._exit(0)\nprint(json.dumps({'webpage_url': 'https://www.tiktok.com/@synthetic-account/video/12345', 'timestamp': int(time.time())}), flush=True)\nos._exit(0)\n", None, &[], 1);
+        assert_eq!(result.status, "timeout", "incomplete inherited output must not be reported as a completed scrape");
+        assert_eq!((result.fetched, result.kept), (0, 0));
+        assert_eq!(result.error, "timed out after 1s");
+        assert!(started.elapsed() < StdDuration::from_millis(2500), "must not wait for the test-owned descendant's three-second lifetime");
+    }
+
+    #[test]
+    fn large_stderr_timeout_retains_redacted_context_and_the_deadline() {
+        let started = Instant::now();
+        let result = fake_scrape("sys.stderr.write('timeout via ' + sys.argv[sys.argv.index('--proxy') + 1] + '\\n' + 'x' * 1048576)\nsys.stderr.flush()\ntime.sleep(5)\n", Some(SYNTHETIC_ERROR_PROXY), &[], 1);
+        assert_eq!(result.status, "timeout");
+        assert_eq!((result.fetched, result.kept), (0, 0));
+        assert!(result.error.starts_with("timeout via [redacted]\n"));
+        assert!(result.error.len() > 1048576, "the active reader must drain output larger than the pipe");
+        assert!(!serde_json::to_string(&result).unwrap().contains("synthetic-error-pass"));
+        assert!(started.elapsed() < StdDuration::from_millis(2500));
+    }
+
 }
