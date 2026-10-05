@@ -29,6 +29,8 @@ Campaign CRM integration, campaign delivery reporting, and creator operations.
 
 - Sound Assignments sends the optional server-only CONTENT_LAB_HUB_API_KEY as X-API-Key to its configured Content Lab proxy. Browser headers never supply this credential. Configured-key requests do not follow redirects, and transport errors do not expose the key. Without the key, existing upstream behavior remains unchanged.
 
+- Local yt-scraper command diagnostics redact every `--proxy` value, including credentials and query parameters; the actual yt-dlp arguments remain byte-for-byte unchanged.
+
 ## Work Guidance
 
 ## Verification
@@ -36,5 +38,7 @@ Campaign CRM integration, campaign delivery reporting, and creator operations.
 - Backend checks run with `pytest tests/backend`; `.github/workflows/backend-tests.yml` runs the same suite on pull requests and pushes to `main`.
 - Run `pytest -q tests/backend/test_health_db_target.py tests/backend/test_smoke.py` for synthetic credential redaction and existing app health contracts; only test-owned SQLite fixtures are used.
 - Run `TEST_POSTGRES_DATABASE_URL=... pytest -q tests/backend/test_completion_status_schema.py` against a disposable PostgreSQL database to verify the populated-table repair and readiness failure path. The fixture creates and drops an isolated schema.
+
+- Run `cargo test --locked --manifest-path tools/yt-scraper/Cargo.toml -- --test-threads=1` for scraper normalization and synthetic proxy diagnostic redaction; tests must not run a real scrape or use real credentials.
 
 ## Child devlog Index

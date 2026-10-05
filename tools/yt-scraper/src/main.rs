@@ -912,13 +912,25 @@ fn first_line(input: &str) -> String {
 }
 
 fn shell_join(args: &[String]) -> String {
+    let mut redact_next = false;
     args.iter()
         .map(|arg| {
+            let arg = if redact_next {
+                redact_next = false;
+                "[redacted]"
+            } else if arg == "--proxy" {
+                redact_next = true;
+                arg.as_str()
+            } else if arg.starts_with("--proxy=") {
+                "--proxy=[redacted]"
+            } else {
+                arg.as_str()
+            };
             if arg
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || "-_./:@=".contains(c))
             {
-                arg.clone()
+                arg.to_string()
             } else {
                 format!("'{}'", arg.replace('\'', "'\\''"))
             }
@@ -961,5 +973,82 @@ mod tests {
         assert_eq!(format_number(0), "0");
         assert_eq!(format_number(1200), "1,200");
         assert_eq!(format_number(1234567), "1,234,567");
+    }
+
+    #[test]
+    fn dry_run_hides_proxy_url_without_changing_yt_dlp_arguments() {
+        let proxy = "http://synthetic-user:synthetic-password@proxy.invalid:10001/path?token=synthetic-query#synthetic-fragment";
+        // This process has a test-owned environment; never read a real proxy.
+        env::set_var("TIKTOK_PROXY", proxy);
+        let config = RunConfig {
+            yt_dlp: YtDlp {
+                program: "yt-dlp".to_string(),
+                prefix_args: Vec::new(),
+            },
+            start: Local::now(),
+            end: Local::now(),
+            limit: 50,
+            timeout_seconds: 180,
+            sound_ids: BTreeSet::new(),
+        };
+        let args = build_yt_dlp_args(&config, "synthetic-account");
+        env::remove_var("TIKTOK_PROXY");
+        let original_args = args.clone();
+        let proxy_position = args.iter().position(|arg| arg == "--proxy").unwrap();
+        assert_eq!(args[proxy_position + 1], proxy);
+        let diagnostic = format!("{} {}", config.yt_dlp.program, shell_join(&args));
+        assert!(diagnostic.contains("--proxy '[redacted]'"), "{diagnostic}");
+        for sensitive in [
+            "synthetic-user",
+            "synthetic-password",
+            "proxy.invalid",
+            "synthetic-query",
+            "synthetic-fragment",
+        ] {
+            assert!(!diagnostic.contains(sensitive), "{diagnostic}");
+        }
+        assert!(diagnostic.ends_with("https://www.tiktok.com/@synthetic-account"));
+        assert_eq!(args, original_args);
+        assert_eq!(args[proxy_position + 1], proxy);
+    }
+
+    #[test]
+    fn diagnostics_hide_all_separate_and_inline_proxy_values() {
+        let args = [
+            "--proxy",
+            "socks5://first-user:first-pass@first.invalid/?key=first-query",
+            "--dump-json",
+            "--proxy=https://second-user:second-pass@second.invalid/?key=second-query",
+            "--proxy",
+            "not-a-url-but-still-private",
+            "--socket-timeout",
+            "30",
+        ]
+        .map(str::to_string)
+        .to_vec();
+        let original_args = args.clone();
+        assert_eq!(
+            shell_join(&args),
+            "--proxy '[redacted]' --dump-json '--proxy=[redacted]' --proxy '[redacted]' --socket-timeout 30"
+        );
+        assert_eq!(args, original_args);
+    }
+
+    #[test]
+    fn diagnostics_preserve_non_proxy_arguments_and_shell_quoting() {
+        let args = [
+            "--dump-json",
+            "--user-agent",
+            "two words",
+            "--socket-timeout",
+            "30",
+            "https://www.tiktok.com/@synthetic-account",
+        ]
+        .map(str::to_string)
+        .to_vec();
+        assert_eq!(
+            shell_join(&args),
+            "--dump-json --user-agent 'two words' --socket-timeout 30 https://www.tiktok.com/@synthetic-account"
+        );
     }
 }
