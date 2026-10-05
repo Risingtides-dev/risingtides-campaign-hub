@@ -6,10 +6,12 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::env;
 use std::fs;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
-use std::time::Duration as StdDuration;
+use std::time::{Duration as StdDuration, Instant};
 use wait_timeout::ChildExt;
 
 mod gui;
@@ -406,16 +408,219 @@ where
     Ok(results)
 }
 
+// Reading only after wait_timeout can fill either pipe and prevent child exit.
+// Each reader checks readiness instead of blocking in read_to_end, so inherited
+// descendant handles cannot keep a reader alive beyond the account deadline.
+trait OutputPipe: Read + Send + 'static {
+    fn read_ready(&self) -> io::Result<bool>;
+}
+
+#[cfg(unix)]
+impl<T: Read + Send + std::os::fd::AsRawFd + 'static> OutputPipe for T {
+    fn read_ready(&self) -> io::Result<bool> {
+        #[repr(C)]
+        struct PollFd {
+            fd: std::os::raw::c_int,
+            events: std::os::raw::c_short,
+            revents: std::os::raw::c_short,
+        }
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        type Nfds = std::os::raw::c_ulong;
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        type Nfds = std::os::raw::c_uint;
+        extern "C" {
+            fn poll(fds: *mut PollFd, nfds: Nfds, timeout: std::os::raw::c_int)
+                -> std::os::raw::c_int;
+        }
+        let mut fd = PollFd {
+            fd: self.as_raw_fd(),
+            events: 1, // POLLIN; poll also reports EOF/error readiness.
+            revents: 0,
+        };
+        // The descriptor remains owned by this reader; poll does not change it.
+        let result = unsafe { poll(&mut fd, 1, 0) };
+        if result < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(result > 0)
+        }
+    }
+}
+
+#[cfg(windows)]
+impl<T: Read + Send + std::os::windows::io::AsRawHandle + 'static> OutputPipe for T {
+    fn read_ready(&self) -> io::Result<bool> {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn PeekNamedPipe(
+                handle: *mut std::ffi::c_void,
+                buffer: *mut std::ffi::c_void,
+                buffer_size: u32,
+                read: *mut u32,
+                available: *mut u32,
+                remaining: *mut u32,
+            ) -> i32;
+        }
+        let mut available = 0;
+        // Peek only; Read owns consumption. A broken pipe is EOF-ready.
+        let result = unsafe {
+            PeekNamedPipe(
+                self.as_raw_handle(),
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                &mut available,
+                std::ptr::null_mut(),
+            )
+        };
+        if result != 0 {
+            Ok(available > 0)
+        } else {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(109) {
+                Ok(true)
+            } else {
+                Err(error)
+            }
+        }
+    }
+}
+
+// Flat-playlist JSON may contain large titles; permit the existing >1 MiB
+// regression without retaining unlimited output across parallel accounts.
+const MAX_STDOUT_BYTES: usize = 8 * 1024 * 1024;
+const MAX_STDERR_BYTES: usize = 16 * 1024;
+const TRUNCATED_DIAGNOSTIC: &str = "\n[truncated]";
+
+struct PipeOutput {
+    bytes: Vec<u8>,
+    complete: bool,
+    truncated: bool,
+}
+
+fn drain_pipe(
+    mut pipe: impl OutputPipe,
+    deadline: Instant,
+    cancelled: Arc<AtomicBool>,
+    max_bytes: usize,
+) -> mpsc::Receiver<io::Result<PipeOutput>> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut output = PipeOutput {
+            bytes: Vec::with_capacity(max_bytes.min(8192)),
+            complete: false,
+            truncated: false,
+        };
+        let mut buffer = [0u8; 8192];
+        let result = loop {
+            if cancelled.load(Ordering::Relaxed) || Instant::now() >= deadline {
+                break Ok(output);
+            }
+            match pipe.read_ready() {
+                Ok(false) => std::thread::sleep(StdDuration::from_millis(10)),
+                Ok(true) => match pipe.read(&mut buffer) {
+                    Ok(0) => {
+                        output.complete = true;
+                        break Ok(output);
+                    }
+                    Ok(count) => {
+                        let keep = count.min(max_bytes - output.bytes.len());
+                        output.bytes.extend_from_slice(&buffer[..keep]);
+                        output.truncated |= keep < count;
+                        // Keep draining discarded bytes so the child can exit.
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(error) => break Err(error),
+                },
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => break Err(error),
+            }
+        };
+        let _ = tx.send(result);
+    });
+    rx
+}
+
+fn receive_pipe(
+    rx: mpsc::Receiver<io::Result<PipeOutput>>,
+    deadline: Instant,
+) -> io::Result<PipeOutput> {
+    rx.recv_timeout(
+        deadline.saturating_duration_since(Instant::now()) + StdDuration::from_millis(100),
+    )
+    .map_err(|error| io::Error::new(io::ErrorKind::TimedOut, error))?
+}
+
+fn terminate_scraper(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        extern "C" {
+            fn kill(pid: std::os::raw::c_int, signal: std::os::raw::c_int) -> std::os::raw::c_int;
+        }
+        // spawn creates this private group. Only its recorded ID is signalled;
+        // do not enumerate or affect unrelated scrapers or the caller's group.
+        if let Ok(group) = i32::try_from(child.id()) {
+            unsafe {
+                kill(-group, 9);
+            } // SIGKILL includes inherited-pipe helpers.
+        }
+    }
+    // Windows cleanup remains direct-child-only; no process-tree claim.
+    let _ = child.kill();
+    let _ = child.wait_timeout(StdDuration::from_secs(1));
+}
+
+fn stderr_diagnostic(output: &PipeOutput, args: &[String]) -> String {
+    let mut bytes = output.bytes.clone();
+    if output.truncated || !output.complete {
+        // A cap/deadline can split a proxy at any byte, including within UTF-8.
+        // Remove any matching suffix before conversion or full-value redaction.
+        let overlap = proxy_values(args)
+            .iter()
+            .filter_map(|proxy| {
+                let proxy = proxy.as_bytes();
+                (1..=proxy.len().min(bytes.len()))
+                    .rev()
+                    .find(|&count| bytes.ends_with(&proxy[..count]))
+            })
+            .max()
+            .unwrap_or(0);
+        if overlap > 0 {
+            bytes.truncate(bytes.len() - overlap);
+            bytes.extend_from_slice(b"[redacted]");
+        }
+    }
+    let mut diagnostic = redact_proxy_values(&String::from_utf8_lossy(&bytes), args)
+        .trim()
+        .to_string();
+    let truncated = output.truncated || diagnostic.len() > MAX_STDERR_BYTES;
+    if diagnostic.len() > MAX_STDERR_BYTES {
+        let mut boundary = MAX_STDERR_BYTES;
+        while !diagnostic.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        diagnostic.truncate(boundary);
+    }
+    if truncated {
+        diagnostic.push_str(TRUNCATED_DIAGNOSTIC);
+    }
+    diagnostic
+}
+
 fn scrape_account(account: &str, config: &RunConfig) -> AccountResult {
     let profile_url = format!("https://www.tiktok.com/@{account}");
     let args = build_yt_dlp_args(config, account);
-
-    let mut child = match Command::new(&config.yt_dlp.program)
+    let mut command = Command::new(&config.yt_dlp.program);
+    command
         .args(&args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
     {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = match command.spawn() {
         Ok(child) => child,
         Err(err) => {
             return AccountResult {
@@ -431,34 +636,29 @@ fn scrape_account(account: &str, config: &RunConfig) -> AccountResult {
     };
 
     let timeout = StdDuration::from_secs(config.timeout_seconds);
-    match child.wait_timeout(timeout) {
-        Ok(Some(_)) => {}
+    let deadline = Instant::now() + timeout;
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let stdout_rx = drain_pipe(
+        child.stdout.take().expect("stdout is piped"),
+        deadline,
+        Arc::clone(&cancelled),
+        MAX_STDOUT_BYTES,
+    );
+    let stderr_rx = drain_pipe(
+        child.stderr.take().expect("stderr is piped"),
+        deadline,
+        Arc::clone(&cancelled),
+        MAX_STDERR_BYTES,
+    );
+    let status = match child.wait_timeout(timeout) {
+        Ok(Some(status)) => Some(status),
         Ok(None) => {
-            let _ = child.kill();
-            let output = child.wait_with_output();
-            let stderr = output
-                .ok()
-                .map(|o| {
-                    redact_proxy_values(&String::from_utf8_lossy(&o.stderr), &args)
-                        .trim()
-                        .to_string()
-                })
-                .unwrap_or_default();
-            return AccountResult {
-                account: account.to_string(),
-                profile_url,
-                status: "timeout".to_string(),
-                fetched: 0,
-                kept: 0,
-                error: if stderr.is_empty() {
-                    format!("timed out after {}s", config.timeout_seconds)
-                } else {
-                    stderr
-                },
-                videos: Vec::new(),
-            };
+            terminate_scraper(&mut child);
+            None
         }
         Err(err) => {
+            cancelled.store(true, Ordering::Relaxed);
+            terminate_scraper(&mut child);
             return AccountResult {
                 account: account.to_string(),
                 profile_url,
@@ -469,11 +669,39 @@ fn scrape_account(account: &str, config: &RunConfig) -> AccountResult {
                 videos: Vec::new(),
             };
         }
-    }
+    };
 
-    let output = match child.wait_with_output() {
+    let stdout = receive_pipe(stdout_rx, deadline);
+    let stderr = receive_pipe(stderr_rx, deadline);
+    cancelled.store(true, Ordering::Relaxed);
+    let incomplete = matches!(&stdout, Ok(output) if !output.complete)
+        || matches!(&stderr, Ok(output) if !output.complete);
+    if status.is_none() || incomplete {
+        if status.is_some() {
+            terminate_scraper(&mut child);
+        }
+        let stderr = stderr
+            .as_ref()
+            .map(|output| stderr_diagnostic(output, &args))
+            .unwrap_or_default();
+        return AccountResult {
+            account: account.to_string(),
+            profile_url,
+            status: "timeout".to_string(),
+            fetched: 0,
+            kept: 0,
+            error: if stderr.is_empty() {
+                format!("timed out after {}s", config.timeout_seconds)
+            } else {
+                stderr
+            },
+            videos: Vec::new(),
+        };
+    }
+    let (stdout, stderr) = match stdout.and_then(|stdout| stderr.map(|stderr| (stdout, stderr))) {
         Ok(output) => output,
         Err(err) => {
+            terminate_scraper(&mut child);
             return AccountResult {
                 account: account.to_string(),
                 profile_url,
@@ -485,23 +713,42 @@ fn scrape_account(account: &str, config: &RunConfig) -> AccountResult {
             };
         }
     };
-
-    let stderr = redact_proxy_values(&String::from_utf8_lossy(&output.stderr), &args)
-        .trim()
-        .to_string();
-    if !output.status.success() {
+    if stdout.truncated {
+        terminate_scraper(&mut child);
         return AccountResult {
             account: account.to_string(),
             profile_url,
             status: "error".to_string(),
             fetched: 0,
             kept: 0,
-            error: first_line(&stderr),
+            error: format!(
+                "yt-dlp stdout exceeded {} bytes; no partial rows accepted",
+                MAX_STDOUT_BYTES
+            ),
             videos: Vec::new(),
         };
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let diagnostic = stderr_diagnostic(&stderr, &args);
+    let short_diagnostic = if diagnostic.ends_with(TRUNCATED_DIAGNOSTIC) {
+        format!("{}{}", first_line(&diagnostic), TRUNCATED_DIAGNOSTIC)
+    } else {
+        first_line(&diagnostic)
+    };
+    if !status.expect("completed child").success() {
+        terminate_scraper(&mut child);
+        return AccountResult {
+            account: account.to_string(),
+            profile_url,
+            status: "error".to_string(),
+            fetched: 0,
+            kept: 0,
+            error: short_diagnostic,
+            videos: Vec::new(),
+        };
+    }
+
+    let stdout = String::from_utf8_lossy(&stdout.bytes);
     if stdout.trim().is_empty() {
         return AccountResult {
             account: account.to_string(),
@@ -509,10 +756,10 @@ fn scrape_account(account: &str, config: &RunConfig) -> AccountResult {
             status: "empty".to_string(),
             fetched: 0,
             kept: 0,
-            error: if stderr.is_empty() {
+            error: if diagnostic.is_empty() {
                 "yt-dlp returned no rows".to_string()
             } else {
-                first_line(&stderr)
+                short_diagnostic
             },
             videos: Vec::new(),
         };
@@ -906,7 +1153,7 @@ fn format_number(n: u64) -> String {
     out.chars().rev().collect()
 }
 
-fn redact_proxy_values(message: &str, args: &[String]) -> String {
+fn proxy_values(args: &[String]) -> Vec<&str> {
     let mut proxies = args
         .iter()
         .enumerate()
@@ -922,6 +1169,10 @@ fn redact_proxy_values(message: &str, args: &[String]) -> String {
     // Longer values first so a shorter proxy cannot expose a longer one's query.
     proxies.sort_unstable_by_key(|proxy| std::cmp::Reverse(proxy.len()));
     proxies
+}
+
+fn redact_proxy_values(message: &str, args: &[String]) -> String {
+    proxy_values(args)
         .into_iter()
         .fold(message.to_string(), |message, proxy| {
             message.replace(proxy, "[redacted]")
@@ -1214,5 +1465,157 @@ mod tests {
             "https://www.tiktok.com/@synthetic-account/video/12345"
         );
         assert_eq!(result.videos[0].views, 12);
+    }
+
+    #[test]
+    fn large_stdout_is_drained_before_waiting_for_child_exit() {
+        let result = fake_scrape("print(json.dumps({'webpage_url': 'https://www.tiktok.com/@synthetic-account/video/12345', 'title': 'x' * 1048576, 'timestamp': int(time.time()), 'view_count': 12}))\n", None, &[], 1);
+        assert_eq!(result.status, "ok", "a successful child must not time out on a full stdout pipe");
+        assert_eq!((result.fetched, result.kept), (1, 1));
+        assert!(result.error.is_empty());
+        assert_eq!(result.videos[0].url, "https://www.tiktok.com/@synthetic-account/video/12345");
+        assert_eq!(result.videos[0].views, 12);
+    }
+
+    #[test]
+    fn large_stderr_is_drained_before_waiting_for_child_exit() {
+        let result = fake_scrape("sys.stderr.write('warning via ' + sys.argv[sys.argv.index('--proxy') + 1] + '\\n' + 'x' * 1048576)\nsys.stderr.flush()\nprint(json.dumps({'webpage_url': 'https://www.tiktok.com/@synthetic-account/video/12345', 'timestamp': int(time.time()), 'view_count': 12}))\n", Some(SYNTHETIC_ERROR_PROXY), &[], 1);
+        assert_eq!(result.status, "ok", "a successful child must not time out on a full stderr pipe");
+        assert_eq!((result.fetched, result.kept), (1, 1));
+        assert!(result.error.is_empty());
+        assert_eq!(result.videos[0].url, "https://www.tiktok.com/@synthetic-account/video/12345");
+        assert_eq!(result.videos[0].views, 12);
+    }
+
+
+    #[cfg(unix)]
+    #[test]
+    fn inherited_descendant_pipes_do_not_extend_the_account_deadline() {
+        let started = Instant::now();
+        let result = fake_scrape("import os\nif os.fork() == 0:\n    time.sleep(3)\n    os._exit(0)\nprint(json.dumps({'webpage_url': 'https://www.tiktok.com/@synthetic-account/video/12345', 'timestamp': int(time.time())}), flush=True)\nos._exit(0)\n", None, &[], 1);
+        assert_eq!(result.status, "timeout", "incomplete inherited output must not be reported as a completed scrape");
+        assert_eq!((result.fetched, result.kept), (0, 0));
+        assert_eq!(result.error, "timed out after 1s");
+        assert!(started.elapsed() < StdDuration::from_millis(2500), "must not wait for the test-owned descendant's three-second lifetime");
+    }
+
+    #[test]
+    fn large_stderr_timeout_retains_redacted_context_and_the_deadline() {
+        let started = Instant::now();
+        let result = fake_scrape("sys.stderr.write('timeout via ' + sys.argv[sys.argv.index('--proxy') + 1] + '\\n' + 'x' * 1048576)\nsys.stderr.flush()\ntime.sleep(5)\n", Some(SYNTHETIC_ERROR_PROXY), &[], 1);
+        assert_eq!(result.status, "timeout");
+        assert_eq!((result.fetched, result.kept), (0, 0));
+        assert!(result.error.starts_with("timeout via [redacted]\n"));
+        assert!(result.error.len() <= MAX_STDERR_BYTES + TRUNCATED_DIAGNOSTIC.len(), "retained diagnostics must stay bounded while the reader drains >1 MiB");
+        assert!(result.error.ends_with(TRUNCATED_DIAGNOSTIC));
+        assert!(!serde_json::to_string(&result).unwrap().contains("synthetic-error-pass"));
+        assert!(started.elapsed() < StdDuration::from_millis(2500));
+    }
+
+    #[test]
+    fn resource_oversized_stdout_is_drained_but_never_accepted_as_partial_json() {
+        let done = env::temp_dir().join(format!(
+            "rt-yt-oversize-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let result = fake_scrape("print(json.dumps({'webpage_url': 'https://www.tiktok.com/@synthetic-account/video/12345', 'timestamp': int(time.time())}), flush=True)\nsys.stdout.write(' ' * (9 * 1024 * 1024))\nsys.stdout.flush()\npathlib.Path(sys.argv[sys.argv.index('--done-marker') + 1]).write_text('all stdout drained')\n", None, &["--done-marker", done.to_str().unwrap()], 5);
+        let producer_finished = done.exists();
+        if producer_finished {
+            fs::remove_file(done).unwrap();
+        }
+        assert!(
+            producer_finished,
+            "discarded output must still be drained so the child can finish"
+        );
+        assert_eq!(
+            result.status, "error",
+            "oversized output must not report a partial scrape as healthy"
+        );
+        assert_eq!((result.fetched, result.kept), (0, 0));
+        assert!(result.error.contains("stdout exceeded"), "{}", result.error);
+    }
+
+    #[test]
+    fn resource_timeout_stderr_is_bounded_and_redacted_at_capture_boundary() {
+        let script = "proxy = sys.argv[sys.argv.index('--proxy') + 1]\nsys.stderr.write('a' * (16384 - 30) + proxy + '\\n' + 'x' * (16 * 1024 * 1024))\nsys.stderr.flush()\ntime.sleep(5)\n";
+        let result = fake_scrape(script, Some(SYNTHETIC_ERROR_PROXY), &[], 1);
+        assert_eq!(result.status, "timeout");
+        assert!(
+            result.error.len() <= 16420,
+            "retained {} diagnostic bytes",
+            result.error.len()
+        );
+        assert!(result.error.contains("[truncated]"));
+        assert!(!result.error.contains("synthetic-error"));
+        assert!(!result.error.contains("proxy.invalid"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resource_timeout_stops_owned_inherited_pipe_helper() {
+        for parent_action in ["os._exit(0)", "time.sleep(5)"] {
+            let marker = env::temp_dir().join(format!(
+                "rt-yt-helper-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            let marker_arg = marker.to_str().unwrap();
+            let script = format!("import os\nmarker = pathlib.Path(sys.argv[sys.argv.index('--helper-marker') + 1])\nif os.fork() == 0:\n    marker.write_text(str(os.getpid()))\n    for _ in range(100):\n        with marker.with_suffix('.heartbeat').open('ab') as f:\n            f.write(b'x')\n        time.sleep(0.05)\n    os._exit(0)\n{parent_action}\n");
+            let started = Instant::now();
+            let result = fake_scrape(&script, None, &["--helper-marker", marker_arg], 1);
+            let heartbeat = marker.with_extension("heartbeat");
+            let before = fs::metadata(&heartbeat).unwrap().len();
+            std::thread::sleep(StdDuration::from_millis(250));
+            let after = fs::metadata(&heartbeat).unwrap().len();
+            // Always clean up the test helper, including on the expected red baseline.
+            let pid: i32 = fs::read_to_string(&marker).unwrap().parse().unwrap();
+            extern "C" {
+                fn kill(pid: i32, signal: i32) -> i32;
+            }
+            unsafe {
+                kill(pid, 9);
+            }
+            fs::remove_file(marker).unwrap();
+            fs::remove_file(heartbeat).unwrap();
+            assert_eq!(result.status, "timeout");
+            assert!(started.elapsed() < StdDuration::from_millis(2500));
+            assert_eq!(
+                before, after,
+                "the owned helper must stop before scrape_account returns"
+            );
+        }
+    }
+
+    #[test]
+    fn resource_incomplete_stderr_redacts_partial_proxy_before_utf8_conversion() {
+        let proxy = "http://synthetic-error-user:päss@proxy.invalid/path?token=private";
+        let prefix = &proxy.as_bytes()[..proxy.find('ä').unwrap() + 1];
+        let output = PipeOutput {
+            bytes: [b"context via ".as_slice(), prefix].concat(),
+            complete: false,
+            truncated: false,
+        };
+        let args = vec![format!("--proxy={proxy}")];
+        assert_eq!(stderr_diagnostic(&output, &args), "context via [redacted]");
+    }
+
+    #[test]
+    fn resource_capture_boundary_redacts_long_proxy_even_when_short_proxy_matches() {
+        let short = "http://synthetic-error-user:synthetic-error-pass@proxy.invalid/path";
+        let long = format!("{short}?token=private-extra");
+        let script = "proxy = sys.argv[sys.argv.index('--proxy') + 1]\nsys.stderr.write('a' * (16384 - len(proxy) + 3) + proxy + '\\n')\nsys.stderr.flush()\ntime.sleep(5)\n";
+        let result = fake_scrape(script, Some(&long), &[&format!("--proxy={short}")], 1);
+        assert_eq!(result.status, "timeout");
+        assert!(!result.error.contains("synthetic-error"));
+        assert!(!result.error.contains("private"));
+        assert!(!result.error.contains("token"));
+        assert!(result.error.contains("[truncated]"));
     }
 }
