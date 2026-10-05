@@ -198,3 +198,12 @@ area:      [release]
 
 PR #240 fix commit db3601a5e2ba2d37a347b9c0e8e6c5cc9a537e2c passed the hosted backend check and was squash-merged as 878c2f16bb6e7c446a01e1b20d10b8bb152838a4. The merge-commit backend workflow 37191619980 is pending. Production deployment is unverified: the documented Railway hostname returned 404 Application not found and the Railway CLI is unauthenticated. No live write was attempted. The P3 non-ASCII HUB_WRITE_KEY case remains open.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [1:00am] [05-10-26]
+agent: [codex] [hub_auth_companions]
+worktree: [codex/content-lab-hub-auth-20261005] [/private/tmp/hub-flask-lab-auth-20261005]
+type: [workflow]
+area: [backend]
+
+Prepared the minimal Flask caller companion for Content Lab PR #179: optional server-only CONTENT_LAB_HUB_API_KEY authenticates existing Sound Assignments proxy requests, browser headers cannot supply it, configured-key calls do not follow redirects, and transport errors stay credential-free. Independent source review approved the change; the app-config source audit found no whole-config serialization or logging. All 18 focused checks pass, including real loopback redirect controls; the full existing backend suite on Python 3.10.19 passes 884 with five existing disposable-PostgreSQL skips. The Python 3.11 hosted gate remains required before merge. No credential values, production configuration, database, deployment, or phone state changed; Content Lab still needs actual ingress/configuration/caller evidence.

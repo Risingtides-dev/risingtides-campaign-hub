@@ -26,6 +26,8 @@ Campaign CRM integration, campaign delivery reporting, and creator operations.
 - The campaign editor displays the stored official sound URL ahead of its numeric ID. An ordinary save omits unchanged HTTP(S) sound fields, preserving the stored URL and resolved or absent ID. Intentional URL edits send the revision displayed when editing opened; numeric edits and explicit clearing retain their existing payloads.
 - Campaign API and Notion webhook creation accept only `save_campaign` results `None` or `updated` as success. Duplicate assignments and concurrent revision conflicts return 409 before creator writes or success reporting; unexpected save results fail closed. Notion sync skips known duplicate/conflict outcomes and reports unexpected save failures without listing those campaigns as created.
 
+- Sound Assignments sends the optional server-only CONTENT_LAB_HUB_API_KEY as X-API-Key to its configured Content Lab proxy. Browser headers never supply this credential. Configured-key requests do not follow redirects, and transport errors do not expose the key. Without the key, existing upstream behavior remains unchanged.
+
 ## Work Guidance
 
 ## Verification

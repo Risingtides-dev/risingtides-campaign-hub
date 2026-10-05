@@ -43,3 +43,4 @@ class Config:
         "CONTENT_LAB_URL",
         "https://risingtides-content-lab-production.up.railway.app",
     ).rstrip("/")
+    CONTENT_LAB_HUB_API_KEY = os.environ.get("CONTENT_LAB_HUB_API_KEY", "")
