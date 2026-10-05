@@ -48,7 +48,8 @@ from campaign_manager.utils.budget import (
 USE_DB = _db.init()  # returns True if DATABASE_URL was found and connected
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY") or os.urandom(24).hex()
+from campaign_manager.config import Config as _Config
+app.secret_key = _Config.SECRET_KEY
 
 CREATOR_FIELDS = [
     "username", "posts_owed", "posts_done", "posts_matched",
