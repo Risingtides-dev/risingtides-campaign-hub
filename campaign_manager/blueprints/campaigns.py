@@ -32,7 +32,10 @@ from campaign_manager.utils.helpers import (
     save_json,
     video_posted_before_start,
 )
-from campaign_manager.utils.budget import calc_budget, calc_cpm, calc_stats, to_number
+from campaign_manager.utils.budget import (
+    calc_budget, calc_cpm, calc_stats, creator_rates_complete,
+    rate_is_known, to_number,
+)
 from campaign_manager.services.campaign_stats import (
     CampaignStatsResult,
     get_campaign_stats,
@@ -88,8 +91,11 @@ def _stats_from_result(
     posts_expected = sum(int(to_number(c.get("posts_owed", 0))) for c in active)
 
     total_views = result.total_views
-    booked = sum(float(c.get("total_rate", 0) or 0) for c in active)
-    cpm = calc_cpm(booked, total_views)
+    booked = sum(to_number(c.get("total_rate", 0)) for c in active)
+    cpm = calc_cpm(
+        booked, total_views,
+        spend_complete=creator_rates_complete(active),
+    )
 
     return {
         "live_posts": live_posts,
@@ -139,7 +145,7 @@ def ensure_dirs() -> None:
     COMPLETED_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def load_creators(campaign_dir: Path) -> List[Dict]:
+def load_creators(campaign_dir: Path, *, include_rate_quality: bool = False) -> List[Dict]:
     csv_path = campaign_dir / "creators.csv"
     if not csv_path.exists():
         return []
@@ -150,7 +156,10 @@ def load_creators(campaign_dir: Path) -> List[Dict]:
             row["posts_owed"] = int(row.get("posts_owed") or 0)
             row["posts_done"] = int(row.get("posts_done") or 0)
             row["posts_matched"] = int(row.get("posts_matched") or 0)
-            row["total_rate"] = float(row.get("total_rate") or 0)
+            raw_rate = row.get("total_rate")
+            if include_rate_quality:
+                row["_total_rate_known"] = rate_is_known(raw_rate)
+            row["total_rate"] = to_number(raw_rate)
             row["per_post_rate"] = float(row.get("per_post_rate") or 0)
             rows.append(row)
     return rows
@@ -284,6 +293,7 @@ def get_campaigns(completion: Optional[str] = None) -> List[Dict]:
         rows = _db.list_campaigns_with_creators(
             with_matched_videos=True,
             completion=completion,
+            include_rate_quality=True,
         )
         _t_rows = _time.monotonic()
         tracker_map = _db.get_campaign_to_tracker_map()
@@ -365,7 +375,7 @@ def get_campaigns(completion: Optional[str] = None) -> List[Dict]:
         is_done = meta.get("completion_status", "none") == "completed"
         if (completion == "active" and is_done) or (completion == "finished" and not is_done):
             continue
-        creators = load_creators(d)
+        creators = load_creators(d, include_rate_quality=True)
         budget = calc_budget(meta, creators)
         # File mode is dev-only; the API path requires DB-resident
         # tracker links, so fall back to the legacy calc here.
@@ -943,14 +953,14 @@ def campaign_detail(slug: str):
         meta = _db.get_campaign(slug)
         if not meta:
             return jsonify({"error": "Campaign not found"}), 404
-        creators = _db.get_creators(slug)
+        creators = _db.get_creators(slug, include_rate_quality=True)
         matched_videos = _db.get_matched_videos(slug)
     else:
         campaign_dir = ACTIVE_DIR / slug
         if not campaign_dir.exists():
             return jsonify({"error": "Campaign not found"}), 404
         meta = load_json(campaign_dir / "campaign.json")
-        creators = load_creators(campaign_dir)
+        creators = load_creators(campaign_dir, include_rate_quality=True)
         matched_videos = load_matched_videos(campaign_dir)
 
     active = [c for c in creators if c.get("status", "active") != "removed"]
@@ -1017,7 +1027,7 @@ def campaign_detail(slug: str):
                 "posts_owed": int(c.get("posts_owed", 0)),
                 "posts_done": int(c.get("posts_done", 0)),
                 "posts_matched": int(c.get("posts_matched", 0)),
-                "total_rate": float(c.get("total_rate", 0)),
+                "total_rate": to_number(c.get("total_rate", 0)),
                 "per_post_rate": float(c.get("per_post_rate", 0)),
                 "paid": c.get("paid", "no"),
                 "payment_date": c.get("payment_date", ""),
@@ -1932,7 +1942,8 @@ def _get_all_campaigns_data():
 
     if _db.is_active():
         rows = _db.list_campaigns_with_creators(
-            with_matched_videos=True
+            with_matched_videos=True,
+            include_rate_quality=True,
         )
         tracker_map = _db.get_campaign_to_tracker_map()
         for meta, creators, matched_videos in rows:
@@ -1955,7 +1966,7 @@ def _get_all_campaigns_data():
                 meta = load_json(d / "campaign.json")
                 if not meta:
                     continue
-                creators = load_creators(d)
+                creators = load_creators(d, include_rate_quality=True)
                 matched_videos = load_matched_videos(d)
                 results.append({
                     "slug": d.name,
@@ -2080,6 +2091,7 @@ def list_creators():
                     "niches": [],
                     "_platforms": [],
                     "_video_records": [],
+                    "_spend_complete": True,
                 }
 
             entry = creator_map[key]
@@ -2091,9 +2103,12 @@ def list_creators():
                 entry["_video_records"].extend(video_records_by_account.get(key, []))
             entry["total_posts_owed"] += int(c.get("posts_owed", 0) or 0)
             entry["total_posts_done"] += int(c.get("posts_done", 0) or 0)
-            entry["total_spend"] += float(c.get("total_rate", 0) or 0)
+            entry["_spend_complete"] = (
+                entry["_spend_complete"] and creator_rates_complete([c])
+            )
+            entry["total_spend"] += to_number(c.get("total_rate", 0))
             if str(c.get("paid", "no")).lower() == "yes":
-                entry["total_payout"] += float(c.get("total_rate", 0) or 0)
+                entry["total_payout"] += to_number(c.get("total_rate", 0))
             entry["_platforms"].append(c.get("platform", "tiktok"))
 
             # Keep latest non-empty paypal
@@ -2113,7 +2128,11 @@ def list_creators():
         if platforms:
             entry["platform"] = max(set(platforms), key=platforms.count)
 
-        cpm = calc_cpm(entry["total_spend"], entry["total_views"])
+        spend_complete = entry.pop("_spend_complete", True)
+        cpm = calc_cpm(
+            entry["total_spend"], entry["total_views"],
+            spend_complete=spend_complete,
+        )
         if cpm is not None:
             entry["avg_cpm"] = round(cpm, 2)
         else:
@@ -2153,6 +2172,7 @@ def creator_profile(username: str):
     total_payout = 0.0
     total_views = 0
     total_likes = 0
+    total_spend_complete = True
     platforms = []
     paypal_email = ""
 
@@ -2192,14 +2212,21 @@ def creator_profile(username: str):
         creators = camp["creators"]
         matched_videos = camp["matched_videos"]
 
-        creator_entry = None
-        for c in creators:
-            if (c.get("username", "") or "").lower() == uname_lower and c.get("status", "active") != "removed":
-                creator_entry = c
-                break
+        creator_entries = [
+            c for c in creators
+            if (c.get("username", "") or "").lower() == uname_lower
+            and c.get("status", "active") != "removed"
+        ]
+        creator_entry = creator_entries[0] if creator_entries else None
 
         if not creator_entry:
             continue
+        # A creator may have separate platform bookings in one campaign.
+        # Include every rate below, while keeping posts and matched views at
+        # person level and withholding CPM if any booking rate is unknown.
+        total_spend_complete = (
+            total_spend_complete and creator_rates_complete(creator_entries)
+        )
 
         # Overlay live counts from the bulk pre-warm (non-completed only).
         if _db.is_active():
@@ -2212,16 +2239,22 @@ def creator_profile(username: str):
 
         posts_owed = int(creator_entry.get("posts_owed", 0) or 0)
         posts_done = int(creator_entry.get("posts_done", 0) or 0)
-        rate = float(creator_entry.get("total_rate", 0) or 0)
-        paid = creator_entry.get("paid", "no")
-        platform = creator_entry.get("platform", "tiktok")
-        platforms.append(platform)
+        rate = sum(to_number(c.get("total_rate", 0)) for c in creator_entries)
+        payout = sum(
+            to_number(c.get("total_rate", 0))
+            for c in creator_entries
+            if str(c.get("paid", "no")).lower() == "yes"
+        )
+        paid = "yes" if all(
+            str(c.get("paid", "no")).lower() == "yes"
+            for c in creator_entries
+        ) else "no"
+        platforms.extend(c.get("platform", "tiktok") for c in creator_entries)
 
         total_posts_owed += posts_owed
         total_posts_done += posts_done
         total_spend += rate
-        if str(paid).lower() == "yes":
-            total_payout += rate
+        total_payout += payout
 
         pp = (creator_entry.get("paypal_email", "") or "").strip()
         if pp:
@@ -2272,7 +2305,10 @@ def creator_profile(username: str):
         platform = max(set(platforms), key=platforms.count)
 
     avg_cpm = None
-    cpm = calc_cpm(total_spend, total_views)
+    cpm = calc_cpm(
+        total_spend, total_views,
+        spend_complete=total_spend_complete,
+    )
     if cpm is not None:
         avg_cpm = round(cpm, 2)
 

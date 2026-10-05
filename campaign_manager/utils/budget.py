@@ -1,5 +1,6 @@
 """Budget and stats calculation helpers."""
 
+import math
 from typing import Dict, List
 
 CLIENT_SPEND_MULTIPLIER = 2.0
@@ -12,9 +13,45 @@ def to_number(x, default: float = 0.0) -> float:
     or imported record) used to raise ValueError and 500 the entire dashboard
     list — not just its own card. Coerce defensively instead."""
     try:
-        return float(x or 0)
-    except (TypeError, ValueError):
+        value = float(x or 0)
+        return value if math.isfinite(value) else default
+    except (OverflowError, TypeError, ValueError):
         return default
+
+
+def rate_is_known(value) -> bool:
+    """Whether a creator rate is a supplied, finite numeric value.
+
+    Zero is a known rate. Empty/import placeholder values are unknown and
+    must not support a reported CPM.
+    """
+    if value is None or isinstance(value, bool):
+        return False
+    if isinstance(value, str) and value.strip().lower() in {
+        "", "tbd", "n/a", "na", "none", "null", "unknown",
+    }:
+        return False
+    try:
+        return math.isfinite(float(value))
+    except (OverflowError, TypeError, ValueError):
+        return False
+
+
+def creator_rate_is_known(creator: Dict) -> bool:
+    """Read the source-quality flag when present, otherwise inspect the row."""
+    marker = creator.get("_total_rate_known")
+    if isinstance(marker, bool):
+        return marker
+    return "total_rate" in creator and rate_is_known(creator.get("total_rate"))
+
+
+def creator_rates_complete(creators: List[Dict]) -> bool:
+    """Return whether every active creator row has a known rate."""
+    return all(
+        creator_rate_is_known(c)
+        for c in creators
+        if c.get("status", "active") != "removed"
+    )
 
 
 # Back-compat: this was `_num` before the campaigns blueprint needed it.
@@ -36,12 +73,19 @@ def gross_client_spend(deployed_spend: float) -> float:
     return to_number(deployed_spend) * CLIENT_SPEND_MULTIPLIER
 
 
-def calc_cpm(deployed_spend: float, total_views: int) -> float | None:
+def calc_cpm(
+    deployed_spend: float,
+    total_views: int,
+    *,
+    spend_complete: bool = True,
+) -> float | None:
     """Calculate CPM from gross client spend.
 
     Campaign Hub budget/rate fields represent the 50% deployed-to-market
     amount. Client-facing CPM uses the full amount the client spent.
     """
+    if not spend_complete:
+        return None
     views = int(to_number(total_views, 0))
     spend = gross_client_spend(deployed_spend)
     if views > 0 and spend > 0:
@@ -61,7 +105,10 @@ def calc_stats(meta: Dict, creators: List[Dict]) -> Dict:
     total_views = int(to_number(stored.get("total_views", 0)))
 
     budget_info = calc_budget(meta, creators)
-    cpm = calc_cpm(budget_info["booked"], total_views)
+    cpm = calc_cpm(
+        budget_info["booked"], total_views,
+        spend_complete=creator_rates_complete(active),
+    )
 
     return {
         "live_posts": live_posts,
