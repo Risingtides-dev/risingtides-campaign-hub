@@ -207,3 +207,13 @@ type: [workflow]
 area: [backend]
 
 Prepared the minimal Flask caller companion for Content Lab PR #179: optional server-only CONTENT_LAB_HUB_API_KEY authenticates existing Sound Assignments proxy requests, browser headers cannot supply it, configured-key calls do not follow redirects, and transport errors stay credential-free. Independent source review approved the change; the app-config source audit found no whole-config serialization or logging. All 18 focused checks pass, including real loopback redirect controls; the full existing backend suite on Python 3.10.19 passes 884 with five existing disposable-PostgreSQL skips. The Python 3.11 hosted gate remains required before merge. No credential values, production configuration, database, deployment, or phone state changed; Content Lab still needs actual ingress/configuration/caller evidence.
+
+_________________________________________________________________________________
+time: [18:33 EDT 10-05-26]
+agent: [Codex desktop] [gpt-6]
+worktree: [codex/review-campaign-hub-195-event-20261005]
+type: [review]: Risingtides-dev/risingtides-campaign-hub PR #195
+area: [review] [backend] [security]
+
+Independent adversarial review of PR #195 at head 44ac724bf87677b8813451133ac3cbe47cba8230 against base 8fcac22a9c3423708279d32479aa1694becca4f2 found the branch diverged from current main 55d193c9f2d74f5da6643901dbe8f98521aca3c4 (3 commits ahead, 118 behind); no hosted checks were reported for this head. Treat its prior review and checks as insufficient for current integration. In the candidate code, generic _sync_columns can recreate missing columns without their original constraints/defaults, swallow DDL failures, and commit repairs column by column while /health still returns 200. Its health URL parser does not fail closed on ambiguous raw @ credentials. Current main has a versioned completion_status repair with an advisory lock, backfill/default restoration and verification, plus readiness failure on repair errors and make_url-based fail-closed URL handling. The PR also adds a duplicate CI workflow weaker than the existing backend-tests.yml permissions, pinned actions, cancellation, timeout and prescribed test scope. Recommendation: do not approve or merge this branch; close it as superseded or rebuild any needed workflow-only change on current main. No database mutation, deployment, or production behavior was exercised.
+_________________________________________________________________________________
