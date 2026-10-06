@@ -1,6 +1,7 @@
 // Local stand-in for the Railway GraphQL API, a health URL, and the GitHub issues API.
 // Test-only: driven by tests/smoke.sh. Usage: node tests/mock.mjs <port>
-//   POST /__set     merge JSON into the fake world (services, billing, failIds, health)
+//   POST /__set     merge JSON into the fake world (services, billing, failIds, health,
+//                   billingError, railwayDown, pageSize, delayMs)
 //   GET  /__log     {calls: [...railway mutations...], issues: [...], comments: [...], authFails}
 import http from "node:http";
 
@@ -35,7 +36,7 @@ const send = (res, code, obj) => {
   res.end(typeof obj === "string" ? obj : JSON.stringify(obj));
 };
 
-function projects() {
+function projects(after) {
   const byProject = {};
   for (const [envId, e] of Object.entries(world.envs)) {
     const sis = Object.entries(world.services)
@@ -50,11 +51,21 @@ function projects() {
           activeDeployments: s.active.map(([id, status]) => ({ id, status })),
         },
       }));
-    (byProject[e.project] ||= []).push({ node: { id: envId, name: e.name, serviceInstances: { edges: sis } } });
+    (byProject[e.project] ||= []).push({
+      node: { id: envId, name: e.name, serviceInstances: { pageInfo: { hasNextPage: false }, edges: sis } },
+    });
   }
+  // Pages of projects; the cursor is the index of the next project.
+  const all = Object.entries(byProject).map(([name, envs]) => ({
+    node: { name, environments: { pageInfo: { hasNextPage: false }, edges: envs } },
+  }));
+  const start = after ? Number(after) : 0;
+  const size = world.pageSize || 100;
+  const end = Math.min(start + size, all.length);
   return {
     projects: {
-      edges: Object.entries(byProject).map(([name, envs]) => ({ node: { name, environments: { edges: envs } } })),
+      pageInfo: { hasNextPage: end < all.length, endCursor: String(end) },
+      edges: all.slice(start, end),
     },
   };
 }
@@ -80,10 +91,15 @@ function graphql(q) {
     return { data: { deployments: { edges: (s?.deployments || []).map(([id, status]) => ({ node: { id, status } })) } } };
   }
   if (q.includes("workspace(")) {
+    if (world.billingError) return { errors: [{ message: "Not Authorized" }] };
     const b = world.billing;
     return { data: { workspace: { customer: { currentUsage: b.usage, usageLimit: { softLimit: b.hard, hardLimit: b.hard, isOverLimit: b.over } } } } };
   }
-  if (q.includes("projects(")) return { data: projects() };
+  if (q.includes("projects(")) {
+    log.projectPages = (log.projectPages || 0) + 1;
+    if (world.railwayDown) return { errors: [{ message: "Internal server error" }] };
+    return { data: projects(arg("after")) };
+  }
   return { errors: [{ message: "mock: unknown query" }] };
 }
 
@@ -111,6 +127,7 @@ http
         log.authFails++;
         return send(res, 401, { errors: [{ message: "Not Authorized" }] });
       }
+      if (world.delayMs) await new Promise((r) => setTimeout(r, world.delayMs));
       return send(res, 200, graphql(json.query));
     }
     // GitHub issues API

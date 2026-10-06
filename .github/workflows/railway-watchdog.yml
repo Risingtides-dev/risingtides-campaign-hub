@@ -1,0 +1,42 @@
+name: Railway watchdog
+
+on:
+  pull_request:
+    branches: [main]
+    paths: ["tools/railway-watchdog/**", ".github/workflows/railway-watchdog.yml"]
+  push:
+    branches: [main]
+    paths: ["tools/railway-watchdog/**", ".github/workflows/railway-watchdog.yml"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: railway-watchdog-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  watchdog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: tools/railway-watchdog
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy,rustfmt
+          rustup target add wasm32-unknown-unknown
+      - name: Format
+        run: cargo fmt --check
+      - name: Unit tests (decisions, limits, cap, overlap, pagination)
+        run: cargo test --locked
+      - name: Lint (host)
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Compile the Worker (wasm32)
+        run: cargo check --locked --target wasm32-unknown-unknown
+      - name: Lint (wasm32)
+        run: cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings

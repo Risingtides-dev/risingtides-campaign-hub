@@ -1,7 +1,8 @@
 #!/bin/bash
 # Local end-to-end test: `wrangler dev` (local mode, local KV) + tests/mock.mjs standing in for
 # Railway, a health URL and GitHub. FAKE secrets only; no real network call leaves this machine.
-# Replays the 2026-10-06 outage and the guard rails. ~2.5 min. Usage: bash tests/smoke.sh
+# Replays the 2026-10-06 outage and the guard rails (cap unknown, blind, overlap, pages). ~3 min.
+# Usage: bash tests/smoke.sh
 set -u
 cd "$(dirname "$0")/.." || exit 1
 MOCK_PORT=${MOCK_PORT:-18797}; DEV_PORT=${DEV_PORT:-18798}
@@ -93,11 +94,51 @@ set_ '{"billing":{"over":false,"usage":20,"hard":200}}'
 n=$(ncalls); tick
 expect "cap lifted: brought back"           "$(calls_since "$n")" '[["redeploy","lab-old"]]'
 
+echo "== two overlapping runs: one restart, not two"
+set_ '{"services":{"lab":{"latest":"SUCCESS","active":[["lab-2","SUCCESS"]]},"app":{"latest":null,"active":[]}},"delayMs":400}'
+n=$(ncalls)
+curl -s -o /dev/null "$W/__scheduled?cron=*+*+*+*+*" & A=$!
+curl -s -o /dev/null "$W/__scheduled?cron=*+*+*+*+*" & B=$!
+wait $A $B; sleep 2
+expect "exactly one action for the down app" "$(calls_since "$n")" '[["deploy","app"]]'
+grep -q "another run is still going" "$TMP/dev.log" && ok "the second run stood down" || bad "the second run stood down"
+set_ '{"delayMs":0}'
+
+echo "== spending cap unreadable: fail closed"
+set_ '{"billingError":true,"services":{"pg":{"latest":null,"active":[]}}}'
+n=$(ncalls); tick; tick; tick
+expect "no actions while the cap is unknown" "$(calls_since "$n")" '[]'
+L | jq -r '[.comments[].body, .issues[].body]|join("\n")' | grep -q "will not say whether the workspace is over" \
+  && ok "unknown cap is alerted" || bad "unknown cap is alerted"
+set_ '{"billingError":false}'
+n=$(ncalls); tick
+expect "cap readable again: it acts"        "$(calls_since "$n")" '[["deploy","pg"]]'
+set_ '{"services":{"pg":{"latest":"SUCCESS","active":[["pg-3","SUCCESS"]]},"app":{"latest":"SUCCESS","active":[["a3","SUCCESS"]]}}}'
+tick
+expect "all up: incident closed"            "$(L | jq '[.issues[]|select(.state=="open")]|length')" 0
+
+echo "== Railway unreadable 5 runs in a row: alert, and never 'all fine'"
+set_ '{"railwayDown":true}'
+issues=$(L | jq '.issues|length'); n=$(ncalls)
+for _ in 1 2 3 4 5; do tick; done
+expect "no actions while blind"             "$(calls_since "$n")" '[]'
+expect "one new alert issue"                "$(L | jq '.issues|length')" $((issues+1))
+L | jq -r '.issues[-1].body' | grep -q "cannot read Railway" && ok "read-failure alert text" || bad "read-failure alert text"
+
+echo "== Railway back, one project per page: pages are joined, incident closes"
+set_ '{"railwayDown":false,"pageSize":1}'
+p0=$(L | jq '.projectPages'); tick
+expect "two pages read in one run"          "$(( $(L | jq '.projectPages') - p0 ))" 2
+expect "full view across pages: closed"     "$(L | jq -r '.issues[-1].state')" closed
+
 echo "== paused"
 wrangler kv key put paused 1 --binding WATCHDOG --local --persist-to "$TMP/state" > /dev/null 2>&1
-set_ '{"services":{"pg":{"latest":null,"active":[]}}}'
+set_ '{"services":{"bk":{"latest":null,"active":[]}}}'
 n=$(ncalls); tick
 expect "no actions while paused"            "$(calls_since "$n")" '[]'
+wrangler kv key delete paused --binding WATCHDOG --local --persist-to "$TMP/state" > /dev/null 2>&1
+n=$(ncalls); tick
+expect "resumed: it acts again"             "$(calls_since "$n" | jq -c 'length')" 1
 
 echo "== secrets never logged"
 grep -q -e fake-railway-token -e fake-github-token "$TMP/dev.log" && bad "a token appeared in the Worker log" || ok "no token in the Worker log"
