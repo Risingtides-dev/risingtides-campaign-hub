@@ -1,5 +1,7 @@
 [deploy]
 healthcheckPath = "/health"
 healthcheckTimeout = 60
-restartPolicyType = "ON_FAILURE"
-restartPolicyMaxRetries = 3
+# ALWAYS, not ON_FAILURE with a retry cap: if the database blips, the app keeps coming back
+# until it can connect, instead of giving up after a few crashes and staying down.
+# (A stop by Railway itself is handled by tools/railway-watchdog, which runs outside Railway.)
+restartPolicyType = "ALWAYS"
