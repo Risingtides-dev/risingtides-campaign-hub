@@ -1355,15 +1355,29 @@ fn render_links_only(report: &ScrapeReport) -> String {
 }
 
 fn proxy_hub(request: Request, url: &str) -> Result<()> {
+    proxy_hub_with_timeout(request, url, StdDuration::from_secs(30))
+}
+
+fn proxy_hub_with_timeout(request: Request, url: &str, timeout: StdDuration) -> Result<()> {
     let base =
         env::var("CAMPAIGN_HUB_API_URL").unwrap_or_else(|_| "http://localhost:5055".to_string());
     let suffix = url.trim_start_matches("/api/hub");
     let target = format!("{}{}", base.trim_end_matches('/'), suffix);
 
-    match ureq::get(&target).set("Accept", "application/json").call() {
-        Ok(resp) => {
-            let status = resp.status();
-            let body = resp.into_string().unwrap_or_else(|_| "{}".to_string());
+    let upstream = ureq::get(&target)
+        .set("Accept", "application/json")
+        .timeout(timeout)
+        .call()
+        .map_err(anyhow::Error::from)
+        .and_then(|response| {
+            let status = response.status();
+            response
+                .into_string()
+                .context("failed reading Campaign Hub response")
+                .map(|body| (status, body))
+        });
+    match upstream {
+        Ok((status, body)) => {
             let response = Response::from_string(body)
                 .with_status_code(StatusCode(status))
                 .with_header(header("Content-Type", "application/json"));
@@ -1704,6 +1718,198 @@ mod tests {
             assert!(response.starts_with("HTTP/1.1 405"), "{method}: {response}");
             assert!(!response.contains("100 Continue"), "{method}: {response}");
         }
+    }
+
+    #[derive(Clone, Copy)]
+    enum HubProxyReply {
+        HeadersStall,
+        BodyStall,
+        TrickleBody,
+        Success(u16, &'static str),
+    }
+
+    fn hub_proxy_fixture(cases: &[(HubProxyReply, bool)]) -> Vec<(u16, String, StdDuration)> {
+        use std::sync::mpsc;
+        use std::time::Instant;
+
+        struct RestoreHub(Option<String>);
+        impl Drop for RestoreHub {
+            fn drop(&mut self) {
+                match &self.0 {
+                    Some(value) => env::set_var("CAMPAIGN_HUB_API_URL", value),
+                    None => env::remove_var("CAMPAIGN_HUB_API_URL"),
+                }
+            }
+        }
+
+        let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
+        upstream.set_nonblocking(true).unwrap();
+        let _restore = RestoreHub(env::var("CAMPAIGN_HUB_API_URL").ok());
+        env::set_var(
+            "CAMPAIGN_HUB_API_URL",
+            format!("http://{}", upstream.local_addr().unwrap()),
+        );
+        let mut releases = Vec::new();
+        let pending: Vec<_> = cases
+            .iter()
+            .map(|(reply, _)| {
+                let (release, released) = mpsc::channel();
+                releases.push(release);
+                (*reply, released)
+            })
+            .collect();
+        let upstream_worker = thread::spawn(move || {
+            for (reply, released) in pending {
+                let deadline = Instant::now() + StdDuration::from_secs(2);
+                let mut stream = loop {
+                    match upstream.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(
+                                Instant::now() < deadline,
+                                "fixture request was not received"
+                            );
+                            thread::sleep(StdDuration::from_millis(5));
+                        }
+                        Err(err) => panic!("fixture accept failed: {err}"),
+                    }
+                };
+                stream
+                    .set_read_timeout(Some(StdDuration::from_secs(2)))
+                    .unwrap();
+                stream
+                    .set_write_timeout(Some(StdDuration::from_secs(2)))
+                    .unwrap();
+                let mut headers = Vec::new();
+                while !headers.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    assert_eq!(stream.read(&mut byte).unwrap(), 1);
+                    headers.push(byte[0]);
+                    assert!(headers.len() < 8192);
+                }
+                match reply {
+                    HubProxyReply::HeadersStall => {
+                        let _ = released.recv_timeout(StdDuration::from_millis(800));
+                    }
+                    HubProxyReply::BodyStall => {
+                        stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 16\r\nConnection: close\r\n\r\n{\"").unwrap();
+                        let _ = released.recv_timeout(StdDuration::from_millis(800));
+                    }
+                    HubProxyReply::TrickleBody => {
+                        stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 32\r\nConnection: close\r\n\r\n").unwrap();
+                        for _ in 0..32 {
+                            if stream.write_all(b"x").is_err() {
+                                break;
+                            }
+                            if released.recv_timeout(StdDuration::from_millis(25))
+                                != Err(mpsc::RecvTimeoutError::Timeout)
+                            {
+                                break;
+                            }
+                        }
+                    }
+                    HubProxyReply::Success(status, body) => {
+                        let headers = format!(
+                            "HTTP/1.1 {status} Synthetic\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        );
+                        stream.write_all(headers.as_bytes()).unwrap();
+                        stream.write_all(body.as_bytes()).unwrap();
+                    }
+                }
+            }
+        });
+
+        let (server, state) = gui("127.0.0.1");
+        let endpoint = format!("{}/api/hub/api/campaigns", state.base_url);
+        let origin = state.base_url.clone();
+        let dispatches: Vec<_> = cases.iter().map(|(_, production)| *production).collect();
+        let proxy_worker = thread::spawn(move || {
+            for production in dispatches {
+                let request = server
+                    .recv_timeout(StdDuration::from_secs(2))
+                    .unwrap()
+                    .unwrap();
+                if production {
+                    handle_request(request, state.clone()).unwrap();
+                } else {
+                    assert!(local_request(&request, state.local_addr));
+                    let url = request.url().to_string();
+                    proxy_hub_with_timeout(request, &url, StdDuration::from_millis(100)).unwrap();
+                }
+            }
+        });
+        let mut results = Vec::new();
+        for release in releases {
+            let start = Instant::now();
+            let response = match ureq::get(&endpoint)
+                .set("Origin", &origin)
+                .timeout(StdDuration::from_secs(3))
+                .call()
+            {
+                Ok(response) | Err(ureq::Error::Status(_, response)) => response,
+                Err(err) => panic!("local proxy request failed: {err}"),
+            };
+            let status = response.status();
+            let body = response.into_string().unwrap();
+            results.push((status, body, start.elapsed()));
+            let _ = release.send(());
+        }
+        proxy_worker.join().unwrap();
+        upstream_worker.join().unwrap();
+        results
+    }
+
+    fn assert_bounded_hub_failure(result: &(u16, String, StdDuration)) {
+        assert_eq!(
+            result.0, 502,
+            "partial upstream output must not become success: {}",
+            result.1
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&result.1).unwrap()["error"],
+            "Campaign Hub API unavailable"
+        );
+        assert!(
+            result.2 < StdDuration::from_millis(500),
+            "proxy waited {:?}",
+            result.2
+        );
+    }
+
+    #[test]
+    fn hub_proxy_headers_stall_returns_bounded_502_and_recovers() {
+        let results = hub_proxy_fixture(&[
+            (HubProxyReply::HeadersStall, false),
+            (HubProxyReply::Success(200, "{\"campaigns\":[]}"), true),
+        ]);
+        assert_bounded_hub_failure(&results[0]);
+        assert_eq!(results[1].0, 200);
+        assert_eq!(results[1].1, "{\"campaigns\":[]}");
+    }
+
+    #[test]
+    fn hub_proxy_body_stall_returns_bounded_502() {
+        let results = hub_proxy_fixture(&[(HubProxyReply::BodyStall, false)]);
+        assert_bounded_hub_failure(&results[0]);
+    }
+
+    #[test]
+    fn hub_proxy_whole_deadline_is_not_restarted_by_body_progress() {
+        let results = hub_proxy_fixture(&[(HubProxyReply::TrickleBody, false)]);
+        assert_bounded_hub_failure(&results[0]);
+    }
+
+    #[test]
+    fn hub_proxy_success_preserves_status_and_body() {
+        let results = hub_proxy_fixture(&[
+            (HubProxyReply::Success(201, " synthetic body \n"), true),
+            (HubProxyReply::Success(204, ""), true),
+        ]);
+        assert_eq!(results[0].0, 201);
+        assert_eq!(results[0].1, " synthetic body \n");
+        assert_eq!(results[1].0, 204);
+        assert_eq!(results[1].1, "");
     }
 }
 
