@@ -22,6 +22,17 @@ pub const MAX_OUTBOX: usize = 20;
 /// Every alert issue carries this exact line, so later updates find the same issue.
 pub const ISSUE_KEY_LINE: &str = "key: RAILWAY-WATCHDOG";
 
+/// An unreadable maintenance pause must not permit recovery actions.
+pub fn actions_paused<E>(read: &Result<Option<String>, E>) -> bool {
+    match read {
+        Ok(value) => value
+            .as_ref()
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false),
+        Err(_) => true,
+    }
+}
+
 // ---------- config ----------
 
 /// One Railway environment to look after (from the WATCH var, a JSON list).
@@ -564,6 +575,12 @@ pub fn decide(inp: &Inputs, lim: &Limits, mut st: State) -> (State, Vec<Action>)
         st.blind = 0;
     }
 
+    // A cut-off inventory can hide a database the visible code services depend on.
+    // Missing another watched environment alone does not make this inventory truncated.
+    if inp.view.truncated {
+        return (st, vec![]);
+    }
+
     for v in st.tries.values_mut() {
         v.retain(|t| now - *t < lim.window_s);
     }
@@ -1010,6 +1027,100 @@ mod tests {
                 Action::Restart { name, .. } => format!("restart:{name}"),
             })
             .collect()
+    }
+
+    #[test]
+    fn unreadable_pause_blocks_recovery_and_successful_missing_key_resumes() {
+        let view = View {
+            services: vec![down("app", false)],
+            ..View::default()
+        };
+        let recovery = |read: Result<Option<String>, &str>| {
+            if actions_paused(&read) {
+                (State::default(), vec![])
+            } else {
+                decide(
+                    &Inputs {
+                        now: T0,
+                        view: &view,
+                        health: &BTreeMap::new(),
+                        billing: OK,
+                    },
+                    &Limits::default(),
+                    State::default(),
+                )
+            }
+        };
+        let (st, actions) = recovery(Err("synthetic KV unavailable"));
+        assert!(actions.is_empty());
+        assert_eq!(st, State::default(), "unreadable pause spends no tries");
+        assert!(recovery(Ok(Some("maintenance".into()))).1.is_empty());
+        assert_eq!(names(&recovery(Ok(None)).1), ["revive:app:restore"]);
+        assert_eq!(
+            names(&recovery(Ok(Some("  ".into()))).1),
+            ["revive:app:restore"]
+        );
+    }
+
+    #[test]
+    fn truncated_service_inventory_cannot_revive_app_before_unseen_database() {
+        let page = |truncated| {
+            json!({
+                "projects": {"edges": [{"node": {
+                    "name": "hub",
+                    "environments": {"edges": [{"node": {
+                        "id": "abc", "name": "production",
+                        "serviceInstances": {
+                            "pageInfo": {"hasNextPage": truncated},
+                            "edges": [{"node": {
+                                "serviceId": "app", "serviceName": "app", "source": {},
+                                "latestDeployment": null, "activeDeployments": []
+                            }}]
+                        }
+                    }}]}
+                }}]}
+            })
+        };
+        let watch = [WatchEnv {
+            env: "abc".into(),
+            health: BTreeMap::new(),
+            skip: vec![],
+        }];
+        let cut = collect(&[page(true)], &watch);
+        assert!(cut.truncated);
+        assert_eq!(cut.services.len(), 1);
+        let mut st = State::default();
+        for i in 0..=BLIND_ALERT {
+            let (next, actions) = decide(
+                &Inputs {
+                    now: T0 + 60 * i64::from(i),
+                    view: &cut,
+                    health: &BTreeMap::new(),
+                    billing: OK,
+                },
+                &Limits::default(),
+                st,
+            );
+            assert!(
+                actions.is_empty(),
+                "hidden database must prevent code restart"
+            );
+            assert!(next.tries.is_empty());
+            st = next;
+        }
+        assert!(st.outbox.iter().any(|m| m.text.contains("cut short")));
+        let full = collect(&[page(false)], &watch);
+        let (_, actions) = decide(
+            &Inputs {
+                now: T0 + 600,
+                view: &full,
+                health: &BTreeMap::new(),
+                billing: OK,
+            },
+            &Limits::default(),
+            st,
+        );
+        assert_eq!(names(&actions), ["revive:app:restore"]);
     }
 
     // Review fix (1): an unreadable spending cap fails closed.

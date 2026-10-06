@@ -9,6 +9,7 @@ Campaign CRM integration, campaign delivery reporting, and creator operations.
 - `campaign_manager/` owns the API and scheduled backend work.
 - `frontend/` owns the web interface.
 - `tests/backend/` owns backend verification.
+- `tools/railway-watchdog/` owns optional Railway recovery; its child devlog governs decisions, saved state and rollout authority.
 
 ## Local Contracts
 
@@ -48,3 +49,5 @@ Campaign CRM integration, campaign delivery reporting, and creator operations.
 - Run `cargo test --locked --manifest-path tools/yt-scraper/Cargo.toml -- --test-threads=1` for scraper normalization, synthetic proxy diagnostic/error redaction, bounded pipe-drain subprocess controls, actual loopback HTTP GUI boundary regressions, and fake-Pi pipe/deadline/output/history regressions; controls use test-owned fake executables and local HTTP only, never Pi, a real scrape or credentials.
 
 ## Child devlog Index
+
+- `tools/railway-watchdog/` — optional Railway recovery policy, state, verification and rollout holds; governed by `tools/railway-watchdog/AGENTS.md`.

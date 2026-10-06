@@ -186,16 +186,12 @@ mod worker_glue {
         };
 
         let kv = env.kv("WATCHDOG")?;
-        let paused = kv
-            .get("paused")
-            .text()
-            .await
-            .ok()
-            .flatten()
-            .map(|v| !v.trim().is_empty())
-            .unwrap_or(false);
-        let (st, actions) = if paused {
-            console_log!("watchdog paused (KV key 'paused' is set): no actions");
+        let pause_read = kv.get("paused").text().await;
+        if pause_read.is_err() {
+            console_warn!("watchdog: maintenance pause unreadable; no actions");
+        }
+        let (st, actions) = if core::actions_paused(&pause_read) {
+            console_log!("watchdog: recovery actions paused");
             (old.clone(), vec![])
         } else {
             check(env, old.clone()).await
