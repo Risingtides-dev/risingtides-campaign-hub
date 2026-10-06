@@ -19,13 +19,13 @@ if str(ROOT) not in sys.path:
 
 from src.scrapers.yt_dlp_runner import (
     NativeSubprocessCrash,
+    build_tiktok_cmd,
     raise_for_native_crash,
 )
 
 # Scraping configuration
-IMPERSONATE_TARGETS = ['chrome', 'safari', None]  # Fallback chain
 REQUEST_DELAY = 2.5  # Seconds between accounts to avoid rate limiting
-MAX_RETRIES = 3  # Max retry attempts per impersonation target
+MAX_RETRIES = 3  # Max retry attempts per account
 RATE_LIMIT_WAIT = 60  # Base wait time for 429 errors (multiplied by attempt)
 
 
@@ -44,27 +44,26 @@ def build_profile_url(username):
     return f"https://www.tiktok.com/@{username}"
 
 def build_yt_dlp_command(profile_url, limit, impersonate_target=None):
-    """Build yt-dlp command with optional impersonation"""
-    import shutil
-
-    # Determine yt-dlp command
-    if shutil.which('yt-dlp'):
-        cmd = ['yt-dlp']
-    else:
-        cmd = [sys.executable, '-m', 'yt_dlp']
-
-    cmd.extend([
-        '--flat-playlist',
-        '--dump-json',
-        '--playlist-end', str(limit),
-    ])
-
-    # Add impersonation if specified
+    """Build the shared TikTok command, retaining explicit legacy overrides."""
+    cmd = build_tiktok_cmd(profile_url, playlist_end=limit)
     if impersonate_target:
-        cmd.extend(['--impersonate', impersonate_target])
-
-    cmd.append(profile_url)
+        if '--impersonate' in cmd:
+            cmd[cmd.index('--impersonate') + 1] = impersonate_target
+        else:
+            cmd[-1:-1] = ['--impersonate', impersonate_target]
     return cmd
+
+
+def _redact_scrape_diagnostic(detail, cmd):
+    """Remove actual configured option values before diagnostics are copied."""
+    values = {
+        cmd[index + 1] for index, arg in enumerate(cmd[:-1])
+        if arg in ('--proxy', '--cookies') and cmd[index + 1]
+    }
+    values.update(repr(value)[1:-1] for value in tuple(values))
+    for value in sorted(values, key=len, reverse=True):
+        detail = detail.replace(value, '[redacted]')
+    return detail
 
 
 class ScrapeError(Exception):
@@ -73,7 +72,7 @@ class ScrapeError(Exception):
 
 
 def scrape_account_videos(account, start_datetime=None, end_datetime=None, limit=500):
-    """Scrape videos from a TikTok account with retry logic and impersonation fallback.
+    """Scrape videos with bounded retries and shared environment policy.
 
     Returns a list of video dicts on success (may be empty if no videos in window).
     Raises ScrapeError if yt-dlp could not fetch data at all (blocked, timeout, etc).
@@ -85,55 +84,55 @@ def scrape_account_videos(account, start_datetime=None, end_datetime=None, limit
     profile_url = build_profile_url(username)
     print(f"  Scraping @{username}...")
 
-    # Try each impersonation target with retries
     last_error = None
-    for impersonate_target in IMPERSONATE_TARGETS:
+    for attempt in range(MAX_RETRIES):
+        cmd = build_yt_dlp_command(profile_url, limit)
+        impersonate_target = (
+            cmd[cmd.index('--impersonate') + 1] if '--impersonate' in cmd else None
+        )
         target_name = impersonate_target or 'none'
 
-        for attempt in range(MAX_RETRIES):
-            cmd = build_yt_dlp_command(profile_url, limit, impersonate_target)
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            raise_for_native_crash(result, context=f"yt-dlp for @{username}")
 
-            try:
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-                raise_for_native_crash(result, context=f"yt-dlp for @{username}")
-
-                # Check for rate limiting (429)
-                if '429' in result.stderr or 'Too Many Requests' in result.stderr:
-                    wait_time = RATE_LIMIT_WAIT * (attempt + 1)
-                    print(f"    [RATE LIMITED] Waiting {wait_time}s before retry ({attempt + 1}/{MAX_RETRIES})...")
-                    time.sleep(wait_time)
-                    continue
-
-                # Check if we got valid output (yt-dlp may return non-zero even with warnings)
-                if result.stdout.strip():
-                    # Success - parse the output
-                    videos, total_fetched, skipped_old = parse_video_output(
-                        result.stdout, username, start_datetime, end_datetime
-                    )
-
-                    date_info = ""
-                    if start_datetime and end_datetime:
-                        date_info = f" (window: {start_datetime.strftime('%Y-%m-%d %H:%M')} to {end_datetime.strftime('%Y-%m-%d %H:%M')})"
-                    elif start_datetime:
-                        date_info = f" (after {start_datetime.strftime('%Y-%m-%d %H:%M')})"
-
-                    impersonate_info = f" [impersonate={target_name}]" if impersonate_target else ""
-                    print(f"    Fetched {total_fetched} posts | {len(videos)} within window{date_info} | {skipped_old} too old{impersonate_info}")
-                    return videos
-
-                # No output - save error and try next target
-                last_error = result.stderr[:300] if result.stderr else "yt-dlp returned no output (likely blocked)"
-                break  # Move to next impersonation target
-
-            except NativeSubprocessCrash:
-                raise
-            except subprocess.TimeoutExpired:
-                last_error = f"Timeout after 120s"
-                print(f"    [TIMEOUT] Attempt {attempt + 1}/{MAX_RETRIES} with impersonate={target_name}")
+            # Check for rate limiting (429)
+            if '429' in result.stderr or 'Too Many Requests' in result.stderr:
+                wait_time = RATE_LIMIT_WAIT * (attempt + 1)
+                print(f"    [RATE LIMITED] Waiting {wait_time}s before retry ({attempt + 1}/{MAX_RETRIES})...")
+                time.sleep(wait_time)
                 continue
-            except Exception as e:
-                last_error = str(e)
-                break  # Move to next impersonation target
+
+            # Check if we got valid output (yt-dlp may return non-zero even with warnings)
+            if result.stdout.strip():
+                # Success - parse the output
+                videos, total_fetched, skipped_old = parse_video_output(
+                    result.stdout, username, start_datetime, end_datetime
+                )
+
+                date_info = ""
+                if start_datetime and end_datetime:
+                    date_info = f" (window: {start_datetime.strftime('%Y-%m-%d %H:%M')} to {end_datetime.strftime('%Y-%m-%d %H:%M')})"
+                elif start_datetime:
+                    date_info = f" (after {start_datetime.strftime('%Y-%m-%d %H:%M')})"
+
+                impersonate_info = f" [impersonate={target_name}]" if impersonate_target else ""
+                print(f"    Fetched {total_fetched} posts | {len(videos)} within window{date_info} | {skipped_old} too old{impersonate_info}")
+                return videos
+
+            # No output - save a sanitized error and retry
+            last_error = _redact_scrape_diagnostic(result.stderr, cmd)[:300] if result.stderr else "yt-dlp returned no output (likely blocked)"
+            continue
+
+        except NativeSubprocessCrash:
+            raise
+        except subprocess.TimeoutExpired:
+            last_error = f"Timeout after 120s"
+            print(f"    [TIMEOUT] Attempt {attempt + 1}/{MAX_RETRIES} with impersonate={target_name}")
+            continue
+        except Exception as e:
+            last_error = _redact_scrape_diagnostic(str(e), cmd)
+            continue
 
     # All attempts failed — raise so caller knows this wasn't "0 videos in window"
     error_msg = f"yt-dlp failed for @{username}: {last_error}"
