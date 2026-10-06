@@ -1,0 +1,37 @@
+# railway-watchdog: brings stopped Railway services back on its own. NO SECRET VALUES IN THIS FILE.
+# Secrets (set with `wrangler secret put`, see README): RAILWAY_TOKEN (required), GITHUB_TOKEN (alerts).
+name = "railway-watchdog"
+account_id = "6107ea95ab3eac3689c3bdddf0778380"   # Rising Tides Cloudflare account (same as fleet-deadman)
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-08-01"
+workers_dev = false   # no HTTP surface; it only runs on the timer
+
+[build]
+command = "worker-build --release && (command -v wasm-opt >/dev/null 2>&1 && wasm-opt -Oz --enable-reference-types --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals --enable-multivalue build/index_bg.wasm -o build/index_bg.wasm || true)"
+
+[triggers]
+crons = ["* * * * *"]
+
+[vars]
+WORKSPACE_ID = "d0001927-81c1-4f07-86c7-82c33ce57c78"   # risingtides-dev's Projects
+GITHUB_REPO = "ecfromthedc/fleet-alerts"                # same alert repo fleet-deadman uses
+# Every production environment that was running when Railway stopped the workspace on 2026-10-06.
+# health: service name -> URL; a running service whose URL fails 3 checks in a row is restarted.
+# skip: service names the watchdog must never touch.
+WATCH = '''[
+  {"env": "57e14d07-2f38-4ee0-83db-aa945ed0b35d", "note": "campaign-hub",
+   "health": {"risingtides-campaign-hub": "https://campaignhub.risingtidesviral.com/health"}},
+  {"env": "99ff0f13-254f-4bf2-960a-134f4f2e0e0f", "note": "risingtides-content-lab"},
+  {"env": "6acee057-1da5-47a5-8371-4cf1686d471c", "note": "rising-tides-agents"},
+  {"env": "cce67d76-1ebb-4ff8-8c10-7989a5df2ceb", "note": "syzygy"},
+  {"env": "ec420f5b-5c94-44f6-ba03-3f3d2790a74c", "note": "cliptide"},
+  {"env": "266dc53c-3361-46db-a2c0-bba41c72e691", "note": "youtube-dashboard"},
+  {"env": "664cf9cf-521b-4f63-b4f3-d71dda1a3253", "note": "tidescale"},
+  {"env": "06fb8f31-4b0e-4ddb-86af-22fca7101b71", "note": "campaign-hub-rust-rewrite"},
+  {"env": "4cf292e4-89c4-4c88-8142-5c220f6c1961", "note": "harmonious-joy"}
+]'''
+
+# Created 2026-10-06 with `wrangler kv namespace create WATCHDOG` (Rising Tides account).
+[[kv_namespaces]]
+binding = "WATCHDOG"
+id = "11909cb5f19f4487972e91b2acdc0998"

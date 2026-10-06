@@ -39,3 +39,6 @@ docs/
 frontend/src/pages/PublicDashboard.tsx
 campaign_manager/blueprints/public_dashboard.py
 campaign_manager/services/thumbnails.py
+
+# Railway watchdog (a Cloudflare Worker, deployed separately)
+tools/railway-watchdog/

@@ -1,0 +1,23 @@
+[package]
+name = "railway-watchdog"
+version = "0.1.0"
+edition = "2021"
+description = "Brings stopped Railway services back on its own (Cloudflare Worker, runs outside Railway)"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# The Worker runtime is only needed for the wasm build; host `cargo test` stays light.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+worker = { version = "0.8.7", default-features = false }
+futures-util = { version = "0.3", default-features = false }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
