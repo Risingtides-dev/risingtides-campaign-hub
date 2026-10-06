@@ -34,6 +34,11 @@ The default local URL is:
 http://127.0.0.1:8787
 ```
 
+The GUI listens only on a loopback IP address or `localhost`. Browser requests
+must use that local address and the listening port from the GUI URL; foreign
+Host/Origin headers and cross-site requests are refused before any action. Local
+CLI calls without an Origin header remain supported.
+
 The GUI is a standalone two-pane workbench:
 
 - left pane: Pi Agent chat / command entry

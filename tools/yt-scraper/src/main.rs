@@ -73,7 +73,7 @@ struct Args {
     #[arg(long)]
     gui: bool,
 
-    /// Host for the local GUI server.
+    /// Loopback IP address or localhost for the local GUI server.
     #[arg(long, default_value = "127.0.0.1")]
     host: String,
 

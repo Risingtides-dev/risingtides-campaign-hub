@@ -235,3 +235,13 @@ Before controls: the five root modules passed 34/34 on unchanged main; original 
 
 Evidence: /private/tmp/hub-root-regression-ci-20261006T105235580396Z/candidate-corrected-full-python.receipt.json and prefreeze-source-preservation.json. Other322 tracked blobs retain main bytes. Root owns actual canonical append, final source freeze, independent review, exact-head hosted normal941 discovery under3.11 and release. No push, PR closure, merge, deployment, schema mutation, credential grant, paid resource or queue change by this builder. John's holds and peer ownership remain.
 _________________________________________________________________________________
+_________________________________________________________________________________
+time: [7:20am] [06-10-26] EDT
+agent: [Codex desktop] [GPT-6] [local scraper GUI boundary builder]
+worktree: [codex/secure-local-scraper-gui] /private/tmp/hub-local-scraper-gui-after-ci249-20261006T111904702145Z/repo
+type: [issues]: Risingtides-dev/risingtides-campaign-hub local yt-scraper GUI
+area: [backend], [testing]
+entry-id: hub-local-scraper-gui-loopback-browser-boundary-20261006
+
+Repair the existing local yt-scraper GUI's non-loopback bind and browser-origin exposure on actual current main 92cbd779b90af84cd53a0bb816fc5b92f06e9f53, after the verified CI249 merge. Bind only literal loopback IPs or exact localhost, use the actual bound address/port, validate Host/Origin/Fetch-Site before body reads or dispatch, reject unsupported methods, and remove wildcard CORS. Preserve same-origin GUI and originless local CLI/MCP calls; HTML, Cargo dependencies/lock and scraping behavior are unchanged. Preserve CI249's full Python test discovery and root Verification while appending the locked Cargo suite to the existing workflow. The corrected prefreeze modified-source Cargo execution at 11:01:44.993126-11:01:55.169878 UTC passed 29/29 on the earlier 782acec checkout, including five synthetic loopback HTTP boundary regressions and one strict default-port authority regression. Current GUI/main/Cargo/lock/README bytes match those actual tested inputs; only workflow/root documentation integrated onto the new base, so no new execution is claimed. Diff check and GUI rustfmt pass. Independent corrected source review found no remaining actionable defect; immutable-head review and final own-head hosted verification remain separate gates. No Pi, real scraper, production endpoint, paid call, installation, deployment or public posting is claimed. Receipt: /private/tmp/hub-local-scraper-gui-boundary-20261006T104652666398Z/corrected-full-existing-scraper-suite-result.json.
+_________________________________________________________________________________
