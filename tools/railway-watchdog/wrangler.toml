@@ -1,5 +1,6 @@
 # railway-watchdog: brings stopped Railway services back on its own. NO SECRET VALUES IN THIS FILE.
 # Secrets (set with `wrangler secret put`, see README): RAILWAY_TOKEN (required), GITHUB_TOKEN (alerts).
+# State and the run lease live in the BRAIN Durable Object; KV holds only `paused` and a read-only copy.
 name = "railway-watchdog"
 account_id = "6107ea95ab3eac3689c3bdddf0778380"   # Rising Tides Cloudflare account (same as fleet-deadman)
 main = "build/worker/shim.mjs"
@@ -35,3 +36,13 @@ WATCH = '''[
 [[kv_namespaces]]
 binding = "WATCHDOG"
 id = "11909cb5f19f4487972e91b2acdc0998"
+
+# The Brain: one Durable Object holding the saved state and the one-run-at-a-time lease.
+# Strongly consistent (KV is not), so a run always sees the tries the previous run recorded.
+[[durable_objects.bindings]]
+name = "BRAIN"
+class_name = "WatchdogBrain"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["WatchdogBrain"]

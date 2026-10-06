@@ -2,17 +2,25 @@
 //! It runs on Cloudflare, outside Railway, because on 2026-10-06 Railway stopped every service
 //! in the workspace at once; anything running inside Railway would have stopped too.
 //! All decisions live in `core` (pure, unit-tested on the host). This file is only the
-//! Cloudflare Worker glue: the Railway API, health checks, KV, and the GitHub alert issue.
+//! Cloudflare Worker glue: the Railway API, health checks, the Durable Object, and alerts.
 //!
-//! KV layout (binding WATCHDOG):
-//!   state   JSON core::State   (written only when it changes)
-//!   paused  any non-empty value pauses all actions (alerts still drain)
+//! One run at a time, and nothing acted on before it is saved:
+//!   1. take the lease from the `Brain` Durable Object (refused if another run holds it);
+//!   2. read Railway, decide;
+//!   3. save the decision to the Brain (refused if the lease was lost) -- only then act;
+//!   4. deliver alerts, save again, release the lease.
+//!
+//! Durable Object storage is strongly consistent, unlike KV, so a later run always sees
+//! the tries an earlier run recorded. KV (binding WATCHDOG) holds only:
+//!
+//! - `paused`: any non-empty value pauses all actions (alerts still drain)
+//! - `state`: a read-only copy of the saved state, for people (`wrangler kv key get`)
 
 pub mod core;
 
 #[cfg(target_arch = "wasm32")]
 mod worker_glue {
-    use crate::core::{self, Action, Billing, Inputs, Msg, MsgKind, State};
+    use crate::core::{self, Action, Billing, Inputs, Msg, MsgKind, State as Brain};
     use futures_util::future::{select, Either};
     use serde::Deserialize;
     use serde_json::{json, Value};
@@ -22,9 +30,18 @@ mod worker_glue {
 
     const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
     const UA: &str = "railway-watchdog/0.1";
+    /// Stop starting new work this long into a run, well inside the lease and before the
+    /// next scheduled run a minute later.
+    const RUN_DEADLINE_MS: u64 = 40_000;
+    /// At most this many pages of projects (25 each) per run; more counts as a cut-off view.
+    const MAX_PAGES: usize = 8;
+
+    fn now_ms() -> u64 {
+        Date::now().as_millis()
+    }
 
     fn now_s() -> i64 {
-        (Date::now().as_millis() / 1000) as i64
+        (now_ms() / 1000) as i64
     }
 
     fn var(env: &Env, name: &str) -> Option<String> {
@@ -49,79 +66,227 @@ mod worker_glue {
 
     #[event(scheduled)]
     async fn scheduled(_ev: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
+        // Never throw: Cloudflare may retry a failed scheduled run. (A retry would still be
+        // safe: the lease and the saved tries stop it from repeating an action.)
         if let Err(e) = tick(&env).await {
             console_error!("watchdog tick failed: {e}");
         }
     }
 
+    // ---------- the Brain: one Durable Object holding the state and the lease ----------
+
+    #[durable_object(fetch)]
+    pub struct WatchdogBrain {
+        state: State,
+    }
+
+    impl DurableObject for WatchdogBrain {
+        fn new(state: State, _env: Env) -> Self {
+            Self { state }
+        }
+
+        /// POST /begin {owner} -> 200 <saved state JSON> | 409 (another run holds the lease)
+        /// POST /commit {owner, state} -> 200 | 409 (lease lost: do not act)
+        /// POST /end {owner} -> 200
+        /// Each handler only awaits storage, so the Durable Object's input gate makes the
+        /// read-check-write of the lease atomic.
+        async fn fetch(&self, mut req: Request) -> Result<Response> {
+            let body: Value = req.json().await.unwrap_or(Value::Null);
+            let owner = body["owner"].as_str().unwrap_or_default().to_string();
+            if owner.is_empty() {
+                return Response::error("owner required", 400);
+            }
+            let store = self.state.storage();
+            let now = now_s();
+            let lease: Option<core::Lease> = store
+                .get::<String>("lease")
+                .await?
+                .and_then(|s| serde_json::from_str(&s).ok());
+            match req.path().as_str() {
+                "/begin" => {
+                    match core::lease_take(lease.as_ref(), &owner, now, core::LEASE_TTL_S) {
+                        None => Response::error("lease held by another run", 409),
+                        Some(l) => {
+                            store.put("lease", serde_json::to_string(&l)?).await?;
+                            let saved = store.get::<String>("state").await?.unwrap_or_default();
+                            Response::ok(saved)
+                        }
+                    }
+                }
+                "/commit" => {
+                    if !core::lease_held(lease.as_ref(), &owner, now) {
+                        return Response::error("lease lost", 409);
+                    }
+                    store.put("state", body["state"].to_string()).await?;
+                    Response::ok("saved")
+                }
+                "/end" => {
+                    if lease.map(|l| l.owner == owner).unwrap_or(false) {
+                        store.delete("lease").await?;
+                    }
+                    Response::ok("released")
+                }
+                _ => Response::error("not found", 404),
+            }
+        }
+    }
+
+    async fn brain(env: &Env, path: &str, body: Value) -> Result<(u16, String)> {
+        let stub = env
+            .durable_object("BRAIN")?
+            .id_from_name("watchdog")?
+            .get_stub()?;
+        let mut init = RequestInit::new();
+        init.with_method(Method::Post)
+            .with_body(Some(wasm_bindgen::JsValue::from_str(&body.to_string())));
+        let req = Request::new_with_init(&format!("https://brain{path}"), &init)?;
+        let mut resp = stub.fetch_with_request(req).await?;
+        let text = resp.text().await.unwrap_or_default();
+        Ok((resp.status_code(), text))
+    }
+
+    /// Save `st` while still holding the lease. False means: do not act.
+    async fn commit(env: &Env, owner: &str, st: &Brain) -> bool {
+        match brain(env, "/commit", json!({ "owner": owner, "state": st })).await {
+            Ok((200, _)) => true,
+            Ok((code, why)) => {
+                console_warn!("watchdog: save refused ({code} {why}); not acting");
+                false
+            }
+            Err(e) => {
+                console_warn!("watchdog: save failed ({e}); not acting");
+                false
+            }
+        }
+    }
+
     async fn tick(env: &Env) -> Result<()> {
-        let kv = env.kv("WATCHDOG")?;
-        let old: State = kv
-            .get("state")
-            .json::<State>()
-            .await
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        let mut st = old.clone();
-
-        let paused = kv
-            .get("paused")
-            .text()
-            .await
-            .ok()
-            .flatten()
-            .map(|v| !v.trim().is_empty())
-            .unwrap_or(false);
-        if paused {
-            console_log!("watchdog paused (KV key 'paused' is set): no actions");
+        let started = now_ms();
+        let owner = format!("{started:x}-{:x}", (js_sys::Math::random() * 1e15) as u64);
+        let (code, saved) = brain(env, "/begin", json!({ "owner": owner })).await?;
+        if code == 409 {
+            console_log!("watchdog: another run is still going; skipping this one");
+            return Ok(());
+        }
+        if code != 200 {
+            return Err(Error::RustError(format!("brain /begin: HTTP {code}")));
+        }
+        let old: Brain = if saved.trim().is_empty() {
+            Brain::default()
         } else {
-            st = check(env, st).await;
+            match serde_json::from_str(&saved) {
+                Ok(s) => s,
+                Err(e) => {
+                    // Fail closed: without the saved tries we cannot respect the limits.
+                    console_error!("watchdog: saved state unreadable ({e}); doing nothing");
+                    let _ = brain(env, "/end", json!({ "owner": owner })).await;
+                    return Ok(());
+                }
+            }
+        };
+
+        let kv = env.kv("WATCHDOG")?;
+        let pause_read = kv.get("paused").text().await;
+        if pause_read.is_err() {
+            console_warn!("watchdog: maintenance pause unreadable; no actions");
+        }
+        let (st, actions) = if core::actions_paused(&pause_read) {
+            console_log!("watchdog: recovery actions paused");
+            (old.clone(), vec![])
+        } else {
+            check(env, old.clone()).await
+        };
+
+        // Save the decision BEFORE acting, so an overlapping or retried run sees these tries.
+        let mut saved_st = old.clone();
+        if st != old || !actions.is_empty() {
+            if !commit(env, &owner, &st).await {
+                return Ok(());
+            }
+            saved_st = st.clone();
         }
 
-        st = deliver(env, st).await;
-        if st != old {
-            kv.put("state", serde_json::to_string(&st)?)?
-                .execute()
-                .await?;
+        if !actions.is_empty() {
+            let rw = Railway::new(env).expect("actions imply a token");
+            for a in &actions {
+                if now_ms() - started > RUN_DEADLINE_MS {
+                    // Already counted as a try, so the limits stay conservative.
+                    console_warn!("watchdog: run deadline reached; skipping {a:?}");
+                    continue;
+                }
+                let out = act(&rw, a).await;
+                console_log!("watchdog action {a:?}: {out}");
+            }
         }
+
+        let delivered = deliver(env, saved_st.clone(), started).await;
+        if delivered != saved_st && commit(env, &owner, &delivered).await {
+            saved_st = delivered;
+        }
+        if saved_st != old {
+            // A copy for people to read; never read back by the watchdog.
+            let _ = kv
+                .put("state", serde_json::to_string(&saved_st)?)?
+                .execute()
+                .await;
+        }
+        let _ = brain(env, "/end", json!({ "owner": owner })).await;
         Ok(())
     }
 
-    /// Look at Railway, decide, act. Any failure to read Railway leaves the state untouched.
-    async fn check(env: &Env, st: State) -> State {
+    /// Look at Railway and decide. A failed read decides nothing and counts toward an alert.
+    async fn check(env: &Env, st: Brain) -> (Brain, Vec<Action>) {
+        let Some(rw) = Railway::new(env) else {
+            // The intended "not armed yet" state: say so, change nothing.
+            console_warn!("watchdog: RAILWAY_TOKEN is not set; watching nothing");
+            return (st, vec![]);
+        };
+        let now = now_s();
         let Some(ws) = var(env, "WORKSPACE_ID").filter(|w| core::is_id(w)) else {
-            console_error!("watchdog: WORKSPACE_ID is missing or malformed");
-            return st;
+            return (
+                core::record_read_failure(st, now, "WORKSPACE_ID is missing or malformed"),
+                vec![],
+            );
         };
         let watch = match core::parse_watch(&var(env, "WATCH").unwrap_or_default()) {
             Ok(w) => w,
-            Err(e) => {
-                console_error!("watchdog: {e}");
-                return st;
-            }
+            Err(e) => return (core::record_read_failure(st, now, &e), vec![]),
         };
-        let rw = match Railway::new(env) {
-            Some(r) => r,
-            None => {
-                console_warn!("watchdog: RAILWAY_TOKEN is not set; watching nothing");
-                return st;
+        let mut pages = Vec::new();
+        let mut after: Option<String> = None;
+        let mut truncated = false;
+        loop {
+            match rw.query(&services_query(&ws, after.as_deref())).await {
+                Ok(page) => {
+                    after = core::next_cursor(&page);
+                    pages.push(page);
+                }
+                Err(e) => {
+                    console_warn!("watchdog: could not read Railway: {e}");
+                    return (core::record_read_failure(st, now, &e), vec![]);
+                }
             }
-        };
-        let data = match rw.query(&services_query(&ws)).await {
-            Ok(d) => d,
-            Err(e) => {
-                console_warn!("watchdog: could not read Railway: {e}");
-                return st;
+            if after.is_none() {
+                break;
             }
-        };
-        let (services, missing) = core::collect(&data, &watch);
-        if !missing.is_empty() {
-            console_error!("watchdog: Railway does not list watched environment(s) {missing:?}");
+            if pages.len() >= MAX_PAGES {
+                truncated = true;
+                break;
+            }
+        }
+        let mut view = core::collect(&pages, &watch);
+        view.truncated |= truncated;
+        if !view.missing.is_empty() || view.truncated {
+            console_error!(
+                "watchdog: incomplete view (missing {:?}, cut off {})",
+                view.missing,
+                view.truncated
+            );
         }
 
         let mut health = BTreeMap::new();
-        for s in services
+        for s in view
+            .services
             .iter()
             .filter(|s| core::phase(s) == core::Phase::Up)
         {
@@ -137,27 +302,19 @@ mod worker_glue {
             }
         }
 
-        let billing = if core::needs_attention(&services, &health) {
+        let billing = if core::needs_attention(&view, &health) {
             rw.billing(&ws).await
         } else {
             None
         };
         let limits = core::parse_limits(|k| var(env, k));
-        let (st, actions) = core::decide(
-            &Inputs {
-                now: now_s(),
-                services: &services,
-                health: &health,
-                billing,
-            },
-            &limits,
-            st,
-        );
-        for a in &actions {
-            let out = act(&rw, a).await;
-            console_log!("watchdog action {a:?}: {out}");
-        }
-        st
+        let inp = Inputs {
+            now,
+            view: &view,
+            health: &health,
+            billing,
+        };
+        core::decide(&inp, &limits, st)
     }
 
     async fn act(rw: &Railway, a: &Action) -> String {
@@ -180,12 +337,16 @@ mod worker_glue {
                             );
                             match rw.query(&q).await {
                                 Ok(v) => return format!("restored deployment {id}: {v}"),
-                                Err(e) => console_warn!("watchdog: restoring {id} failed ({e}); building latest instead"),
+                                Err(e) => console_warn!(
+                                    "watchdog: restoring {id} failed ({e}); building latest instead"
+                                ),
                             }
                         }
-                        None => console_log!(
-                            "watchdog: no earlier deployment to restore; building latest"
-                        ),
+                        None => {
+                            console_log!(
+                                "watchdog: no earlier deployment to restore; building latest"
+                            )
+                        }
                     }
                 }
                 let q = format!(
@@ -203,11 +364,15 @@ mod worker_glue {
         }
     }
 
-    fn services_query(ws: &str) -> String {
+    fn services_query(ws: &str, after: Option<&str>) -> String {
+        let after = after
+            .map(|c| format!(r#", after: {}"#, Value::String(c.to_string())))
+            .unwrap_or_default();
         format!(
-            r#"{{ projects(workspaceId: "{ws}") {{ edges {{ node {{ name environments {{ edges {{ node {{ id name
-            serviceInstances {{ edges {{ node {{ serviceId serviceName cronSchedule source {{ image }}
-            latestDeployment {{ status }} activeDeployments {{ id status }} }} }} }} }} }} }} }} }} }} }}"#
+            r#"{{ projects(workspaceId: "{ws}", first: 25{after}) {{ pageInfo {{ hasNextPage endCursor }}
+            edges {{ node {{ name environments {{ pageInfo {{ hasNextPage }} edges {{ node {{ id name
+            serviceInstances {{ pageInfo {{ hasNextPage }} edges {{ node {{ serviceId serviceName cronSchedule
+            source {{ image }} latestDeployment {{ status }} activeDeployments {{ id status }} }} }} }} }} }} }} }} }} }} }}"#
         )
     }
 
@@ -258,33 +423,42 @@ mod worker_glue {
             Ok(v.get("data").cloned().unwrap_or(Value::Null))
         }
 
+        /// None means unknown, and unknown means "restart nothing" (see core::decide).
         async fn billing(&self, ws: &str) -> Option<Billing> {
             let q = format!(
                 r#"{{ workspace(workspaceId: "{ws}") {{ customer {{ currentUsage usageLimit {{ hardLimit isOverLimit }} }} }} }}"#
             );
             match self.query(&q).await {
-                Ok(d) => core::parse_billing(&d),
+                Ok(d) => {
+                    let b = core::parse_billing(&d);
+                    if b.is_none() {
+                        console_warn!("watchdog: Railway's spending-cap answer was incomplete");
+                    }
+                    b
+                }
                 Err(e) => {
-                    console_warn!(
-                        "watchdog: could not read the spending cap ({e}); assuming not capped"
-                    );
+                    console_warn!("watchdog: could not read the spending cap ({e})");
                     None
                 }
             }
         }
 
         async fn last_ran(&self, env_id: &str, service_id: &str) -> Option<String> {
+            // No orderBy exists on this query; core::last_ran sorts by createdAt itself.
             let q = format!(
-                r#"{{ deployments(first: 20, input: {{ serviceId: "{service_id}", environmentId: "{env_id}" }}) {{ edges {{ node {{ id status }} }} }} }}"#
+                r#"{{ deployments(first: {}, input: {{ serviceId: "{service_id}", environmentId: "{env_id}" }}) {{ edges {{ node {{ id status createdAt }} }} }} }}"#,
+                core::DEPLOYMENTS_PAGE
             );
             let d = self.query(&q).await.ok()?;
-            let list: Vec<(String, String)> = d["deployments"]["edges"]
+            let list: Vec<core::PastDeployment> = d["deployments"]["edges"]
                 .as_array()?
                 .iter()
                 .filter_map(|e| {
+                    let n = &e["node"];
                     Some((
-                        e["node"]["id"].as_str()?.to_string(),
-                        e["node"]["status"].as_str()?.to_string(),
+                        n["id"].as_str()?.to_string(),
+                        n["status"].as_str()?.to_string(),
+                        n["createdAt"].as_str()?.to_string(),
                     ))
                 })
                 .collect();
@@ -446,7 +620,7 @@ mod worker_glue {
     }
 
     /// Send queued messages in order. Without GITHUB_TOKEN they are only logged.
-    async fn deliver(env: &Env, mut st: State) -> State {
+    async fn deliver(env: &Env, mut st: Brain, started: u64) -> Brain {
         if st.outbox.is_empty() {
             return st;
         }
@@ -466,12 +640,15 @@ mod worker_glue {
             auth: format!("Bearer {tok}"),
         };
         while let Some(m) = st.outbox.first().cloned() {
+            if now_ms() - started > RUN_DEADLINE_MS {
+                break;
+            }
             console_log!("watchdog alert {:?}: {}", m.kind, m.text);
             if gh.send(&m).await {
                 st.outbox.remove(0);
                 continue;
             }
-            // Keep order: stop here and retry this one next tick, a few times at most.
+            // Keep order: stop here and retry this one next run, a few times at most.
             let first = &mut st.outbox[0];
             first.tries += 1;
             console_warn!("watchdog github: send failed (try {})", first.tries);

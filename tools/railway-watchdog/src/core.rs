@@ -22,6 +22,17 @@ pub const MAX_OUTBOX: usize = 20;
 /// Every alert issue carries this exact line, so later updates find the same issue.
 pub const ISSUE_KEY_LINE: &str = "key: RAILWAY-WATCHDOG";
 
+/// An unreadable maintenance pause must not permit recovery actions.
+pub fn actions_paused<E>(read: &Result<Option<String>, E>) -> bool {
+    match read {
+        Ok(value) => value
+            .as_ref()
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false),
+        Err(_) => true,
+    }
+}
+
 // ---------- config ----------
 
 /// One Railway environment to look after (from the WATCH var, a JSON list).
@@ -146,19 +157,52 @@ fn edges<'a>(v: &'a Value, k: &str) -> impl Iterator<Item = &'a Value> {
         .filter_map(|e| e.get("node"))
 }
 
-/// Turn the `projects(workspaceId)` answer into the watched services. Also returns the
-/// watched environment ids Railway did not list (a typo or a deleted environment).
-pub fn collect(data: &Value, watch: &[WatchEnv]) -> (Vec<Svc>, Vec<String>) {
+fn has_next_page(v: &Value, k: &str) -> bool {
+    v.get(k)
+        .and_then(|x| x.get("pageInfo"))
+        .and_then(|p| p.get("hasNextPage"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// The cursor for the next page of projects, if Railway says there is one.
+pub fn next_cursor(page: &Value) -> Option<String> {
+    if !has_next_page(page, "projects") {
+        return None;
+    }
+    page.get("projects")?
+        .get("pageInfo")?
+        .get("endCursor")?
+        .as_str()
+        .map(str::to_string)
+}
+
+/// What the watchdog could see this tick.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct View {
+    pub services: Vec<Svc>,
+    /// Watched environment ids Railway did not list (a typo, a deleted environment, or a
+    /// token that cannot see them).
+    pub missing: Vec<String>,
+    /// Some list came back cut short (a nested page), so the view may be incomplete.
+    pub truncated: bool,
+}
+
+/// Turn the pages of the `projects(workspaceId)` answer into the watched services.
+pub fn collect(pages: &[Value], watch: &[WatchEnv]) -> View {
     let mut found = BTreeSet::new();
     let mut by_env: BTreeMap<String, Vec<Svc>> = BTreeMap::new();
-    for p in edges(data, "projects") {
+    let mut truncated = false;
+    for p in pages.iter().flat_map(|page| edges(page, "projects")) {
         let project = s(p, "name").unwrap_or_default();
+        truncated |= has_next_page(p, "environments");
         for e in edges(p, "environments") {
             let Some(env_id) = s(e, "id") else { continue };
             let Some(w) = watch.iter().find(|w| w.env == env_id) else {
                 continue;
             };
             found.insert(env_id.clone());
+            truncated |= has_next_page(e, "serviceInstances");
             let place = format!("{project} / {}", s(e, "name").unwrap_or_default());
             for si in edges(e, "serviceInstances") {
                 let (Some(service_id), Some(name)) = (s(si, "serviceId"), s(si, "serviceName"))
@@ -204,16 +248,60 @@ pub fn collect(data: &Value, watch: &[WatchEnv]) -> (Vec<Svc>, Vec<String>) {
         .map(|w| w.env.clone())
         .filter(|e| !found.contains(e))
         .collect();
-    (out, missing)
+    View {
+        services: out,
+        missing,
+        truncated,
+    }
 }
 
-/// Pick the deployment that last actually ran (newest first): the one to restore.
-/// Failed builds never ran; removed, crashed or live ones did.
-pub fn last_ran(newest_first: &[(String, String)]) -> Option<String> {
-    newest_first
+/// How many deployments the glue asks Railway for when looking for one to restore.
+pub const DEPLOYMENTS_PAGE: usize = 20;
+
+/// One past deployment: (id, status, createdAt as Railway's ISO-8601 UTC string).
+pub type PastDeployment = (String, String, String);
+
+/// A sortable key for Railway's "2026-10-06T13:24:12.537Z" timestamps, or None if the
+/// string is not in that shape. Fractions of any length compare correctly.
+fn time_key(t: &str) -> Option<(String, String)> {
+    let t = t.strip_suffix('Z')?;
+    let (whole, frac) = t.split_once('.').unwrap_or((t, ""));
+    let b = whole.as_bytes();
+    let shape = b.len() == 19
+        && b.iter().enumerate().all(|(i, c)| match i {
+            4 | 7 => *c == b'-',
+            10 => *c == b'T',
+            13 | 16 => *c == b':',
+            _ => c.is_ascii_digit(),
+        })
+        && frac.len() <= 9
+        && frac.bytes().all(|c| c.is_ascii_digit());
+    shape.then(|| (whole.to_string(), format!("{frac:0<9}")))
+}
+
+/// Pick the deployment that last actually ran: the one to restore. Failed builds never
+/// ran; removed, crashed or live ones did.
+///
+/// Railway's `deployments` query takes no ordering argument, so this sorts by createdAt
+/// itself rather than trusting the order it was given. `deps` is one page of at most
+/// DEPLOYMENTS_PAGE. A short page is the whole history, so sorting it is enough. A full
+/// page that is not already newest-first may have missed the newest deployments, so it
+/// returns None (the caller then builds fresh instead of restoring something old).
+pub fn last_ran(deps: &[PastDeployment]) -> Option<String> {
+    let mut keyed: Vec<((String, String), &str, &str)> = deps
         .iter()
-        .find(|(_, st)| matches!(st.as_str(), "REMOVED" | "CRASHED" | "SUCCESS" | "SLEEPING"))
-        .map(|(id, _)| id.clone())
+        .filter_map(|(id, st, at)| Some((time_key(at)?, id.as_str(), st.as_str())))
+        .collect();
+    let complete = deps.len() < DEPLOYMENTS_PAGE;
+    let newest_first = keyed.windows(2).all(|w| w[0].0 >= w[1].0);
+    if !complete && !newest_first {
+        return None;
+    }
+    keyed.sort_by(|a, b| b.0.cmp(&a.0));
+    keyed
+        .into_iter()
+        .find(|(_, _, st)| matches!(*st, "REMOVED" | "CRASHED" | "SUCCESS" | "SLEEPING"))
+        .map(|(_, id, _)| id.to_string())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -272,23 +360,48 @@ pub struct Billing {
 }
 
 /// Read `workspace { customer { currentUsage usageLimit { hardLimit isOverLimit } } }`.
+/// Returns a definite answer or None ("unknown"); it never guesses "not capped".
+/// `usageLimit: null` is definite: the workspace has no limit set.
 pub fn parse_billing(data: &Value) -> Option<Billing> {
     let c = data.get("workspace")?.get("customer")?;
-    let lim = c.get("usageLimit");
-    Some(Billing {
-        over_limit: lim
-            .and_then(|l| l.get("isOverLimit"))
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
-        usage: c.get("currentUsage").and_then(Value::as_f64),
-        hard_limit: lim.and_then(|l| l.get("hardLimit")).and_then(Value::as_f64),
-    })
+    if !c.is_object() {
+        return None;
+    }
+    let usage = c.get("currentUsage").and_then(Value::as_f64);
+    match c.get("usageLimit")? {
+        Value::Null => Some(Billing {
+            over_limit: false,
+            usage,
+            hard_limit: None,
+        }),
+        lim => Some(Billing {
+            over_limit: lim.get("isOverLimit")?.as_bool()?,
+            usage,
+            hard_limit: lim.get("hardLimit").and_then(Value::as_f64),
+        }),
+    }
 }
 
-// ---------- state (KV key "state") ----------
+// ---------- state (kept in the Durable Object) ----------
+
+/// Alert after this many runs in a row that could not read Railway at all.
+pub const READ_FAILS_ALERT: u32 = 5;
+/// Alert after this many runs in a row where something was down but the cap was unreadable.
+pub const BILLING_UNKNOWN_ALERT: u32 = 3;
+/// Alert after this many runs in a row with an incomplete view of the watched services.
+pub const BLIND_ALERT: u32 = 3;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct State {
+    /// Runs in a row that could not read Railway.
+    #[serde(default)]
+    pub read_fails: u32,
+    /// Runs in a row where something was down and the spending cap could not be read.
+    #[serde(default)]
+    pub billing_unknown: u32,
+    /// Runs in a row that saw no services, missed a watched environment, or got a cut-off list.
+    #[serde(default)]
+    pub blind: u32,
     /// Service key -> when the watchdog acted on it, inside the rolling window.
     #[serde(default)]
     pub tries: BTreeMap<String, Vec<i64>>,
@@ -388,17 +501,55 @@ pub enum Action {
 
 pub struct Inputs<'a> {
     pub now: i64,
-    pub services: &'a [Svc],
+    pub view: &'a View,
     /// Service key -> did its health URL answer 2xx this tick. Only services that are up
     /// and have a URL are checked.
     pub health: &'a BTreeMap<String, bool>,
-    /// None when Railway would not say (e.g. the token cannot read billing).
+    /// None when Railway would not say. Unknown is treated as "maybe capped": no actions.
     pub billing: Option<Billing>,
 }
 
+/// A run could not read Railway at all (network, auth, bad config). Nothing is decided;
+/// after READ_FAILS_ALERT runs in a row, a person is told, once per streak.
+pub fn record_read_failure(mut st: State, now: i64, err: &str) -> State {
+    st.read_fails = st.read_fails.saturating_add(1);
+    if st.read_fails == READ_FAILS_ALERT {
+        st.report(now, read_fail_text(err, st.read_fails));
+    }
+    st
+}
+
+// ---------- one run at a time (the lease, held in the Durable Object) ----------
+
+/// How long a run may hold the lease. A run stops starting new work well before this
+/// (see `RUN_DEADLINE_MS` in the glue), and the next scheduled run is 60 s later.
+pub const LEASE_TTL_S: i64 = 90;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Lease {
+    pub owner: String,
+    pub until: i64,
+}
+
+/// Grant the lease to `owner` unless someone else holds an unexpired one.
+pub fn lease_take(cur: Option<&Lease>, owner: &str, now: i64, ttl: i64) -> Option<Lease> {
+    match cur {
+        Some(l) if l.until > now && l.owner != owner => None,
+        _ => Some(Lease {
+            owner: owner.to_string(),
+            until: now + ttl,
+        }),
+    }
+}
+
+/// Does `owner` still hold the lease? A run that lost it must not act or save.
+pub fn lease_held(cur: Option<&Lease>, owner: &str, now: i64) -> bool {
+    matches!(cur, Some(l) if l.owner == owner && l.until > now)
+}
+
 /// Is anything wrong enough that the glue should spend an API call on the spending cap?
-pub fn needs_attention(services: &[Svc], health: &BTreeMap<String, bool>) -> bool {
-    services.iter().any(|s| phase(s) == Phase::Down) || health.values().any(|ok| !ok)
+pub fn needs_attention(view: &View, health: &BTreeMap<String, bool>) -> bool {
+    view.services.iter().any(|s| phase(s) == Phase::Down) || health.values().any(|ok| !ok)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -409,6 +560,27 @@ enum Why {
 
 pub fn decide(inp: &Inputs, lim: &Limits, mut st: State) -> (State, Vec<Action>) {
     let now = inp.now;
+    let services = inp.view.services.as_slice();
+    // This run read Railway, so the read-failure streak is over.
+    st.read_fails = 0;
+
+    // Seeing nothing is not the same as everything being fine.
+    let blind = services.is_empty() || !inp.view.missing.is_empty() || inp.view.truncated;
+    if blind {
+        st.blind = st.blind.saturating_add(1);
+        if st.blind == BLIND_ALERT {
+            st.report(now, blind_text(inp.view));
+        }
+    } else {
+        st.blind = 0;
+    }
+
+    // A cut-off inventory can hide a database the visible code services depend on.
+    // Missing another watched environment alone does not make this inventory truncated.
+    if inp.view.truncated {
+        return (st, vec![]);
+    }
+
     for v in st.tries.values_mut() {
         v.retain(|t| now - *t < lim.window_s);
     }
@@ -416,12 +588,11 @@ pub fn decide(inp: &Inputs, lim: &Limits, mut st: State) -> (State, Vec<Action>)
     let tried = st.tries.clone();
     st.restored.retain(|k| tried.contains_key(k));
 
-    let phases: BTreeMap<&str, Phase> = inp
-        .services
+    let phases: BTreeMap<&str, Phase> = services
         .iter()
         .map(|s| (s.key.as_str(), phase(s)))
         .collect();
-    for s in inp.services {
+    for s in services {
         if phases[s.key.as_str()] != Phase::Up {
             st.health_fails.remove(&s.key);
             continue;
@@ -435,14 +606,15 @@ pub fn decide(inp: &Inputs, lim: &Limits, mut st: State) -> (State, Vec<Action>)
         }
     }
     st.health_fails
-        .retain(|k, _| inp.services.iter().any(|s| &s.key == k));
+        .retain(|k, _| services.iter().any(|s| &s.key == k));
     let fails = |st: &State, k: &str| st.health_fails.get(k).copied().unwrap_or(0);
 
-    let all_ok = inp
-        .services
-        .iter()
-        .all(|s| phases[s.key.as_str()] == Phase::Up && fails(&st, &s.key) == 0);
+    let all_ok = !blind
+        && services
+            .iter()
+            .all(|s| phases[s.key.as_str()] == Phase::Up && fails(&st, &s.key) == 0);
     if all_ok {
+        st.billing_unknown = 0;
         if let Some(inc) = st.incident.take() {
             st.push(
                 MsgKind::Close,
@@ -453,8 +625,7 @@ pub fn decide(inp: &Inputs, lim: &Limits, mut st: State) -> (State, Vec<Action>)
         return (st, vec![]);
     }
 
-    let sick: Vec<(&Svc, Why)> = inp
-        .services
+    let sick: Vec<(&Svc, Why)> = services
         .iter()
         .filter_map(|s| match phases[s.key.as_str()] {
             Phase::Down => Some((s, Why::Down)),
@@ -465,15 +636,27 @@ pub fn decide(inp: &Inputs, lim: &Limits, mut st: State) -> (State, Vec<Action>)
         })
         .collect();
     if sick.is_empty() {
-        // Only deploys in flight or a short health blip: wait.
+        // Only deploys in flight, a short health blip, or an incomplete view: wait.
+        st.billing_unknown = 0;
         return (st, vec![]);
     }
 
+    // Fail closed: if Railway will not say whether the workspace is over its spending cap,
+    // restart nothing. Restarting into a cap is exactly what this tool must never do.
+    let Some(billing) = inp.billing else {
+        st.billing_unknown = st.billing_unknown.saturating_add(1);
+        if st.billing_unknown == BILLING_UNKNOWN_ALERT {
+            st.report(now, billing_unknown_text(sick.len()));
+        }
+        return (st, vec![]);
+    };
+    st.billing_unknown = 0;
+
     // Never fight a spending cap: redeploying would only be stopped again or run up the bill.
-    if let Some(b) = inp.billing.filter(|b| b.over_limit) {
+    if billing.over_limit {
         let noted = st.incident.as_ref().map(|i| i.cap_noted).unwrap_or(false);
         if !noted {
-            st.report(now, cap_text(b, sick.len()));
+            st.report(now, cap_text(billing, sick.len()));
             if let Some(i) = st.incident.as_mut() {
                 i.cap_noted = true;
             }
@@ -501,7 +684,7 @@ pub fn decide(inp: &Inputs, lim: &Limits, mut st: State) -> (State, Vec<Action>)
     for (s, why) in sick {
         // Code services come back only after the databases in their environment are up
         // (unless a database has been given up on, so one broken image cannot block the rest).
-        let db_pending = inp.services.iter().any(|d| {
+        let db_pending = services.iter().any(|d| {
             d.image
                 && d.env_id == s.env_id
                 && d.key != s.key
@@ -651,6 +834,42 @@ fn cap_text(b: Billing, down: usize) -> String {
     )
 }
 
+fn read_fail_text(err: &str, runs: u32) -> String {
+    format!(
+        "The watchdog **cannot read Railway** ({runs} checks in a row, about {runs} minutes). \
+         While this lasts it cannot see or fix anything. Last error: `{err}`. Check that \
+         RAILWAY_TOKEN is still valid and that the Railway API is up."
+    )
+}
+
+fn billing_unknown_text(down: usize) -> String {
+    format!(
+        "{down} service(s) are down, but Railway will not say whether the workspace is over its \
+         spending cap. The watchdog is **not** restarting anything, because restarting into a \
+         cap is the one thing it must never do. A person needs to check the Railway dashboard \
+         (Workspace settings, Usage). If the token cannot read billing, give it one that can."
+    )
+}
+
+fn blind_text(view: &View) -> String {
+    let what = if view.services.is_empty() {
+        "it **cannot see any services**".to_string()
+    } else if !view.missing.is_empty() {
+        format!(
+            "Railway is not listing {} watched environment(s): {}",
+            view.missing.len(),
+            view.missing.join(", ")
+        )
+    } else {
+        "Railway's list came back cut short".to_string()
+    };
+    format!(
+        "The watchdog's view is incomplete: {what}. It will not say \"everything is fine\" \
+         until it can see every watched environment. Check the WATCH list and that the token \
+         can see these projects."
+    )
+}
+
 fn resolved_text(opened_at: i64, now: i64) -> String {
     let mins = ((now - opened_at).max(0) + 59) / 60;
     format!(
@@ -742,6 +961,12 @@ mod tests {
     use serde_json::json;
 
     const T0: i64 = 1_791_287_000; // Tue Oct 6 2026, ~7:43 AM EDT
+    /// Railway said: not over the cap (no limit set).
+    const OK: Option<Billing> = Some(Billing {
+        over_limit: false,
+        usage: None,
+        hard_limit: None,
+    });
 
     fn svc(name: &str, image: bool, latest: Option<&str>, active: &[(&str, &str)]) -> Svc {
         Svc {
@@ -777,10 +1002,14 @@ mod tests {
             .iter()
             .map(|(k, v)| (format!("env1/{k}"), *v))
             .collect();
+        let view = View {
+            services: svcs.to_vec(),
+            ..View::default()
+        };
         decide(
             &Inputs {
                 now,
-                services: svcs,
+                view: &view,
                 health: &h,
                 billing,
             },
@@ -801,12 +1030,256 @@ mod tests {
     }
 
     #[test]
+    fn unreadable_pause_blocks_recovery_and_successful_missing_key_resumes() {
+        let view = View {
+            services: vec![down("app", false)],
+            ..View::default()
+        };
+        let recovery = |read: Result<Option<String>, &str>| {
+            if actions_paused(&read) {
+                (State::default(), vec![])
+            } else {
+                decide(
+                    &Inputs {
+                        now: T0,
+                        view: &view,
+                        health: &BTreeMap::new(),
+                        billing: OK,
+                    },
+                    &Limits::default(),
+                    State::default(),
+                )
+            }
+        };
+        let (st, actions) = recovery(Err("synthetic KV unavailable"));
+        assert!(actions.is_empty());
+        assert_eq!(st, State::default(), "unreadable pause spends no tries");
+        assert!(recovery(Ok(Some("maintenance".into()))).1.is_empty());
+        assert_eq!(names(&recovery(Ok(None)).1), ["revive:app:restore"]);
+        assert_eq!(
+            names(&recovery(Ok(Some("  ".into()))).1),
+            ["revive:app:restore"]
+        );
+    }
+
+    #[test]
+    fn truncated_service_inventory_cannot_revive_app_before_unseen_database() {
+        let page = |truncated| {
+            json!({
+                "projects": {"edges": [{"node": {
+                    "name": "hub",
+                    "environments": {"edges": [{"node": {
+                        "id": "abc", "name": "production",
+                        "serviceInstances": {
+                            "pageInfo": {"hasNextPage": truncated},
+                            "edges": [{"node": {
+                                "serviceId": "app", "serviceName": "app", "source": {},
+                                "latestDeployment": null, "activeDeployments": []
+                            }}]
+                        }
+                    }}]}
+                }}]}
+            })
+        };
+        let watch = [WatchEnv {
+            env: "abc".into(),
+            health: BTreeMap::new(),
+            skip: vec![],
+        }];
+        let cut = collect(&[page(true)], &watch);
+        assert!(cut.truncated);
+        assert_eq!(cut.services.len(), 1);
+        let mut st = State::default();
+        for i in 0..=BLIND_ALERT {
+            let (next, actions) = decide(
+                &Inputs {
+                    now: T0 + 60 * i64::from(i),
+                    view: &cut,
+                    health: &BTreeMap::new(),
+                    billing: OK,
+                },
+                &Limits::default(),
+                st,
+            );
+            assert!(
+                actions.is_empty(),
+                "hidden database must prevent code restart"
+            );
+            assert!(next.tries.is_empty());
+            st = next;
+        }
+        assert!(st.outbox.iter().any(|m| m.text.contains("cut short")));
+        let full = collect(&[page(false)], &watch);
+        let (_, actions) = decide(
+            &Inputs {
+                now: T0 + 600,
+                view: &full,
+                health: &BTreeMap::new(),
+                billing: OK,
+            },
+            &Limits::default(),
+            st,
+        );
+        assert_eq!(names(&actions), ["revive:app:restore"]);
+    }
+
+    // Review fix (1): an unreadable spending cap fails closed.
+    #[test]
+    fn unknown_billing_with_a_down_service_restarts_nothing_and_alerts_once() {
+        let s = [down("Postgres", true)];
+        let mut st = State::default();
+        for i in 0..(BILLING_UNKNOWN_ALERT as i64 + 3) {
+            let (n, a) = run(T0 + 60 * i, &s, &[], None, st);
+            assert!(a.is_empty(), "unreadable cap must fail closed, got {a:?}");
+            st = n;
+        }
+        assert!(
+            st.tries.is_empty(),
+            "no tries spent while the cap is unknown"
+        );
+        assert_eq!(st.outbox.len(), 1, "alerted once per streak");
+        assert!(st.outbox[0]
+            .text
+            .contains("will not say whether the workspace is over"));
+        // The cap becomes readable and is fine: it acts.
+        let (_, a) = run(T0 + 600, &s, &[], OK, st);
+        assert_eq!(names(&a), ["revive:Postgres:restore"]);
+    }
+
+    #[test]
+    fn unknown_billing_with_everything_up_is_quiet() {
+        let (st, a) = run(T0, &[up("Postgres", true)], &[], None, State::default());
+        assert!(a.is_empty());
+        assert_eq!(st, State::default());
+    }
+
+    // Review fix (2): an empty or partial view never counts as "everything is fine".
+    #[test]
+    fn seeing_no_services_never_closes_an_incident_and_alerts() {
+        let (st, _) = run(T0, &[down("Postgres", true)], &[], OK, State::default());
+        assert!(st.incident.is_some());
+        let mut st = st;
+        for i in 1..=(BLIND_ALERT as i64 + 2) {
+            let (n, a) = run(T0 + 60 * i, &[], &[], OK, st);
+            assert!(a.is_empty());
+            assert!(
+                n.incident.is_some(),
+                "an empty view is not 'everything is fine'"
+            );
+            st = n;
+        }
+        assert!(!st.outbox.iter().any(|m| m.kind == MsgKind::Close));
+        let blind: Vec<_> = st
+            .outbox
+            .iter()
+            .filter(|m| m.text.contains("cannot see any services"))
+            .collect();
+        assert_eq!(blind.len(), 1, "alerted once per streak");
+    }
+
+    #[test]
+    fn a_missing_or_cut_off_environment_blocks_closing_but_not_fixing() {
+        let h = BTreeMap::new();
+        let view = View {
+            services: vec![down("Postgres", true)],
+            missing: vec!["env-gone".into()],
+            truncated: false,
+        };
+        let inp = |now, v| Inputs {
+            now,
+            view: v,
+            health: &h,
+            billing: OK,
+        };
+        let (st, a) = decide(&inp(T0, &view), &Limits::default(), State::default());
+        assert_eq!(
+            names(&a),
+            ["revive:Postgres:restore"],
+            "visible services still get fixed"
+        );
+        let up_view = View {
+            services: vec![up("Postgres", true)],
+            ..view.clone()
+        };
+        let (st, _) = decide(&inp(T0 + 60, &up_view), &Limits::default(), st);
+        let (st, _) = decide(&inp(T0 + 120, &up_view), &Limits::default(), st);
+        assert!(st.incident.is_some(), "a missing environment keeps it open");
+        assert!(st.outbox.iter().any(|m| m.text.contains("env-gone")));
+        let cut = View {
+            services: vec![up("Postgres", true)],
+            missing: vec![],
+            truncated: true,
+        };
+        let (st, _) = decide(&inp(T0 + 180, &cut), &Limits::default(), st);
+        assert!(st.incident.is_some(), "a cut-off list keeps it open");
+        let full = View {
+            services: vec![up("Postgres", true)],
+            ..View::default()
+        };
+        let (st, _) = decide(&inp(T0 + 240, &full), &Limits::default(), st);
+        assert!(st.incident.is_none(), "a full, healthy view closes it");
+    }
+
+    // Review fix (4): repeated Railway read failures page a person.
+    #[test]
+    fn repeated_read_failures_alert_once_then_clear() {
+        let mut st = State::default();
+        for i in 0..(READ_FAILS_ALERT as i64 + 3) {
+            st = record_read_failure(st, T0 + 60 * i, "HTTP 401: Not Authorized");
+        }
+        assert_eq!(st.outbox.len(), 1, "alerted once per streak");
+        assert!(st.outbox[0].text.contains("cannot read Railway"));
+        assert!(st.outbox[0].text.contains("HTTP 401"));
+        let (st, _) = run(T0 + 900, &[up("Postgres", true)], &[], None, st);
+        assert_eq!(st.read_fails, 0);
+        assert!(st.incident.is_none());
+        assert_eq!(st.outbox.last().unwrap().kind, MsgKind::Close);
+    }
+
+    // Review fix (3): two overlapping runs. The lease admits one; the decision is saved
+    // before acting, so the next run sees the try and does not repeat it.
+    #[test]
+    fn overlapping_runs_cannot_both_act() {
+        let s = [down("Postgres", true)];
+        // Durable Object storage, simulated: one lease slot and one saved state.
+        let mut lease: Option<Lease> = None;
+        let mut saved = State::default();
+
+        // Run A and run B start at the same moment.
+        let a = lease_take(lease.as_ref(), "A", T0, LEASE_TTL_S).expect("A gets the lease");
+        lease = Some(a);
+        assert!(
+            lease_take(lease.as_ref(), "B", T0, LEASE_TTL_S).is_none(),
+            "B is refused while A holds it"
+        );
+
+        // A decides, saves BEFORE acting, then acts.
+        let (st_a, acts_a) = run(T0, &s, &[], OK, saved.clone());
+        assert!(lease_held(lease.as_ref(), "A", T0 + 5));
+        saved = st_a;
+        assert_eq!(names(&acts_a), ["revive:Postgres:restore"]);
+
+        // A crashes without releasing. B retries before the lease runs out: still refused.
+        assert!(lease_take(lease.as_ref(), "B", T0 + 60, LEASE_TTL_S).is_none());
+        // After it runs out, B takes over, loads the saved state, and does not repeat A.
+        let b = lease_take(lease.as_ref(), "B", T0 + LEASE_TTL_S, LEASE_TTL_S).unwrap();
+        lease = Some(b);
+        let (_, acts_b) = run(T0 + LEASE_TTL_S, &s, &[], OK, saved.clone());
+        assert!(
+            acts_b.is_empty(),
+            "inside the cooldown: no second restart, got {acts_b:?}"
+        );
+        // A, waking up late, no longer holds the lease, so it may not act or save.
+        assert!(!lease_held(lease.as_ref(), "A", T0 + LEASE_TTL_S + 1));
+    }
+
+    #[test]
     fn all_running_is_quiet_and_writes_nothing() {
         let (st, a) = run(
             T0,
             &[up("Postgres", true), up("app", false)],
             &[("app", true)],
-            None,
+            OK,
             State::default(),
         );
         assert!(a.is_empty());
@@ -857,7 +1330,7 @@ mod tests {
             down("app", false),
             down("Backup CRON", false),
         ];
-        let (st, a) = run(T0, &s0, &[], None, State::default());
+        let (st, a) = run(T0, &s0, &[], OK, State::default());
         assert_eq!(
             names(&a),
             ["revive:Postgres:restore"],
@@ -875,7 +1348,7 @@ mod tests {
             down("app", false),
             down("Backup CRON", false),
         ];
-        let (st, a) = run(T0 + 60, &s1, &[], None, st);
+        let (st, a) = run(T0 + 60, &s1, &[], OK, st);
         assert!(a.is_empty());
 
         // Database up -> both code services come back in one tick, one comment.
@@ -884,7 +1357,7 @@ mod tests {
             down("app", false),
             down("Backup CRON", false),
         ];
-        let (st, a) = run(T0 + 120, &s2, &[], None, st);
+        let (st, a) = run(T0 + 120, &s2, &[], OK, st);
         assert_eq!(
             names(&a),
             ["revive:app:restore", "revive:Backup CRON:restore"]
@@ -898,7 +1371,7 @@ mod tests {
             up("app", false),
             up("Backup CRON", false),
         ];
-        let (st, a) = run(T0 + 300, &s3, &[], None, st);
+        let (st, a) = run(T0 + 300, &s3, &[], OK, st);
         assert!(a.is_empty());
         assert!(st.incident.is_none());
         let last = st.outbox.last().unwrap();
@@ -910,18 +1383,18 @@ mod tests {
     fn retries_are_spaced_then_fresh_build_then_pages_a_person() {
         let lim = Limits::default();
         let s = [down("app", false)];
-        let (st, a) = run(T0, &s, &[], None, State::default());
+        let (st, a) = run(T0, &s, &[], OK, State::default());
         assert_eq!(names(&a), ["revive:app:restore"]);
         // Inside the cooldown: nothing.
-        let (st, a) = run(T0 + lim.cooldown_s - 1, &s, &[], None, st);
+        let (st, a) = run(T0 + lim.cooldown_s - 1, &s, &[], OK, st);
         assert!(a.is_empty());
         // Second try is a fresh build of the latest code.
-        let (st, a) = run(T0 + lim.cooldown_s, &s, &[], None, st);
+        let (st, a) = run(T0 + lim.cooldown_s, &s, &[], OK, st);
         assert_eq!(names(&a), ["revive:app:fresh"]);
-        let (st, a) = run(T0 + 2 * lim.cooldown_s, &s, &[], None, st);
+        let (st, a) = run(T0 + 2 * lim.cooldown_s, &s, &[], OK, st);
         assert_eq!(names(&a), ["revive:app:fresh"]);
         // Out of tries: no action, one page.
-        let (st, a) = run(T0 + 3 * lim.cooldown_s, &s, &[], None, st);
+        let (st, a) = run(T0 + 3 * lim.cooldown_s, &s, &[], OK, st);
         assert!(a.is_empty());
         assert!(st
             .outbox
@@ -930,20 +1403,14 @@ mod tests {
             .text
             .contains("A person needs to look"));
         let n = st.outbox.len();
-        let (st, a) = run(T0 + 4 * lim.cooldown_s, &s, &[], None, st);
+        let (st, a) = run(T0 + 4 * lim.cooldown_s, &s, &[], OK, st);
         assert!(a.is_empty());
         assert_eq!(st.outbox.len(), n, "paged once, not every minute");
         // The window rolls: as the oldest try ages out, one more try is allowed.
-        let (st, a) = run(T0 + lim.window_s, &s, &[], None, st);
+        let (st, a) = run(T0 + lim.window_s, &s, &[], OK, st);
         assert_eq!(names(&a), ["revive:app:fresh"]);
         // Once every try has aged out, it starts over with a restore.
-        let (_, a) = run(
-            T0 + 2 * lim.cooldown_s + 2 * lim.window_s,
-            &s,
-            &[],
-            None,
-            st,
-        );
+        let (_, a) = run(T0 + 2 * lim.cooldown_s + 2 * lim.window_s, &s, &[], OK, st);
         assert_eq!(names(&a), ["revive:app:restore"]);
     }
 
@@ -983,18 +1450,18 @@ mod tests {
         let s = [up("Postgres", true), up("app", false)];
         let mut st = State::default();
         for i in 0..(DEFAULT_HEALTH_FAILS as i64 - 1) {
-            let (n, a) = run(T0 + 60 * i, &s, &[("app", false)], None, st);
+            let (n, a) = run(T0 + 60 * i, &s, &[("app", false)], OK, st);
             assert!(a.is_empty(), "no restart on a short blip");
             st = n;
         }
         assert!(st.outbox.is_empty(), "a short blip pages nobody");
-        let (st, a) = run(T0 + 600, &s, &[("app", false)], None, st);
+        let (st, a) = run(T0 + 600, &s, &[("app", false)], OK, st);
         assert_eq!(names(&a), ["restart:app"]);
         assert!(st.outbox[0]
             .text
             .contains("health check failed 3 times in a row"));
         // Recovers: incident closes.
-        let (st, _) = run(T0 + 660, &s, &[("app", true)], None, st);
+        let (st, _) = run(T0 + 660, &s, &[("app", true)], OK, st);
         assert!(st.incident.is_none());
         assert_eq!(st.outbox.last().unwrap().kind, MsgKind::Close);
     }
@@ -1005,7 +1472,7 @@ mod tests {
         let mut st = State::default();
         let s = [up("app", false)];
         for i in 0..DEFAULT_HEALTH_FAILS as i64 {
-            st = run(T0 + 60 * i, &s, &[("app", false)], None, st).0;
+            st = run(T0 + 60 * i, &s, &[("app", false)], OK, st).0;
         }
         assert_eq!(
             st.tries.get("env1/app").map(Vec::len),
@@ -1016,7 +1483,7 @@ mod tests {
             T0 + lim.cooldown_s + 200,
             &[down("app", false)],
             &[],
-            None,
+            OK,
             st,
         );
         assert_eq!(names(&a), ["revive:app:restore"]);
@@ -1025,9 +1492,9 @@ mod tests {
     #[test]
     fn a_blip_that_recovers_resets_the_streak() {
         let s = [up("app", false)];
-        let (st, _) = run(T0, &s, &[("app", false)], None, State::default());
-        let (st, _) = run(T0 + 60, &s, &[("app", false)], None, st);
-        let (st, _) = run(T0 + 120, &s, &[("app", true)], None, st);
+        let (st, _) = run(T0, &s, &[("app", false)], OK, State::default());
+        let (st, _) = run(T0 + 60, &s, &[("app", false)], OK, st);
+        let (st, _) = run(T0 + 120, &s, &[("app", true)], OK, st);
         assert_eq!(st, State::default());
     }
 
@@ -1038,14 +1505,14 @@ mod tests {
         let mut st = State::default();
         let mut t = T0;
         for _ in 0..lim.max_tries {
-            let (n, a) = run(t, &s, &[], None, st);
+            let (n, a) = run(t, &s, &[], OK, st);
             assert_eq!(a.len(), 1);
             st = n;
             t += lim.cooldown_s;
         }
-        let (st, a) = run(t, &s, &[], None, st);
+        let (st, a) = run(t, &s, &[], OK, st);
         assert!(a.is_empty(), "this tick records the give-up");
-        let (_, a) = run(t + 60, &s, &[], None, st);
+        let (_, a) = run(t + 60, &s, &[], OK, st);
         assert_eq!(names(&a), ["revive:app:restore"]);
     }
 
@@ -1055,14 +1522,17 @@ mod tests {
             max_actions_per_hour: 2,
             ..Limits::default()
         };
-        let s = [down("a", true), down("b", true), down("c", true)];
+        let s = View {
+            services: vec![down("a", true), down("b", true), down("c", true)],
+            ..View::default()
+        };
         let h = BTreeMap::new();
         let (st, a) = decide(
             &Inputs {
                 now: T0,
-                services: &s,
+                view: &s,
                 health: &h,
-                billing: None,
+                billing: OK,
             },
             &lim,
             State::default(),
@@ -1076,9 +1546,9 @@ mod tests {
         let (st, a) = decide(
             &Inputs {
                 now: T0 + 60,
-                services: &s,
+                view: &s,
                 health: &h,
-                billing: None,
+                billing: OK,
             },
             &lim,
             st,
@@ -1090,9 +1560,9 @@ mod tests {
     #[test]
     fn one_run_never_does_more_than_ten_actions() {
         let many: Vec<Svc> = (0..15).map(|i| down(&format!("db{i}"), true)).collect();
-        let (st, a) = run(T0, &many, &[], None, State::default());
+        let (st, a) = run(T0, &many, &[], OK, State::default());
         assert_eq!(a.len(), MAX_ACTIONS_PER_TICK);
-        let (_, a) = run(T0 + 60, &many, &[], None, st);
+        let (_, a) = run(T0 + 60, &many, &[], OK, st);
         assert_eq!(a.len(), 5, "the rest go a minute later");
     }
 
@@ -1132,7 +1602,9 @@ mod tests {
             r#"[{"env":"e1","health":{"Postgres":"https://x/health"},"skip":["scratch"]},{"env":"e2"},{"env":"e404"}]"#,
         )
         .unwrap();
-        let (svcs, missing) = collect(&data, &watch);
+        let view = collect(&[data], &watch);
+        let (svcs, missing) = (&view.services, &view.missing);
+        assert!(!view.truncated);
         let got: Vec<(&str, bool, bool, Phase)> = svcs
             .iter()
             .map(|s| (s.name.as_str(), s.image, s.cron, phase(s)))
@@ -1148,31 +1620,66 @@ mod tests {
         assert_eq!(svcs[0].key, "e1/s1");
         assert_eq!(svcs[0].place, "campaign-hub / production");
         assert_eq!(svcs[0].health_url.as_deref(), Some("https://x/health"));
-        assert_eq!(missing, ["e404"]);
+        assert_eq!(missing, &["e404"]);
     }
 
     #[test]
-    fn last_ran_skips_failed_builds() {
-        let l = |v: &[(&str, &str)]| {
+    fn last_ran_skips_failed_builds_and_ignores_railways_order() {
+        let at = |h: u32| format!("2026-10-06T{h:02}:00:00.000Z");
+        let l = |v: &[(&str, &str, String)]| {
             last_ran(
                 &v.iter()
-                    .map(|(a, b)| (a.to_string(), b.to_string()))
+                    .map(|(a, b, c)| (a.to_string(), b.to_string(), c.clone()))
                     .collect::<Vec<_>>(),
             )
         };
-        // Campaign Hub this morning: three deploys failed because the database was gone.
+        // Campaign Hub on 2026-10-06: three deploys failed because the database was gone.
+        let newest_first = [
+            ("f3", "FAILED", at(13)),
+            ("f2", "FAILED", at(12)),
+            ("f1", "FAILED", at(11)),
+            ("ok", "REMOVED", at(10)),
+            ("ancient", "REMOVED", at(9)),
+        ];
+        assert_eq!(l(&newest_first).as_deref(), Some("ok"));
+        // Same history served oldest first: still "ok", never "ancient".
+        let mut oldest_first = newest_first.clone();
+        oldest_first.reverse();
+        assert_eq!(l(&oldest_first).as_deref(), Some("ok"));
+        assert_eq!(l(&[("f", "FAILED", at(1))]), None);
+        assert_eq!(l(&[]), None);
+        // Fractions of different lengths compare by time, not by text.
         assert_eq!(
             l(&[
-                ("f3", "FAILED"),
-                ("f2", "FAILED"),
-                ("f1", "FAILED"),
-                ("ok", "REMOVED")
+                ("later", "REMOVED", "2026-10-06T10:00:00.5Z".into()),
+                ("earlier", "REMOVED", "2026-10-06T10:00:00.123Z".into())
             ])
             .as_deref(),
-            Some("ok")
+            Some("later")
         );
-        assert_eq!(l(&[("f", "FAILED")]), None);
-        assert_eq!(l(&[]), None);
+        // Unparseable timestamps are ignored.
+        assert_eq!(l(&[("x", "REMOVED", "yesterday".into())]), None);
+    }
+
+    #[test]
+    fn a_full_page_out_of_order_is_not_trusted() {
+        let full: Vec<PastDeployment> = (0..DEPLOYMENTS_PAGE as u32)
+            .map(|i| {
+                (
+                    format!("d{i}"),
+                    "REMOVED".to_string(),
+                    format!("2026-10-{:02}T00:00:00Z", i + 1),
+                )
+            })
+            .collect();
+        assert_eq!(
+            last_ran(&full),
+            None,
+            "oldest first and full: the newest may be missing"
+        );
+        let mut newest_first = full.clone();
+        newest_first.reverse();
+        assert_eq!(last_ran(&newest_first).as_deref(), Some("d19"));
     }
 
     #[test]
@@ -1210,8 +1717,45 @@ mod tests {
             &json!({"workspace": {"customer": {"currentUsage": 0, "usageLimit": null}}}),
         )
         .unwrap();
-        assert!(!none.over_limit);
+        assert!(!none.over_limit, "no limit set is a definite 'not capped'");
         assert!(parse_billing(&json!({})).is_none());
+        // Anything half-answered is unknown, never "not capped".
+        assert!(parse_billing(&json!({"workspace": {"customer": null}})).is_none());
+        assert!(parse_billing(&json!({"workspace": {"customer": {"currentUsage": 1}}})).is_none());
+        assert!(parse_billing(
+            &json!({"workspace": {"customer": {"usageLimit": {"hardLimit": 100}}}})
+        )
+        .is_none());
+        assert!(parse_billing(
+            &json!({"workspace": {"customer": {"usageLimit": {"isOverLimit": "yes"}}}})
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn pagination_and_cut_off_lists() {
+        let page = |name: &str, more: bool, env_more: bool| {
+            json!({"projects": {
+                "pageInfo": {"hasNextPage": more, "endCursor": format!("after-{name}")},
+                "edges": [{"node": {"name": name, "environments": {
+                    "pageInfo": {"hasNextPage": env_more},
+                    "edges": [{"node": {"id": format!("e-{name}"), "name": "production",
+                        "serviceInstances": {"pageInfo": {"hasNextPage": false}, "edges": []}}}]}}}]}})
+        };
+        assert_eq!(
+            next_cursor(&page("a", true, false)).as_deref(),
+            Some("after-a")
+        );
+        assert_eq!(next_cursor(&page("b", false, false)), None);
+        let watch = parse_watch(r#"[{"env":"e-a"},{"env":"e-b"}]"#).unwrap();
+        let v = collect(&[page("a", true, false), page("b", false, false)], &watch);
+        assert!(v.missing.is_empty(), "environments on page 2 are found");
+        assert!(!v.truncated);
+        let v = collect(&[page("a", false, true)], &watch);
+        assert!(
+            v.truncated,
+            "a nested list with more pages is reported as cut off"
+        );
     }
 
     #[test]
@@ -1238,8 +1782,8 @@ mod dry_run {
         .unwrap();
         let data = snap.get("data").unwrap_or(&snap);
         let watch = parse_watch(&std::env::var("WATCH").unwrap()).unwrap();
-        let (svcs, missing) = collect(data, &watch);
-        for s in &svcs {
+        let view = collect(std::slice::from_ref(data), &watch);
+        for s in &view.services {
             println!(
                 "{:?}\t{}\t{}{}",
                 phase(s),
@@ -1248,14 +1792,23 @@ mod dry_run {
                 if s.image { " (database)" } else { "" }
             );
         }
-        println!("missing environments: {missing:?}");
+        println!(
+            "missing environments: {:?}, cut off: {}",
+            view.missing, view.truncated
+        );
         let h = BTreeMap::new();
+        // Assume "not capped" so the dry run shows what it would restart.
+        let ok = Some(Billing {
+            over_limit: false,
+            usage: None,
+            hard_limit: None,
+        });
         let (_, actions) = decide(
             &Inputs {
                 now: 0,
-                services: &svcs,
+                view: &view,
                 health: &h,
-                billing: None,
+                billing: ok,
             },
             &Limits::default(),
             State::default(),
