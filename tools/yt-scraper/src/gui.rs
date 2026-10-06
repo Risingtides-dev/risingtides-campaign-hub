@@ -15,7 +15,10 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration as StdDuration, Instant};
-use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
+#[path = "gui_http.rs"]
+mod gui_http;
+use gui_http::{Request, Server};
+use tiny_http::{Header, Method, Response, StatusCode};
 use wait_timeout::ChildExt;
 
 #[derive(Debug, Clone)]
@@ -114,6 +117,10 @@ struct McpRequest {
 }
 
 fn bind_gui(options: GuiOptions) -> Result<(Server, GuiState)> {
+    bind_gui_with_limits(options, gui_http::Limits::default())
+}
+
+fn bind_gui_with_limits(options: GuiOptions, limits: gui_http::Limits) -> Result<(Server, GuiState)> {
     let host = options
         .host
         .strip_prefix('[')
@@ -128,12 +135,8 @@ fn bind_gui(options: GuiOptions) -> Result<(Server, GuiState)> {
     if !ip.is_loopback() {
         bail!("GUI host must be a loopback IP address or localhost");
     }
-    let server = Server::http(SocketAddr::new(ip, options.port))
-        .map_err(|e| anyhow!("failed to start GUI server: {e}"))?;
-    let local_addr = server
-        .server_addr()
-        .to_ip()
-        .ok_or_else(|| anyhow!("GUI server requires a loopback TCP address"))?;
+    let server = Server::bind_with_limits(SocketAddr::new(ip, options.port), gui_body_required, limits)?;
+    let local_addr = server.server_addr();
     let state = GuiState {
         runs: Arc::new(Mutex::new(BTreeMap::new())),
         chat_history: Arc::new(Mutex::new(Vec::new())),
@@ -151,7 +154,9 @@ pub(crate) fn serve(options: GuiOptions) -> Result<()> {
 
     for request in server.incoming_requests() {
         let request_state = state.clone();
+        let admission = request.handler_admission();
         std::thread::spawn(move || {
+            let _admission = admission;
             if let Err(err) = handle_request(request, request_state) {
                 eprintln!("GUI request failed: {err}");
             }
@@ -220,6 +225,16 @@ fn local_request(request: &Request, local_addr: SocketAddr) -> bool {
         && sites
             .first()
             .is_none_or(|site| matches!(*site, "same-origin" | "none"))
+}
+
+
+// Preserve the existing guard and route/method denials before body collection.
+fn gui_body_required(request: &Request, local_addr: SocketAddr) -> bool {
+    if !local_request(request, local_addr) || request.method() != &Method::Post {
+        return false;
+    }
+    let path = request.url().split('?').next().unwrap_or("/").trim_end_matches('/');
+    matches!(path, "/api/runs" | "/api/chat" | "/api/tools/call" | "/api/mcp")
 }
 
 fn handle_request(mut request: Request, state: GuiState) -> Result<()> {
@@ -1911,6 +1926,496 @@ mod tests {
         assert_eq!(results[1].0, 204);
         assert_eq!(results[1].1, "");
     }
+    struct IngressFixture {
+        state: GuiState,
+        stop: Arc<AtomicBool>,
+        dispatched: Arc<std::sync::atomic::AtomicUsize>,
+        peak_tasks: Arc<std::sync::atomic::AtomicUsize>,
+        worker: Option<thread::JoinHandle<()>>,
+    }
+
+    impl IngressFixture {
+        fn new(limits: gui_http::Limits) -> Self {
+            let (server, state) = bind_gui_with_limits(
+                GuiOptions {
+                    host: "127.0.0.1".into(),
+                    port: 0,
+                },
+                limits,
+            )
+            .unwrap();
+            let stop = Arc::new(AtomicBool::new(false));
+            let dispatched = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let stopped = stop.clone();
+            let counted = dispatched.clone();
+            let handler_state = state.clone();
+            let peak_tasks = server.peak_owned_tasks();
+            let worker = thread::spawn(move || {
+                while !stopped.load(Ordering::SeqCst) {
+                    if let Some(request) =
+                        server.recv_timeout(StdDuration::from_millis(10)).unwrap()
+                    {
+                        counted.fetch_add(1, Ordering::SeqCst);
+                        // Malformed/refused test bodies never reach a real action.
+                        let _ = handle_request(request, handler_state.clone());
+                    }
+                }
+            });
+            Self {
+                state,
+                stop,
+                dispatched,
+                peak_tasks,
+                worker: Some(worker),
+            }
+        }
+
+        fn connect(&self) -> TcpStream {
+            let stream = TcpStream::connect(self.state.local_addr).unwrap();
+            stream
+                .set_read_timeout(Some(StdDuration::from_millis(800)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(StdDuration::from_secs(2)))
+                .unwrap();
+            stream
+        }
+
+        fn post_headers(&self, path: &str, framing: &str) -> String {
+            let host = self.state.local_addr;
+            format!("POST {path} HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nSec-Fetch-Site: same-origin\r\nContent-Type: application/json\r\n{framing}\r\nConnection: close\r\n\r\n")
+        }
+
+        fn healthy(&self) {
+            let mut client = self.connect();
+            write!(
+                client,
+                "GET /api/state HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+                self.state.local_addr
+            )
+            .unwrap();
+            let response = ingress_read(&mut client).unwrap();
+            assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+            assert!(response.contains(r#""runs":[]"#), "{response}");
+        }
+
+        fn assert_no_actions(&self) {
+            assert!(self.state.runs.lock().unwrap().is_empty());
+            assert!(self.state.chat_history.lock().unwrap().is_empty());
+        }
+    }
+
+    impl Drop for IngressFixture {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            self.worker.take().unwrap().join().unwrap();
+            // Server::drop joins the transport owner after aborting all its sockets/tasks.
+            assert!(
+                TcpListener::bind(self.state.local_addr).is_ok(),
+                "owned listener must be closed after shutdown"
+            );
+        }
+    }
+
+    fn ingress_limits() -> gui_http::Limits {
+        gui_http::Limits {
+            connections: 4,
+            body_bytes: 8192,
+            ingress: StdDuration::from_millis(200),
+            response: StdDuration::from_millis(100),
+        }
+    }
+
+    fn ingress_read(client: &mut TcpStream) -> std::io::Result<String> {
+        let mut bytes = Vec::new();
+        match client.read_to_end(&mut bytes) {
+            Ok(_) => Ok(String::from_utf8_lossy(&bytes).into_owned()),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+                ) =>
+            {
+                Ok(String::from_utf8_lossy(&bytes).into_owned())
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    #[test]
+    fn ingress_stalled_headers_close_without_dispatch_and_recover() {
+        let fixture = IngressFixture::new(ingress_limits());
+        let mut client = fixture.connect();
+        write!(
+            client,
+            "POST /api/chat HTTP/1.1\r\nHost: {}\r\n",
+            fixture.state.local_addr
+        )
+        .unwrap();
+        let started = Instant::now();
+        let response = ingress_read(&mut client);
+        assert!(started.elapsed() < StdDuration::from_millis(650));
+        assert!(
+            response.is_ok(),
+            "header deadline must close held socket: {response:?}"
+        );
+        assert_eq!(fixture.dispatched.load(Ordering::SeqCst), 0);
+        fixture.assert_no_actions();
+        fixture.healthy();
+    }
+
+    #[test]
+    fn ingress_small_and_large_incomplete_bodies_close_while_ui_stays_healthy() {
+        for size in [20, 4096] {
+            let fixture = IngressFixture::new(ingress_limits());
+            let mut client = fixture.connect();
+            client
+                .write_all(
+                    fixture
+                        .post_headers("/api/chat", &format!("Content-Length: {size}"))
+                        .as_bytes(),
+                )
+                .unwrap();
+            client.write_all(b" ").unwrap();
+            let started = Instant::now();
+            fixture.healthy(); // Another request succeeds while the upload is still held.
+            assert!(started.elapsed() < StdDuration::from_millis(150));
+            let response = ingress_read(&mut client);
+            assert!(
+                response.is_ok(),
+                "body deadline must close held socket: {response:?}"
+            );
+            assert!(started.elapsed() < StdDuration::from_millis(650));
+            assert_eq!(
+                fixture.dispatched.load(Ordering::SeqCst),
+                1,
+                "only healthy GET may reach dispatch"
+            );
+            fixture.assert_no_actions();
+            fixture.healthy();
+        }
+    }
+
+    #[test]
+    fn ingress_headers_and_body_share_one_accept_deadline() {
+        let mut limits = ingress_limits();
+        limits.ingress = StdDuration::from_millis(300);
+        let fixture = IngressFixture::new(limits);
+        let mut client = fixture.connect();
+        let started = Instant::now();
+        write!(client, "POST /api/chat HTTP/1.1\r\n").unwrap();
+        thread::sleep(StdDuration::from_millis(220));
+        write!(
+            client,
+            "Host: {}\r\nContent-Length: 4096\r\nConnection: close\r\n\r\n ",
+            fixture.state.local_addr
+        )
+        .unwrap();
+        let response = ingress_read(&mut client);
+        assert!(response.is_ok(), "{response:?}");
+        assert!(
+            started.elapsed() < StdDuration::from_millis(450),
+            "body must not receive a second full ingress budget: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(fixture.dispatched.load(Ordering::SeqCst), 0);
+        fixture.assert_no_actions();
+        fixture.healthy();
+    }
+
+    #[test]
+    fn ingress_trickle_does_not_restart_header_or_body_deadline() {
+        for headers in [true, false] {
+            let fixture = IngressFixture::new(ingress_limits());
+            let mut client = fixture.connect();
+            if headers {
+                client.write_all(b"POST /api/chat HTTP/1.1\r\n").unwrap();
+            } else {
+                client
+                    .write_all(
+                        fixture
+                            .post_headers("/api/chat", "Content-Length: 4096")
+                            .as_bytes(),
+                    )
+                    .unwrap();
+            }
+            let stopped = Arc::new(AtomicBool::new(false));
+            let stop_writer = stopped.clone();
+            let mut writer = client.try_clone().unwrap();
+            let trickle = thread::spawn(move || {
+                for _ in 0..40 {
+                    if stop_writer.load(Ordering::SeqCst) || writer.write_all(b" ").is_err() {
+                        break;
+                    }
+                    thread::sleep(StdDuration::from_millis(25));
+                }
+            });
+            let started = Instant::now();
+            let response = ingress_read(&mut client);
+            stopped.store(true, Ordering::SeqCst);
+            trickle.join().unwrap();
+            assert!(
+                response.is_ok(),
+                "progress must not extend ingress: {response:?}"
+            );
+            assert!(started.elapsed() < StdDuration::from_millis(650));
+            assert_eq!(fixture.dispatched.load(Ordering::SeqCst), 0);
+            fixture.assert_no_actions();
+            fixture.healthy();
+        }
+    }
+
+    #[test]
+    fn ingress_fixed_and_chunked_caps_reject_and_close_without_drain() {
+        for chunked in [false, true] {
+            let mut limits = ingress_limits();
+            limits.body_bytes = 4096;
+            let fixture = IngressFixture::new(limits);
+            let mut client = fixture.connect();
+            let framing = if chunked {
+                "Transfer-Encoding: chunked"
+            } else {
+                "Content-Length: 4097"
+            };
+            let started = Instant::now();
+            client
+                .write_all(fixture.post_headers("/api/chat", framing).as_bytes())
+                .unwrap();
+            if chunked {
+                // Decoded cap+1, deliberately no terminating chunk: never drain it.
+                client.write_all(b"1001\r\n").unwrap();
+                client.write_all(&vec![b' '; 4097]).unwrap();
+                client.write_all(b"\r\n").unwrap();
+            } else {
+                client.write_all(b" ").unwrap(); // Keep almost the whole declared body withheld.
+            }
+            let response = ingress_read(&mut client).unwrap();
+            assert!(response.starts_with("HTTP/1.1 413"), "{response}");
+            assert!(
+                started.elapsed() < StdDuration::from_millis(150),
+                "413 must close without waiting for withheld data"
+            );
+            assert_eq!(fixture.dispatched.load(Ordering::SeqCst), 0);
+            fixture.assert_no_actions();
+            fixture.healthy();
+        }
+    }
+
+    #[test]
+    fn ingress_rejected_bodies_never_dispatch_any_post_action() {
+        for path in ["/api/runs", "/api/chat", "/api/tools/call", "/api/mcp"] {
+            let mut limits = ingress_limits();
+            limits.body_bytes = 32;
+            let fixture = IngressFixture::new(limits);
+            let mut client = fixture.connect();
+            client
+                .write_all(fixture.post_headers(path, "Content-Length: 33").as_bytes())
+                .unwrap();
+            let response = ingress_read(&mut client).unwrap();
+            assert!(response.starts_with("HTTP/1.1 413"), "{path}: {response}");
+            assert_eq!(fixture.dispatched.load(Ordering::SeqCst), 0);
+            fixture.assert_no_actions();
+            fixture.healthy();
+        }
+    }
+
+    #[test]
+    fn ingress_partial_disconnect_and_bad_chunks_run_zero_actions() {
+        for malformed_chunk in [false, true] {
+            let fixture = IngressFixture::new(ingress_limits());
+            let mut client = fixture.connect();
+            if malformed_chunk {
+                client
+                    .write_all(
+                        fixture
+                            .post_headers("/api/chat", "Transfer-Encoding: chunked")
+                            .as_bytes(),
+                    )
+                    .unwrap();
+                client.write_all(b"not-a-chunk\r\n").unwrap();
+            } else {
+                client
+                    .write_all(
+                        fixture
+                            .post_headers("/api/chat", "Content-Length: 4096")
+                            .as_bytes(),
+                    )
+                    .unwrap();
+                client.write_all(b" ").unwrap();
+                client.shutdown(std::net::Shutdown::Write).unwrap();
+            }
+            let response = ingress_read(&mut client).unwrap();
+            assert!(
+                response.is_empty() || response.starts_with("HTTP/1.1 400"),
+                "{response}"
+            );
+            assert_eq!(fixture.dispatched.load(Ordering::SeqCst), 0);
+            fixture.assert_no_actions();
+            fixture.healthy();
+        }
+    }
+
+    #[test]
+    fn ingress_admission_is_bounded_before_headers_and_recovers() {
+        let mut limits = ingress_limits();
+        limits.connections = 2;
+        let fixture = IngressFixture::new(limits);
+        let mut held = Vec::new();
+        for _ in 0..2 {
+            let mut client = fixture.connect();
+            client.write_all(b"POST /api/chat HTTP/1.1\r\n").unwrap();
+            held.push(client);
+        }
+        thread::sleep(StdDuration::from_millis(40));
+        let mut rejected = fixture.connect();
+        write!(
+            rejected,
+            "GET /api/state HTTP/1.1\r\nHost: {}\r\n\r\n",
+            fixture.state.local_addr
+        )
+        .ok();
+        let response = ingress_read(&mut rejected).unwrap();
+        assert!(
+            response.is_empty(),
+            "overload must close before reads: {response}"
+        );
+        assert_eq!(fixture.dispatched.load(Ordering::SeqCst), 0);
+        for stream in held {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+        thread::sleep(StdDuration::from_millis(30));
+        fixture.healthy();
+        fixture.assert_no_actions();
+    }
+
+    #[test]
+    fn ingress_generous_default_cap_keeps_large_existing_run_context() {
+        let fixture = IngressFixture::new(gui_http::Limits::default());
+        let retained_log = "synthetic log context ".repeat(500);
+        let logs = vec![retained_log; 1600];
+        let body = serde_json::to_string(&json!({
+            "name": "scrape.list_runs",
+            "arguments": {
+                "run": { "request": { "accounts_text": "synthetic" }, "logs": logs,
+                    "report": { "accounts": [], "videos": [], "songs": [] } }
+            }
+        }))
+        .unwrap();
+        assert!(body.len() > 16 * 1024 * 1024);
+        assert!(body.len() < gui_http::Limits::default().body_bytes);
+        let mut client = fixture.connect();
+        client
+            .set_read_timeout(Some(StdDuration::from_secs(3)))
+            .unwrap();
+        client
+            .write_all(
+                fixture
+                    .post_headers(
+                        "/api/tools/call",
+                        &format!("Content-Length: {}", body.len()),
+                    )
+                    .as_bytes(),
+            )
+            .unwrap();
+        client.write_all(body.as_bytes()).unwrap();
+        let response = ingress_read(&mut client).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(response.contains(r#""runs":[]"#), "{response}");
+        fixture.assert_no_actions();
+        fixture.healthy();
+    }
+    #[test]
+    fn ingress_completed_task_records_stay_bounded_under_repeated_requests() {
+        let mut limits = ingress_limits();
+        limits.connections = 2;
+        let fixture = IngressFixture::new(limits);
+        for _ in 0..96 {
+            fixture.healthy();
+        }
+        let peak = fixture.peak_tasks.load(Ordering::SeqCst);
+        assert!(peak > 0 && peak <= 2, "peak owned connection task records: {peak}");
+        assert_eq!(fixture.dispatched.load(Ordering::SeqCst), 96);
+        fixture.assert_no_actions();
+    }
+
+    #[test]
+    fn ingress_committed_handler_outlives_ingress_without_cancellation() {
+        let mut limits = ingress_limits();
+        limits.ingress = StdDuration::from_millis(30);
+        let (server, state) = bind_gui_with_limits(
+            GuiOptions { host: "127.0.0.1".into(), port: 0 }, limits,
+        ).unwrap();
+        let address = state.local_addr;
+        let started = Instant::now();
+        let worker = thread::spawn(move || {
+            let request = server.recv_timeout(StdDuration::from_secs(1)).unwrap().unwrap();
+            assert!(local_request(&request, state.local_addr));
+            // Established actions have their own deadlines after ingress commits.
+            thread::sleep(StdDuration::from_millis(250));
+            handle_request(request, state)
+        });
+        let mut client = TcpStream::connect(address).unwrap();
+        client.set_read_timeout(Some(StdDuration::from_millis(800))).unwrap();
+        write!(client, "GET /api/state HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n").unwrap();
+        let response = ingress_read(&mut client);
+        let result = worker.join().unwrap();
+        result.unwrap();
+        assert!(started.elapsed() >= StdDuration::from_millis(250));
+        let response = response.unwrap();
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(response.contains(r#""runs":[]"#), "{response}");
+        assert!(TcpListener::bind(address).is_ok(), "owned listener cleanup");
+    }
+
+    #[test]
+    fn ingress_admission_covers_handler_tail_after_response_consumption() {
+        use std::sync::mpsc;
+        let mut limits = ingress_limits();
+        limits.connections = 1;
+        let (server, state) = bind_gui_with_limits(
+            GuiOptions { host: "127.0.0.1".into(), port: 0 }, limits,
+        ).unwrap();
+        let address = state.local_addr;
+        let (holding, held) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let request = server.recv_timeout(StdDuration::from_secs(1)).unwrap().unwrap();
+            // Same ownership as serve's complete handler/logging closure.
+            let admission = request.handler_admission();
+            handle_request(request, state.clone()).unwrap();
+            holding.send(()).unwrap();
+            let _ = released.recv_timeout(StdDuration::from_millis(700));
+            drop(admission);
+            let request = server.recv_timeout(StdDuration::from_secs(1)).unwrap().unwrap();
+            handle_request(request, state)
+        });
+        let request = format!("GET /api/state HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n");
+        let mut first = TcpStream::connect(address).unwrap();
+        first.set_read_timeout(Some(StdDuration::from_millis(800))).unwrap();
+        first.write_all(request.as_bytes()).unwrap();
+        let response = ingress_read(&mut first);
+        let held_result = held.recv_timeout(StdDuration::from_secs(1));
+        let mut refused = TcpStream::connect(address).unwrap();
+        refused.set_read_timeout(Some(StdDuration::from_millis(800))).unwrap();
+        refused.write_all(request.as_bytes()).ok();
+        let rejected = ingress_read(&mut refused);
+        // Release and join every owned worker before assertions, including red runs.
+        release.send(()).ok();
+        thread::sleep(StdDuration::from_millis(20));
+        let mut next = TcpStream::connect(address).unwrap();
+        next.set_read_timeout(Some(StdDuration::from_millis(800))).unwrap();
+        next.write_all(request.as_bytes()).unwrap();
+        let recovered = ingress_read(&mut next);
+        let handled = worker.join().unwrap();
+        handled.unwrap();
+        assert!(response.unwrap().starts_with("HTTP/1.1 200"));
+        assert!(held_result.is_ok());
+        assert!(rejected.unwrap().is_empty(),
+            "completed socket/request must not release admission while handler tail is live");
+        assert!(recovered.unwrap().starts_with("HTTP/1.1 200"));
+        assert!(TcpListener::bind(address).is_ok(), "owned listener cleanup");
+    }
+
 }
 
 #[cfg(all(test, unix))]
