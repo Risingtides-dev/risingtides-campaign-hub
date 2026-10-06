@@ -41,7 +41,8 @@ expect "token accepted by Railway"          "$(L | jq '.authFails')" 0
 expect "no HTTP surface"                    "$(curl -s -o /dev/null -w '%{http_code}' "$W/status")" 404
 
 echo "== the 2026-10-06 outage: Railway removes every deployment in campaign-hub"
-set_ '{"services":{"pg":{"latest":null,"active":[]},"app":{"latest":null,"active":[]},"bk":{"latest":null,"active":[]}}}'
+# Railway may list deployments in any order (its query takes no orderBy): serve them oldest first.
+set_ '{"oldestFirst":true,"services":{"pg":{"latest":null,"active":[]},"app":{"latest":null,"active":[]},"bk":{"latest":null,"active":[]}}}'
 n=$(ncalls); tick
 expect "database restored first, alone"     "$(calls_since "$n")" '[["redeploy","pg-old"]]'
 expect "restore reuses the built image"     "$(L | jq '.calls[-1].previousImage')" true
@@ -58,7 +59,7 @@ expect "nothing while the database starts"  "$(calls_since "$n")" '[]'
 echo "== database up: code services come back; a lost image falls back to a fresh build"
 set_ '{"services":{"pg":{"latest":"SUCCESS","active":[["pg-new","SUCCESS"]]}},"failIds":["bk-old"]}'
 n=$(ncalls); tick
-expect "app restored past its failed builds, cron falls back" "$(calls_since "$n")" \
+expect "newest deployment that ran is restored, whatever the order; cron falls back" "$(calls_since "$n")" \
   '[["redeploy","app-old"],["redeploy","bk-old"],["deploy","bk"]]'
 expect "update posted on the same issue"    "$(L | jq '[.comments[]|select(.issue==1)]|length')" 1
 

@@ -1,7 +1,10 @@
 // Local stand-in for the Railway GraphQL API, a health URL, and the GitHub issues API.
 // Test-only: driven by tests/smoke.sh. Usage: node tests/mock.mjs <port>
 //   POST /__set     merge JSON into the fake world (services, billing, failIds, health,
-//                   billingError, railwayDown, pageSize, delayMs)
+//                   billingError, railwayDown, pageSize, delayMs, oldestFirst)
+// Each service's `deployments` list is written newest first; createdAt is derived from that.
+// Railway's deployments query takes no orderBy, so `oldestFirst` reverses the answer to prove
+// the watchdog does not depend on the order Railway happens to return.
 //   GET  /__log     {calls: [...railway mutations...], issues: [...], comments: [...], authFails}
 import http from "node:http";
 
@@ -17,7 +20,7 @@ const world = {
   },
   services: {
     pg: { env: "e1", name: "Postgres", image: true, cron: false, latest: "SUCCESS", active: [["pg-live", "SUCCESS"]], deployments: [["pg-old", "REMOVED"]] },
-    app: { env: "e1", name: "app", image: false, cron: false, latest: "SUCCESS", active: [["app-live", "SUCCESS"]], deployments: [["f3", "FAILED"], ["f2", "FAILED"], ["app-old", "REMOVED"]] },
+    app: { env: "e1", name: "app", image: false, cron: false, latest: "SUCCESS", active: [["app-live", "SUCCESS"]], deployments: [["f3", "FAILED"], ["f2", "FAILED"], ["app-old", "REMOVED"], ["app-ancient", "REMOVED"]] },
     bk: { env: "e1", name: "Backup CRON", image: false, cron: true, latest: "SUCCESS", active: [], deployments: [["bk-old", "REMOVED"]] },
     lab: { env: "e2", name: "lab", image: false, cron: false, latest: "SUCCESS", active: [["lab-live", "SUCCESS"]], deployments: [["lab-old", "REMOVED"]] },
   },
@@ -88,7 +91,11 @@ function graphql(q) {
   }
   if (q.includes("deployments(")) {
     const s = world.services[arg("serviceId")];
-    return { data: { deployments: { edges: (s?.deployments || []).map(([id, status]) => ({ node: { id, status } })) } } };
+    const deps = (s?.deployments || []).map(([id, status], i) => ({
+      node: { id, status, createdAt: new Date(Date.UTC(2026, 9, 6, 12, 0, 0) - i * 3600_000).toISOString() },
+    }));
+    if (world.oldestFirst) deps.reverse();
+    return { data: { deployments: { edges: deps } } };
   }
   if (q.includes("workspace(")) {
     if (world.billingError) return { errors: [{ message: "Not Authorized" }] };

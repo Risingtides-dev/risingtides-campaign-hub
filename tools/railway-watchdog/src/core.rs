@@ -244,13 +244,53 @@ pub fn collect(pages: &[Value], watch: &[WatchEnv]) -> View {
     }
 }
 
-/// Pick the deployment that last actually ran (newest first): the one to restore.
-/// Failed builds never ran; removed, crashed or live ones did.
-pub fn last_ran(newest_first: &[(String, String)]) -> Option<String> {
-    newest_first
+/// How many deployments the glue asks Railway for when looking for one to restore.
+pub const DEPLOYMENTS_PAGE: usize = 20;
+
+/// One past deployment: (id, status, createdAt as Railway's ISO-8601 UTC string).
+pub type PastDeployment = (String, String, String);
+
+/// A sortable key for Railway's "2026-10-06T13:24:12.537Z" timestamps, or None if the
+/// string is not in that shape. Fractions of any length compare correctly.
+fn time_key(t: &str) -> Option<(String, String)> {
+    let t = t.strip_suffix('Z')?;
+    let (whole, frac) = t.split_once('.').unwrap_or((t, ""));
+    let b = whole.as_bytes();
+    let shape = b.len() == 19
+        && b.iter().enumerate().all(|(i, c)| match i {
+            4 | 7 => *c == b'-',
+            10 => *c == b'T',
+            13 | 16 => *c == b':',
+            _ => c.is_ascii_digit(),
+        })
+        && frac.len() <= 9
+        && frac.bytes().all(|c| c.is_ascii_digit());
+    shape.then(|| (whole.to_string(), format!("{frac:0<9}")))
+}
+
+/// Pick the deployment that last actually ran: the one to restore. Failed builds never
+/// ran; removed, crashed or live ones did.
+///
+/// Railway's `deployments` query takes no ordering argument, so this sorts by createdAt
+/// itself rather than trusting the order it was given. `deps` is one page of at most
+/// DEPLOYMENTS_PAGE. A short page is the whole history, so sorting it is enough. A full
+/// page that is not already newest-first may have missed the newest deployments, so it
+/// returns None (the caller then builds fresh instead of restoring something old).
+pub fn last_ran(deps: &[PastDeployment]) -> Option<String> {
+    let mut keyed: Vec<((String, String), &str, &str)> = deps
         .iter()
-        .find(|(_, st)| matches!(st.as_str(), "REMOVED" | "CRASHED" | "SUCCESS" | "SLEEPING"))
-        .map(|(id, _)| id.clone())
+        .filter_map(|(id, st, at)| Some((time_key(at)?, id.as_str(), st.as_str())))
+        .collect();
+    let complete = deps.len() < DEPLOYMENTS_PAGE;
+    let newest_first = keyed.windows(2).all(|w| w[0].0 >= w[1].0);
+    if !complete && !newest_first {
+        return None;
+    }
+    keyed.sort_by(|a, b| b.0.cmp(&a.0));
+    keyed
+        .into_iter()
+        .find(|(_, _, st)| matches!(*st, "REMOVED" | "CRASHED" | "SUCCESS" | "SLEEPING"))
+        .map(|(_, id, _)| id.to_string())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1473,27 +1513,62 @@ mod tests {
     }
 
     #[test]
-    fn last_ran_skips_failed_builds() {
-        let l = |v: &[(&str, &str)]| {
+    fn last_ran_skips_failed_builds_and_ignores_railways_order() {
+        let at = |h: u32| format!("2026-10-06T{h:02}:00:00.000Z");
+        let l = |v: &[(&str, &str, String)]| {
             last_ran(
                 &v.iter()
-                    .map(|(a, b)| (a.to_string(), b.to_string()))
+                    .map(|(a, b, c)| (a.to_string(), b.to_string(), c.clone()))
                     .collect::<Vec<_>>(),
             )
         };
-        // Campaign Hub this morning: three deploys failed because the database was gone.
+        // Campaign Hub on 2026-10-06: three deploys failed because the database was gone.
+        let newest_first = [
+            ("f3", "FAILED", at(13)),
+            ("f2", "FAILED", at(12)),
+            ("f1", "FAILED", at(11)),
+            ("ok", "REMOVED", at(10)),
+            ("ancient", "REMOVED", at(9)),
+        ];
+        assert_eq!(l(&newest_first).as_deref(), Some("ok"));
+        // Same history served oldest first: still "ok", never "ancient".
+        let mut oldest_first = newest_first.clone();
+        oldest_first.reverse();
+        assert_eq!(l(&oldest_first).as_deref(), Some("ok"));
+        assert_eq!(l(&[("f", "FAILED", at(1))]), None);
+        assert_eq!(l(&[]), None);
+        // Fractions of different lengths compare by time, not by text.
         assert_eq!(
             l(&[
-                ("f3", "FAILED"),
-                ("f2", "FAILED"),
-                ("f1", "FAILED"),
-                ("ok", "REMOVED")
+                ("later", "REMOVED", "2026-10-06T10:00:00.5Z".into()),
+                ("earlier", "REMOVED", "2026-10-06T10:00:00.123Z".into())
             ])
             .as_deref(),
-            Some("ok")
+            Some("later")
         );
-        assert_eq!(l(&[("f", "FAILED")]), None);
-        assert_eq!(l(&[]), None);
+        // Unparseable timestamps are ignored.
+        assert_eq!(l(&[("x", "REMOVED", "yesterday".into())]), None);
+    }
+
+    #[test]
+    fn a_full_page_out_of_order_is_not_trusted() {
+        let full: Vec<PastDeployment> = (0..DEPLOYMENTS_PAGE as u32)
+            .map(|i| {
+                (
+                    format!("d{i}"),
+                    "REMOVED".to_string(),
+                    format!("2026-10-{:02}T00:00:00Z", i + 1),
+                )
+            })
+            .collect();
+        assert_eq!(
+            last_ran(&full),
+            None,
+            "oldest first and full: the newest may be missing"
+        );
+        let mut newest_first = full.clone();
+        newest_first.reverse();
+        assert_eq!(last_ran(&newest_first).as_deref(), Some("d19"));
     }
 
     #[test]

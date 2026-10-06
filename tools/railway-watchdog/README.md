@@ -26,6 +26,8 @@ anything inside Railway is stopped along with everything else.
      as Postgres) in their environment are up.
    - **First try: restore.** It redeploys the exact deployment that was running, from the
      already-built image (no rebuild, no surprise code change). Failed builds are skipped.
+     Railway's deployment list has no sort option, so it sorts by creation time itself; if it
+     cannot be sure it saw the newest deployments, it builds fresh instead.
    - **Next tries: fresh build** of the service's latest code.
    - **A running service that fails its health check 3 times in a row** is restarted.
 5. It saves what it decided **before** it acts, so a later or overlapping run always sees

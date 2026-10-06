@@ -448,17 +448,21 @@ mod worker_glue {
         }
 
         async fn last_ran(&self, env_id: &str, service_id: &str) -> Option<String> {
+            // No orderBy exists on this query; core::last_ran sorts by createdAt itself.
             let q = format!(
-                r#"{{ deployments(first: 20, input: {{ serviceId: "{service_id}", environmentId: "{env_id}" }}) {{ edges {{ node {{ id status }} }} }} }}"#
+                r#"{{ deployments(first: {}, input: {{ serviceId: "{service_id}", environmentId: "{env_id}" }}) {{ edges {{ node {{ id status createdAt }} }} }} }}"#,
+                core::DEPLOYMENTS_PAGE
             );
             let d = self.query(&q).await.ok()?;
-            let list: Vec<(String, String)> = d["deployments"]["edges"]
+            let list: Vec<core::PastDeployment> = d["deployments"]["edges"]
                 .as_array()?
                 .iter()
                 .filter_map(|e| {
+                    let n = &e["node"];
                     Some((
-                        e["node"]["id"].as_str()?.to_string(),
-                        e["node"]["status"].as_str()?.to_string(),
+                        n["id"].as_str()?.to_string(),
+                        n["status"].as_str()?.to_string(),
+                        n["createdAt"].as_str()?.to_string(),
                     ))
                 })
                 .collect();
