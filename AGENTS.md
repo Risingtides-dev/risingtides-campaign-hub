@@ -33,6 +33,8 @@ Campaign CRM integration, campaign delivery reporting, and creator operations.
 
 - The local yt-scraper GUI binds only loopback IP addresses or localhost. Validate Host, Origin and browser fetch-site headers against the actual listening address/port before reading bodies or dispatching any action; trusted local CLI calls may omit Origin. Keep the GUI same-origin and do not add a remote-access mode.
 
+- Pi CLI chat reuses the scraper's concurrent bounded pipe readers and process-group cleanup. Its existing 15-600 second timeout covers child exit and complete stdout/stderr collection from one monotonic spawn deadline. Retain at most 8 MiB stdout and 16 KiB stderr; refuse incomplete or oversized replies and keep failure diagnostics bounded. Record chat history only after a complete successful reply. Timeout, wait/read failure, nonzero exit and refused output cancel readers and terminate the owned Unix process group; Windows remains direct-child-only. Preserve the Pi command, prompt, inherited stdin and API response shape.
+
 ## Work Guidance
 
 ## Verification
@@ -41,6 +43,6 @@ Campaign CRM integration, campaign delivery reporting, and creator operations.
 - Run `pytest -q tests/backend/test_health_db_target.py tests/backend/test_smoke.py` for synthetic credential redaction and existing app health contracts; only test-owned SQLite fixtures are used.
 - Run `TEST_POSTGRES_DATABASE_URL=... pytest -q tests/backend/test_completion_status_schema.py` against a disposable PostgreSQL database to verify the populated-table repair and readiness failure path. The fixture creates and drops an isolated schema.
 
-- Run `cargo test --locked --manifest-path tools/yt-scraper/Cargo.toml -- --test-threads=1` for scraper normalization, synthetic proxy diagnostic/error redaction, bounded pipe-drain subprocess controls, and actual loopback HTTP GUI boundary regressions; controls use test-owned fake executables and local HTTP only, never Pi, a real scrape or credentials.
+- Run `cargo test --locked --manifest-path tools/yt-scraper/Cargo.toml -- --test-threads=1` for scraper normalization, synthetic proxy diagnostic/error redaction, bounded pipe-drain subprocess controls, actual loopback HTTP GUI boundary regressions, and fake-Pi pipe/deadline/output/history regressions; controls use test-owned fake executables and local HTTP only, never Pi, a real scrape or credentials.
 
 ## Child devlog Index

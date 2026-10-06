@@ -164,6 +164,12 @@ PI_AGENT_THINKING=low
 PI_AGENT_TIMEOUT_SECONDS=120
 ```
 
+Pi CLI output is collected within the configured 15-600 second subprocess
+timeout, including output held open by helpers. Replies are limited to 8 MiB
+from stdout or 16 KiB from stderr; incomplete or oversized replies fail without
+entering chat history. Failure diagnostics are bounded, and failed Unix calls
+terminate their own process group.
+
 Set `PI_AGENT_BACKEND=openai` to bypass the local Pi CLI and use the built-in
 OpenAI Chat Completions fallback with `OPENAI_API_KEY`.
 

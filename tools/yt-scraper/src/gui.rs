@@ -1,6 +1,7 @@
 use crate::{
-    build_report, detect_yt_dlp, normalize_account, normalize_sound_id, parse_local_datetime,
-    scrape_accounts, write_outputs, RunConfig, ScrapeReport,
+    build_report, detect_yt_dlp, drain_pipe, normalize_account, normalize_sound_id,
+    parse_local_datetime, receive_pipe, scrape_accounts, stderr_diagnostic, terminate_scraper,
+    write_outputs, RunConfig, ScrapeReport, MAX_STDERR_BYTES, MAX_STDOUT_BYTES,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{Duration, Local};
@@ -11,8 +12,9 @@ use std::env;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration as StdDuration;
+use std::time::{Duration as StdDuration, Instant};
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use wait_timeout::ChildExt;
 
@@ -457,6 +459,19 @@ fn run_pi_agent(state: GuiState, chat: ChatRequest) -> Result<ChatResponse> {
 }
 
 fn run_pi_cli_agent(state: &GuiState, chat: &ChatRequest) -> Result<ChatResponse> {
+    let timeout = env::var("PI_AGENT_TIMEOUT_SECONDS")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .unwrap_or(120)
+        .clamp(15, 600);
+    run_pi_cli_agent_with_timeout(state, chat, StdDuration::from_secs(timeout))
+}
+
+fn run_pi_cli_agent_with_timeout(
+    state: &GuiState,
+    chat: &ChatRequest,
+    timeout: StdDuration,
+) -> Result<ChatResponse> {
     let pi_path = resolve_pi_command().ok_or_else(|| {
         anyhow!(
             "could not find Pi CLI. Set PI_AGENT_COMMAND or install /Users/risingtidesdev/bin/pi"
@@ -511,47 +526,75 @@ fn run_pi_cli_agent(state: &GuiState, chat: &ChatRequest) -> Result<ChatResponse
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let mut child = command.spawn().context("failed to launch Pi CLI")?;
-    let timeout = env::var("PI_AGENT_TIMEOUT_SECONDS")
-        .ok()
-        .and_then(|raw| raw.parse::<u64>().ok())
-        .unwrap_or(120)
-        .clamp(15, 600);
-    let status = match child
-        .wait_timeout(StdDuration::from_secs(timeout))
-        .context("failed waiting for Pi CLI")?
+    #[cfg(unix)]
     {
-        Some(status) => status,
-        None => {
-            let _ = child.kill();
-            let _ = child.wait();
-            bail!("Pi CLI timed out after {timeout}s");
-        }
-    };
-    let output = child
-        .wait_with_output()
-        .context("failed collecting Pi CLI output")?;
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    if !status.success() {
-        bail!(
-            "Pi CLI exited with {}. {}{}",
-            status,
-            stdout,
-            if stderr.is_empty() {
-                String::new()
-            } else {
-                format!("\n{stderr}")
-            }
-        );
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
     }
-
-    let reply = if stdout.is_empty() { stderr } else { stdout };
-    let reply = if reply.is_empty() {
-        "Pi returned no text.".to_string()
-    } else {
-        reply
-    };
+    let mut child = command.spawn().context("failed to launch Pi CLI")?;
+    let deadline = Instant::now() + timeout;
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let stdout_rx = drain_pipe(
+        child.stdout.take().expect("stdout is piped"),
+        deadline,
+        Arc::clone(&cancelled),
+        MAX_STDOUT_BYTES,
+    );
+    let stderr_rx = drain_pipe(
+        child.stderr.take().expect("stderr is piped"),
+        deadline,
+        Arc::clone(&cancelled),
+        MAX_STDERR_BYTES,
+    );
+    let collected = (|| -> Result<String> {
+        let status = child
+            .wait_timeout(deadline.saturating_duration_since(Instant::now()))
+            .context("failed waiting for Pi CLI")?
+            .ok_or_else(|| anyhow!("Pi CLI timed out after {}s", timeout.as_secs()))?;
+        let stdout =
+            receive_pipe(stdout_rx, deadline).context("failed collecting Pi CLI stdout")?;
+        let stderr =
+            receive_pipe(stderr_rx, deadline).context("failed collecting Pi CLI stderr")?;
+        if !stdout.complete || !stderr.complete {
+            bail!("Pi CLI timed out after {}s", timeout.as_secs());
+        }
+        if stdout.truncated {
+            bail!("Pi CLI stdout exceeded {MAX_STDOUT_BYTES} bytes");
+        }
+        let stdout = String::from_utf8_lossy(&stdout.bytes).trim().to_string();
+        if stdout.len() > MAX_STDOUT_BYTES {
+            bail!("Pi CLI stdout exceeded {MAX_STDOUT_BYTES} bytes");
+        }
+        let stderr_truncated = stderr.truncated
+            || String::from_utf8_lossy(&stderr.bytes).trim().len() > MAX_STDERR_BYTES;
+        let stderr = stderr_diagnostic(&stderr, &[]);
+        if !status.success() {
+            bail!(
+                "Pi CLI exited with {}. {}{}",
+                status,
+                stdout,
+                if stderr.is_empty() {
+                    String::new()
+                } else {
+                    format!("\n{stderr}")
+                }
+            );
+        }
+        if stdout.is_empty() && stderr_truncated {
+            bail!("Pi CLI stderr reply exceeded {MAX_STDERR_BYTES} bytes");
+        }
+        let reply = if stdout.is_empty() { stderr } else { stdout };
+        Ok(if reply.is_empty() {
+            "Pi returned no text.".to_string()
+        } else {
+            reply
+        })
+    })();
+    cancelled.store(true, Ordering::Relaxed);
+    if collected.is_err() {
+        terminate_scraper(&mut child);
+    }
+    let reply = collected?;
     remember_chat(state, &chat.message, &reply);
     Ok(ChatResponse {
         reply,
@@ -1661,6 +1704,318 @@ mod tests {
             assert!(response.starts_with("HTTP/1.1 405"), "{method}: {response}");
             assert!(!response.contains("100 Continue"), "{method}: {response}");
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod pi_process_tests {
+    use super::*;
+    use std::ffi::OsString;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::thread::JoinHandle;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct FakePi {
+        state: GuiState,
+        dir: PathBuf,
+        saved_env: Vec<(&'static str, Option<OsString>)>,
+        hub_worker: Option<JoinHandle<()>>,
+    }
+
+    impl FakePi {
+        fn new(script: &str) -> Self {
+            let dir = env::temp_dir().join(format!(
+                "pi-process-test-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            fs::create_dir(&dir).unwrap();
+            let fake = dir.join("fake-pi");
+            let fixture_dir = json!(dir.to_str().unwrap()).to_string();
+            fs::write(&fake, format!(
+                "#!/usr/bin/env python3\nimport os, sys, json, time\nfixture_dir = {fixture_dir}\nwith open(os.path.join(fixture_dir, 'argv.json'), 'w') as out:\n    json.dump(sys.argv[1:], out)\n{script}"
+            )).unwrap();
+            fs::set_permissions(&fake, fs::Permissions::from_mode(0o700)).unwrap();
+            let hub = Server::http("127.0.0.1:0").unwrap();
+            let hub_url = format!("http://{}", hub.server_addr());
+            let hub_worker = std::thread::spawn(move || {
+                for path in [
+                    "/api/campaigns",
+                    "/api/internal/groups",
+                    "/api/internal/creators",
+                    "/api/scrape-tasks/queue?limit=20",
+                ] {
+                    let request = hub
+                        .recv_timeout(StdDuration::from_secs(3))
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(request.url(), path);
+                    request
+                        .respond(Response::from_string("[]").with_header(
+                            Header::from_bytes("Content-Type", "application/json").unwrap(),
+                        ))
+                        .unwrap();
+                }
+            });
+            let values = [
+                ("PI_AGENT_COMMAND", fake.to_string_lossy().into_owned()),
+                ("PI_AGENT_BACKEND", "pi".into()),
+                ("PI_AGENT_TIMEOUT_SECONDS", "15".into()),
+                ("PI_AGENT_PROVIDER", "synthetic-provider".into()),
+                ("PI_AGENT_MODEL", "synthetic-model".into()),
+                ("PI_AGENT_THINKING", "low".into()),
+                ("CAMPAIGN_HUB_API_URL", hub_url),
+            ];
+            let saved_env = values
+                .iter()
+                .map(|(key, _)| (*key, env::var_os(key)))
+                .collect();
+            for (key, value) in values {
+                env::set_var(key, value);
+            }
+            Self {
+                state: GuiState {
+                    runs: Arc::new(Mutex::new(BTreeMap::new())),
+                    chat_history: Arc::new(Mutex::new(Vec::new())),
+                    base_url: "http://127.0.0.1:1".into(),
+                    local_addr: "127.0.0.1:1".parse().unwrap(),
+                },
+                dir,
+                saved_env,
+                hub_worker: Some(hub_worker),
+            }
+        }
+
+        fn request() -> ChatRequest {
+            ChatRequest {
+                message: "synthetic request".into(),
+                context: Some(json!({"fixture": true})),
+            }
+        }
+
+        fn run(&self, timeout: StdDuration) -> Result<ChatResponse> {
+            run_pi_cli_agent_with_timeout(&self.state, &Self::request(), timeout)
+        }
+
+        fn production_run(&self) -> Result<ChatResponse> {
+            run_pi_cli_agent(&self.state, &Self::request())
+        }
+
+        fn history_len(&self) -> usize {
+            self.state.chat_history.lock().unwrap().len()
+        }
+
+        fn assert_stopped(&self, file: &str) {
+            let pid = fs::read_to_string(self.dir.join(file)).unwrap();
+            let deadline = Instant::now() + StdDuration::from_secs(1);
+            loop {
+                let output = Command::new("ps")
+                    .args(["-o", "stat=", "-p", pid.trim()])
+                    .output()
+                    .unwrap();
+                let state = String::from_utf8_lossy(&output.stdout);
+                if state.trim().is_empty() || state.trim().starts_with('Z') {
+                    return;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "test-owned PID {} still live: {state}",
+                    pid.trim()
+                );
+                std::thread::sleep(StdDuration::from_millis(20));
+            }
+        }
+    }
+
+    impl Drop for FakePi {
+        fn drop(&mut self) {
+            if let Some(worker) = self.hub_worker.take() {
+                worker.join().unwrap();
+            }
+            for (key, value) in self.saved_env.drain(..) {
+                if let Some(value) = value {
+                    env::set_var(key, value);
+                } else {
+                    env::remove_var(key);
+                }
+            }
+            fs::remove_dir_all(&self.dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn pi_verbose_outputs_are_drained_before_wait_and_keep_argv() {
+        let fake = FakePi::new("sys.stdout.write('x' * 1048576)\nsys.stdout.flush()\nsys.stderr.write('w' * 1048576)\nsys.stderr.flush()\n");
+        let started = Instant::now();
+        let response = fake.production_run().unwrap();
+        assert_eq!(response.reply, "x".repeat(1048576));
+        assert!(started.elapsed() < StdDuration::from_secs(3));
+        assert_eq!(fake.history_len(), 2);
+        let args: Vec<String> =
+            serde_json::from_slice(&fs::read(fake.dir.join("argv.json")).unwrap()).unwrap();
+        assert_eq!(
+            &args[..10],
+            [
+                "-p",
+                "--no-context-files",
+                "--no-extensions",
+                "--no-skills",
+                "--no-prompt-templates",
+                "--no-themes",
+                "--tools",
+                "bash,read,grep,find,ls",
+                "--system-prompt",
+                pi_system_prompt()
+            ]
+        );
+        assert_eq!(
+            &args[10..16],
+            [
+                "--provider",
+                "synthetic-provider",
+                "--model",
+                "synthetic-model",
+                "--thinking",
+                "low"
+            ]
+        );
+        assert_eq!(args.len(), 17);
+        assert!(
+            args[16].starts_with("User message:\nsynthetic request\n\nLive GUI/context JSON:\n")
+        );
+        assert!(args[16].contains("\"fixture\":true"));
+        assert!(args[16].contains("GET http://127.0.0.1:1/api/state"));
+        assert!(
+            response.run_id.is_none() && response.request.is_none() && response.tool_call.is_none()
+        );
+    }
+
+    #[test]
+    fn pi_exited_leader_inherited_pipes_obey_deadline_and_cleanup() {
+        let fake = FakePi::new("pid = os.fork()\nif pid == 0:\n    time.sleep(5)\n    os._exit(0)\nwith open(os.path.join(fixture_dir, 'descendant.pid'), 'w') as out:\n    out.write(str(pid))\nprint('parent-complete', flush=True)\nos._exit(0)\n");
+        let started = Instant::now();
+        let error = fake
+            .run(StdDuration::from_secs(1))
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("timed out after 1s"), "{error}");
+        assert!(started.elapsed() < StdDuration::from_millis(2500));
+        assert_eq!(fake.history_len(), 0);
+        fake.assert_stopped("descendant.pid");
+    }
+
+    #[test]
+    fn pi_running_parent_and_helper_timeout_leave_no_live_process() {
+        let fake = FakePi::new("with open(os.path.join(fixture_dir, 'parent.pid'), 'w') as out:\n    out.write(str(os.getpid()))\npid = os.fork()\nif pid == 0:\n    time.sleep(5)\n    os._exit(0)\nwith open(os.path.join(fixture_dir, 'descendant.pid'), 'w') as out:\n    out.write(str(pid))\ntime.sleep(5)\n");
+        let started = Instant::now();
+        assert!(fake
+            .run(StdDuration::from_secs(1))
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("timed out after 1s"));
+        assert!(started.elapsed() < StdDuration::from_millis(2500));
+        assert_eq!(fake.history_len(), 0);
+        fake.assert_stopped("parent.pid");
+        fake.assert_stopped("descendant.pid");
+    }
+
+    #[test]
+    fn pi_oversized_stdout_is_refused_and_cleanup_preserves_empty_history() {
+        let fake = FakePi::new("pid = os.fork()\nif pid == 0:\n    os.close(1)\n    os.close(2)\n    time.sleep(5)\n    os._exit(0)\nwith open(os.path.join(fixture_dir, 'descendant.pid'), 'w') as out:\n    out.write(str(pid))\nsys.stdout.write('x' * (8388608 + 1))\nsys.stdout.flush()\n");
+        let error = fake
+            .run(StdDuration::from_secs(2))
+            .err()
+            .unwrap()
+            .to_string();
+        assert_eq!(error, "Pi CLI stdout exceeded 8388608 bytes");
+        assert_eq!(fake.history_len(), 0);
+        fake.assert_stopped("descendant.pid");
+    }
+
+    #[test]
+    fn pi_empty_fallback_and_nonzero_results_keep_semantics() {
+        for (script, expected) in [
+            ("", "Pi returned no text."),
+            (
+                "sys.stderr.write('  diagnostic reply  ')\n",
+                "diagnostic reply",
+            ),
+        ] {
+            let fake = FakePi::new(script);
+            assert_eq!(fake.production_run().unwrap().reply, expected);
+            assert_eq!(fake.history_len(), 2);
+        }
+        let fake =
+            FakePi::new("print('output text')\nsys.stderr.write('error text')\nsys.exit(7)\n");
+        let response = handle_chat(fake.state.clone(), FakePi::request());
+        assert!(response
+            .reply
+            .starts_with("Pi LLM error: Pi CLI exited with "));
+        assert!(response.reply.ends_with(". output text\nerror text"));
+        assert!(
+            response.run_id.is_none() && response.request.is_none() && response.tool_call.is_none()
+        );
+        assert_eq!(fake.history_len(), 0);
+    }
+
+    #[test]
+    fn pi_stderr_reply_overflow_and_failure_diagnostics_are_bounded() {
+        let fake = FakePi::new("sys.stderr.write('e' * (16384 + 1))\n");
+        assert_eq!(
+            fake.production_run().err().unwrap().to_string(),
+            "Pi CLI stderr reply exceeded 16384 bytes"
+        );
+        assert_eq!(fake.history_len(), 0);
+        drop(fake);
+        let fake = FakePi::new("sys.stderr.write('e' * 1048576)\nsys.exit(7)\n");
+        let error = fake.production_run().err().unwrap().to_string();
+        assert!(error.starts_with("Pi CLI exited with "));
+        assert!(error.ends_with("\n[truncated]"));
+        assert!(error.len() < MAX_STDERR_BYTES + 100);
+        assert_eq!(fake.history_len(), 0);
+    }
+
+    #[test]
+    fn pi_exact_caps_and_lossy_utf8_expansion_keep_reply_bounds() {
+        for (script, expected_len) in [
+            ("sys.stdout.write('x' * 8388608)\n", MAX_STDOUT_BYTES),
+            ("sys.stderr.write('e' * 16384)\n", MAX_STDERR_BYTES),
+        ] {
+            let fake = FakePi::new(script);
+            assert_eq!(fake.production_run().unwrap().reply.len(), expected_len);
+            assert_eq!(fake.history_len(), 2);
+        }
+        for (script, expected) in [
+            (
+                "os.write(1, b'\\xff' * (8388608 // 3 + 1))\n",
+                "Pi CLI stdout exceeded 8388608 bytes",
+            ),
+            (
+                "os.write(2, b'\\xff' * 6000)\n",
+                "Pi CLI stderr reply exceeded 16384 bytes",
+            ),
+        ] {
+            let fake = FakePi::new(script);
+            assert_eq!(fake.production_run().err().unwrap().to_string(), expected);
+            assert_eq!(fake.history_len(), 0);
+        }
+    }
+
+    #[test]
+    fn pi_spawn_failure_does_not_record_history() {
+        let fake = FakePi::new("");
+        fs::set_permissions(fake.dir.join("fake-pi"), fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(
+            fake.production_run().err().unwrap().to_string(),
+            "failed to launch Pi CLI"
+        );
+        assert_eq!(fake.history_len(), 0);
     }
 }
 
