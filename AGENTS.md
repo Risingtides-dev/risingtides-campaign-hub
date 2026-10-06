@@ -35,7 +35,7 @@ Campaign CRM integration, campaign delivery reporting, and creator operations.
 
 ## Verification
 
-- Backend checks run with `pytest tests/backend`; `.github/workflows/backend-tests.yml` runs the same suite on pull requests and pushes to `main`.
+- Python checks run with `python -m pytest`, using `pyproject.toml` discovery for `tests/backend/` and the root scheduler, scrape-task, runtime-guard, and yt-dlp regressions; `.github/workflows/backend-tests.yml` runs the same suite on pull requests and pushes to `main`.
 - Run `pytest -q tests/backend/test_health_db_target.py tests/backend/test_smoke.py` for synthetic credential redaction and existing app health contracts; only test-owned SQLite fixtures are used.
 - Run `TEST_POSTGRES_DATABASE_URL=... pytest -q tests/backend/test_completion_status_schema.py` against a disposable PostgreSQL database to verify the populated-table repair and readiness failure path. The fixture creates and drops an isolated schema.
 

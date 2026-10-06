@@ -217,3 +217,21 @@ area: [review] [backend]
 
 Independent adversarial review of PR #195 at head 44ac724bf87677b8813451133ac3cbe47cba8230 against base 8fcac22a9c3423708279d32479aa1694becca4f2 found the branch diverged from current main 55d193c9f2d74f5da6643901dbe8f98521aca3c4 (3 commits ahead, 118 behind); no hosted checks were reported for this head. Treat its prior review and checks as insufficient for current integration. In the candidate code, generic _sync_columns can recreate missing columns without their original constraints/defaults, swallow DDL failures, and commit repairs column by column while /health still returns 200. Its health URL parser does not fail closed on ambiguous raw @ credentials. Current main has a versioned completion_status repair with an advisory lock, backfill/default restoration and verification, plus readiness failure on repair errors and make_url-based fail-closed URL handling. The PR also adds a duplicate CI workflow weaker than the existing backend-tests.yml permissions, pinned actions, cancellation, timeout and prescribed test scope. Recommendation: do not approve or merge this branch; close it as superseded or rebuild any needed workflow-only change on current main. No database mutation, deployment, or production behavior was exercised.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [07:04am] [06-10-26]
+agent: [codex desktop]
+worktree: [codex/include-root-backend-regressions] [/private/tmp/hub-root-regression-ci-20261006T105235580396Z/repo]
+type: [gh actions]: Campaign Hub existing Python CI coverage
+area: [testing]: root regressions and backend discovery
+entry-id: root-hub-ci-root-regressions-20261006T110434Z
+utc: 2026-10-06T11:04:34.403015+00:00
+
+On actual main 782acecbc483ec44fda090653444a333d8bb2f3d, independently audited Eric's PR #195 and found its remaining plain-pytest coverage intent was not fully delivered: the current hosted job collected only tests/backend. Preserve #195 and its branch while carrying that useful intent through the existing hardened workflow.
+
+Changed only .github/workflows/backend-tests.yml's pytest command to python -m pytest and the root AGENTS.md Verification bullet. Existing pyproject.toml discovery includes every backend case plus tests/test_scheduler_scrape_health.py, tests/test_scrape_tasks_dismiss.py, tests/test_scrape_tasks_round_filter.py, tests/test_scraper_runtime_guard.py and tests/test_yt_dlp_runner.py. Least-privilege permissions, pinned actions, persist-credentials:false, timeout, concurrency cancellation, trigger scope and Python 3.11 stay intact. No duplicate workflow, source/test/dependency changes or new service.
+
+Before controls: the five root modules passed 34/34 on unchanged main; original workflow collection907, default collection941, exactly34 added and no missing backend cases. Final private full run passed936, failed0, skipped5 existing disposable-PostgreSQL cases. Python3.10.19 reused existing dependencies satisfying all19 requirements; all114 repository imports came from the private checkout. Credentials and production DB configuration were absent, scheduler disabled; only3 connections to exact test-owned temporary loopback listeners occurred. Initial2 full-run and three2-case failures came from private guard setup (blanket denial/macOS unsupported socket option); their original artifacts remain labeled, no tests were skipped or assertions changed. Corrected guard affected cases passed2/2.
+
+Evidence: /private/tmp/hub-root-regression-ci-20261006T105235580396Z/candidate-corrected-full-python.receipt.json and prefreeze-source-preservation.json. Other322 tracked blobs retain main bytes. Root owns actual canonical append, final source freeze, independent review, exact-head hosted normal941 discovery under3.11 and release. No push, PR closure, merge, deployment, schema mutation, credential grant, paid resource or queue change by this builder. John's holds and peer ownership remain.
+_________________________________________________________________________________
