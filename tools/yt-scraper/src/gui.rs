@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::env;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -26,6 +27,7 @@ struct GuiState {
     runs: Arc<Mutex<BTreeMap<String, RunRecord>>>,
     chat_history: Arc<Mutex<Vec<Value>>>,
     base_url: String,
+    local_addr: SocketAddr,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,23 +111,41 @@ struct McpRequest {
     params: Value,
 }
 
-pub(crate) fn serve(options: GuiOptions) -> Result<()> {
-    let addr = format!("{}:{}", options.host, options.port);
-    let server = Server::http(&addr).map_err(|e| anyhow!("failed to start GUI server: {e}"))?;
-    let browser_host = if options.host == "0.0.0.0" {
-        "127.0.0.1".to_string()
+fn bind_gui(options: GuiOptions) -> Result<(Server, GuiState)> {
+    let host = options
+        .host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(&options.host);
+    let ip = if host.eq_ignore_ascii_case("localhost") {
+        IpAddr::V4(Ipv4Addr::LOCALHOST)
     } else {
-        options.host.clone()
+        host.parse::<IpAddr>()
+            .context("GUI host must be a loopback IP address or localhost")?
     };
+    if !ip.is_loopback() {
+        bail!("GUI host must be a loopback IP address or localhost");
+    }
+    let server = Server::http(SocketAddr::new(ip, options.port))
+        .map_err(|e| anyhow!("failed to start GUI server: {e}"))?;
+    let local_addr = server
+        .server_addr()
+        .to_ip()
+        .ok_or_else(|| anyhow!("GUI server requires a loopback TCP address"))?;
     let state = GuiState {
         runs: Arc::new(Mutex::new(BTreeMap::new())),
         chat_history: Arc::new(Mutex::new(Vec::new())),
-        base_url: format!("http://{}:{}", browser_host, options.port),
+        base_url: format!("http://{local_addr}"),
+        local_addr,
     };
+    Ok((server, state))
+}
 
-    println!("Local scraper GUI: http://{addr}");
-    println!("Tool endpoint:      http://{addr}/api/tools/call");
-    println!("MCP-like endpoint:  http://{addr}/api/mcp");
+pub(crate) fn serve(options: GuiOptions) -> Result<()> {
+    let (server, state) = bind_gui(options)?;
+    println!("Local scraper GUI: {}", state.base_url);
+    println!("Tool endpoint:      {}/api/tools/call", state.base_url);
+    println!("MCP-like endpoint:  {}/api/mcp", state.base_url);
 
     for request in server.incoming_requests() {
         let request_state = state.clone();
@@ -139,8 +159,79 @@ pub(crate) fn serve(options: GuiOptions) -> Result<()> {
     Ok(())
 }
 
+// Accept only the listening address or localhost, at the actual listening port.
+// This does not resolve caller-controlled DNS names.
+fn local_authority(value: &str, local_addr: SocketAddr) -> Option<String> {
+    if value.eq_ignore_ascii_case(&format!("localhost:{}", local_addr.port()))
+        || (local_addr.port() == 80 && value.eq_ignore_ascii_case("localhost"))
+    {
+        return Some(format!("localhost:{}", local_addr.port()));
+    }
+    let address = value.parse::<SocketAddr>().ok().or_else(|| {
+        if local_addr.port() != 80 {
+            return None;
+        }
+        let ip = if let Some(host) = value
+            .strip_prefix('[')
+            .and_then(|host| host.strip_suffix(']'))
+        {
+            host.parse::<Ipv6Addr>().ok().map(IpAddr::V6)
+        } else {
+            value.parse::<Ipv4Addr>().ok().map(IpAddr::V4)
+        };
+        ip.map(|ip| SocketAddr::new(ip, 80))
+    })?;
+    (address == local_addr).then(|| address.to_string())
+}
+
+fn local_request(request: &Request, local_addr: SocketAddr) -> bool {
+    let values = |name: &'static str| {
+        request
+            .headers()
+            .iter()
+            .filter(|header| header.field.equiv(name))
+            .map(|header| header.value.as_str())
+            .collect::<Vec<_>>()
+    };
+    let hosts = values("Host");
+    if hosts.len() != 1 {
+        return false;
+    }
+    let Some(host) = local_authority(hosts[0], local_addr) else {
+        return false;
+    };
+    let origins = values("Origin");
+    if origins.len() > 1
+        || origins.first().is_some_and(|origin| {
+            origin
+                .strip_prefix("http://")
+                .and_then(|authority| local_authority(authority, local_addr))
+                .as_ref()
+                != Some(&host)
+        })
+    {
+        return false;
+    }
+    // Cross-site navigations and no-CORS reads can omit Origin.
+    let sites = values("Sec-Fetch-Site");
+    sites.len() <= 1
+        && sites
+            .first()
+            .is_none_or(|site| matches!(*site, "same-origin" | "none"))
+}
+
 fn handle_request(mut request: Request, state: GuiState) -> Result<()> {
+    if !local_request(&request, state.local_addr) {
+        return respond_json(
+            request,
+            403,
+            &json!({ "error": "local GUI request required" }),
+        );
+    }
     let method = request.method().clone();
+    if method != Method::Get && method != Method::Post {
+        return respond_json(request, 405, &json!({ "error": "method not allowed" }));
+    }
     let url = request.url().to_string();
     let path_string = url
         .split('?')
@@ -153,10 +244,6 @@ fn handle_request(mut request: Request, state: GuiState) -> Result<()> {
     } else {
         path_string.as_str()
     };
-
-    if method == Method::Options {
-        return respond_empty(request, 204);
-    }
 
     match (method, path) {
         (Method::Get, "/") => respond_html(request, INDEX_HTML),
@@ -1236,8 +1323,7 @@ fn proxy_hub(request: Request, url: &str) -> Result<()> {
             let body = resp.into_string().unwrap_or_else(|_| "{}".to_string());
             let response = Response::from_string(body)
                 .with_status_code(StatusCode(status))
-                .with_header(header("Content-Type", "application/json"))
-                .with_header(header("Access-Control-Allow-Origin", "*"));
+                .with_header(header("Content-Type", "application/json"));
             request
                 .respond(response)
                 .map_err(|e| anyhow!(e.to_string()))
@@ -1266,8 +1352,7 @@ fn read_body(request: &mut Request) -> Result<String> {
 fn respond_html(request: Request, body: &str) -> Result<()> {
     let response = Response::from_string(body)
         .with_status_code(StatusCode(200))
-        .with_header(header("Content-Type", "text/html; charset=utf-8"))
-        .with_header(header("Access-Control-Allow-Origin", "*"));
+        .with_header(header("Content-Type", "text/html; charset=utf-8"));
     request
         .respond(response)
         .map_err(|e| anyhow!(e.to_string()))
@@ -1277,20 +1362,7 @@ fn respond_json<T: Serialize>(request: Request, status: u16, value: &T) -> Resul
     let body = serde_json::to_string(value)?;
     let response = Response::from_string(body)
         .with_status_code(StatusCode(status))
-        .with_header(header("Content-Type", "application/json"))
-        .with_header(header("Access-Control-Allow-Origin", "*"))
-        .with_header(header("Access-Control-Allow-Headers", "Content-Type"))
-        .with_header(header("Access-Control-Allow-Methods", "GET, POST, OPTIONS"));
-    request
-        .respond(response)
-        .map_err(|e| anyhow!(e.to_string()))
-}
-
-fn respond_empty(request: Request, status: u16) -> Result<()> {
-    let response = Response::empty(StatusCode(status))
-        .with_header(header("Access-Control-Allow-Origin", "*"))
-        .with_header(header("Access-Control-Allow-Headers", "Content-Type"))
-        .with_header(header("Access-Control-Allow-Methods", "GET, POST, OPTIONS"));
+        .with_header(header("Content-Type", "application/json"));
     request
         .respond(response)
         .map_err(|e| anyhow!(e.to_string()))
@@ -1298,6 +1370,298 @@ fn respond_empty(request: Request, status: u16) -> Result<()> {
 
 fn header(name: &str, value: &str) -> Header {
     Header::from_bytes(name.as_bytes(), value.as_bytes()).expect("valid static header")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::thread;
+
+    fn exchange(state: GuiState, server: Server, headers: &str, body: &str) -> String {
+        let address = state.local_addr;
+        let worker = thread::spawn(move || {
+            let request = server
+                .recv_timeout(StdDuration::from_secs(3))
+                .unwrap()
+                .unwrap();
+            handle_request(request, state)
+        });
+        let mut client = TcpStream::connect(address).unwrap();
+        client
+            .set_read_timeout(Some(StdDuration::from_secs(2)))
+            .unwrap();
+        client
+            .set_write_timeout(Some(StdDuration::from_secs(2)))
+            .unwrap();
+        client.write_all(headers.as_bytes()).unwrap();
+        client.write_all(body.as_bytes()).unwrap();
+        let mut response = Vec::new();
+        let mut buffer = [0; 4096];
+        loop {
+            let count = client.read(&mut buffer).unwrap();
+            if count == 0 {
+                break;
+            }
+            response.extend_from_slice(&buffer[..count]);
+            // A denial must arrive without reading the withheld request body.
+            if response.windows(4).any(|window| window == b"\r\n\r\n") && body.is_empty() {
+                break;
+            }
+        }
+        drop(client);
+        worker.join().unwrap().unwrap();
+        String::from_utf8(response).unwrap()
+    }
+
+    fn gui(host: &str) -> (Server, GuiState) {
+        bind_gui(GuiOptions {
+            host: host.into(),
+            port: 0,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn default_http_port_accepts_only_valid_local_authorities() {
+        for (address, valid, invalid) in [
+            (
+                "127.0.0.1:80",
+                vec!["127.0.0.1", "127.0.0.1:80", "localhost", "LOCALHOST:80"],
+                vec![
+                    "[127.0.0.1]",
+                    "[127.0.0.1]:80",
+                    "::1",
+                    "localhost:1",
+                    "127.0.0.1/path",
+                ],
+            ),
+            (
+                "[::1]:80",
+                vec!["[::1]", "[::1]:80", "localhost", "LOCALHOST:80"],
+                vec![
+                    "::1",
+                    "::1:80",
+                    "[127.0.0.1]",
+                    "[127.0.0.1]:80",
+                    "[::1]/path",
+                ],
+            ),
+        ] {
+            let address = address.parse().unwrap();
+            for value in valid {
+                assert!(local_authority(value, address).is_some(), "{value}");
+            }
+            for value in invalid {
+                assert!(local_authority(value, address).is_none(), "{value}");
+            }
+        }
+    }
+
+    #[test]
+    fn non_loopback_gui_binds_are_refused_without_listening() {
+        for host in [
+            "0.0.0.0",
+            "::",
+            "192.0.2.1",
+            "::ffff:127.0.0.1",
+            "example.invalid",
+        ] {
+            let reservation = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = reservation.local_addr().unwrap().port();
+            drop(reservation);
+            let result = bind_gui(GuiOptions {
+                host: host.into(),
+                port,
+            });
+            assert!(result.is_err(), "{host} must not listen");
+            assert!(
+                result.err().unwrap().to_string().contains("loopback"),
+                "{host}"
+            );
+            let _still_free = TcpListener::bind(("127.0.0.1", port)).unwrap();
+        }
+    }
+
+    #[test]
+    fn actual_bound_port_and_loopback_forms_preserve_gui_and_local_cli() {
+        for bind_host in ["127.0.0.1", "::1", "[::1]", "localhost"] {
+            for path in ["/", "/api/state", "/api/tools"] {
+                let (server, state) = gui(bind_host);
+                assert_ne!(state.local_addr.port(), 0);
+                assert_eq!(state.base_url, format!("http://{}", state.local_addr));
+                let host = state.local_addr.to_string();
+                let request = format!(
+                    "GET {path} HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nSec-Fetch-Site: same-origin\r\nConnection: close\r\n\r\n"
+                );
+                let response = exchange(state, server, &request, "");
+                assert!(
+                    response.starts_with("HTTP/1.1 200"),
+                    "{bind_host} {path}: {response}"
+                );
+                assert!(
+                    !response.to_ascii_lowercase().contains("access-control-"),
+                    "{response}"
+                );
+            }
+            for (path, body, browser) in [
+                (
+                    "/api/tools/call",
+                    r#"{"name":"scrape.list_runs","arguments":{}}"#,
+                    false,
+                ),
+                (
+                    "/api/tools/call",
+                    r#"{"name":"scrape.list_runs","arguments":{}}"#,
+                    true,
+                ),
+                (
+                    "/api/mcp",
+                    r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#,
+                    false,
+                ),
+                (
+                    "/api/mcp",
+                    r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#,
+                    true,
+                ),
+            ] {
+                let (server, state) = gui(bind_host);
+                let host = format!("localhost:{}", state.local_addr.port());
+                let origin = if browser {
+                    format!("Origin: http://{host}\r\nSec-Fetch-Site: same-origin\r\n")
+                } else {
+                    String::new()
+                };
+                let request = format!(
+                    "POST {path} HTTP/1.1\r\nHost: {host}\r\n{origin}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let response = exchange(state, server, &request, body);
+                assert!(
+                    response.starts_with("HTTP/1.1 200"),
+                    "{bind_host} {path} browser={browser}: {response}"
+                );
+                assert!(
+                    response.contains("runs") || response.contains("tools"),
+                    "{response}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn foreign_host_origin_and_fetch_site_are_denied_before_body_or_actions() {
+        let bad_headers = [
+            "Host: attacker.invalid:PORT",
+            "Host: ",
+            "Host: localhost:PORT, attacker.invalid:PORT",
+            "Host: localhost",
+            "Host: localhost:1",
+            "Host: localhost:PORT\r\nHost: attacker.invalid:PORT",
+            "Host: localhost:PORT\r\nOrigin: https://attacker.invalid",
+            "Host: localhost:PORT\r\nOrigin: null",
+            "Host: localhost:PORT\r\nOrigin: http://localhost:PORT?query=1",
+            "Host: localhost:PORT\r\nOrigin: http://localhost:PORT#fragment",
+            "Host: localhost:PORT\r\nSec-Fetch-Site: same-origin\r\nSec-Fetch-Site: same-origin",
+            "Host: localhost:PORT\r\nOrigin: http://localhost:1",
+            "Host: localhost:PORT\r\nOrigin: http://localhost:PORT/path",
+            "Host: localhost:PORT\r\nOrigin: http://user@localhost:PORT",
+            "Host: localhost:PORT\r\nOrigin: http://localhost:PORT\r\nOrigin: http://localhost:PORT",
+            "Host: localhost:PORT\r\nOrigin: http://127.0.0.1:PORT",
+            "Host: localhost:PORT\r\nSec-Fetch-Site: cross-site",
+            "Host: localhost:PORT\r\nSec-Fetch-Site: same-site",
+        ];
+        for path in ["/api/chat", "/api/runs", "/api/tools/call", "/api/mcp"] {
+            for bad in bad_headers {
+                let (server, state) = gui("127.0.0.1");
+                let runs = state.runs.clone();
+                let chats = state.chat_history.clone();
+                let bad = bad.replace("PORT", &state.local_addr.port().to_string());
+                let request = format!(
+                    "POST {path} HTTP/1.1\r\n{bad}\r\nContent-Length: 100\r\nExpect: 100-continue\r\nConnection: close\r\n\r\n"
+                );
+                let response = exchange(state, server, &request, "");
+                assert!(
+                    response.starts_with("HTTP/1.1 403"),
+                    "{path} {bad}: {response}"
+                );
+                assert!(
+                    !response.contains("100 Continue"),
+                    "{path} {bad}: {response}"
+                );
+                assert!(runs.lock().unwrap().is_empty());
+                assert!(chats.lock().unwrap().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn foreign_reads_never_reach_the_hub_proxy() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        struct RestoreHub(Option<String>);
+        impl Drop for RestoreHub {
+            fn drop(&mut self) {
+                match &self.0 {
+                    Some(value) => env::set_var("CAMPAIGN_HUB_API_URL", value),
+                    None => env::remove_var("CAMPAIGN_HUB_API_URL"),
+                }
+            }
+        }
+        let upstream = Server::http("127.0.0.1:0").unwrap();
+        let _restore = RestoreHub(env::var("CAMPAIGN_HUB_API_URL").ok());
+        env::set_var(
+            "CAMPAIGN_HUB_API_URL",
+            format!("http://{}", upstream.server_addr()),
+        );
+        let calls = Arc::new(AtomicUsize::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let counted = calls.clone();
+        let stopped = stop.clone();
+        let upstream_worker = thread::spawn(move || {
+            while !stopped.load(Ordering::SeqCst) {
+                if let Some(request) = upstream.recv_timeout(StdDuration::from_millis(20)).unwrap()
+                {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    request.respond(Response::from_string("{}")).unwrap();
+                }
+            }
+        });
+        for headers in [
+            "Host: attacker.invalid:PORT",
+            "Host: localhost:PORT\r\nOrigin: https://attacker.invalid",
+            "Host: localhost:PORT\r\nSec-Fetch-Site: cross-site",
+        ] {
+            let (server, state) = gui("127.0.0.1");
+            let headers = headers.replace("PORT", &state.local_addr.port().to_string());
+            let request = format!(
+                "GET /api/hub/api/campaigns HTTP/1.1\r\n{headers}\r\nConnection: close\r\n\r\n"
+            );
+            let response = exchange(state, server, &request, "");
+            assert!(
+                response.starts_with("HTTP/1.1 403"),
+                "{headers}: {response}"
+            );
+        }
+        stop.store(true, Ordering::SeqCst);
+        upstream_worker.join().unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn unsupported_methods_are_denied_before_body_or_actions() {
+        for method in ["OPTIONS", "PUT", "PATCH", "DELETE", "HEAD"] {
+            let (server, state) = gui("127.0.0.1");
+            let request = format!(
+                "{method} /api/chat HTTP/1.1\r\nHost: {}\r\nContent-Length: 100\r\nExpect: 100-continue\r\nConnection: close\r\n\r\n",
+                state.local_addr
+            );
+            let response = exchange(state, server, &request, "");
+            assert!(response.starts_with("HTTP/1.1 405"), "{method}: {response}");
+            assert!(!response.contains("100 Continue"), "{method}: {response}");
+        }
+    }
 }
 
 const INDEX_HTML: &str = r#"<!doctype html>

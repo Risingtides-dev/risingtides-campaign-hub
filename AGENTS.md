@@ -31,6 +31,8 @@ Campaign CRM integration, campaign delivery reporting, and creator operations.
 
 - Local yt-scraper command diagnostics redact every `--proxy` value, including credentials and query parameters; the actual yt-dlp arguments remain byte-for-byte unchanged. Copied yt-dlp stderr also redacts complete configured proxy values before first-line truncation, preserving other error context. Drain stdout and stderr concurrently within the per-account deadline while retaining at most 8 MiB of stdout and 16 KiB of raw stderr per account. Excess stdout fails with zero accepted rows; excess diagnostics carry a truncation marker after configured-proxy redaction, including proxy fragments split at the retained boundary. Incomplete output must not produce a completed scrape. Unix subprocesses own a private process group, terminated on timeout, wait/read failure, incomplete collection, or oversized stdout; Windows currently terminates only the direct child and has no verified descendant-cleanup guarantee.
 
+- The local yt-scraper GUI binds only loopback IP addresses or localhost. Validate Host, Origin and browser fetch-site headers against the actual listening address/port before reading bodies or dispatching any action; trusted local CLI calls may omit Origin. Keep the GUI same-origin and do not add a remote-access mode.
+
 ## Work Guidance
 
 ## Verification
@@ -39,6 +41,6 @@ Campaign CRM integration, campaign delivery reporting, and creator operations.
 - Run `pytest -q tests/backend/test_health_db_target.py tests/backend/test_smoke.py` for synthetic credential redaction and existing app health contracts; only test-owned SQLite fixtures are used.
 - Run `TEST_POSTGRES_DATABASE_URL=... pytest -q tests/backend/test_completion_status_schema.py` against a disposable PostgreSQL database to verify the populated-table repair and readiness failure path. The fixture creates and drops an isolated schema.
 
-- Run `cargo test --locked --manifest-path tools/yt-scraper/Cargo.toml -- --test-threads=1` for scraper normalization, synthetic proxy diagnostic/error redaction, and bounded pipe-drain subprocess controls; subprocess controls use test-owned fake executables only, never a real scrape or credentials.
+- Run `cargo test --locked --manifest-path tools/yt-scraper/Cargo.toml -- --test-threads=1` for scraper normalization, synthetic proxy diagnostic/error redaction, bounded pipe-drain subprocess controls, and actual loopback HTTP GUI boundary regressions; controls use test-owned fake executables and local HTTP only, never Pi, a real scrape or credentials.
 
 ## Child devlog Index
