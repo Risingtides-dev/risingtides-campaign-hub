@@ -100,6 +100,7 @@ def _scrape_run_is_degraded(
     campaigns_refreshed: int,
     total_new_matches: int,
     total_videos_checked: int,
+    instagram_complete_failure: bool = False,
 ) -> bool:
     """Return whether scrape results are unsafe to report as healthy."""
     empty_rate = (
@@ -113,7 +114,8 @@ def _scrape_run_is_degraded(
         else 0.0
     )
     return bool(
-        (empty_rate > 0.7 and total_creators > 5)
+        instagram_complete_failure
+        or (empty_rate > 0.7 and total_creators > 5)
         or (native_crash_rate > 0.2 and total_creators > 5)
         or (
             campaigns_refreshed > 5
@@ -769,6 +771,10 @@ def _run_campaign_refresh(only_slugs, on_progress, lease, request_log_id=None) -
         #    new. Could be legit (slow day) but combined with high empty rate
         #    means the system is broken, not just quiet.
         total_creators_scraped = len(scrape_outcomes)
+        instagram_complete_failure = bool(ig_usernames) and all(
+            outcome.get("status") not in {"ok", "empty"}
+            for outcome in ig_outcomes.values()
+        )
         empty_rate = (
             outcome_counts["empty"] / total_creators_scraped
             if total_creators_scraped > 0
@@ -780,6 +786,7 @@ def _run_campaign_refresh(only_slugs, on_progress, lease, request_log_id=None) -
             campaigns_refreshed=campaigns_refreshed,
             total_new_matches=total_new_matches,
             total_videos_checked=total_videos_checked,
+            instagram_complete_failure=instagram_complete_failure,
         )
 
         summary = {
@@ -797,6 +804,8 @@ def _run_campaign_refresh(only_slugs, on_progress, lease, request_log_id=None) -
                 st: sum(1 for o in ig_outcomes.values() if o.get("status") == st)
                 for st in ("ok", "empty", "error")
             },
+            "instagram_creators_total": len(ig_usernames),
+            "instagram_complete_failure": instagram_complete_failure,
             "creators_scraped_total": total_creators_scraped,
             "empty_creator_rate": round(empty_rate, 3),
             "degraded": is_degraded,
@@ -1534,6 +1543,9 @@ def _post_campaign_refresh_slack(summary: dict):
     creators_total = summary.get("creators_scraped_total", 0)
     empty_rate = summary.get("empty_creator_rate", 0)
     videos_checked = summary.get("total_videos_checked", 0)
+    instagram_total = summary.get("instagram_creators_total", 0)
+    instagram_outcomes = summary.get("instagram_outcome_counts", {})
+    instagram_complete_failure = summary.get("instagram_complete_failure", False)
 
     header = (
         ":warning: *Daily campaign refresh DEGRADED*"
@@ -1557,11 +1569,21 @@ def _post_campaign_refresh_slack(summary: dict):
             f"({int(empty_rate * 100)}% empty rate)"
         )
 
-    if degraded:
+    if instagram_total > 0:
         lines.append(
-            "_Run produced no useful data. Likely TikTok rate-limited yt-dlp "
-            "(empty rate over 70%) or matching is broken. Check logs._"
+            f"Instagram creators: {instagram_total} attempted — "
+            f"{instagram_outcomes.get('ok', 0)} returned videos, "
+            f"{instagram_outcomes.get('empty', 0)} empty, "
+            f"{instagram_outcomes.get('error', 0)} errored"
         )
+
+    if degraded:
+        if instagram_complete_failure:
+            lines.append("_All Instagram creator scrapes failed; Instagram results are unavailable. Check cron errors and Apify configuration._")
+        else:
+            lines.append(
+                "_Scrape anomaly detected. Check TikTok empty/crash rates and matching in cron logs._"
+            )
 
     if failed:
         lines.append(f":x: {failed} campaign(s) failed")

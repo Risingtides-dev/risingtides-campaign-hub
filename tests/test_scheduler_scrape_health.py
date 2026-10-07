@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+from types import SimpleNamespace
 
 import pytest
 
@@ -89,6 +90,72 @@ def test_high_native_crash_rate_marks_run_degraded():
 
 def test_single_native_crash_does_not_mark_run_degraded():
     assert _degraded({"ok": 9, "empty": 0, "native_crash": 1}) is False
+
+
+def test_complete_instagram_failure_degrades_without_changing_tiktok_thresholds():
+    assert _degraded({"ok": 9, "empty": 1}, instagram_complete_failure=True) is True
+    assert _degraded({"ok": 9, "empty": 1}, instagram_complete_failure=False) is False
+
+
+@pytest.mark.parametrize("errors_count, expected_degraded", [(18, True), (17, False)])
+def test_instagram_only_apify_failure_persists_degraded_and_notifies_truthfully(
+    monkeypatch, errors_count, expected_degraded,
+):
+    campaign = {"slug": "ig-only", "completion_status": "none", "start_date": "2026-10-01"}
+    saved = {}
+    notices = []
+    monkeypatch.setattr(scheduler._db, "list_campaigns", lambda **_kwargs: [campaign])
+    monkeypatch.setattr(scheduler._db, "get_creators", lambda _slug: [
+        {"username": f"ig{n}", "platform": "instagram", "status": "active"}
+        for n in range(18)
+    ])
+    monkeypatch.setattr(scheduler, "_scrape_instagram", lambda names, _start: SimpleNamespace(
+        videos=[], errors=["instagram scrape failed: APIFY_API_TOKEN is not set"],
+        outcomes={name: {"status": "error" if index < errors_count else "empty", "video_count": 0}
+                  for index, name in enumerate(sorted(names))},
+    ))
+    monkeypatch.setattr(scheduler, "_refresh_single_campaign", lambda *_args, **_kwargs: {
+        "new_matches": 0, "total_matches": 0, "videos_checked": 0,
+    })
+    monkeypatch.setattr(scheduler._db, "finish_cron_log", lambda _id, state, summary: saved.update(
+        status=state, summary=summary,
+    ))
+    monkeypatch.setattr(scheduler._db, "get_cron_log_by_id", lambda _id: None)
+    monkeypatch.setattr(scheduler, "_post_campaign_refresh_slack", lambda summary: notices.append(summary))
+    monkeypatch.setattr(scheduler, "_post_new_matches_digest_slack", lambda *_args: None)
+    monkeypatch.setattr(scheduler, "_post_active_sounds_slack", lambda: None)
+    monkeypatch.setattr(
+        "campaign_manager.services.tides_tracker.auto_track_submitted_videos",
+        lambda **_kwargs: SimpleNamespace(trackers_polled=0, trackers_failed=0,
+                                         submission_ids_found=0, queue_rows_auto_tracked=0),
+    )
+    result = scheduler._run_campaign_refresh(None, None, SimpleNamespace(assert_held=lambda: None), 982)
+    assert result["status"] == saved["status"] == "completed"
+    assert result["summary"]["degraded"] is expected_degraded
+    assert result["summary"]["instagram_complete_failure"] is expected_degraded
+    assert result["summary"]["instagram_outcome_counts"] == {
+        "ok": 0, "empty": 18 - errors_count, "error": errors_count,
+    }
+    assert result["summary"]["scrape_outcome_counts"] == {"ok": 0, "empty": 0, "error": 0}
+    assert notices == [result["summary"]]
+
+
+def test_instagram_notification_names_failure_without_tiktok_diagnosis(monkeypatch):
+    sent = []
+    monkeypatch.setattr(scheduler, "_get_slack_client", lambda: SimpleNamespace(
+        chat_postMessage=lambda **kwargs: sent.append(kwargs["text"]),
+    ))
+    monkeypatch.setattr(scheduler, "_get_cron_channel", lambda: "test-channel")
+    scheduler._post_campaign_refresh_slack({
+        "campaigns_refreshed": 1, "campaigns_total": 1, "degraded": True,
+        "instagram_creators_total": 18,
+        "instagram_outcome_counts": {"ok": 0, "empty": 0, "error": 18},
+        "instagram_complete_failure": True,
+    })
+    assert "DEGRADED" in sent[0]
+    assert "18 errored" in sent[0]
+    assert "All Instagram creator scrapes failed" in sent[0]
+    assert "TikTok rate-limited" not in sent[0]
 
 
 def test_on_demand_trigger_surfaces_failed_refresh(monkeypatch):
