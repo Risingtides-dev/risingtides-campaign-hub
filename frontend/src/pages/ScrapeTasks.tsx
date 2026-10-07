@@ -67,11 +67,13 @@ export default function ScrapeTasks() {
     scrapeMut.mutate(body, {
       onSuccess: (res) => {
         if (res.job_id) setActiveJobId(res.job_id)
-        toast.success(
-          res.already_running
-            ? "A scrape is already running — watching that one."
-            : `Scrape started${body.campaign_id ? ` for ${body.campaign_id}` : " (all active)"}.`
-        )
+        if (res.already_running) {
+          toast.info("A local scrape is already running; no new scrape was started.")
+        } else if (res.state === "delegated") {
+          toast.info("Local scraper accepted the request. Check its run for the outcome.")
+        } else {
+          toast.success(`Scrape started${body.campaign_id ? ` for ${body.campaign_id}` : " (all active)"}.`)
+        }
       },
       onError: (e) =>
         toast.error(e instanceof Error ? e.message : "Couldn't start the scrape."),

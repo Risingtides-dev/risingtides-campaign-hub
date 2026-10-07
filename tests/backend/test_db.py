@@ -324,6 +324,20 @@ class TestCronLog:
         assert db.get_cron_log_by_id(log_id)["status"] == "failed"
         assert not db.transition_cron_log(log_id, "queued", "running")
 
+    def test_janitor_keeps_queued_capacity_waiter_with_live_job_lock(self, db, monkeypatch):
+        from datetime import datetime, timedelta
+        from campaign_manager.models import CronLog
+
+        log_id = db.create_cron_log("internal_scrape", status="queued")
+        with db.get_session() as session:
+            row = session.query(CronLog).filter_by(id=log_id).one()
+            row.started_at = datetime.now() - timedelta(hours=1)
+            session.commit()
+        monkeypatch.setattr(db, "scrape_job_lock_held",
+                            lambda job: job == "internal_scrape")
+        assert db.reap_orphaned_cron_logs(threshold_minutes=30) == []
+        assert db.get_cron_log_by_id(log_id)["status"] == "queued"
+
     def test_janitor_keeps_running_job_with_live_database_lock(self, db, monkeypatch):
         from datetime import datetime, timedelta
         from campaign_manager.models import CronLog

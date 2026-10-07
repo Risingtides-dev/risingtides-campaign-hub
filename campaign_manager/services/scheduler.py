@@ -11,6 +11,8 @@ from __future__ import annotations
 import logging
 import os
 import re
+import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -499,6 +501,51 @@ def _finish_unstarted_request(request_log_id: int | None, status: str, summary: 
         log.exception("CRON: could not finish accepted request %s", request_log_id)
 
 
+CAPACITY_WAIT_SECONDS = 3600
+
+
+class ScrapeCapacityTimeout(TimeoutError):
+    """A distinct scrape could not claim shared capacity within the bound."""
+
+
+class _CombinedScrapeLease:
+    def __init__(self, job_lease, capacity_lease):
+        self.job_lease = job_lease
+        self.capacity_lease = capacity_lease
+
+    def assert_held(self):
+        self.job_lease.assert_held()
+        self.capacity_lease.assert_held()
+
+
+@contextmanager
+def _wait_for_scrape_capacity(job_lease):
+    """Bounded shared scraper admission; unlike duplicate jobs, distinct jobs wait."""
+    deadline = time.monotonic() + CAPACITY_WAIT_SECONDS
+    delay = 0.5
+    while True:
+        job_lease.assert_held()
+        with _db.scrape_job_lease("scrape_capacity") as capacity_lease:
+            if capacity_lease is not None:
+                yield _CombinedScrapeLease(job_lease, capacity_lease)
+                return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ScrapeCapacityTimeout("shared scrape capacity wait expired")
+        time.sleep(min(delay, remaining))
+        delay = min(delay * 2, 15.0)
+
+
+def _begin_scrape_run(job_type: str, request_log_id: int | None) -> int | None:
+    log_id = request_log_id if request_log_id is not None else _db.create_cron_log(
+        job_type, status="queued"
+    )
+    if not _db.transition_cron_log(log_id, "queued", "running"):
+        log.warning("CRON: %s request %s was already closed", job_type, log_id)
+        return None
+    return log_id
+
+
 def run_campaign_refresh(only_slugs=None, on_progress=None, request_log_id: int | None = None) -> dict:
     """Run one refresh across scheduler, manual and on-demand entrypoints."""
     try:
@@ -511,12 +558,17 @@ def run_campaign_refresh(only_slugs=None, on_progress=None, request_log_id: int 
                 _finish_unstarted_request(request_log_id, "skipped", summary)
                 log.warning("CRON: campaign_refresh already running; skipping duplicate")
                 return {"status": "skipped", "summary": summary}
-            if request_log_id is not None and not _db.transition_cron_log(
-                request_log_id, "queued", "running"
-            ):
-                log.warning("CRON: campaign_refresh request %s was already closed", request_log_id)
-                return {"status": "skipped", "summary": {"reason": "request_expired"}}
-            return _run_campaign_refresh(only_slugs, on_progress, lease, request_log_id)
+            if request_log_id is None:
+                request_log_id = _db.create_cron_log("campaign_refresh", status="queued")
+            with _wait_for_scrape_capacity(lease) as guarded_lease:
+                log_id = _begin_scrape_run("campaign_refresh", request_log_id)
+                if log_id is None:
+                    return {"status": "skipped", "summary": {"reason": "request_expired"}}
+                return _run_campaign_refresh(only_slugs, on_progress, guarded_lease, log_id)
+    except ScrapeCapacityTimeout as exc:
+        _finish_unstarted_request(request_log_id, "failed", {"error": str(exc)})
+        log.error("CRON: campaign_refresh capacity wait expired: %s", exc)
+        return {"status": "failed", "summary": {"error": str(exc)}}
     except _db.ScrapeJobLockLost as exc:
         _finish_unstarted_request(request_log_id, "failed", {"error": str(exc)})
         log.error("CRON: campaign_refresh lock lost; aborted: %s", exc)
@@ -1081,12 +1133,17 @@ def run_internal_scrape(request_log_id: int | None = None):
                 _finish_unstarted_request(request_log_id, "skipped", summary)
                 log.warning("CRON: internal_scrape already running; skipping duplicate")
                 return {"status": "skipped", "summary": summary}
-            if request_log_id is not None and not _db.transition_cron_log(
-                request_log_id, "queued", "running"
-            ):
-                log.warning("CRON: internal_scrape request %s was already closed", request_log_id)
-                return {"status": "skipped", "summary": {"reason": "request_expired"}}
-            return _run_internal_scrape(lease, request_log_id)
+            if request_log_id is None:
+                request_log_id = _db.create_cron_log("internal_scrape", status="queued")
+            with _wait_for_scrape_capacity(lease) as guarded_lease:
+                log_id = _begin_scrape_run("internal_scrape", request_log_id)
+                if log_id is None:
+                    return {"status": "skipped", "summary": {"reason": "request_expired"}}
+                return _run_internal_scrape(guarded_lease, log_id)
+    except ScrapeCapacityTimeout as exc:
+        _finish_unstarted_request(request_log_id, "failed", {"error": str(exc)})
+        log.error("CRON: internal_scrape capacity wait expired: %s", exc)
+        return {"status": "failed", "summary": {"error": str(exc)}}
     except _db.ScrapeJobLockLost as exc:
         _finish_unstarted_request(request_log_id, "failed", {"error": str(exc)})
         log.error("CRON: internal_scrape lock lost; aborted: %s", exc)

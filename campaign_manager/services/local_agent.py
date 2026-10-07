@@ -29,6 +29,9 @@ def dispatch_scrape(only_slugs=None) -> dict:
     offline Mac comes back as {"ok": False, "error": ...} so the caller can
     surface "local scraper offline" instead of 500ing.
     """
+    if only_slugs:
+        return {"ok": False, "outcome": "unsupported_scope",
+                "error": "Scoped local scrape unavailable; choose all active"}
     base = os.environ.get("LOCAL_AGENT_URL", "").strip().rstrip("/")
     token = os.environ.get("LOCAL_AGENT_TOKEN", "").strip()
     if not base:

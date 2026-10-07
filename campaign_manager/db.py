@@ -843,6 +843,7 @@ def get_tides_stats_agg(tracker_id: str) -> Optional[Dict]:
 _SCRAPE_JOB_LOCK_KEYS = {
     "campaign_refresh": 0x43414D5052454601,
     "internal_scrape": 0x43414D50494E5401,
+    "scrape_capacity": 0x43414D5043415001,
 }
 
 
@@ -1928,7 +1929,7 @@ def create_cron_log(job_type: str, status: str = "running") -> int:
 def transition_cron_log(log_id: int, expected: str, status: str, summary: dict | None = None) -> bool:
     """Atomic queued-to-running/terminal transition; a reaped request stays dead."""
     values = {"status": status}
-    if status in ("completed", "failed", "skipped"):
+    if status in ("completed", "failed", "skipped", "delegated", "unknown"):
         values["finished_at"] = datetime.now(EST).replace(tzinfo=None)
     if summary is not None:
         values["summary"] = summary
@@ -2003,18 +2004,17 @@ def reap_orphaned_cron_logs(threshold_minutes: int = 30) -> List[int]:
                     CronLog.started_at < threshold)
             .all()
         )
-        # An active scrape can legitimately exceed the age threshold.
-        # PostgreSQL's session lock is authoritative even if the cron row is
-        # old; never mark that live execution failed. Queued rows have not
-        # claimed a lock, and the worker's CAS transition prevents a late run.
+        # A scrape waiting for shared capacity can remain queued, and a long
+        # scrape can remain running past the age threshold. Their per-type
+        # session lock is authoritative; preserve both until that lock goes
+        # away. CAS prevents a reaped queued request from starting later.
         active_types = {
             row.job_type for row in stale
-            if row.status == "running"
-            and row.job_type in _SCRAPE_JOB_LOCK_KEYS
+            if row.job_type in ("campaign_refresh", "internal_scrape")
             and scrape_job_lock_held(row.job_type)
         }
         for row in stale:
-            if row.status == "running" and row.job_type in active_types:
+            if row.job_type in active_types:
                 continue
             old_status = row.status
             row.status = "failed"

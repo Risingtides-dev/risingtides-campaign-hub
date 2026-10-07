@@ -62,9 +62,17 @@ def trigger_scrape_task():
         result = dispatch_scrape(only_slugs)
         node = result.get("node") or {}
         # Shape it like the legacy job response so the frontend stays happy.
-        result["state"] = "running" if result.get("ok") else "error"
         result["already_running"] = "already running" in (node.get("note") or "")
-        return jsonify(result), (202 if result.get("ok") else 502)
+        result["state"] = (
+            "skipped" if result["already_running"]
+            else "delegated" if result.get("ok")
+            else "error"
+        )
+        status = 200 if result["already_running"] else (
+            202 if result.get("ok") else
+            409 if result.get("outcome") == "unsupported_scope" else 502
+        )
+        return jsonify(result), status
 
     from campaign_manager.services.scrape_trigger import start_scrape
     job = start_scrape(only_slugs)

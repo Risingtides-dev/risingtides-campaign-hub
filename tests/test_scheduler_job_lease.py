@@ -146,6 +146,8 @@ def test_all_job_entrypoints_share_body_gate(monkeypatch, tmp_path):
     entered = threading.Event()
     release = threading.Event()
     calls = []
+    monkeypatch.setattr(db, "create_cron_log", lambda _job, status: 70)
+    monkeypatch.setattr(db, "transition_cron_log", lambda *_args: True)
 
     def refresh(_slugs, _progress, lease, request_log_id=None):
         calls.append("campaign_refresh")
@@ -168,9 +170,10 @@ def test_all_job_entrypoints_share_body_gate(monkeypatch, tmp_path):
         assert scheduler.run_campaign_refresh(only_slugs=["one"]) == {
             "status": "skipped", "summary": {"reason": "already_running"}
         }
-        assert scheduler.run_internal_scrape() == {"status": "completed"}
+        other = pool.submit(scheduler.run_internal_scrape)
         release.set()
         assert first.result(timeout=5) == {"status": "completed"}
+        assert other.result(timeout=5) == {"status": "completed"}
     assert calls == ["campaign_refresh"]
 
 
@@ -323,3 +326,127 @@ def test_cron_api_thread_start_failure_closes_receipt(monkeypatch):
     assert transitions == [(
         72, "queued", "failed", {"error": "Could not start cron worker"}
     )]
+
+
+def test_distinct_job_waits_for_shared_capacity(monkeypatch, tmp_path):
+    monkeypatch.setattr(db, "_engine", None)
+    monkeypatch.setattr(db.tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(db, "create_cron_log", lambda _job, status: 80)
+    monkeypatch.setattr(db, "transition_cron_log", lambda *_args: True)
+    monkeypatch.setattr(scheduler, "CAPACITY_WAIT_SECONDS", 3)
+    entered = threading.Event()
+    release = threading.Event()
+    internal_entered = threading.Event()
+
+    def refresh(_slugs, _progress, lease, request_log_id=None):
+        entered.set()
+        assert release.wait(5)
+        lease.assert_held()
+        return {"status": "completed"}
+
+    def internal(lease, request_log_id=None):
+        internal_entered.set()
+        lease.assert_held()
+        return {"status": "completed"}
+
+    monkeypatch.setattr(scheduler, "_run_campaign_refresh", refresh)
+    monkeypatch.setattr(scheduler, "_run_internal_scrape", internal)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        campaign = pool.submit(scheduler.run_campaign_refresh)
+        assert entered.wait(5)
+        other = pool.submit(scheduler.run_internal_scrape)
+        assert not internal_entered.wait(0.2)
+        release.set()
+        assert campaign.result(timeout=5)["status"] == "completed"
+        assert other.result(timeout=5)["status"] == "completed"
+    assert internal_entered.is_set()
+
+
+def test_capacity_timeout_fails_queued_receipt_without_running(monkeypatch, tmp_path):
+    monkeypatch.setattr(db, "_engine", None)
+    monkeypatch.setattr(db.tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(scheduler, "CAPACITY_WAIT_SECONDS", 0.05)
+    transitions = []
+    monkeypatch.setattr(db, "transition_cron_log",
+                        lambda *args: transitions.append(args) or True)
+    monkeypatch.setattr(scheduler, "_run_internal_scrape",
+                        lambda *_args: pytest.fail("capacity wait must not run body"))
+    with db.scrape_job_lease("scrape_capacity"):
+        result = scheduler.run_internal_scrape(request_log_id=84)
+    assert result["status"] == "failed"
+    assert "capacity wait expired" in result["summary"]["error"]
+    assert transitions == [(84, "queued", "failed", {
+        "error": "shared scrape capacity wait expired"
+    })]
+
+
+@pytest.mark.parametrize("dispatch,state,code", [
+    ({"ok": True, "node": {"started": True}}, "delegated", 202),
+    ({"ok": True, "node": {"started": False, "note": "scrape already running"}}, "skipped", 200),
+    ({"ok": False, "outcome": "unknown", "error": "reconcile"}, "unknown", 502),
+    ({"ok": False, "error": "refused"}, "failed", 502),
+])
+def test_local_delegation_has_durable_receipt(monkeypatch, dispatch, state, code):
+    from flask import Flask
+    from campaign_manager.blueprints import cron
+    from campaign_manager.services import local_agent
+
+    app = Flask(__name__)
+    app.register_blueprint(cron.cron_bp)
+    monkeypatch.setattr(local_agent, "is_configured", lambda: True)
+    monkeypatch.setattr(local_agent, "dispatch_scrape", lambda _scope: dispatch)
+    monkeypatch.setattr(db, "create_cron_log",
+                        lambda _job, status: 91 if status == "queued" else None)
+    transitions = []
+    monkeypatch.setattr(db, "transition_cron_log",
+                        lambda *args: transitions.append(args) or True)
+    response = app.test_client().post(
+        "/api/cron/trigger", json={"job_type": "campaign_refresh"}
+    )
+    assert response.status_code == code
+    assert response.get_json()["log_id"] == 91
+    assert transitions[0][:3] == (91, "queued", state)
+
+
+def test_local_delegation_refuses_post_without_receipt(monkeypatch):
+    from flask import Flask
+    from campaign_manager.blueprints import cron
+    from campaign_manager.services import local_agent
+
+    app = Flask(__name__)
+    app.register_blueprint(cron.cron_bp)
+    monkeypatch.setattr(local_agent, "is_configured", lambda: True)
+    monkeypatch.setattr(db, "create_cron_log",
+                        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("DB down")))
+    monkeypatch.setattr(local_agent, "dispatch_scrape",
+                        lambda *_args: pytest.fail("must not send POST"))
+    response = app.test_client().post(
+        "/api/cron/trigger", json={"job_type": "campaign_refresh"}
+    )
+    assert response.status_code == 503
+
+
+def test_real_postgres_shared_capacity_across_connections(monkeypatch):
+    """Opt-in integration check against a disposable PostgreSQL instance."""
+    url = os.environ.get("TEST_POSTGRES_DATABASE_URL")
+    if not url:
+        pytest.skip("set TEST_POSTGRES_DATABASE_URL for real PostgreSQL lock test")
+    from sqlalchemy import create_engine
+
+    engine = create_engine(url, pool_size=3)
+    monkeypatch.setattr(db, "_engine", engine)
+    try:
+        with db.scrape_job_lease("campaign_refresh") as campaign:
+            assert campaign is not None
+            with db.scrape_job_lease("scrape_capacity") as capacity:
+                assert capacity is not None
+                assert db.scrape_job_lock_held("scrape_capacity")
+                with db.scrape_job_lease("internal_scrape") as internal:
+                    assert internal is not None
+                    with db.scrape_job_lease("scrape_capacity") as busy:
+                        assert busy is None
+                    internal.assert_held()
+                capacity.assert_held()
+        assert not db.scrape_job_lock_held("scrape_capacity")
+    finally:
+        engine.dispose()

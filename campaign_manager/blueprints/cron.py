@@ -59,8 +59,38 @@ def cron_trigger():
     if job_type == "campaign_refresh":
         from campaign_manager.services.local_agent import is_configured, dispatch_scrape
         if is_configured():
+            try:
+                log_id = _db.create_cron_log(job_type, status="queued")
+            except Exception:
+                log.exception("Could not record delegated cron request")
+                return jsonify({"error": "Could not record cron request"}), 503
             result = dispatch_scrape(None)
-            return jsonify({"status": "delegated_to_local", **result}), (202 if result.get("ok") else 502)
+            node = result.get("node") or {}
+            if result.get("ok") and node.get("started") is True:
+                state, http_status = "delegated", 202
+            elif result.get("ok") and node.get("started") is False:
+                state, http_status = "skipped", 200
+            elif result.get("outcome") == "unknown":
+                state, http_status = "unknown", 502
+            else:
+                state, http_status = "failed", 502
+            try:
+                changed = _db.transition_cron_log(
+                    log_id, "queued", state,
+                    {"dispatch": result, "note": "Node acknowledgment only; reconcile node for scrape outcome"},
+                )
+                if not changed:
+                    raise RuntimeError("delegated request receipt was already closed")
+            except Exception:
+                log.exception("Could not record delegated cron outcome for %s", log_id)
+                return jsonify({
+                    "status": "unknown", "ok": False, "log_id": log_id,
+                    "error": "Local dispatch receipt update failed; reconcile before retry",
+                }), 503
+            return jsonify({
+                "status": "delegated_to_local" if state == "delegated" else state,
+                "log_id": log_id, **result,
+            }), http_status
 
     # Persist the accepted request before returning. The background worker
     # changes this receipt to running, skipped, completed or failed; a process

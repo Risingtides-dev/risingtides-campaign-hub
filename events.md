@@ -325,3 +325,17 @@ On rebased code head c120100c2fc41aabe7578ac53b416c8dcfbf60a4, the full Python s
 
 This is a held candidate, not a delivered fix. The Mac local-agent /api/run-now path and its launchd runner do not share the Hub database lock; the runner has its own host-local guard and currently uses --no-proxy. Campaign and internal jobs still have distinct locks, so their 06:00/06:02 overlap and possible shared-capacity contention remain. Exact-head independent review, hosted checks, merge, intended deployment and live outcome proof remain open. Rollback is a revert of the Hub candidate; reconcile any accepted queued/running receipts before repeating work. Root AGENTS records the current lock and receipt contract; child index remains empty because ownership stays at root.
 _________________________________________________________________________________
+
+
+_________________________________________________________________________________
+time: [3:30pm] [10-07-26] EDT; actual UTC: 2026-10-07T19:30:31Z
+agent: [Codex desktop delegating to AC Mac mini] [GPT-6] [builder]
+worktree: [codex/issue-124-scheduler-lease] /Users/risingtidesdev/hub-issue-124-scheduler on macmini-ip; base 5874b62102d275761ec1b064691862f0665cb67d
+type: [issues]: Risingtides-dev/risingtides-campaign-hub #124 follow-up
+area: [backend], [frontend], [testing], [review]
+entry-id: hub-cron-shared-capacity-delegated-receipt-20261007
+
+Independent review found that the first candidate allowed distinct 06:00 campaign and 06:02 internal Hub jobs to compete for shared scraper capacity, configured manual local delegation lacked a durable receipt, and the Mac node ignored requested slugs. This follow-up gives distinct Hub job types one shared advisory capacity lease with a queued receipt, bounded wait/backoff and explicit timeout failure; same-type duplicates still skip. The janitor preserves active queued waiters. Configured manual local dispatch now writes a receipt before the node POST and records delegated/skipped/failed/unknown dispatch outcomes. Scoped local requests are refused before POST, and the UI distinguishes node acknowledgment from scrape completion.
+
+Focused Python checks passed 73/73; full repository Python suite passed 975/975 with 6 opt-in PostgreSQL tests skipped; separate disposable PostgreSQL targeted checks passed 26/26, and frontend TypeScript/Vite build plus changed-file ESLint passed. A test-owned local PostgreSQL connection confirmed that distinct job types can hold their own keys while the shared capacity key admits one backend, rejects another, and releases afterward. No live scrape, node POST, paid request, publication, push, merge or deployment was used. Exact-head independent review and hosted checks remain required. The Mac runner has a separate host-local guard rather than the Hub DB lease; cross-host exclusion and node outcome parity remain explicit holds. Rollback is a revert of this Hub branch after reconciling queued/delegated/unknown receipts.
+_________________________________________________________________________________
