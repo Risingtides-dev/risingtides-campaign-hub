@@ -514,3 +514,12 @@ area: [backend], [testing], [review]
 
 Natural cron log id 982 showed 18 Instagram creator errors from missing APIFY_API_TOKEN while the run recorded degraded=false and Slack said complete. Campaign refresh now marks an all-error or missing-outcome Instagram batch degraded independently of TikTok anomaly thresholds, retains completed as execution status, and persists Instagram total/failure/counts in the summary. Slack reports Instagram counts and an Instagram-specific degraded explanation without claiming TikTok rate limiting. Synthetic tests reproduce 18/18 failure and 17/18 partial failure, verify the persisted summary and notice dispatch, and check actual Slack wording. Backend verification: 955 passed, 8 PostgreSQL-only tests skipped because TEST_POSTGRES_DATABASE_URL was unavailable. No scrape, publication, push, PR, merge or deployment performed.
 _________________________________________________________________________________
+_________________________________________________________________________________
+time: [06:16pm] [10-07-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/instagram-total-failure-degraded] /Users/smathdaddy-macbook/campaign-hub-instagram-degraded
+type: [bug report]: reconcile requested Instagram creator outcomes
+area: [backend], [testing], [review]
+
+Independent review found that a missing Apify outcome map could be called 0 errored in Slack, and an unrelated successful outcome key could mask a complete failure. Instagram accounting now normalizes each requested creator name, counts only those creators, and records unknown or absent entries as missing outcomes. The complete-failure decision requires at least one requested creator and no requested ok/empty outcome. Slack reports missing separately. Synthetic tests cover all-error, partial, empty and extraneous maps plus normalized names. Backend verification: 958 passed, 8 PostgreSQL-only tests skipped without TEST_POSTGRES_DATABASE_URL. No scrape, publication, push, PR, merge or deployment performed.
+_________________________________________________________________________________

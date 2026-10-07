@@ -21,6 +21,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 
 from campaign_manager import db as _db
+from campaign_manager.services.apify_instagram import clean_username
 from campaign_manager.utils.helpers import build_round_end_by_slug, round_end_for_video, round_qualified_videos
 
 log = logging.getLogger(__name__)
@@ -123,6 +124,19 @@ def _scrape_run_is_degraded(
             and total_videos_checked == 0
         )
     )
+
+
+def _instagram_outcome_counts(requested: set[str], outcomes: dict) -> dict[str, int]:
+    """Count only requested creators; absence/unknown status is not success."""
+    names = {clean_username(name) for name in requested}
+    names.discard("")
+    normalized = {clean_username(name): outcome for name, outcome in outcomes.items()}
+    counts = {"ok": 0, "empty": 0, "error": 0, "missing": 0}
+    for name in names:
+        outcome = normalized.get(name)
+        status = outcome.get("status") if isinstance(outcome, dict) else None
+        counts[status if status in {"ok", "empty", "error"} else "missing"] += 1
+    return counts
 
 
 def _scrape_creator_accounts(usernames, start_date=None, max_workers=DEFAULT_MAX_WORKERS):
@@ -771,9 +785,10 @@ def _run_campaign_refresh(only_slugs, on_progress, lease, request_log_id=None) -
         #    new. Could be legit (slow day) but combined with high empty rate
         #    means the system is broken, not just quiet.
         total_creators_scraped = len(scrape_outcomes)
-        instagram_complete_failure = bool(ig_usernames) and all(
-            outcome.get("status") not in {"ok", "empty"}
-            for outcome in ig_outcomes.values()
+        instagram_counts = _instagram_outcome_counts(ig_usernames, ig_outcomes)
+        instagram_total = sum(instagram_counts.values())
+        instagram_complete_failure = instagram_total > 0 and not (
+            instagram_counts["ok"] or instagram_counts["empty"]
         )
         empty_rate = (
             outcome_counts["empty"] / total_creators_scraped
@@ -800,11 +815,8 @@ def _run_campaign_refresh(only_slugs, on_progress, lease, request_log_id=None) -
             "per_campaign": per_campaign,
             # New observability fields
             "scrape_outcome_counts": outcome_counts,
-            "instagram_outcome_counts": {
-                st: sum(1 for o in ig_outcomes.values() if o.get("status") == st)
-                for st in ("ok", "empty", "error")
-            },
-            "instagram_creators_total": len(ig_usernames),
+            "instagram_outcome_counts": instagram_counts,
+            "instagram_creators_total": instagram_total,
             "instagram_complete_failure": instagram_complete_failure,
             "creators_scraped_total": total_creators_scraped,
             "empty_creator_rate": round(empty_rate, 3),
@@ -1574,7 +1586,8 @@ def _post_campaign_refresh_slack(summary: dict):
             f"Instagram creators: {instagram_total} attempted — "
             f"{instagram_outcomes.get('ok', 0)} returned videos, "
             f"{instagram_outcomes.get('empty', 0)} empty, "
-            f"{instagram_outcomes.get('error', 0)} errored"
+            f"{instagram_outcomes.get('error', 0)} errored, "
+            f"{instagram_outcomes.get('missing', 0)} missing outcomes"
         )
 
     if degraded:
