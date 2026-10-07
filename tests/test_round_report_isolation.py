@@ -120,7 +120,7 @@ def test_round_scoped_cobrand_outcomes_never_join_on_empty_url(monkeypatch):
     assert rows == [{"username": "creator", "posts": 2, "views": 30, "likes": 0, "shares": 2, "comments": 3}]
 
 
-def test_scheduled_refresh_scopes_stats_creator_counts_and_snapshot(monkeypatch):
+def test_scheduled_refresh_scopes_stats_and_creator_counts(monkeypatch, caplog):
     from campaign_manager.services import matching, tracker_discovery
 
     old = {"url": "old", "account": "@creator", "timestamp": "2026-04-15T10:00:00", "views": 900, "likes": 90, "shares": 9}
@@ -135,8 +135,6 @@ def test_scheduled_refresh_scopes_stats_creator_counts_and_snapshot(monkeypatch)
     monkeypatch.setattr(scheduler._db, "save_creators", lambda slug, rows: writes.__setitem__("creators", rows))
     monkeypatch.setattr(scheduler._db, "update_campaign_stats", lambda slug, views, likes: writes.__setitem__("totals", (views, likes)))
     monkeypatch.setattr(scheduler._db, "save_scrape_log", lambda slug, row: writes.__setitem__("log", row))
-    monkeypatch.setattr(scheduler._db, "get_campaign_id", lambda slug: 1)
-    monkeypatch.setattr(scheduler._db, "save_stats_snapshot", lambda **kw: writes.__setitem__("snapshot", kw), raising=False)
     monkeypatch.setattr(matching, "match_videos", lambda videos, *args, **kw: videos)
     monkeypatch.setattr(matching, "discover_original_sounds", lambda *args, **kw: ([], []))
     monkeypatch.setattr(tracker_discovery, "find_trackers_for_campaign", lambda meta: [])
@@ -148,9 +146,7 @@ def test_scheduled_refresh_scopes_stats_creator_counts_and_snapshot(monkeypatch)
     assert writes["totals"] == (20, 2)
     assert writes["creators"][0]["posts_done"] == 1
     assert writes["log"]["total_matches"] == 1
-    assert writes["snapshot"]["views"] == 20
-    assert writes["snapshot"]["shares"] == 1
-    assert writes["snapshot"]["post_count"] == 1
+    assert "stats snapshot failed" not in caplog.text
     assert {v["url"] for v in writes["stored"]} == {"old", "current"}
 
     writes.clear()
@@ -165,7 +161,6 @@ def test_scheduled_refresh_scopes_stats_creator_counts_and_snapshot(monkeypatch)
     )
     assert first_round["total_matches"] == 2
     assert writes["totals"] == (930, 93)
-    assert writes["snapshot"]["post_count"] == 2
 
 
 def test_manual_refresh_scopes_existing_rows_and_response(monkeypatch):

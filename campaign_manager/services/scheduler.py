@@ -1081,29 +1081,6 @@ def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None, 
         "total_matches": len(countable),
     })
 
-    # Save daily stats snapshot for dashboard time-series
-    try:
-        from datetime import date as date_type
-        cid = _db.get_campaign_id(slug)
-        if cid:
-            total_shares = sum(v.get("shares", 0) or 0 for v in countable)
-            total_comments = sum(v.get("comments", 0) or 0 for v in countable)
-            if lease is not None:
-                lease.assert_held()
-            _db.save_stats_snapshot(
-                campaign_id=cid,
-                snapshot_date=date_type.today(),
-                views=total_views,
-                likes=total_likes,
-                shares=total_shares,
-                comments=total_comments,
-                post_count=len(countable),
-            )
-    except _db.ScrapeJobLockLost:
-        raise
-    except Exception as e:
-        log.warning("CRON: stats snapshot failed for %s: %s", slug, e)
-
     return {
         "new_matches": new_count,
         "total_matches": len(countable),
