@@ -53,6 +53,9 @@ export default function ScrapeTasks() {
       toast.success("Scrape finished — queue refreshed.")
       queryClient.invalidateQueries({ queryKey: ["scrape-tasks"] })
       setTimeout(() => setActiveJobId(null), 0)
+    } else if (s === "skipped") {
+      toast.info("A scrape is already running. This request was skipped.")
+      setTimeout(() => setActiveJobId(null), 0)
     } else if (s === "error") {
       toast.error(`Scrape failed: ${jobQ.data?.error ?? "unknown error"}`)
       setTimeout(() => setActiveJobId(null), 0)

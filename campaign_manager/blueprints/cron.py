@@ -5,6 +5,7 @@ Provides status, logs, manual trigger, and toggle for the daily scraping schedul
 from __future__ import annotations
 
 import threading
+import logging
 
 from flask import Blueprint, jsonify, request
 
@@ -16,6 +17,7 @@ from campaign_manager.services.scheduler import (
 )
 
 cron_bp = Blueprint("cron", __name__)
+log = logging.getLogger(__name__)
 
 
 @cron_bp.route("/api/cron/status")
@@ -60,11 +62,31 @@ def cron_trigger():
             result = dispatch_scrape(None)
             return jsonify({"status": "delegated_to_local", **result}), (202 if result.get("ok") else 502)
 
-    # Run in background thread so we return immediately
-    thread = threading.Thread(target=trigger_job, args=(job_type,), daemon=True)
-    thread.start()
+    # Persist the accepted request before returning. The background worker
+    # changes this receipt to running, skipped, completed or failed; a process
+    # recycle before it starts is reaped as an orphaned queued request.
+    try:
+        log_id = _db.create_cron_log(job_type, status="queued")
+    except Exception:
+        log.exception("Could not record manual cron request")
+        return jsonify({"error": "Could not record cron request"}), 503
 
-    return jsonify({"status": "triggered", "job_type": job_type})
+    try:
+        thread = threading.Thread(
+            target=trigger_job, args=(job_type, log_id), daemon=True
+        )
+        thread.start()
+    except Exception:
+        log.exception("Could not start manual cron worker")
+        try:
+            _db.transition_cron_log(
+                log_id, "queued", "failed", {"error": "Could not start cron worker"}
+            )
+        except Exception:
+            log.exception("Could not close manual cron request %s", log_id)
+        return jsonify({"error": "Could not start cron worker", "log_id": log_id}), 503
+
+    return jsonify({"status": "accepted", "job_type": job_type, "log_id": log_id}), 202
 
 
 @cron_bp.route("/api/cron/toggle", methods=["POST"])

@@ -8,6 +8,9 @@ from __future__ import annotations
 import os
 import threading
 import time
+from contextlib import contextmanager
+from pathlib import Path
+import tempfile
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlsplit, urlunsplit
@@ -833,6 +836,132 @@ def get_tides_stats_agg(tracker_id: str) -> Optional[Dict]:
             }
     except Exception:
         return None
+
+
+# Stable PostgreSQL advisory-lock keys for the two heavy cron jobs.
+# A session lock avoids a long transaction during external scraping.
+_SCRAPE_JOB_LOCK_KEYS = {
+    "campaign_refresh": 0x43414D5052454601,
+    "internal_scrape": 0x43414D50494E5401,
+}
+
+
+class ScrapeJobLockLost(RuntimeError):
+    """The dedicated PostgreSQL session no longer owns the scrape lock."""
+
+
+class _ScrapeJobLease:
+    def __init__(self, connection=None, backend_pid=None, file_fd=None, key=None):
+        self.connection = connection
+        self.backend_pid = backend_pid
+        self.file_fd = file_fd
+        self.key = key
+
+    def assert_held(self):
+        """Detect lock loss after a long external scrape, before writes."""
+        if self.connection is not None:
+            try:
+                actual_pid = self.connection.execute(text("SELECT pg_backend_pid()")).scalar_one()
+                if actual_pid != self.backend_pid:
+                    raise ScrapeJobLockLost("scrape job lock session changed")
+                held = _postgres_advisory_lock_held(
+                    self.connection, self.backend_pid, self.key
+                )
+                self.connection.commit()
+            except ScrapeJobLockLost:
+                raise
+            except Exception as exc:
+                raise ScrapeJobLockLost("scrape job lock connection lost") from exc
+            if not held:
+                raise ScrapeJobLockLost("scrape job lock no longer held")
+        elif self.file_fd is not None:
+            try:
+                os.fstat(self.file_fd)
+            except OSError as exc:
+                raise ScrapeJobLockLost("local scrape job lock descriptor lost") from exc
+
+
+def _postgres_advisory_lock_held(connection, backend_pid: int | None, key: int) -> bool:
+    """Read the lock table without acquiring or briefly blocking a scrape."""
+    high, low = key >> 32, key & 0xFFFFFFFF
+    return bool(connection.execute(text(
+        "SELECT EXISTS (SELECT 1 FROM pg_locks "
+        "WHERE locktype = 'advisory' AND granted "
+        "AND database = (SELECT oid FROM pg_database WHERE datname = current_database()) "
+        "AND (:pid IS NULL OR pid = :pid) "
+        "AND CAST(classid AS bigint) = :high "
+        "AND CAST(objid AS bigint) = :low AND objsubid = 1)"
+    ), {"pid": backend_pid, "high": high, "low": low}).scalar_one())
+
+
+def scrape_job_lock_held(job_type: str) -> bool:
+    """Whether any PostgreSQL backend holds this job lock; for log reaping."""
+    if job_type not in _SCRAPE_JOB_LOCK_KEYS:
+        raise ValueError(f"Unknown scrape job type: {job_type}")
+    if _engine is None or _engine.dialect.name != "postgresql":
+        return False
+    with _engine.connect() as connection:
+        return _postgres_advisory_lock_held(
+            connection, None, _SCRAPE_JOB_LOCK_KEYS[job_type]
+        )
+
+
+@contextmanager
+def scrape_job_lease(job_type: str):
+    """Try once to own a heavy scrape across all processes sharing this DB.
+
+    Yield None for a duplicate. Raise on lock-service failure so callers do
+    not report an apparently completed job. SQLite/file-mode development uses
+    a same-host OS file lock and has no cross-host guarantee.
+    """
+    if job_type not in _SCRAPE_JOB_LOCK_KEYS:
+        raise ValueError(f"Unknown scrape job type: {job_type}")
+    key = _SCRAPE_JOB_LOCK_KEYS[job_type]
+
+    if _engine is not None and _engine.dialect.name == "postgresql":
+        connection = _engine.connect()
+        acquired = False
+        backend_pid = None
+        try:
+            backend_pid = connection.execute(text("SELECT pg_backend_pid()")).scalar_one()
+            acquired = bool(connection.execute(
+                text("SELECT pg_try_advisory_lock(:key)"), {"key": key}
+            ).scalar_one())
+            connection.commit()
+            yield _ScrapeJobLease(connection, backend_pid, key=key) if acquired else None
+        finally:
+            if acquired:
+                try:
+                    actual_pid = connection.execute(text("SELECT pg_backend_pid()")).scalar_one()
+                    if actual_pid == backend_pid:
+                        connection.execute(
+                            text("SELECT pg_advisory_unlock(:key)"), {"key": key}
+                        )
+                    connection.commit()
+                except Exception:
+                    # PostgreSQL releases session locks when the connection dies.
+                    connection.invalidate()
+            connection.close()
+        return
+
+    try:
+        import fcntl
+    except ImportError as exc:
+        raise RuntimeError("local scrape lock requires fcntl or PostgreSQL") from exc
+    lock_path = Path(tempfile.gettempdir()) / f"campaign-hub-scrape-{job_type}.lock"
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    acquired = False
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquired = True
+        except BlockingIOError:
+            pass
+        yield _ScrapeJobLease(file_fd=fd) if acquired else None
+    finally:
+        if acquired:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
 
 
 def get_session() -> Session:
@@ -1781,17 +1910,51 @@ def get_synced_notion_ids() -> set:
 
 # ── Cron Logs ────────────────────────────────────────────────────────
 
-def create_cron_log(job_type: str) -> int:
-    """Create a new cron log entry with status 'running'. Returns the log ID."""
+def create_cron_log(job_type: str, status: str = "running") -> int:
+    """Create a run log or a queued manual-request receipt."""
+    if status not in ("running", "queued"):
+        raise ValueError("invalid initial cron status")
     with get_session() as s:
         log = CronLog(
             job_type=job_type,
-            status="running",
+            status=status,
             started_at=datetime.now(EST).replace(tzinfo=None),
         )
         s.add(log)
         s.commit()
         return log.id
+
+
+def transition_cron_log(log_id: int, expected: str, status: str, summary: dict | None = None) -> bool:
+    """Atomic queued-to-running/terminal transition; a reaped request stays dead."""
+    values = {"status": status}
+    if status in ("completed", "failed", "skipped"):
+        values["finished_at"] = datetime.now(EST).replace(tzinfo=None)
+    if summary is not None:
+        values["summary"] = summary
+    with get_session() as s:
+        changed = (
+            s.query(CronLog)
+            .filter(CronLog.id == log_id, CronLog.status == expected)
+            .update(values, synchronize_session=False)
+        )
+        s.commit()
+        return bool(changed)
+
+
+def active_cron_log_id(job_type: str) -> Optional[int]:
+    """Offer a current run ID only when there is exactly one recent candidate."""
+    cutoff = datetime.now(EST).replace(tzinfo=None) - timedelta(minutes=30)
+    with get_session() as s:
+        rows = (
+            s.query(CronLog.id)
+            .filter(CronLog.job_type == job_type,
+                    CronLog.status == "running",
+                    CronLog.started_at >= cutoff)
+            .order_by(desc(CronLog.started_at))
+            .limit(2).all()
+        )
+        return rows[0][0] if len(rows) == 1 else None
 
 
 def finish_cron_log(log_id: int, status: str, summary: dict):
@@ -1836,14 +1999,31 @@ def reap_orphaned_cron_logs(threshold_minutes: int = 30) -> List[int]:
     with get_session() as s:
         stale = (
             s.query(CronLog)
-            .filter(CronLog.status == "running", CronLog.started_at < threshold)
+            .filter(CronLog.status.in_(("running", "queued")),
+                    CronLog.started_at < threshold)
             .all()
         )
+        # An active scrape can legitimately exceed the age threshold.
+        # PostgreSQL's session lock is authoritative even if the cron row is
+        # old; never mark that live execution failed. Queued rows have not
+        # claimed a lock, and the worker's CAS transition prevents a late run.
+        active_types = {
+            row.job_type for row in stale
+            if row.status == "running"
+            and row.job_type in _SCRAPE_JOB_LOCK_KEYS
+            and scrape_job_lock_held(row.job_type)
+        }
         for row in stale:
+            if row.status == "running" and row.job_type in active_types:
+                continue
+            old_status = row.status
             row.status = "failed"
             row.finished_at = datetime.now(EST).replace(tzinfo=None)
             row.summary = {
-                "error": "orphaned: worker recycle killed the daemon thread",
+                "error": (
+                    "orphaned: queued request never started" if old_status == "queued"
+                    else "orphaned: worker recycle killed the daemon thread"
+                ),
                 "threshold_minutes": threshold_minutes,
             }
             reaped.append(row.id)

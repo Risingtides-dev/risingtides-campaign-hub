@@ -303,6 +303,41 @@ class TestCronLog:
         assert db.get_cron_log_by_id(99999) is None
 
 
+    def test_queued_manual_request_transitions_once(self, db):
+        log_id = db.create_cron_log("campaign_refresh", status="queued")
+        assert db.get_cron_log_by_id(log_id)["status"] == "queued"
+        assert db.transition_cron_log(log_id, "queued", "running")
+        assert not db.transition_cron_log(log_id, "queued", "running")
+        db.finish_cron_log(log_id, "completed", {"runs": 1})
+        assert db.get_cron_log_by_id(log_id)["status"] == "completed"
+
+    def test_janitor_reaps_orphaned_queued_request_without_restarting(self, db):
+        from datetime import datetime, timedelta
+        from campaign_manager.models import CronLog
+
+        log_id = db.create_cron_log("campaign_refresh", status="queued")
+        with db.get_session() as session:
+            row = session.query(CronLog).filter_by(id=log_id).one()
+            row.started_at = datetime.now() - timedelta(hours=1)
+            session.commit()
+        assert db.reap_orphaned_cron_logs(threshold_minutes=30) == [log_id]
+        assert db.get_cron_log_by_id(log_id)["status"] == "failed"
+        assert not db.transition_cron_log(log_id, "queued", "running")
+
+    def test_janitor_keeps_running_job_with_live_database_lock(self, db, monkeypatch):
+        from datetime import datetime, timedelta
+        from campaign_manager.models import CronLog
+
+        log_id = db.create_cron_log("campaign_refresh")
+        with db.get_session() as session:
+            row = session.query(CronLog).filter_by(id=log_id).one()
+            row.started_at = datetime.now() - timedelta(hours=1)
+            session.commit()
+        monkeypatch.setattr(db, "scrape_job_lock_held", lambda _job: True)
+        assert db.reap_orphaned_cron_logs(threshold_minutes=30) == []
+        assert db.get_cron_log_by_id(log_id)["status"] == "running"
+
+
 class TestNetworkCreators:
     def test_add_and_fetch(self, db):
         db.add_network_creator({"username": "alice", "default_rate": 100})
