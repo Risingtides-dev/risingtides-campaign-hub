@@ -126,3 +126,54 @@ def test_failed_discovery_releases_guard_for_next_tick():
         assert notion_sync._crm_sync_in_progress is False
         notion_sync.run_crm_sync()
     assert query.call_count == 2
+
+
+def creation_entry():
+    return {"slug": "creation_race", "title": "Incoming", "artist": "", "song": "",
+            "official_sound": "", "sound_id": "", "start_date": "", "budget": 0,
+            "notion_page_id": "incoming-page", "content_types": ["Coffee"],
+            "internal_captions": "Incoming words"}
+
+
+def test_tick_preserves_campaign_created_after_discovery_precheck(db):
+    existing = {"title": "Manual", "notion_page_id": "manual-page",
+                "content_types": ["Trucktok"], "internal_captions": "Exact words",
+                "stats": {"total_views": 123, "total_likes": 45}}
+    real_exists = db.campaign_exists
+    def insert_after_precheck(slug):
+        assert not real_exists(slug)
+        db.save_campaign(slug, existing)
+        db.save_creators(slug, [{"username": "attached", "posts_owed": 3}])
+        return False
+    with patch.object(notion, "query_new_clients", return_value=[creation_entry()]), patch.object(
+            db, "campaign_exists", side_effect=insert_after_precheck):
+        notion_sync.run_crm_sync()
+    stored = db.get_campaign("creation_race")
+    assert stored["title"] == "Manual"
+    assert stored["notion_page_id"] == "manual-page"
+    assert stored["content_types"] == ["Trucktok"]
+    assert stored["internal_captions"] == "Exact words"
+    assert stored["stats"]["total_views"] == 123
+    assert stored["stats"]["total_likes"] == 45
+    assert db.get_creators("creation_race")[0]["username"] == "attached"
+
+
+def test_tick_preserves_creator_attached_after_campaign_insert(db):
+    real_save = db.save_campaign
+    def attach_after_save(slug, meta, **kwargs):
+        result = real_save(slug, meta, **kwargs)
+        db.save_creators(slug, [{"username": "attached", "posts_owed": 3}])
+        return result
+    with patch.object(notion, "query_new_clients", return_value=[creation_entry()]), patch.object(
+            db, "save_campaign", side_effect=attach_after_save):
+        notion_sync.run_crm_sync()
+    assert db.get_campaign("creation_race")["notion_page_id"] == "incoming-page"
+    assert db.get_creators("creation_race")[0]["username"] == "attached"
+
+
+def test_create_only_conflict_preserves_row_and_legacy_update_still_works(db):
+    db.save_campaign("existing", {"title": "Original"})
+    assert db.save_campaign("existing", {"title": "Overwrite"}, create_only=True) == "conflict"
+    assert db.get_campaign("existing")["title"] == "Original"
+    assert db.save_campaign("existing", {"title": "Intentional update"}) is None
+    assert db.get_campaign("existing")["title"] == "Intentional update"

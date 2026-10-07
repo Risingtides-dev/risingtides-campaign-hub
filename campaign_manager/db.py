@@ -17,6 +17,7 @@ EST = ZoneInfo("America/New_York")
 
 from sqlalchemy import create_engine, desc, func, text
 from sqlalchemy.orm import Session, selectinload, sessionmaker
+from sqlalchemy.exc import IntegrityError
 
 from campaign_manager.utils.budget import rate_is_known
 from campaign_manager.models import (
@@ -915,8 +916,9 @@ def get_campaign_obj(slug: str) -> Optional[Campaign]:
         return s.query(Campaign).filter_by(slug=slug).first()
 
 
-def save_campaign(slug: str, meta: Dict, *, expected_official_sound: Optional[str] = None):
-    """Create or update a campaign from a meta dict."""
+def save_campaign(slug: str, meta: Dict, *, expected_official_sound: Optional[str] = None,
+                  create_only: bool = False):
+    """Create or update a campaign; create_only never changes an existing row."""
     with get_session() as s:
         candidate_url = _canonical_sound_url(meta.get("official_sound") or "")
         guarded_sound_write = candidate_url is not None and expected_official_sound is not None
@@ -925,7 +927,7 @@ def save_campaign(slug: str, meta: Dict, *, expected_official_sound: Optional[st
         campaign_query = s.query(Campaign).filter_by(slug=slug)
         if guarded_sound_write:
             campaign_query = campaign_query.with_for_update().populate_existing()
-        c = campaign_query.first()
+        c = None if create_only else campaign_query.first()
         if not c:
             if guarded_sound_write:
                 if expected_official_sound != "":
@@ -1002,7 +1004,17 @@ def save_campaign(slug: str, meta: Dict, *, expected_official_sound: Optional[st
                 pass
 
         c.updated_at = datetime.now()
-        s.commit()
+        try:
+            s.commit()
+        except IntegrityError as error:
+            s.rollback()
+            code = getattr(error.orig, "pgcode", None) or getattr(error.orig, "sqlstate", None)
+            sqlite_code = getattr(error.orig, "sqlite_errorcode", None)
+            if create_only and (code == "23505" or sqlite_code in (1555, 2067)
+                                or (s.bind.dialect.name == "sqlite"
+                                    and str(error.orig).startswith("UNIQUE constraint failed:"))):
+                return "conflict"
+            raise
         return "updated" if guarded_sound_write else None
 
 

@@ -957,6 +957,7 @@ def run_crm_sync() -> None:
             sound_url = _db._canonical_sound_url(meta["official_sound"])
             result = _db.save_campaign(
                 slug, meta, expected_official_sound="" if sound_url is not None else None,
+                create_only=True,
             )
             if result not in (None, "updated"):
                 if result == "duplicate":
@@ -966,7 +967,6 @@ def run_crm_sync() -> None:
                 else:
                     errors.append({"slug": slug, "reason": "campaign save failed"})
                 continue
-            _db.save_creators(slug, [])
             created.append({"slug": slug, "title": entry["title"]})
 
         if created or errors:
