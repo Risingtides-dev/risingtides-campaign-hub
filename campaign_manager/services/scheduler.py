@@ -285,7 +285,10 @@ _scheduler: Optional[BackgroundScheduler] = None
 
 # ── Scheduler lifecycle ──────────────────────────────────────────────
 
-def init_scheduler(database_url: str, hour: int = 6, minute: int = 0):
+def init_scheduler(
+    database_url: str, hour: int = 6, minute: int = 0,
+    campaign_refresh_enabled: bool = True,
+):
     """Initialize and start the APScheduler BackgroundScheduler.
 
     Only one gunicorn worker runs the scheduler (enforced by file lock in create_app).
@@ -319,15 +322,16 @@ def init_scheduler(database_url: str, hour: int = 6, minute: int = 0):
     if internal_hour >= 24:
         internal_hour = internal_hour % 24
 
-    _scheduler.add_job(
-        run_campaign_refresh,
-        "cron",
-        hour=hour,
-        minute=minute,
-        id="campaign_refresh",
-        replace_existing=True,
-        misfire_grace_time=3600,
-    )
+    if campaign_refresh_enabled:
+        _scheduler.add_job(
+            run_campaign_refresh,
+            "cron",
+            hour=hour,
+            minute=minute,
+            id="campaign_refresh",
+            replace_existing=True,
+            misfire_grace_time=3600,
+        )
 
     _scheduler.add_job(
         run_internal_scrape,
@@ -442,13 +446,30 @@ def init_scheduler(database_url: str, hour: int = 6, minute: int = 0):
         kwargs={"threshold_minutes": reap_threshold},
     )
 
-    _scheduler.start()
+    try:
+        if campaign_refresh_enabled:
+            _scheduler.start()
+        else:
+            # Persistent SQLAlchemy jobstores can retain the old cron job across
+            # deploys. Load them while paused, remove it, then allow any due jobs
+            # to run; never expose the old campaign job to a running scheduler.
+            _scheduler.start(paused=True)
+            if _scheduler.get_job("campaign_refresh") is not None:
+                _scheduler.remove_job("campaign_refresh")
+            _scheduler.resume()
+    except Exception:
+        # A failed removal must not be retried by resuming a stale scheduler.
+        # Clear the singleton so the readiness path can retry initialization.
+        if _scheduler.running:
+            _scheduler.shutdown(wait=False)
+        _scheduler = None
+        raise
     log.info(
-        "Scheduler started: campaign_refresh at %02d:%02d, internal_scrape at "
+        "Scheduler started: campaign_refresh enabled=%s at %02d:%02d, internal_scrape at "
         "%02d:%02d EST, notion_sync every %d minutes, "
         "tides_tracker_pull every %d minutes, "
         "cron_log_janitor every 5 minutes (threshold=%d min)",
-        hour, minute, internal_hour, internal_minute, notion_interval,
+        campaign_refresh_enabled, hour, minute, internal_hour, internal_minute, notion_interval,
         tides_interval, reap_threshold,
     )
 
