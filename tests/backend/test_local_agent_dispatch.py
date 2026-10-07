@@ -76,6 +76,8 @@ def test_dispatch_rejects_malformed_success(monkeypatch):
         {'ok': True, 'action': 'other', 'started': True},
         {'ok': True, 'action': 'scrape', 'started': 'yes'},
         {'ok': True, 'action': 'scrape', 'started': False, 'note': 3},
+        {'ok': True, 'action': 'scrape', 'started': False},
+        {'ok': True, 'action': 'scrape', 'started': False, 'note': 'other'},
     ):
         monkeypatch.setattr(local_agent.urllib.request, 'urlopen', lambda *_args, **_kwargs: Response(body))
         result = local_agent.dispatch_scrape()
@@ -95,3 +97,15 @@ def test_dispatch_classifies_timeout_after_send_as_unknown(monkeypatch):
     assert result['ok'] is False
     assert result['outcome'] == 'unknown'
     assert 'reconcile before retry' in result['error']
+
+
+def test_dispatch_strips_node_diagnostics_from_success(monkeypatch):
+    monkeypatch.setenv('LOCAL_AGENT_URL', 'https://node.example')
+    monkeypatch.setattr(local_agent.urllib.request, 'urlopen', lambda *_args, **_kwargs: Response(
+        {'ok': True, 'action': 'scrape', 'started': True,
+         'detail': 'launchctl private-token', 'note': 'private-token'}
+    ))
+    result = local_agent.dispatch_scrape()
+    assert result['ok'] is True
+    assert result['node'] == {'ok': True, 'action': 'scrape', 'started': True}
+    assert 'private-token' not in json.dumps(result)

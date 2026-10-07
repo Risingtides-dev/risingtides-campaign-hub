@@ -47,10 +47,16 @@ def dispatch_scrape(only_slugs=None) -> dict:
         if isinstance(body, dict) and body.get("ok") is False:
             return {"ok": False, "error": "local scraper did not accept the scrape"}
         if (isinstance(body, dict) and body.get("ok") is True
-                and body.get("action") == "scrape"
-                and type(body.get("started")) is bool
-                and isinstance(body.get("note", ""), str)):
-            return {"ok": True, "delegated_to": "local_agent", "node": body}
+                and body.get("action") == "scrape"):
+            started = body.get("started")
+            if started is True:
+                # launchctl diagnostics are not part of the caller contract.
+                node = {"ok": True, "action": "scrape", "started": True}
+                return {"ok": True, "delegated_to": "local_agent", "node": node}
+            if started is False and body.get("note") == "scrape already running":
+                node = {"ok": True, "action": "scrape", "started": False,
+                        "note": "scrape already running"}
+                return {"ok": True, "delegated_to": "local_agent", "node": node}
         return {"ok": False, "outcome": "unknown",
                 "error": "local scraper returned an invalid response; reconcile before retry"}
     except Exception:  # noqa: BLE001
