@@ -1388,7 +1388,8 @@ def _attach_internal_to_campaigns(internal_videos: list, lease=None) -> dict:
     (typical for rounds: r3, r4, r6 may all use the same sound):
         Latest active round whose start is no later than the post wins.
         If start_dates tie, latest created_at wins.
-        Posts without a parseable date are not auto-attached.
+        Posts without a parseable date may attach only to campaigns
+        without a start date, preserving their legacy behavior.
 
     Returns a dict summary:
         {
@@ -1404,7 +1405,7 @@ def _attach_internal_to_campaigns(internal_videos: list, lease=None) -> dict:
     because the match is sound-ID-exact (the whole point of strict).
     """
     from campaign_manager.services.matching import merge_matched_videos
-    from campaign_manager.utils.helpers import round_start_date, video_post_date
+    from campaign_manager.utils.helpers import round_start_date, video_in_round
 
     attached_count = 0
     skipped_no_sound_id = 0
@@ -1448,16 +1449,14 @@ def _attach_internal_to_campaigns(internal_videos: list, lease=None) -> dict:
             skipped_no_sound_id += 1
             continue
         candidates = sound_to_campaigns.get(sid, [])
-        posted = video_post_date(v)
-        if not candidates or posted is None:
+        if not candidates:
             skipped_no_active_campaign += 1
             continue
         eligible = []
         for meta in candidates:
             start_raw = str(meta.get("start_date") or "").strip()
             start = round_start_date(start_raw)
-            end = round_end_for_video(v, round_ends.get(str(meta.get("slug") or "")))
-            if (not start_raw or (start is not None and posted >= start)) and (end is None or posted < end):
+            if video_in_round(v, start_raw, end_date=round_ends.get(str(meta.get("slug") or ""))):
                 eligible.append((start or datetime.min.date(), str(meta.get("created_at") or ""), str(meta.get("slug") or ""), meta))
         if not eligible:
             skipped_no_active_campaign += 1

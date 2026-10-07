@@ -2,6 +2,8 @@
 from datetime import date
 from types import SimpleNamespace
 
+import pytest
+
 from campaign_manager.services import campaign_report, campaign_stats, scheduler
 
 
@@ -314,3 +316,60 @@ def test_internal_attach_does_not_fall_back_to_earlier_active_round_after_later_
     assert result["attached_count"] == 0
     assert result["skipped_no_active_campaign"] == 1
     assert writes == []
+
+
+@pytest.mark.parametrize("date_fields", [
+    {},
+    {"timestamp": "2026-99-99"},
+    {"timestamp": "bad", "upload_date": "20261340"},
+])
+@pytest.mark.parametrize("mixed_rounds", [False, True])
+def test_internal_attach_unknown_date_retains_no_start_campaigns(monkeypatch, date_fields, mixed_rounds):
+    campaigns = [{"slug": "legacy-z", "sound_id": "123456", "created_at": "2026-06-01"}]
+    if mixed_rounds:
+        campaigns += [
+            {"slug": "legacy-old", "sound_id": "123456", "start_date": None, "created_at": "2026-05-01"},
+            {"slug": "legacy-a", "sound_id": "123456", "start_date": "  ", "created_at": "2026-06-01"},
+            {"slug": "dated", "sound_id": "123456", "start_date": "2026-07-01", "created_at": "2026-07-01"},
+            {"slug": "invalid", "sound_id": "123456", "start_date": "bad", "created_at": "2026-08-01"},
+            {"slug": "completed", "sound_id": "123456", "created_at": "2026-09-01", "completion_status": "completed"},
+            {"slug": "other-sound", "sound_id": "654321", "created_at": "2026-10-01"},
+        ]
+    existing = {"url": "retained", "music_id": "123456", "views": 10, "likes": 2}
+    stored = {c["slug"]: [dict(existing)] for c in campaigns}
+    totals = {}
+    monkeypatch.setattr(scheduler._db, "list_campaigns", lambda **kw: campaigns)
+    monkeypatch.setattr(scheduler._db, "get_matched_videos", lambda slug: stored[slug])
+    monkeypatch.setattr(scheduler._db, "replace_matched_videos", lambda slug, rows: stored.__setitem__(slug, rows))
+    monkeypatch.setattr(scheduler._db, "update_campaign_stats", lambda slug, views, likes: totals.__setitem__(slug, (views, likes)))
+    video = {"url": "undated", "music_id": "123456", "views": 20, "likes": 3, **date_fields}
+
+    result = scheduler._attach_internal_to_campaigns([video])
+
+    assert result["attached_count"] == 1
+    assert result["skipped_no_active_campaign"] == 0
+    assert result["per_campaign"] == {"legacy-z": 1}
+    assert [v["url"] for v in stored["legacy-z"]] == ["retained", "undated"]
+    assert stored["legacy-z"][1]["match_strategy"] == "internal_creator"
+    assert totals == {"legacy-z": (30, 5)}
+    assert all(rows == [existing] for slug, rows in stored.items() if slug != "legacy-z")
+
+
+@pytest.mark.parametrize("date_fields", [
+    {},
+    {"timestamp": "2026-99-99"},
+    {"upload_date": "20261340"},
+])
+def test_internal_attach_unknown_date_never_proves_dated_round_membership(monkeypatch, date_fields):
+    campaigns = [
+        {"slug": "dated", "sound_id": "123456", "start_date": "2026-04-01"},
+        {"slug": "invalid", "sound_id": "123456", "start_date": "bad"},
+    ]
+    monkeypatch.setattr(scheduler._db, "list_campaigns", lambda **kw: campaigns)
+    monkeypatch.setattr(scheduler._db, "get_matched_videos", lambda slug: pytest.fail("ineligible campaign read"))
+    monkeypatch.setattr(scheduler._db, "replace_matched_videos", lambda *args: pytest.fail("ineligible campaign write"))
+    result = scheduler._attach_internal_to_campaigns([
+        {"url": "undated", "music_id": "123456", **date_fields},
+    ])
+    assert result["attached_count"] == 0
+    assert result["skipped_no_active_campaign"] == 1
