@@ -417,3 +417,16 @@ entry-id: hub-issue124-hosted-test-portability-20261007
 
 The first exact-head hosted backend run failed in test fixtures: five janitor tests constructed stale timestamps using the runner local timezone while the production ledger uses America/New_York naive values, and the Mac zsh wrapper test invoked /bin/zsh on Linux. The fixtures now construct stale timestamps in the ledger timezone. The wrapper executes on the Mac release host; environments without zsh explicitly skip that platform-specific subprocess check. Under TZ=UTC, 13 focused local tests passed. The owning AGENTS.md contract is unchanged because production behavior did not change. The prior code head passed 994 Python tests, 28 tests against a disposable PostgreSQL 16 cluster, and the frontend build. This test-fix head requires independent review and new exact-head hosted verification. No live scrape, node POST or posting was triggered.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [04:40pm] [07-10-26] EDT; actual UTC: 2026-10-07T20:40:01.220018+00:00
+agent: [Codex] [GPT-6] [delegated Hub258 release owner]
+worktree: [codex/hub258-crm-repair -> PR258] /private/tmp/hub258-crm-repair-20261007/repo
+type: [bug report]
+area: [backend] [testing] [review]
+entry-id: hub258-atomic-creation-race-correction-20261007
+
+Correct the earlier draft258 preparation claim: skipping existing slugs before persistence did not prevent a manual creation between discovery's precheck and save. Independent actual SQLite reproduction overwrote the new campaign's identity, categories and stats, then cleared its creators. save_campaign now offers an optional create-only insert using existing unique constraints; discovery uses it and treats known unique races as conflict, while unrelated integrity failures still raise and ordinary manual upserts remain unchanged. Remove the unnecessary empty creator replacement so attachment immediately after creation survives. Both new race controls fail on original29ea9 source; repaired focused19/19 and full971/971 Python3.10 checks passed with five existing optional PostgreSQL fixture skips. Independent creation-race review passed actual SQLite and synthetic PostgreSQL23505 handling; integrated current-main reviewer passed89 CRM/DB/webhook checks.
+
+Integrated actual GitHub main fad83b11696862dad9041637139a70c0ffa8cfbf, preserving native job/capacity leases, dispatch receipts, export contract and append-only history. Source changes remain limited to CRM discovery, the existing save_campaign function, regression tests and root discovery contract; no lease/model/local-agent edits. Existing scheduler registration from the original draft is retained, not enabled or deployed. This corrective canonical and versioned ledger entry precedes final freeze, independent exact-head review and full backend verification. Push requires the unchanged original draft head e1b94c425507712a6f8ba7654317ddb25360b329 with an explicit lease. Keep draft; no merge, deployment, production CRM request, campaign creation, scraper launch or publication claim. Root contract and empty child index were checked; only the concise discovery contract changed.
+_________________________________________________________________________________
