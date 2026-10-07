@@ -483,3 +483,15 @@ area: [backend], [testing], [review]
 
 Independent review found that ambiguity warnings logged raw matched URLs, which may contain query tokens, and that ORM queue, bulk, sideload, and Chartmetric filters omitted URL identity entirely from their eligibility dictionaries. Those call sites now carry URL and row ID to the shared filter. The warning emits only a stable SHA-256 prefix of the query/fragment-stripped URL, or a row ID when URL is absent, so the excluded row can be reconciled without exposing the token. Focused token-redaction and Cobrand queue identity regressions passed with 110 focused tests; the full Python suite passed 1015 with eight optional PostgreSQL tests skipped. No external upload, scrape, publication, PR, merge or deployment occurred. Rollback is a code revert; no migration is involved.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [05:52pm] [07-10-26] EDT UTC-04:00
+agent: [Codex] [GPT-6] [hub258_finish]
+worktree: [codex/hub-no-start-attachment-20261007] [/private/tmp/hub-no-start-repair-20261007/repo]
+type: [bug report]
+area: [backend]: Restore internal attachment for campaigns without a start date
+
+On authoritative GitHub main 4daca326, six regressions reproduced skipped exact-sound internal posts with absent/malformed dates for sole or mixed no-start campaigns. Reused existing video_in_round membership in _attach_internal_to_campaigns, restoring the current legacy no-start contract while retaining dated/invalid-start exclusions, completed filtering, sound boundaries, creation/slug ties and historical rows. Added six original-failing/new-passing cases and three dated exclusion cases; focused round/report/scrape/Cobrand/Chartmetric/stats checks passed 163, full Python3.10.19 suite passed 1024 with eight existing disposable-PostgreSQL skips. Independent source review found no issue; AGENTS.md unchanged because this restores its existing contract. No real scrape, upload, publication or deployment occurred in this repair.
+
+Root observed predecessor PR264 head a425205e hosted Backend run37691175906/job113031441150 success and merge4daca326 at21:43:42UTC, Railway deployment6921624606 success, and both canonical sombr report routes HTTP200 around21:46UTC with18 headline posts and ten dated top-post URLs each in their respective rounds; this proves those report outputs only, not all stored dates or attachment/scrape/Cobrand execution or publication.
+_________________________________________________________________________________
