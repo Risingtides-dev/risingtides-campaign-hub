@@ -849,3 +849,187 @@ def run_notion_sync() -> None:
     finally:
         with _notion_sync_lock:
             _notion_sync_in_progress = False
+
+
+# ── CRM sync scheduler job (issue #257) ─────────────────────────────
+
+CRM_SYNC_DEFAULT_INTERVAL_MINUTES = 1
+CRM_SYNC_MIN_INTERVAL_MINUTES = 1
+CRM_SYNC_MAX_INTERVAL_MINUTES = 60
+
+_crm_sync_in_progress = False
+_crm_sync_lock = __import__("threading").Lock()
+
+
+def get_crm_sync_interval_minutes() -> int:
+    """Resolve the CRM-poll interval from the env var, clamped to sane bounds.
+
+    Env var: ``NOTION_CRM_SYNC_INTERVAL_MINUTES`` (default 1, clamped 1–60).
+    """
+    raw = os.environ.get("NOTION_CRM_SYNC_INTERVAL_MINUTES", "")
+    if not raw:
+        return CRM_SYNC_DEFAULT_INTERVAL_MINUTES
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "NOTION_CRM_SYNC_INTERVAL_MINUTES=%r is not an integer; using default %d",
+            raw, CRM_SYNC_DEFAULT_INTERVAL_MINUTES,
+        )
+        return CRM_SYNC_DEFAULT_INTERVAL_MINUTES
+    if n < CRM_SYNC_MIN_INTERVAL_MINUTES or n > CRM_SYNC_MAX_INTERVAL_MINUTES:
+        logger.warning(
+            "NOTION_CRM_SYNC_INTERVAL_MINUTES=%d out of bounds [%d, %d]; using default %d",
+            n, CRM_SYNC_MIN_INTERVAL_MINUTES, CRM_SYNC_MAX_INTERVAL_MINUTES,
+            CRM_SYNC_DEFAULT_INTERVAL_MINUTES,
+        )
+        return CRM_SYNC_DEFAULT_INTERVAL_MINUTES
+    return n
+
+
+def run_crm_sync() -> None:
+    """One scheduler tick: poll Notion CRM for new Client rows, create campaigns,
+    and refresh content_types / internal_captions for all campaigns linked to a
+    Notion page.
+
+    Identical business logic to ``POST /api/webhooks/notion/sync``. That endpoint
+    remains the manual trigger and Notion-automation target; this is the background
+    heartbeat that keeps the Hub up to date without human intervention.
+
+    Safety rules carried over from the webhook:
+    - Existing campaigns are never destructively modified — only content_types and
+      internal_captions can change, and only when the CRM row is the page_id source.
+    - Skips (never errors) if the campaign changed while being created (conflict).
+    - Never raises — any unhandled exception is caught and logged so the APScheduler
+      thread stays alive.
+    - In-flight guard: a slow Notion API call that outlasts the 1-minute interval
+      will not spawn a concurrent run.
+    """
+    global _crm_sync_in_progress
+
+    with _crm_sync_lock:
+        if _crm_sync_in_progress:
+            logger.info("CRON: crm_sync skipped (previous tick still in flight)")
+            return
+        _crm_sync_in_progress = True
+
+    try:
+        from datetime import datetime as _dt
+        from campaign_manager import db as _db
+        from campaign_manager.services.notion import query_new_clients, fetch_page_campaign_fields
+
+        if not _db.is_active():
+            logger.warning("CRON: crm_sync skipped (database not active)")
+            return
+
+        logger.info("CRON: starting crm_sync")
+
+        # Fetch all Client rows (same as the manual webhook — add-only, but
+        # refresh content_types + internal_captions for existing campaigns).
+        new_entries = query_new_clients(set())
+
+        created = []
+        skipped = []
+        errors = []
+        refreshed = []
+
+        for entry in new_entries:
+            slug = entry["slug"]
+
+            if _db.campaign_exists(slug):
+                entry_types = sorted(entry.get("content_types") or [])
+                existing = _db.get_campaign(slug) or {}
+                existing_types = sorted(existing.get("content_types") or [])
+                changes = {}
+                if entry_types != existing_types:
+                    changes["content_types"] = entry.get("content_types") or []
+                entry_captions = entry.get("internal_captions")
+                if (entry_captions is not None
+                        and existing.get("notion_page_id") == entry["notion_page_id"]
+                        and entry_captions != existing.get("internal_captions")):
+                    changes["internal_captions"] = entry_captions
+                if changes:
+                    _db.update_campaign_fields(slug, changes)
+                    refreshed.append({"slug": slug, **changes})
+                else:
+                    skipped.append({"slug": slug, "reason": "already exists"})
+                continue
+
+            meta = {
+                "title": entry["title"],
+                "name": entry["title"],
+                "slug": slug,
+                "artist": entry["artist"],
+                "song": entry["song"],
+                "official_sound": entry["official_sound"],
+                "sound_id": entry["sound_id"],
+                "start_date": entry["start_date"],
+                "budget": entry["budget"],
+                "status": "queued",
+                "platform": "tiktok",
+                "created_at": _dt.now().isoformat(),
+                "stats": {"total_views": 0, "total_likes": 0},
+                "source": "notion",
+                "notion_page_id": entry["notion_page_id"],
+                "insta_sound": entry.get("insta_sound", ""),
+                "cobrand_share_url": entry.get("cobrand_share_url", ""),
+                "campaign_stage": entry.get("campaign_stage", ""),
+                "round": entry.get("round", ""),
+                "label": entry.get("label", ""),
+                "project_lead": entry.get("project_lead", []),
+                "client_email": entry.get("client_email", ""),
+                "content_types": entry.get("content_types", []),
+                "internal_captions": entry.get("internal_captions"),
+                "platform_split": entry.get("platform_split", {}),
+            }
+
+            sound_url = _db._canonical_sound_url(meta["official_sound"])
+            result = _db.save_campaign(
+                slug, meta, expected_official_sound="" if sound_url is not None else None,
+            )
+            if result not in (None, "updated"):
+                if result == "duplicate":
+                    skipped.append({"slug": slug, "reason": "duplicate sound URL"})
+                elif result in ("conflict", "missing_revision"):
+                    skipped.append({"slug": slug, "reason": "campaign changed during creation"})
+                else:
+                    errors.append({"slug": slug, "reason": "campaign save failed"})
+                continue
+            _db.save_creators(slug, [])
+            created.append({"slug": slug, "title": entry["title"]})
+
+        # Refresh pass: update content_types + internal_captions for every
+        # campaign that has a stored notion_page_id, regardless of Pipeline Status.
+        for link in _db.get_campaign_notion_links():
+            fields = fetch_page_campaign_fields(link["notion_page_id"])
+            if fields is None:
+                continue
+            changes = {}
+            fresh = fields["content_types"]
+            if fresh is not None and sorted(fresh) != sorted(link["content_types"]):
+                changes["content_types"] = fresh
+            captions = fields["internal_captions"]
+            if captions is not None and captions != link["internal_captions"]:
+                changes["internal_captions"] = captions
+            if changes:
+                _db.update_campaign_fields(link["slug"], changes)
+                refreshed.append({"slug": link["slug"], **changes})
+
+        if created or errors:
+            logger.info(
+                "CRON: crm_sync done — created=%d refreshed=%d skipped=%d errors=%d",
+                len(created), len(refreshed), len(skipped), len(errors),
+            )
+            if errors:
+                logger.warning("CRON: crm_sync errors: %s", errors)
+        else:
+            logger.debug(
+                "CRON: crm_sync done — no new campaigns (refreshed=%d skipped=%d)",
+                len(refreshed), len(skipped),
+            )
+
+    except Exception:
+        logger.exception("CRON: crm_sync raised an unhandled exception")
+    finally:
+        with _crm_sync_lock:
+            _crm_sync_in_progress = False
