@@ -495,3 +495,12 @@ On authoritative GitHub main 4daca326, six regressions reproduced skipped exact-
 
 Root observed predecessor PR264 head a425205e hosted Backend run37691175906/job113031441150 success and merge4daca326 at21:43:42UTC, Railway deployment6921624606 success, and both canonical sombr report routes HTTP200 around21:46UTC with18 headline posts and ten dated top-post URLs each in their respective rounds; this proves those report outputs only, not all stored dates or attachment/scrape/Cobrand execution or publication.
 _________________________________________________________________________________
+time: [05:58pm] [10-07-26] EDT; actual UTC: 2026-10-07T21:58:12Z
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/hub-stats-snapshot-persistence] /Users/smathdaddy-macbook/hub-stats-snapshot-persistence
+base: [origin/main] 4daca3262b78b9696e90c21c7d265426884c039b
+type: [bug report]: dead scheduled stats-snapshot call
+area: [backend], [testing], [review]
+
+The scheduler called db.save_stats_snapshot after each campaign refresh, but no such DB function, model, table, API reader, or active frontend consumer exists; every call produced a swallowed warning and stored no history. The call entered with an April matching change without a schema. The closed September attribution report says Chartmetric supplies history without local daily snapshots, and separate creator-history work leaves capture as an explicit design decision. Removed the dead best-effort call and its misleading monkeypatched test assertion. Scheduled round-scoped campaign/creator/scrape-log aggregates remain verified, and the test checks no snapshot-failure warning is emitted. A new durable time-series feature needs an explicit writer, reader, migration, timezone, and retention contract; no historical snapshot data can be backfilled from this removed call. Focused tests passed 53/53; the full Python suite passed 1015 with eight optional PostgreSQL cases skipped. After PR #265 merged, the prepared source change was rebased onto its current main with both chronological ledger entries preserved. No scrape, publication, PR, merge or deployment occurred for this cleanup. Rollback is a revert of this deletion; no schema changes.
+_________________________________________________________________________________
