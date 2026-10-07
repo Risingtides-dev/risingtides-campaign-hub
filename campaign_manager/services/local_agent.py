@@ -44,10 +44,12 @@ def dispatch_scrape(only_slugs=None) -> dict:
     try:
         with urllib.request.urlopen(req, timeout=12) as resp:
             body = json.loads(resp.read().decode("utf-8") or "{}")
-        return {"ok": True, "delegated_to": "local_agent", "node": body}
-    except Exception as exc:  # noqa: BLE001
+        if isinstance(body, dict) and body.get("ok") is True:
+            return {"ok": True, "delegated_to": "local_agent", "node": body}
+        return {"ok": False, "error": "local scraper did not accept the scrape"}
+    except Exception:  # noqa: BLE001
         return {
             "ok": False,
-            "error": f"local scraper unreachable: {exc}",
+            "error": "local scraper unreachable",
             "hint": "Is the Mac on with the control server + Tailscale funnel up?",
         }
