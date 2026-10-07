@@ -2,7 +2,7 @@
 
 import json
 import re
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Dict
 
@@ -195,3 +195,32 @@ def video_posted_before_start(video: Dict, start_date: str) -> bool:
         return normalized < start_date
 
     return False
+
+
+def round_start_date(value: object) -> date | None:
+    """Parse a campaign round's calendar start; reject malformed dates."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return date.fromisoformat(value.strip()) if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value.strip()) else None
+    except ValueError:
+        return None
+
+
+def video_post_date(video: Dict) -> date | None:
+    """Read a post's calendar date from scraper metadata, if trustworthy."""
+    ts = video.get("timestamp")
+    if isinstance(ts, datetime):
+        return ts.date()
+    if isinstance(ts, str) and ts.strip():
+        try:
+            return datetime.fromisoformat(ts.strip().replace("Z", "+00:00")).date()
+        except ValueError:
+            pass
+    upload = video.get("upload_date")
+    if isinstance(upload, str) and re.fullmatch(r"\d{8}", upload.strip()):
+        try:
+            return datetime.strptime(upload.strip(), "%Y%m%d").date()
+        except ValueError:
+            pass
+    return None

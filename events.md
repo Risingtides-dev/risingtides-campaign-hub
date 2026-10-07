@@ -438,3 +438,12 @@ area: [backend], [testing], [review]
 
 Independent review of be6f319 found that the janitor could cache a stale unbound ORM row while another session bound it, then fail the now-live receipt. The revision locks stale rows during janitor reconciliation, serializing with the binding write, and adds a disposable PostgreSQL interleaving regression. The new regression failed against the prior unlocked janitor and passed with the fix; three disposable PostgreSQL 16 lock tests passed. The final full Python suite passed 1002 tests with eight optional PostgreSQL skips; the disposable cluster was stopped and removed. The 24-hour compatibility cap can mark a pre-deployment receipt failed while its original worker remains active; that receipt is not evidence the worker stopped and its effects require reconciliation before retry. An active-owner lookup currently reads all open rows of affected job types; indexing or a targeted lookup is a later performance follow-up. No scrape, publication, push, PR, deployment or live outcome is claimed.
 _________________________________________________________________________________
+_________________________________________________________________________________
+time: [05:16pm] [10-07-26] EDT; actual UTC: 2026-10-07T21:16:00Z
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/hub-issue46-round-isolation] /Users/smathdaddy-macbook/hub-issue46-round-isolation
+type: [bug report]: cross-round same-sound post attribution and report totals
+area: [backend], [testing]
+
+Same-sound internal posts previously auto-attached to the latest active campaign regardless of post date, and the client report summed raw historical matched rows. This candidate selects only rounds eligible on the post date and scopes campaign-level stats plus report headline, top-post, creator, and Cobrand outcome totals to eligible stored matches. Historical rows are preserved; missing or malformed post dates do not auto-attach or count in a dated report. A campaign without a start date keeps its legacy report behavior. Focused scheduler/report/stat tests passed 55/55. The full Python suite passed 1004 tests, with eight optional PostgreSQL cases skipped. No scrape, post, PR, merge or deployment occurred. Rollback is a code revert; existing stored rows require no migration.
+_________________________________________________________________________________

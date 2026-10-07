@@ -1356,8 +1356,9 @@ def _attach_internal_to_campaigns(internal_videos: list, lease=None) -> dict:
 
     Disambiguation rule when multiple campaigns share a sound ID
     (typical for rounds: r3, r4, r6 may all use the same sound):
-        Latest active round wins (highest start_date).
+        Latest active round whose start is no later than the post wins.
         If start_dates tie, latest created_at wins.
+        Posts without a parseable date are not auto-attached.
 
     Returns a dict summary:
         {
@@ -1373,6 +1374,7 @@ def _attach_internal_to_campaigns(internal_videos: list, lease=None) -> dict:
     because the match is sound-ID-exact (the whole point of strict).
     """
     from campaign_manager.services.matching import merge_matched_videos
+    from campaign_manager.utils.helpers import round_start_date, video_post_date
 
     attached_count = 0
     skipped_no_sound_id = 0
@@ -1388,9 +1390,9 @@ def _attach_internal_to_campaigns(internal_videos: list, lease=None) -> dict:
             "per_campaign": {},
         }
 
-    # Build sound_id -> winning campaign lookup
+    # Keep every candidate: the winner depends on the video's post date.
     campaigns = _db.list_campaigns(exclude_completed=True)
-    sound_to_campaign: dict = {}  # sound_id -> meta
+    sound_to_campaigns: dict = {}  # sound_id -> [meta]
 
     for meta in campaigns:
         sids = []
@@ -1403,29 +1405,31 @@ def _attach_internal_to_campaigns(internal_videos: list, lease=None) -> dict:
                 sids.append(s)
 
         for sid in sids:
-            existing = sound_to_campaign.get(sid)
-            if existing is None:
-                sound_to_campaign[sid] = meta
-                continue
-
-            # Disambiguation: latest start_date wins
-            def _start_key(m):
-                return (m.get("start_date") or "", m.get("created_at") or "")
-
-            if _start_key(meta) > _start_key(existing):
-                sound_to_campaign[sid] = meta
+            sound_to_campaigns.setdefault(sid, []).append(meta)
 
     # Group internal videos by which campaign they should attach to
     by_campaign: dict = {}  # campaign_slug -> [video_dicts_to_attach]
+    attached_meta: dict = {}  # campaign_slug -> meta for round-scoped totals
     for v in internal_videos:
         sid = (v.get("extracted_sound_id") or v.get("music_id") or "").strip()
         if not sid:
             skipped_no_sound_id += 1
             continue
-        winning = sound_to_campaign.get(sid)
-        if winning is None:
+        candidates = sound_to_campaigns.get(sid, [])
+        posted = video_post_date(v)
+        if not candidates or posted is None:
             skipped_no_active_campaign += 1
             continue
+        eligible = []
+        for meta in candidates:
+            start_raw = str(meta.get("start_date") or "").strip()
+            start = round_start_date(start_raw)
+            if not start_raw or (start is not None and posted >= start):
+                eligible.append((start or datetime.min.date(), str(meta.get("created_at") or ""), meta))
+        if not eligible:
+            skipped_no_active_campaign += 1
+            continue
+        winning = max(eligible, key=lambda item: item[:2])[2]
         # Tag and stage for attach
         attach_v = dict(v)
         attach_v["match_strategy"] = "internal_creator"
@@ -1433,6 +1437,7 @@ def _attach_internal_to_campaigns(internal_videos: list, lease=None) -> dict:
         if not slug:
             continue
         by_campaign.setdefault(slug, []).append(attach_v)
+        attached_meta[slug] = winning
 
     # Merge into each campaign's matched_videos
     for slug, vids in by_campaign.items():
@@ -1451,8 +1456,12 @@ def _attach_internal_to_campaigns(internal_videos: list, lease=None) -> dict:
 
             # Refresh campaign-level totals when there were new attaches
             if new_count > 0:
-                total_views = sum(v.get("views", 0) or 0 for v in all_matched)
-                total_likes = sum(v.get("likes", 0) or 0 for v in all_matched)
+                start = round_start_date(attached_meta[slug].get("start_date"))
+                countable = [v for v in all_matched if start is None or (
+                    (posted := video_post_date(v)) is not None and posted >= start
+                )]
+                total_views = sum(v.get("views", 0) or 0 for v in countable)
+                total_likes = sum(v.get("likes", 0) or 0 for v in countable)
                 if lease is not None:
                     lease.assert_held()
                 _db.update_campaign_stats(slug, total_views, total_likes)
