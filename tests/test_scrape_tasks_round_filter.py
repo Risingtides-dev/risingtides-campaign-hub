@@ -198,23 +198,27 @@ def test_video_posted_before_start_no_campaign_start():
 def test_queue_and_bulk_track_exclude_posts_after_completed_next_round(client):
     """A completed R2 still closes R1's upload window."""
     with db.get_session() as s:
-        r1 = Campaign(slug="same-sound-r1", title="Round 1", sound_id="1234567890", start_date="2026-04-01")
+        r1 = Campaign(slug="same-sound-r1", title="Round 1", sound_id="1234567890",
+                      additional_sounds=["2222222222"], start_date="2026-04-01")
         r2 = Campaign(slug="same-sound-r2", title="Round 2", sound_id="1234567890", start_date="2026-05-01", completion_status="completed")
         s.add_all([r1, r2])
         s.flush()
         s.add_all([
             MatchedVideo(campaign_id=r1.id, url="https://example.com/r1", timestamp="2026-04-15T00:00:00", upload_date="20260415"),
             MatchedVideo(campaign_id=r1.id, url="https://example.com/r2-in-r1", timestamp="2026-05-15T00:00:00", upload_date="20260515"),
+            MatchedVideo(campaign_id=r1.id, url="https://example.com/secondary-in-r1",
+                         music_id="2222222222", timestamp="2026-05-15T00:00:00", upload_date="20260515"),
         ])
         s.commit()
 
     body = client.get("/api/scrape-tasks/queue").get_json()
     urls = {v["url"] for camp in body["campaigns"] for v in camp["videos"]}
     assert "https://example.com/r1" in urls
+    assert "https://example.com/secondary-in-r1" in urls
     assert "https://example.com/r2-in-r1" not in urls
 
     response = client.post("/api/scrape-tasks/mark-campaign-tracked", json={"slug": "same-sound-r1"})
-    assert response.get_json()["marked_tracked"] == 1
+    assert response.get_json()["marked_tracked"] == 2
     with db.get_session() as s:
         later = s.query(MatchedVideo).filter_by(url="https://example.com/r2-in-r1").one()
         assert later.tracked_at is None

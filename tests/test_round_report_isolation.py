@@ -73,6 +73,19 @@ def test_report_filters_historical_and_undated_rows_from_all_totals(monkeypatch)
     assert first_round["headline"] == {"total_views": 100, "total_likes": 10, "post_count": 1, "creator_count": 1}
     assert first_round["creators"][0]["shares"] == 100
 
+    secondary = {"url": "secondary", "account": "@creator", "music_id": "222222222222222",
+                 "upload_date": "20260520", "views": 30, "likes": 3}
+    rows.append(secondary)
+    monkeypatch.setattr(db, "list_campaigns", lambda **kw: [
+        {"slug": "r1", "sound_id": "123456789012345", "additional_sounds": ["222222222222222"],
+         "start_date": "2026-04-01"},
+        {"slug": "r2", "sound_id": "123456789012345", "start_date": "2026-05-01"},
+    ])
+    partial = campaign_report.build_report("r1")
+    assert partial["headline"] == {"total_views": 130, "total_likes": 13, "post_count": 2, "creator_count": 1}
+    assert {post["url"] for post in partial["top_posts"]} == {"r1-post", "secondary"}
+    rows.pop()
+
     meta["start_date"] = "2026-05-01"
 
     meta["start_date"] = "2026-99-99"
@@ -139,13 +152,18 @@ def test_scheduled_refresh_scopes_stats_creator_counts_and_snapshot(monkeypatch)
     assert {v["url"] for v in writes["stored"]} == {"old", "current"}
 
     writes.clear()
+    secondary = {"url": "secondary", "account": "@creator", "music_id": "222222222222222",
+                 "timestamp": "2026-05-15T10:00:00", "views": 30, "likes": 3, "shares": 2}
+    persisted.append(secondary)
     first_round = scheduler._refresh_single_campaign(
-        "r1", {"sound_id": "123456789012345", "start_date": "2026-04-01"},
-        shared_videos={"creator": [old, current]}, round_end=date(2026, 5, 1),
+        "r1", {"sound_id": "123456789012345", "additional_sounds": ["222222222222222"],
+               "start_date": "2026-04-01"},
+        shared_videos={"creator": [old, current, secondary]},
+        round_end={"123456789012345": date(2026, 5, 1), "222222222222222": None},
     )
-    assert first_round["total_matches"] == 1
-    assert writes["totals"] == (900, 90)
-    assert writes["snapshot"]["post_count"] == 1
+    assert first_round["total_matches"] == 2
+    assert writes["totals"] == (930, 93)
+    assert writes["snapshot"]["post_count"] == 2
 
 
 def test_manual_refresh_scopes_existing_rows_and_response(monkeypatch):
@@ -171,7 +189,7 @@ def test_manual_refresh_scopes_existing_rows_and_response(monkeypatch):
     monkeypatch.setattr(campaigns._db, "update_campaign_fields", lambda slug, fields: writes.__setitem__("fields", fields))
     monkeypatch.setattr(campaigns._db, "save_creators", lambda slug, rows: writes.__setitem__("creators", rows))
     monkeypatch.setattr(campaigns._db, "save_scrape_log", lambda slug, row: writes.__setitem__("log", row))
-    monkeypatch.setattr(master_tracker, "scrape_tiktok_account", lambda *args, **kw: [old, current])
+    monkeypatch.setattr(master_tracker, "scrape_tiktok_account", lambda *args, **kw: persisted)
     monkeypatch.setattr(matching, "match_videos", lambda videos, *args, **kw: videos)
     app = Flask(__name__)
     app.register_blueprint(campaigns.campaigns_bp)
@@ -187,10 +205,19 @@ def test_manual_refresh_scopes_existing_rows_and_response(monkeypatch):
     assert {v["url"] for v in writes["stored"]} == {"old", "current"}
 
     meta["start_date"] = "2026-04-01"
+    meta["additional_sounds"] = ["222222222222222"]
+    persisted.append({"url": "secondary", "account": "@creator", "music_id": "222222222222222",
+                      "timestamp": "2026-05-15T10:00:00", "views": 30, "likes": 3})
+    roster = [
+        {"slug": "r1", "sound_id": "123456789012345", "additional_sounds": ["222222222222222"],
+         "start_date": "2026-04-01"},
+        {"slug": "r2", "sound_id": "123456789012345", "start_date": "2026-05-01"},
+    ]
+    monkeypatch.setattr(campaigns._db, "list_campaigns", lambda **kw: roster)
     with app.test_client() as client:
         first_round = client.post("/api/campaign/r1/refresh")
     assert first_round.status_code == 200, first_round.get_json()
-    assert (first_round.get_json()["total_views"], first_round.get_json()["total_matches"]) == (900, 1)
+    assert (first_round.get_json()["total_views"], first_round.get_json()["total_matches"]) == (930, 2)
 
 
 def test_no_active_creators_reconciles_dated_totals_without_faking_scrape(monkeypatch):
@@ -238,13 +265,36 @@ def test_round_end_includes_completed_later_round_and_same_day_tie():
         {"slug": "unrelated", "sound_id": "999999", "start_date": "2026-03-01"},
     ]
     ends = build_round_end_by_slug(roster)
-    assert ends == {"r1": date(2026, 5, 1), "same-a": date(2026, 6, 1)}
+    assert ends["r1"] == {"123456": date(2026, 5, 1)}
+    assert ends["same-a"] == {"789012": date(2026, 6, 1)}
     videos = [
         {"timestamp": "2026-04-30T23:59:59"},
         {"timestamp": "2026-05-01T00:00:00"},
     ]
     assert round_qualified_videos(videos, "2026-04-01", end_date=ends["r1"]) == [videos[0]]
     assert round_qualified_videos(videos, "") == videos
+
+
+def test_partial_sound_overlap_keeps_identified_secondary_post(caplog):
+    from campaign_manager.utils.helpers import build_round_end_by_slug, round_qualified_videos
+    roster = [
+        {"slug": "r1", "sound_id": "111111", "additional_sounds": ["222222"], "start_date": "2026-04-01"},
+        {"slug": "r2", "sound_id": "111111", "start_date": "2026-05-01"},
+    ]
+    window = build_round_end_by_slug(roster)["r1"]
+    assert window == {"111111": date(2026, 5, 1), "222222": None}
+    rows = [
+        {"url": "primary-old", "music_id": "111111", "upload_date": "20260420"},
+        {"url": "primary-new", "music_id": "111111", "upload_date": "20260515"},
+        {"url": "secondary-new", "music_id": "222222", "upload_date": "20260515"},
+        {"url": "unknown-new", "upload_date": "20260515"},
+        {"url": "foreign-new", "music_id": "333333", "upload_date": "20260515"},
+    ]
+    assert [row["url"] for row in round_qualified_videos(rows, "2026-04-01", end_date=window)] == [
+        "primary-old", "secondary-new",
+    ]
+    assert "unknown-new" in caplog.text
+    assert "foreign-new" in caplog.text
 
 
 def test_internal_attach_does_not_fall_back_to_earlier_active_round_after_later_completed(monkeypatch):

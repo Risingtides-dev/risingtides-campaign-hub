@@ -178,7 +178,8 @@ def queue():
         # them into the queue produces duplicate uploads in the client
         # report. Exclude videos posted before the campaign's start_date.
         if not video_in_round(
-            {"timestamp": mv.timestamp or "", "upload_date": mv.upload_date or ""},
+            {"timestamp": mv.timestamp or "", "upload_date": mv.upload_date or "",
+             "extracted_sound_id": mv.extracted_sound_id or "", "music_id": mv.music_id or ""},
             camp.start_date or "",
             end_date=round_ends.get(camp.slug or ""),
         ):
@@ -401,7 +402,8 @@ def mark_campaign_tracked():
             # queue itself hides those rows, so they're not part of what
             # the user just sent to Cobrand.
             if not video_in_round(
-                {"timestamp": row.timestamp or "", "upload_date": row.upload_date or ""},
+                {"timestamp": row.timestamp or "", "upload_date": row.upload_date or "",
+                 "extracted_sound_id": row.extracted_sound_id or "", "music_id": row.music_id or ""},
                 campaign_start,
                 end_date=round_end,
             ):

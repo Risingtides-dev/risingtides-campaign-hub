@@ -21,7 +21,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 
 from campaign_manager import db as _db
-from campaign_manager.utils.helpers import build_round_end_by_slug, round_qualified_videos
+from campaign_manager.utils.helpers import build_round_end_by_slug, round_end_for_video, round_qualified_videos
 
 log = logging.getLogger(__name__)
 
@@ -1456,7 +1456,7 @@ def _attach_internal_to_campaigns(internal_videos: list, lease=None) -> dict:
         for meta in candidates:
             start_raw = str(meta.get("start_date") or "").strip()
             start = round_start_date(start_raw)
-            end = round_ends.get(str(meta.get("slug") or ""))
+            end = round_end_for_video(v, round_ends.get(str(meta.get("slug") or "")))
             if (not start_raw or (start is not None and posted >= start)) and (end is None or posted < end):
                 eligible.append((start or datetime.min.date(), str(meta.get("created_at") or ""), str(meta.get("slug") or ""), meta))
         if not eligible:

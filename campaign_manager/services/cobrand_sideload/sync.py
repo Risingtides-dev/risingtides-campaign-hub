@@ -118,7 +118,8 @@ def sync_campaign(
         batch: List[Dict] = []
         for mv in rows:
             if not video_in_round(
-                {"timestamp": mv.timestamp or "", "upload_date": mv.upload_date or ""},
+                {"timestamp": mv.timestamp or "", "upload_date": mv.upload_date or "",
+                 "extracted_sound_id": mv.extracted_sound_id or "", "music_id": mv.music_id or ""},
                 start,
                 end_date=round_end,
             ):

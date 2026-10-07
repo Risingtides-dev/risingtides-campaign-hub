@@ -1,12 +1,15 @@
 """Shared helper functions extracted from web_dashboard."""
 
 import json
+import logging
 import re
 from datetime import date, datetime
 from pathlib import Path
 from typing import Dict, Iterable
 
 import requests
+
+log = logging.getLogger(__name__)
 
 
 def slugify(text: str) -> str:
@@ -231,8 +234,8 @@ def video_post_date(video: Dict) -> date | None:
     return None
 
 
-def build_round_end_by_slug(campaigns: Iterable[Dict]) -> dict[str, date]:
-    """Upper-exclusive start of the next campaign sharing an exact sound ID.
+def build_round_end_by_slug(campaigns: Iterable[Dict]) -> dict[str, dict[str, date | None]]:
+    """Upper-exclusive next-round start for each exact campaign sound ID.
 
     Include completed rounds: completion stops writes, not the previous
     round's date window. Same-day rounds use created_at then slug to select
@@ -251,18 +254,37 @@ def build_round_end_by_slug(campaigns: Iterable[Dict]) -> dict[str, date]:
         if sound_ids:
             keyed.append((slug, start, str(meta.get("created_at") or ""), sound_ids))
 
-    end_by_slug: dict[str, date] = {}
+    end_by_slug: dict[str, dict[str, date | None]] = {}
     for slug, start, created, sound_ids in keyed:
         current_key = (start, created, slug)
-        later_starts = [other_start for other_slug, other_start, other_created, other_ids in keyed
-                        if other_ids & sound_ids and (other_start, other_created, other_slug) > current_key]
-        if later_starts:
-            end_by_slug[slug] = min(later_starts)
+        per_sound = {}
+        for sound_id in sound_ids:
+            later_starts = [other_start for other_slug, other_start, other_created, other_ids in keyed
+                            if sound_id in other_ids and (other_start, other_created, other_slug) > current_key]
+            per_sound[sound_id] = min(later_starts) if later_starts else None
+        end_by_slug[slug] = per_sound
     return end_by_slug
 
 
+def round_end_for_video(video: Dict, end_date: date | dict[str, date | None] | None) -> date | None:
+    """Resolve a sound-specific boundary; unknown identities use the earliest end.
+
+    This prevents uncertain historical matches from crossing into another
+    round's Cobrand queue or report. A known secondary sound with no successor
+    retains its own open window even if the primary sound has advanced.
+    """
+    if not isinstance(end_date, dict):
+        return end_date
+    for field in ("extracted_sound_id", "music_id"):
+        sound_id = str(video.get(field) or "").strip()
+        if sound_id in end_date:
+            return end_date[sound_id]
+    bounded = [end for end in end_date.values() if end is not None]
+    return min(bounded) if bounded else None
+
+
 def round_qualified_videos(
-    videos: Iterable[Dict], start_date: object, *, end_date: date | None = None,
+    videos: Iterable[Dict], start_date: object, *, end_date: date | dict[str, date | None] | None = None,
     exclude_dismissed: bool = False,
 ) -> list[Dict]:
     """Scope stored matches to a campaign round without deleting history.
@@ -276,7 +298,7 @@ def round_qualified_videos(
 
 
 def video_in_round(
-    video: Dict, start_date: object, *, end_date: date | None = None,
+    video: Dict, start_date: object, *, end_date: date | dict[str, date | None] | None = None,
     exclude_dismissed: bool = False,
 ) -> bool:
     """Whether one matched row can be shown or counted in a round."""
@@ -287,5 +309,15 @@ def video_in_round(
         return True
     start = round_start_date(raw)
     posted = video_post_date(video)
+    end = round_end_for_video(video, end_date)
+    if (isinstance(end_date, dict) and end is not None and posted is not None
+            and posted >= end and not any(
+                str(video.get(field) or "").strip() in end_date
+                for field in ("extracted_sound_id", "music_id")
+            )):
+        log.warning(
+            "Matched post %s has no owned sound identity after a partial round boundary; excluded for reconciliation",
+            video.get("url") or "<missing-url>",
+        )
     return bool(start is not None and posted is not None and posted >= start
-                and (end_date is None or posted < end_date))
+                and (end is None or posted < end))
