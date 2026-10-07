@@ -2049,6 +2049,7 @@ def reap_orphaned_cron_logs(threshold_minutes: int = 30) -> List[int]:
             s.query(CronLog)
             .filter(CronLog.status.in_(("running", "queued", "dispatching")),
                     CronLog.started_at < threshold)
+            .with_for_update()
             .all()
         )
         # A scrape waiting for shared capacity can remain queued, and a long

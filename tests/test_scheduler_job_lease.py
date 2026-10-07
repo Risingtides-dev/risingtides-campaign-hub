@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
@@ -504,6 +505,57 @@ def test_real_postgres_janitor_distinguishes_reused_pid(monkeypatch):
                 session.commit()
             assert db.reap_orphaned_cron_logs(threshold_minutes=30) == [old_id]
             assert db.get_cron_log_by_id(current_id)["status"] == "queued"
+    finally:
+        db._SessionLocal = previous_session
+        engine.dispose()
+        with admin.begin() as connection:
+            connection.execute(text(f"DROP SCHEMA {schema} CASCADE"))
+        admin.dispose()
+
+
+def test_real_postgres_janitor_waits_for_receipt_binding(monkeypatch):
+    """The janitor must read a fresh owner after a concurrent bind commits."""
+    url = os.environ.get("TEST_POSTGRES_DATABASE_URL")
+    if not url:
+        pytest.skip("set TEST_POSTGRES_DATABASE_URL for real PostgreSQL lock test")
+    from datetime import datetime, timedelta
+    from uuid import uuid4
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.orm import sessionmaker
+    from campaign_manager.models import CronLog
+
+    schema = f"test_janitor_{uuid4().hex}"
+    admin = create_engine(url)
+    with admin.begin() as connection:
+        connection.execute(text(f"CREATE SCHEMA {schema}"))
+    engine = create_engine(url, connect_args={"options": f"-csearch_path={schema}"})
+    previous_session = db._SessionLocal
+    monkeypatch.setattr(db, "_engine", engine)
+    monkeypatch.setattr(db, "_SessionLocal", sessionmaker(bind=engine))
+    try:
+        CronLog.__table__.create(engine)
+        with db.scrape_job_lease("campaign_refresh") as lease:
+            assert lease is not None
+            log_id = db.create_cron_log("campaign_refresh", status="queued")
+            with db.get_session() as session:
+                row = session.query(CronLog).filter_by(id=log_id).one()
+                row.started_at = datetime.now(db.EST).replace(tzinfo=None) - timedelta(hours=25)
+                session.commit()
+            with db.get_session() as session:
+                row = session.query(CronLog).filter_by(id=log_id).with_for_update().one()
+                row.summary = {"_scrape_lock_owner": {
+                    "pid": lease.backend_pid, "backend_start": lease.backend_start,
+                }}
+                started = threading.Event()
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    future = pool.submit(lambda: (started.set(),
+                        db.reap_orphaned_cron_logs(threshold_minutes=30))[1])
+                    assert started.wait(2)
+                    time.sleep(0.1)
+                    assert not future.done(), "janitor must wait on the binding row lock"
+                    session.commit()
+                    assert future.result(timeout=5) == []
+            assert db.get_cron_log_by_id(log_id)["status"] == "queued"
     finally:
         db._SessionLocal = previous_session
         engine.dispose()

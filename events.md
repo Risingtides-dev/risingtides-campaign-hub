@@ -429,3 +429,12 @@ area: [backend]: PostgreSQL scrape lease reconciliation
 
 A stale queued/running receipt could remain open indefinitely when a newer same-type run held the advisory lock, because the janitor knew only the job type. This candidate binds PostgreSQL receipts to the exact lease backend PID and start time before the shared-capacity wait. The janitor preserves the matching receipt, reaps stale mismatches, and conservatively handles pre-deployment unbound receipts. The final full Python suite passed 1002 tests with seven optional PostgreSQL skips. A disposable real PostgreSQL 16 cluster passed two advisory-lock integration tests, including reuse of a backend PID with a different start time; the cluster was stopped and removed. The pre-deployment fallback is capped at 24 hours; internal lease identity is excluded from public cron log reads. No scrape, publication, PR, deployment, or live outcome is claimed. Rollback is a revert after reconciling any open cron receipts; no schema migration is involved.
 _________________________________________________________________________________
+_________________________________________________________________________________
+time: [05:05pm] [10-07-26]
+agent: [codex] [gpt-6.1-sol]
+worktree: [codex/hub-janitor-receipt-owner-20261007] /Users/risingtidesdev/worktrees/hub-janitor-receipt-owner
+type: [bug report]: janitor binding race found in independent review
+area: [backend], [testing], [review]
+
+Independent review of be6f319 found that the janitor could cache a stale unbound ORM row while another session bound it, then fail the now-live receipt. The revision locks stale rows during janitor reconciliation, serializing with the binding write, and adds a disposable PostgreSQL interleaving regression. The new regression failed against the prior unlocked janitor and passed with the fix; three disposable PostgreSQL 16 lock tests passed. The final full Python suite passed 1002 tests with eight optional PostgreSQL skips; the disposable cluster was stopped and removed. The 24-hour compatibility cap can mark a pre-deployment receipt failed while its original worker remains active; that receipt is not evidence the worker stopped and its effects require reconciliation before retry. An active-owner lookup currently reads all open rows of affected job types; indexing or a targeted lookup is a later performance follow-up. No scrape, publication, push, PR, deployment or live outcome is claimed.
+_________________________________________________________________________________
