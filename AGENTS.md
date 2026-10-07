@@ -29,6 +29,8 @@ Campaign CRM integration, campaign delivery reporting, and creator operations.
 
 - Sound Assignments sends the optional server-only CONTENT_LAB_HUB_API_KEY as X-API-Key to its configured Content Lab proxy. Browser headers never supply this credential. Configured-key requests do not follow redirects, and transport errors do not expose the key. Without the key, existing upstream behavior remains unchanged.
 
+- Local Hub queue export and helper defaults use the canonical https://campaignhub.risingtidesviral.com origin. Queue export accepts only an HTTP(S) origin or that origin ending in /api from CAMPAIGN_HUB_API_URL; reject credentials, query, fragment, other paths, invalid ports and limits outside 1-5000 before network or output creation. Report HTTP, transport or JSON failure without copying response bodies or token-bearing URLs, and create no successful export receipt on failure. The internal-groups CLI retains its separate CAMPAIGN_HUB_API override.
+
 - Local scraper delegation accepts a node launch only when `/api/run-now` returns `ok: true`, `action: "scrape"`, and `started: true`, or `started: false` with the exact `scrape already running` note. An explicit node refusal is failure; malformed or transport responses have an unknown outcome and require reconciliation with the original local run before any retry. Return normalized node fields and fixed diagnostics without launch details or token-bearing URLs. A launch acknowledgment is not proof that scraping completed.
 
 - Backend song-link scraping uses `src/scrapers/yt_dlp_runner.py` for yt-dlp command and environment policy. Redact configured `--proxy` and `--cookies` values from copied stderr and runner exceptions before truncation, logging or propagation.
