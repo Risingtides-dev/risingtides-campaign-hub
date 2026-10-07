@@ -6,6 +6,11 @@ import argparse
 import csv
 import json
 import os
+import signal
+import threading
+import time
+from contextlib import contextmanager
+from http.client import IncompleteRead
 from pathlib import Path
 import sqlite3
 from datetime import datetime, timezone
@@ -17,6 +22,9 @@ from urllib.request import Request, urlopen
 ROOT = Path(__file__).resolve().parents[2]
 OUTPUT_ROOT = ROOT / "output" / "local-scraper"
 DEFAULT_HUB_BASE = "https://campaignhub.risingtidesviral.com"
+QUEUE_REQUEST_TIMEOUT_SECONDS = 45
+MAX_QUEUE_RESPONSE_BYTES = 32 * 1024 * 1024
+QUEUE_READ_CHUNK_BYTES = 64 * 1024
 
 CSV_FIELDS = [
     "campaign_slug",
@@ -94,18 +102,81 @@ def queue_url(limit: int) -> str:
     return f"{hub_base()}/api/scrape-tasks/queue?{urlencode({'limit': limit})}"
 
 
+class _QueueDeadlineExceeded(Exception):
+    pass
+
+
+@contextmanager
+def _request_deadline(seconds: float):
+    """Bound the entire urllib exchange on the Unix CLI main thread."""
+    if not (hasattr(signal, "setitimer") and threading.current_thread() is threading.main_thread()):
+        # Other platforms still use urllib's socket timeout and the read-loop clock.
+        yield
+        return
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    previous_remaining, previous_interval = signal.getitimer(signal.ITIMER_REAL)
+    started = time.monotonic()
+
+    def expire(_signum, _frame):
+        raise _QueueDeadlineExceeded()
+
+    signal.signal(signal.SIGALRM, expire)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        elapsed = time.monotonic() - started
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_remaining > 0:
+            signal.setitimer(
+                signal.ITIMER_REAL,
+                max(0.000001, previous_remaining - elapsed),
+                previous_interval,
+            )
+
+
+def _read_bounded_queue(resp, deadline: float) -> bytes:
+    chunks: List[bytes] = []
+    total = 0
+    while True:
+        if time.monotonic() >= deadline:
+            raise _QueueDeadlineExceeded()
+        chunk = resp.read(min(QUEUE_READ_CHUNK_BYTES, MAX_QUEUE_RESPONSE_BYTES + 1 - total))
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > MAX_QUEUE_RESPONSE_BYTES:
+            raise RuntimeError("Campaign Hub queue response exceeded the size limit")
+        chunks.append(chunk)
+    declared_length = resp.headers.get("Content-Length") if getattr(resp, "headers", None) else None
+    if declared_length is not None:
+        try:
+            if int(declared_length) != total:
+                raise RuntimeError("Campaign Hub queue response was incomplete")
+        except ValueError:
+            raise RuntimeError("Campaign Hub queue response had an invalid length") from None
+    return b"".join(chunks)
+
+
 def fetch_queue(limit: int) -> Dict[str, Any]:
     url = queue_url(limit)
     req = Request(url, headers={"Accept": "application/json"})
+    deadline = time.monotonic() + QUEUE_REQUEST_TIMEOUT_SECONDS
     try:
-        with urlopen(req, timeout=45) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
+        with _request_deadline(QUEUE_REQUEST_TIMEOUT_SECONDS):
+            with urlopen(req, timeout=QUEUE_REQUEST_TIMEOUT_SECONDS) as resp:
+                payload = json.loads(_read_bounded_queue(resp, deadline).decode("utf-8"))
     except HTTPError as exc:
-        raise RuntimeError(f"Campaign Hub queue request failed with HTTP {exc.code}") from exc
-    except URLError as exc:
-        raise RuntimeError("Campaign Hub queue request could not reach the configured origin") from exc
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise RuntimeError("Campaign Hub queue returned invalid JSON") from exc
+        raise RuntimeError(f"Campaign Hub queue request failed with HTTP {exc.code}") from None
+    except URLError:
+        raise RuntimeError("Campaign Hub queue request could not reach the configured origin") from None
+    except (_QueueDeadlineExceeded, TimeoutError):
+        raise RuntimeError("Campaign Hub queue request exceeded the time limit") from None
+    except (IncompleteRead, OSError):
+        raise RuntimeError("Campaign Hub queue response could not be read completely") from None
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise RuntimeError("Campaign Hub queue returned invalid JSON") from None
     if not isinstance(payload, dict) or not isinstance(payload.get("campaigns"), list):
         raise RuntimeError("Campaign Hub queue returned an unexpected payload")
     payload["_source_url"] = url

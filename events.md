@@ -409,3 +409,14 @@ entry-id: hub-issue124-hosted-test-portability-20261007
 
 The first exact-head hosted backend run failed in test fixtures: five janitor tests constructed stale timestamps using the runner local timezone while the production ledger uses America/New_York naive values, and the Mac zsh wrapper test invoked /bin/zsh on Linux. The fixtures now construct stale timestamps in the ledger timezone. The wrapper executes on the Mac release host; environments without zsh explicitly skip that platform-specific subprocess check. Under TZ=UTC, 13 focused local tests passed. The owning AGENTS.md contract is unchanged because production behavior did not change. The prior code head passed 994 Python tests, 28 tests against a disposable PostgreSQL 16 cluster, and the frontend build. This test-fix head requires independent review and new exact-head hosted verification. No live scrape, node POST or posting was triggered.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [4:43pm] [10-07-26] EDT; actual UTC: 2026-10-07T20:43:00Z
+agent: [Codex desktop delegating to AC Mac mini] [GPT-6] [root release owner]
+worktree: [codex/hub-export-bounded] /Users/risingtidesdev/worktrees/hub-export-bounded on macmini-ip
+type: [bug report]: bounded Hub queue export response and deadline
+area: [backend], [testing], [review]
+entry-id: hub-export-bounded-response-20261007
+
+The production queue export previously read the whole HTTP response without a byte cap. In an isolated follow-up to PR #260, code head 95e4a228014c18bdae359c8542d63d273c8179b3 caps the response at 32 MiB, applies a 45-second whole-exchange POSIX main-thread deadline, and rejects an incomplete declared body before writing an output directory or completed SQLite receipt. Synthetic oversize, incomplete and stalled responses plus a loopback HTTP success/receipt test passed; 14 focused tests and 998 repository Python tests passed, with six optional PostgreSQL cases skipped. Independent code-head review found no blocker for the standalone Mac CLI, but noted that a pre-existing ITIMER_REAL alarm can be delayed and other-thread/non-POSIX callers have no strict whole-exchange deadline. The root AGENTS.md records those scope limits; no child AGENTS exists. No live export, scrape, paid request, post, push, merge or deployment was triggered. Rollback is a revert of this one focused change after checking export receipts; final-head review and hosted checks remain required.
+_________________________________________________________________________________

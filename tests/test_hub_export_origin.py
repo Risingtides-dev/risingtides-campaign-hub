@@ -81,3 +81,130 @@ def test_export_http_failure_is_bounded_and_writes_nothing(monkeypatch, tmp_path
         module.export_queue(tmp_path / "exports", 500)
     assert "private diagnostics" not in str(err.value)
     assert not (tmp_path / "exports").exists()
+
+
+def test_export_rejects_oversized_response_without_output(monkeypatch, tmp_path):
+    module = load_script("hub_queue_big", "tools/yt-scraper/export_hub_queue_links.py")
+    monkeypatch.setattr(module, "OUTPUT_ROOT", tmp_path / "no-env")
+    monkeypatch.setattr(module, "MAX_QUEUE_RESPONSE_BYTES", 8)
+
+    class BigResponse:
+        headers = {"Content-Length": "9"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, size):
+            assert size <= 9
+            return b"x" * size
+
+    monkeypatch.setattr(module, "urlopen", lambda *_args, **_kwargs: BigResponse())
+    with pytest.raises(RuntimeError, match="size limit"):
+        module.export_queue(tmp_path / "exports", 1)
+    assert not (tmp_path / "exports").exists()
+
+
+def test_export_rejects_incomplete_response_without_receipt(monkeypatch, tmp_path):
+    module = load_script("hub_queue_short", "tools/yt-scraper/export_hub_queue_links.py")
+    monkeypatch.setattr(module, "OUTPUT_ROOT", tmp_path / "no-env")
+
+    class ShortResponse:
+        headers = {"Content-Length": "200"}
+
+        def __init__(self):
+            self.calls = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _size):
+            self.calls += 1
+            return b'{"campaigns":[]}' if self.calls == 1 else b""
+
+    monkeypatch.setattr(module, "urlopen", lambda *_args, **_kwargs: ShortResponse())
+    with pytest.raises(RuntimeError, match="incomplete"):
+        module.export_queue(tmp_path / "exports", 1)
+    assert not (tmp_path / "exports").exists()
+
+
+def test_export_deadline_bounds_stalled_body(monkeypatch, tmp_path):
+    import time
+
+    module = load_script("hub_queue_stall", "tools/yt-scraper/export_hub_queue_links.py")
+    monkeypatch.setattr(module, "OUTPUT_ROOT", tmp_path / "no-env")
+    monkeypatch.setattr(module, "QUEUE_REQUEST_TIMEOUT_SECONDS", 0.05)
+
+    class SlowResponse:
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _size):
+            time.sleep(1)
+            return b"{}"
+
+    monkeypatch.setattr(module, "urlopen", lambda *_args, **_kwargs: SlowResponse())
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match="time limit"):
+        module.export_queue(tmp_path / "exports", 1)
+    assert time.monotonic() - started < 0.5
+    assert not (tmp_path / "exports").exists()
+
+
+def test_export_local_http_success_preserves_receipt(monkeypatch, tmp_path):
+    import json
+    import sqlite3
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    module = load_script("hub_queue_local_http", "tools/yt-scraper/export_hub_queue_links.py")
+    monkeypatch.setattr(module, "OUTPUT_ROOT", tmp_path / "no-env")
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+    body = json.dumps({
+        "campaigns": [{
+            "slug": "sample",
+            "title": "Sample",
+            "videos": [{"url": "https://www.tiktok.com/@sample/video/123"}],
+        }],
+        "total_untracked": 1,
+    }).encode()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            assert self.path == "/api/scrape-tasks/queue?limit=1"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        monkeypatch.setenv("CAMPAIGN_HUB_API_URL", f"http://127.0.0.1:{server.server_port}")
+        result = module.export_queue(tmp_path / "exports", 1)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert result["campaigns"] == 1
+    assert result["links_exported"] == 1
+    output_dir = tmp_path / "exports" / Path(result["output_dir"]).name
+    assert (output_dir / "all_post_links_copy_paste.txt").read_text().strip() ==         "https://www.tiktok.com/@sample/video/123"
+    with sqlite3.connect(tmp_path / "exports" / "scrape_records.sqlite") as conn:
+        assert conn.execute("SELECT status, links_exported FROM scrape_runs").fetchone() == ("completed", 1)
