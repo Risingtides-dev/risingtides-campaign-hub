@@ -342,15 +342,20 @@ def fetch_page_content_types(notion_page_id: str) -> Optional[List[str]]:
     return fields["content_types"] if fields else None
 
 
-def query_new_clients(synced_page_ids: Set[str]) -> List[Dict]:
+_client_discovery_cursor = None
+
+
+def query_new_clients(synced_page_ids: Set[str], *, resume: bool = False) -> List[Dict]:
     """Query Notion CRM for entries with Pipeline Status = 'Client' not yet synced.
 
     Args:
         synced_page_ids: Set of Notion page IDs already imported to Campaign Hub.
+        resume: Continue the bounded one-page discovery scan across scheduler ticks.
 
     Returns:
         List of campaign dicts ready to be saved via db.save_campaign().
     """
+    global _client_discovery_cursor
     api_key = _get_api_key()
     if not api_key:
         return []
@@ -370,9 +375,14 @@ def query_new_clients(synced_page_ids: Set[str]) -> List[Dict]:
         "page_size": 50,
     }
 
+    if resume and _client_discovery_cursor:
+        payload["start_cursor"] = _client_discovery_cursor
+
     try:
         resp = requests.post(url, headers=_headers(), json=payload, timeout=15)
         if resp.status_code != 200:
+            if resume and resp.status_code == 400:
+                _client_discovery_cursor = None
             logger.warning(
                 "CRM sync query returned HTTP %s: %s", resp.status_code, resp.text[:300]
             )
@@ -381,8 +391,9 @@ def query_new_clients(synced_page_ids: Set[str]) -> List[Dict]:
         logger.warning("CRM sync query failed: %s", e)
         return []
 
+    response = resp.json()
     results = []
-    for page in resp.json().get("results", []):
+    for page in response.get("results", []):
         page_id = page["id"]
         if page_id in synced_page_ids:
             continue
@@ -402,14 +413,7 @@ def query_new_clients(synced_page_ids: Set[str]) -> List[Dict]:
         label = _get_rich_text(props.get("Label/Distro Partner", {}))
         lead = _get_multi_select(props.get("Project Lead", {}))
         email = _get_email(props.get("Key Contact Email", {}))
-        # The CRM property is "Content Niche Targets" (multi_select). We were
-        # reading "Types of Content Creators", which does not exist on the
-        # database — so this came back empty for every campaign ever synced
-        # (0 of 326 populated) while 286 of 300 CRM rows actually carry tags.
-        # A missing property is silently empty here, so nothing ever surfaced.
-        # Legacy name kept as a fallback in case an older DB copy still uses it.
-        content_types = (_get_multi_select(props.get("Content Niche Targets", {}))
-                         or _get_multi_select(props.get("Types of Content Creators", {})))
+        content_types = _parse_content_types(props)
         tiktok_pct = _get_multi_select(props.get("TikTok", {}))
         insta_pct = _get_multi_select(props.get("Instagram", {}))
         internal_captions = _parse_internal_captions(page_id, props)
@@ -455,6 +459,9 @@ def query_new_clients(synced_page_ids: Set[str]) -> List[Dict]:
             "platform_split": platform_split,
             "source": "notion",
         })
+
+    if resume:
+        _client_discovery_cursor = response.get("next_cursor") if response.get("has_more") else None
 
     return results
 
