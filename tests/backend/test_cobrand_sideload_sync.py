@@ -146,6 +146,52 @@ def test_happy_path_partial_failure(db_env):
         assert t2.status == "FAILURE"
 
 
+def test_upload_batch_excludes_post_after_completed_next_round(db_env):
+    _seed()
+    with _db.get_session() as s:
+        first = s.query(Campaign).filter_by(slug="camp").one()
+        first.sound_id = "1234567890"
+        first.start_date = "2024-04-01"
+        s.query(MatchedVideo).filter_by(url=U1).one().upload_date = "20240501"
+        s.query(MatchedVideo).filter_by(url=U1).one().timestamp = "2024-05-01T00:00:00"
+        s.query(MatchedVideo).filter_by(url=U2).one().upload_date = "20240701"
+        s.query(MatchedVideo).filter_by(url=U2).one().timestamp = "2024-07-01T00:00:00"
+        s.add(Campaign(slug="later", title="Later", name="Later", artist="Artist",
+                       sound_id="1234567890", start_date="2024-06-01", completion_status="completed"))
+        s.commit()
+
+    client = FakeClient(activations=[_act()], task_map={U1: ("SUCCESS", "c", "s")}, pending_first=False)
+    report = sync_campaign("camp", config=_enabled_cfg(), client=client, sleep=lambda d: None)
+    assert report.uploaded == 1
+    assert client.uploaded == ("act-1", [U1])
+    with _db.get_session() as s:
+        assert s.query(MatchedVideo).filter_by(url=U2).one().tracked_at is None
+
+
+def test_upload_batch_keeps_identified_secondary_sound_after_primary_advances(db_env):
+    _seed(urls=(U1, U2))
+    with _db.get_session() as s:
+        first = s.query(Campaign).filter_by(slug="camp").one()
+        first.sound_id = "1234567890"
+        first.additional_sounds = ["2222222222"]
+        first.start_date = "2024-04-01"
+        primary = s.query(MatchedVideo).filter_by(url=U1).one()
+        primary.music_id = "1234567890"
+        primary.upload_date = "20240701"
+        primary.timestamp = "2024-07-01T00:00:00"
+        secondary = s.query(MatchedVideo).filter_by(url=U2).one()
+        secondary.music_id = "2222222222"
+        secondary.upload_date = "20240701"
+        secondary.timestamp = "2024-07-01T00:00:00"
+        s.add(Campaign(slug="later", title="Later", name="Later", artist="Artist",
+                       sound_id="1234567890", start_date="2024-06-01", completion_status="completed"))
+        s.commit()
+    client = FakeClient(activations=[_act()], task_map={U2: ("SUCCESS", "c", "s")}, pending_first=False)
+    report = sync_campaign("camp", config=_enabled_cfg(), client=client, sleep=lambda d: None)
+    assert report.uploaded == 1
+    assert client.uploaded == ("act-1", [U2])
+
+
 def test_poll_loop_waits_for_pending(db_env):
     _seed(urls=(U1,))
     client = FakeClient(activations=[_act()], task_map={U1: ("SUCCESS", "c", "s")},

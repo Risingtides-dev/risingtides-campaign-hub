@@ -1,12 +1,31 @@
 """Shared helper functions extracted from web_dashboard."""
 
 import json
+import hashlib
+import logging
 import re
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Iterable
+from urllib.parse import urlsplit, urlunsplit
 
 import requests
+
+log = logging.getLogger(__name__)
+
+
+def _ambiguous_post_ref(video: Dict) -> str:
+    """Stable diagnostic identity without leaking query tokens or raw URLs."""
+    raw = str(video.get("url") or "").strip()
+    if raw:
+        try:
+            parts = urlsplit(raw)
+            canonical = urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path, "", ""))
+        except ValueError:
+            canonical = raw.split("?", 1)[0].split("#", 1)[0]
+        return "url_sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:20]
+    row_id = video.get("id")
+    return f"row_id:{row_id}" if row_id is not None else "unidentified"
 
 
 def slugify(text: str) -> str:
@@ -195,3 +214,126 @@ def video_posted_before_start(video: Dict, start_date: str) -> bool:
         return normalized < start_date
 
     return False
+
+
+def round_start_date(value: object) -> date | None:
+    """Parse a campaign round's calendar start; reject malformed dates."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return date.fromisoformat(value.strip()) if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value.strip()) else None
+    except ValueError:
+        return None
+
+
+def video_post_date(video: Dict) -> date | None:
+    """Read a post's calendar date from scraper metadata, if trustworthy."""
+    ts = video.get("timestamp")
+    if isinstance(ts, datetime):
+        return ts.date()
+    if isinstance(ts, str) and ts.strip():
+        try:
+            return datetime.fromisoformat(ts.strip().replace("Z", "+00:00")).date()
+        except ValueError:
+            pass
+    upload = video.get("upload_date")
+    if isinstance(upload, str) and re.fullmatch(r"\d{8}", upload.strip()):
+        try:
+            return datetime.strptime(upload.strip(), "%Y%m%d").date()
+        except ValueError:
+            pass
+    if isinstance(upload, str) and upload.strip():
+        try:
+            return datetime.fromisoformat(upload.strip().replace("Z", "+00:00")).date()
+        except ValueError:
+            pass
+    return None
+
+
+def build_round_end_by_slug(campaigns: Iterable[Dict]) -> dict[str, dict[str, date | None]]:
+    """Upper-exclusive next-round start for each exact campaign sound ID.
+
+    Include completed rounds: completion stops writes, not the previous
+    round's date window. Same-day rounds use created_at then slug to select
+    one deterministic owner for that date.
+    """
+    rows = list(campaigns)
+    keyed = []
+    for meta in rows:
+        slug = str(meta.get("slug") or "")
+        start = round_start_date(meta.get("start_date"))
+        if not slug or start is None:
+            continue
+        additional = meta.get("additional_sounds")
+        raw_ids = [meta.get("sound_id")] + (list(additional) if isinstance(additional, (list, tuple)) else [])
+        sound_ids = {str(raw).strip() for raw in raw_ids if raw is not None and len(str(raw).strip()) >= 5 and str(raw).strip() != "-"}
+        if sound_ids:
+            keyed.append((slug, start, str(meta.get("created_at") or ""), sound_ids))
+
+    end_by_slug: dict[str, dict[str, date | None]] = {}
+    for slug, start, created, sound_ids in keyed:
+        current_key = (start, created, slug)
+        per_sound = {}
+        for sound_id in sound_ids:
+            later_starts = [other_start for other_slug, other_start, other_created, other_ids in keyed
+                            if sound_id in other_ids and (other_start, other_created, other_slug) > current_key]
+            per_sound[sound_id] = min(later_starts) if later_starts else None
+        end_by_slug[slug] = per_sound
+    return end_by_slug
+
+
+def round_end_for_video(video: Dict, end_date: date | dict[str, date | None] | None) -> date | None:
+    """Resolve a sound-specific boundary; unknown identities use the earliest end.
+
+    This prevents uncertain historical matches from crossing into another
+    round's Cobrand queue or report. A known secondary sound with no successor
+    retains its own open window even if the primary sound has advanced.
+    """
+    if not isinstance(end_date, dict):
+        return end_date
+    for field in ("extracted_sound_id", "music_id"):
+        sound_id = str(video.get(field) or "").strip()
+        if sound_id in end_date:
+            return end_date[sound_id]
+    bounded = [end for end in end_date.values() if end is not None]
+    return min(bounded) if bounded else None
+
+
+def round_qualified_videos(
+    videos: Iterable[Dict], start_date: object, *, end_date: date | dict[str, date | None] | None = None,
+    exclude_dismissed: bool = False,
+) -> list[Dict]:
+    """Scope stored matches to a campaign round without deleting history.
+
+    A missing campaign start retains legacy behavior. A malformed nonempty
+    start or missing/malformed post date cannot prove round membership.
+    """
+    return [video for video in videos if video_in_round(
+        video, start_date, end_date=end_date, exclude_dismissed=exclude_dismissed,
+    )]
+
+
+def video_in_round(
+    video: Dict, start_date: object, *, end_date: date | dict[str, date | None] | None = None,
+    exclude_dismissed: bool = False,
+) -> bool:
+    """Whether one matched row can be shown or counted in a round."""
+    if exclude_dismissed and video.get("dismissed_at"):
+        return False
+    raw = str(start_date or "").strip()
+    if not raw:
+        return True
+    start = round_start_date(raw)
+    posted = video_post_date(video)
+    end = round_end_for_video(video, end_date)
+    if (isinstance(end_date, dict) and end is not None and posted is not None
+            and posted >= end and not any(
+                str(video.get(field) or "").strip() in end_date
+                for field in ("extracted_sound_id", "music_id")
+            )):
+        log.warning(
+            "Matched post %s has no owned sound identity after a partial round boundary; excluded for reconciliation",
+            _ambiguous_post_ref(video),
+        )
+    return bool(start is not None and posted is not None and posted >= start
+                and (end is None or posted < end))

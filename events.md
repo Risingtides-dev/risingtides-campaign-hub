@@ -438,3 +438,48 @@ area: [backend], [testing], [review]
 
 Independent review of be6f319 found that the janitor could cache a stale unbound ORM row while another session bound it, then fail the now-live receipt. The revision locks stale rows during janitor reconciliation, serializing with the binding write, and adds a disposable PostgreSQL interleaving regression. The new regression failed against the prior unlocked janitor and passed with the fix; three disposable PostgreSQL 16 lock tests passed. The final full Python suite passed 1002 tests with eight optional PostgreSQL skips; the disposable cluster was stopped and removed. The 24-hour compatibility cap can mark a pre-deployment receipt failed while its original worker remains active; that receipt is not evidence the worker stopped and its effects require reconciliation before retry. An active-owner lookup currently reads all open rows of affected job types; indexing or a targeted lookup is a later performance follow-up. No scrape, publication, push, PR, deployment or live outcome is claimed.
 _________________________________________________________________________________
+_________________________________________________________________________________
+time: [05:16pm] [10-07-26] EDT; actual UTC: 2026-10-07T21:16:00Z
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/hub-issue46-round-isolation] /Users/smathdaddy-macbook/hub-issue46-round-isolation
+type: [bug report]: cross-round same-sound post attribution and report totals
+area: [backend], [testing]
+
+Same-sound internal posts previously auto-attached to the latest active campaign regardless of post date, and the client report summed raw historical matched rows. This candidate selects only rounds eligible on the post date and scopes campaign-level stats plus report headline, top-post, creator, and Cobrand outcome totals to eligible stored matches. Historical rows are preserved; missing or malformed post dates do not auto-attach or count in a dated report. A campaign without a start date keeps its legacy report behavior. Focused scheduler/report/stat tests passed 55/55. The full Python suite passed 1004 tests, with eight optional PostgreSQL cases skipped. No scrape, post, PR, merge or deployment occurred. Rollback is a code revert; existing stored rows require no migration.
+_________________________________________________________________________________
+_________________________________________________________________________________
+time: [05:23pm] [10-07-26] EDT; actual UTC: 2026-10-07T21:23:40Z
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/hub-issue46-round-isolation] /Users/smathdaddy-macbook/hub-issue46-round-isolation
+type: [bug report]: issue #46 independent-review follow-up
+area: [backend], [testing], [review]
+
+Independent review found two further round-integrity leaks: a URL-less eligible matched row could join an unrelated URL-less Cobrand outcome, and a dated round with no newly attached URLs could retain contaminated campaign totals. The candidate now requires nonempty normalized URLs for Cobrand outcome joins and reconciles every touched dated round. The same date-eligibility helper scopes scheduled and manual scrape candidates, campaign totals, creator counts, scrape-log counts, response counts, and the scheduled snapshot call arguments. Historical stored rows remain untouched, and no-start legacy behavior remains. Five focused regressions passed; the full Python suite passed 1007 tests with eight optional PostgreSQL tests skipped. The scheduled snapshot call remains best-effort and currently invokes an unimplemented db.save_stats_snapshot method; its side effect is not verified. No live scrape, post, PR, merge or deployment occurred. Rollback is a code revert; no migration is involved.
+_________________________________________________________________________________
+_________________________________________________________________________________
+time: [05:33pm] [10-07-26] EDT; actual UTC: 2026-10-07T21:33:15Z
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/hub-issue46-round-isolation] /Users/smathdaddy-macbook/hub-issue46-round-isolation
+type: [bug report]: issue #46 exclusive same-sound round windows
+area: [backend], [testing], [review]
+
+Independent review found that a lower-bound-only round filter let later-round posts remain visible and uploadable in the earlier round. This revision derives an exclusive end boundary from the next campaign sharing an exact primary or additional sound, including completed rounds; same-day ties use creation time then slug. DB-backed scheduled/manual scrapes, internal attachment, stored aggregates, campaign detail/list/links/creator views, client report, Cobrand untracked queue/bulk tracking, Cobrand sideload upload batch, and Chartmetric post events now use the bounded window. Historical rows remain stored. Invalid or undated posts cannot prove dated-round membership; campaigns without a start date retain legacy behavior. File-mode cross-worker upper boundaries remain unverified because there is no authoritative all-campaign roster. Focused tests passed 108/108; the full Python suite passed 1013 with eight optional PostgreSQL cases skipped. The scheduled snapshot call remains a best-effort call to an unimplemented db.save_stats_snapshot method and is not durable proof. No live scrape, external upload, post, PR, merge or deployment occurred. Rollback is a code revert; no migration is involved.
+_________________________________________________________________________________
+_________________________________________________________________________________
+time: [05:37pm] [10-07-26] EDT; actual UTC: 2026-10-07T21:37:23Z
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/hub-issue46-round-isolation] /Users/smathdaddy-macbook/hub-issue46-round-isolation
+type: [bug report]: issue #46 partial sound-overlap review repair
+area: [backend], [testing], [review]
+
+Independent review found that a campaign-wide upper boundary discarded valid later posts on an unaffected secondary sound when only the primary sound moved to a new round. The boundary is now resolved by each video's exact campaign-owned sound ID. A missing or foreign sound ID after a partial-overlap boundary uses the earliest successor cutoff and logs its URL for reconciliation, avoiding an uncertain duplicate Cobrand upload; the stored row is retained. Scheduled and manual matching, report aggregates, Cobrand queue and sideload upload, and Chartmetric post events have partial-overlap regressions. Focused tests passed 110/110; the full Python suite passed 1015 with eight optional PostgreSQL cases skipped. No live scrape, Cobrand upload, publication, PR, merge or deployment occurred. Rollback remains a code revert with no migration.
+_________________________________________________________________________________
+_________________________________________________________________________________
+time: [05:40pm] [10-07-26] EDT; actual UTC: 2026-10-07T21:40:32Z
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/hub-issue46-round-isolation] /Users/smathdaddy-macbook/hub-issue46-round-isolation
+type: [bug report]: safe ambiguous-post reconciliation reference
+area: [backend], [testing], [review]
+
+Independent review found that ambiguity warnings logged raw matched URLs, which may contain query tokens, and that ORM queue, bulk, sideload, and Chartmetric filters omitted URL identity entirely from their eligibility dictionaries. Those call sites now carry URL and row ID to the shared filter. The warning emits only a stable SHA-256 prefix of the query/fragment-stripped URL, or a row ID when URL is absent, so the excluded row can be reconciled without exposing the token. Focused token-redaction and Cobrand queue identity regressions passed with 110 focused tests; the full Python suite passed 1015 with eight optional PostgreSQL tests skipped. No external upload, scrape, publication, PR, merge or deployment occurred. Rollback is a code revert; no migration is involved.
+_________________________________________________________________________________
