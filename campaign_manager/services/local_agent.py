@@ -44,12 +44,17 @@ def dispatch_scrape(only_slugs=None) -> dict:
     try:
         with urllib.request.urlopen(req, timeout=12) as resp:
             body = json.loads(resp.read().decode("utf-8") or "{}")
-        if isinstance(body, dict) and body.get("ok") is True:
+        if isinstance(body, dict) and body.get("ok") is False:
+            return {"ok": False, "error": "local scraper did not accept the scrape"}
+        if (isinstance(body, dict) and body.get("ok") is True
+                and body.get("action") == "scrape"
+                and type(body.get("started")) is bool
+                and isinstance(body.get("note", ""), str)):
             return {"ok": True, "delegated_to": "local_agent", "node": body}
-        return {"ok": False, "error": "local scraper did not accept the scrape"}
+        return {"ok": False, "outcome": "unknown",
+                "error": "local scraper returned an invalid response; reconcile before retry"}
     except Exception:  # noqa: BLE001
-        return {
-            "ok": False,
-            "error": "local scraper unreachable",
-            "hint": "Is the Mac on with the control server + Tailscale funnel up?",
-        }
+        # A timeout or broken response can happen after the node received the POST.
+        # Do not classify it as unreachable or retry an irreversible kickstart.
+        return {"ok": False, "outcome": "unknown",
+                "error": "local scraper outcome unknown; reconcile before retry"}

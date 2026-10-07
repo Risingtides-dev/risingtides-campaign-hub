@@ -31,7 +31,7 @@ def test_dispatch_reports_node_launch_failure(monkeypatch):
     monkeypatch.setenv('LOCAL_AGENT_URL', 'https://node.example')
     monkeypatch.setenv('LOCAL_AGENT_TOKEN', 'private-token')
     monkeypatch.setattr(local_agent.urllib.request, 'urlopen', lambda *_args, **_kwargs: Response(
-        {'ok': False, 'started': False, 'detail': 'launchctl kickstart failed'}
+        {'ok': False, 'action': 'scrape', 'started': False, 'detail': 'launchctl kickstart failed'}
     ))
 
     result = local_agent.dispatch_scrape()
@@ -44,7 +44,7 @@ def test_dispatch_reports_node_launch_failure(monkeypatch):
 def test_dispatch_preserves_already_running_success(monkeypatch):
     monkeypatch.setenv('LOCAL_AGENT_URL', 'https://node.example')
     monkeypatch.setattr(local_agent.urllib.request, 'urlopen', lambda *_args, **_kwargs: Response(
-        {'ok': True, 'started': False, 'note': 'scrape already running'}
+        {'ok': True, 'action': 'scrape', 'started': False, 'note': 'scrape already running'}
     ))
 
     result = local_agent.dispatch_scrape()
@@ -65,4 +65,33 @@ def test_dispatch_hides_token_from_transport_errors(monkeypatch):
     result = local_agent.dispatch_scrape()
 
     assert result['ok'] is False
+    assert result['outcome'] == 'unknown'
     assert 'private-token' not in json.dumps(result)
+
+
+def test_dispatch_rejects_malformed_success(monkeypatch):
+    monkeypatch.setenv('LOCAL_AGENT_URL', 'https://node.example')
+    for body in (
+        {'ok': True},
+        {'ok': True, 'action': 'other', 'started': True},
+        {'ok': True, 'action': 'scrape', 'started': 'yes'},
+        {'ok': True, 'action': 'scrape', 'started': False, 'note': 3},
+    ):
+        monkeypatch.setattr(local_agent.urllib.request, 'urlopen', lambda *_args, **_kwargs: Response(body))
+        result = local_agent.dispatch_scrape()
+        assert result['ok'] is False
+        assert result['outcome'] == 'unknown'
+        assert 'node' not in result
+
+
+def test_dispatch_classifies_timeout_after_send_as_unknown(monkeypatch):
+    monkeypatch.setenv('LOCAL_AGENT_URL', 'https://node.example')
+
+    def timeout(*_args, **_kwargs):
+        raise TimeoutError('timed out after POST body was sent')
+
+    monkeypatch.setattr(local_agent.urllib.request, 'urlopen', timeout)
+    result = local_agent.dispatch_scrape()
+    assert result['ok'] is False
+    assert result['outcome'] == 'unknown'
+    assert 'reconcile before retry' in result['error']
