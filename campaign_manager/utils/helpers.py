@@ -1,15 +1,31 @@
 """Shared helper functions extracted from web_dashboard."""
 
 import json
+import hashlib
 import logging
 import re
 from datetime import date, datetime
 from pathlib import Path
 from typing import Dict, Iterable
+from urllib.parse import urlsplit, urlunsplit
 
 import requests
 
 log = logging.getLogger(__name__)
+
+
+def _ambiguous_post_ref(video: Dict) -> str:
+    """Stable diagnostic identity without leaking query tokens or raw URLs."""
+    raw = str(video.get("url") or "").strip()
+    if raw:
+        try:
+            parts = urlsplit(raw)
+            canonical = urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path, "", ""))
+        except ValueError:
+            canonical = raw.split("?", 1)[0].split("#", 1)[0]
+        return "url_sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:20]
+    row_id = video.get("id")
+    return f"row_id:{row_id}" if row_id is not None else "unidentified"
 
 
 def slugify(text: str) -> str:
@@ -317,7 +333,7 @@ def video_in_round(
             )):
         log.warning(
             "Matched post %s has no owned sound identity after a partial round boundary; excluded for reconciliation",
-            video.get("url") or "<missing-url>",
+            _ambiguous_post_ref(video),
         )
     return bool(start is not None and posted is not None and posted >= start
                 and (end is None or posted < end))

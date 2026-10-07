@@ -474,3 +474,12 @@ area: [backend], [testing], [review]
 
 Independent review found that a campaign-wide upper boundary discarded valid later posts on an unaffected secondary sound when only the primary sound moved to a new round. The boundary is now resolved by each video's exact campaign-owned sound ID. A missing or foreign sound ID after a partial-overlap boundary uses the earliest successor cutoff and logs its URL for reconciliation, avoiding an uncertain duplicate Cobrand upload; the stored row is retained. Scheduled and manual matching, report aggregates, Cobrand queue and sideload upload, and Chartmetric post events have partial-overlap regressions. Focused tests passed 110/110; the full Python suite passed 1015 with eight optional PostgreSQL cases skipped. No live scrape, Cobrand upload, publication, PR, merge or deployment occurred. Rollback remains a code revert with no migration.
 _________________________________________________________________________________
+_________________________________________________________________________________
+time: [05:40pm] [10-07-26] EDT; actual UTC: 2026-10-07T21:40:32Z
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/hub-issue46-round-isolation] /Users/smathdaddy-macbook/hub-issue46-round-isolation
+type: [bug report]: safe ambiguous-post reconciliation reference
+area: [backend], [testing], [review]
+
+Independent review found that ambiguity warnings logged raw matched URLs, which may contain query tokens, and that ORM queue, bulk, sideload, and Chartmetric filters omitted URL identity entirely from their eligibility dictionaries. Those call sites now carry URL and row ID to the shared filter. The warning emits only a stable SHA-256 prefix of the query/fragment-stripped URL, or a row ID when URL is absent, so the excluded row can be reconciled without exposing the token. Focused token-redaction and Cobrand queue identity regressions passed with 110 focused tests; the full Python suite passed 1015 with eight optional PostgreSQL tests skipped. No external upload, scrape, publication, PR, merge or deployment occurred. Rollback is a code revert; no migration is involved.
+_________________________________________________________________________________

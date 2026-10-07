@@ -16,7 +16,7 @@ import pytest
 
 from campaign_manager import db
 from campaign_manager.models import Campaign, MatchedVideo
-from campaign_manager.utils.helpers import video_posted_before_start
+from campaign_manager.utils.helpers import _ambiguous_post_ref, video_posted_before_start
 
 
 @pytest.fixture
@@ -195,7 +195,7 @@ def test_video_posted_before_start_no_campaign_start():
     )
 
 
-def test_queue_and_bulk_track_exclude_posts_after_completed_next_round(client):
+def test_queue_and_bulk_track_exclude_posts_after_completed_next_round(client, caplog):
     """A completed R2 still closes R1's upload window."""
     with db.get_session() as s:
         r1 = Campaign(slug="same-sound-r1", title="Round 1", sound_id="1234567890",
@@ -205,7 +205,7 @@ def test_queue_and_bulk_track_exclude_posts_after_completed_next_round(client):
         s.flush()
         s.add_all([
             MatchedVideo(campaign_id=r1.id, url="https://example.com/r1", timestamp="2026-04-15T00:00:00", upload_date="20260415"),
-            MatchedVideo(campaign_id=r1.id, url="https://example.com/r2-in-r1", timestamp="2026-05-15T00:00:00", upload_date="20260515"),
+            MatchedVideo(campaign_id=r1.id, url="https://example.com/r2-in-r1?token=private-secret", timestamp="2026-05-15T00:00:00", upload_date="20260515"),
             MatchedVideo(campaign_id=r1.id, url="https://example.com/secondary-in-r1",
                          music_id="2222222222", timestamp="2026-05-15T00:00:00", upload_date="20260515"),
         ])
@@ -215,10 +215,12 @@ def test_queue_and_bulk_track_exclude_posts_after_completed_next_round(client):
     urls = {v["url"] for camp in body["campaigns"] for v in camp["videos"]}
     assert "https://example.com/r1" in urls
     assert "https://example.com/secondary-in-r1" in urls
-    assert "https://example.com/r2-in-r1" not in urls
+    assert "https://example.com/r2-in-r1?token=private-secret" not in urls
+    assert _ambiguous_post_ref({"url": "https://example.com/r2-in-r1"}) in caplog.text
+    assert "private-secret" not in caplog.text
 
     response = client.post("/api/scrape-tasks/mark-campaign-tracked", json={"slug": "same-sound-r1"})
     assert response.get_json()["marked_tracked"] == 2
     with db.get_session() as s:
-        later = s.query(MatchedVideo).filter_by(url="https://example.com/r2-in-r1").one()
+        later = s.query(MatchedVideo).filter_by(url="https://example.com/r2-in-r1?token=private-secret").one()
         assert later.tracked_at is None

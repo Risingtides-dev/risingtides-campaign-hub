@@ -157,7 +157,7 @@ def get_pop_score(slug: str):
             for video in s.query(MatchedVideo).filter(MatchedVideo.campaign_id == campaign.id, MatchedVideo.dismissed_at.is_(None)).all():
                 upload_date = video.upload_date
                 if not video_in_round(
-                    {"timestamp": video.timestamp, "upload_date": upload_date,
+                    {"id": video.id, "url": video.url or "", "timestamp": video.timestamp, "upload_date": upload_date,
                      "extracted_sound_id": video.extracted_sound_id or "", "music_id": video.music_id or ""},
                     row["start_date"], end_date=round_end,
                 ):

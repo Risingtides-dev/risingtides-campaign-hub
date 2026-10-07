@@ -276,7 +276,7 @@ def test_round_end_includes_completed_later_round_and_same_day_tie():
 
 
 def test_partial_sound_overlap_keeps_identified_secondary_post(caplog):
-    from campaign_manager.utils.helpers import build_round_end_by_slug, round_qualified_videos
+    from campaign_manager.utils.helpers import build_round_end_by_slug, round_qualified_videos, _ambiguous_post_ref
     roster = [
         {"slug": "r1", "sound_id": "111111", "additional_sounds": ["222222"], "start_date": "2026-04-01"},
         {"slug": "r2", "sound_id": "111111", "start_date": "2026-05-01"},
@@ -287,14 +287,16 @@ def test_partial_sound_overlap_keeps_identified_secondary_post(caplog):
         {"url": "primary-old", "music_id": "111111", "upload_date": "20260420"},
         {"url": "primary-new", "music_id": "111111", "upload_date": "20260515"},
         {"url": "secondary-new", "music_id": "222222", "upload_date": "20260515"},
-        {"url": "unknown-new", "upload_date": "20260515"},
+        {"url": "https://example.com/unknown-new?token=private-secret", "upload_date": "20260515"},
         {"url": "foreign-new", "music_id": "333333", "upload_date": "20260515"},
     ]
     assert [row["url"] for row in round_qualified_videos(rows, "2026-04-01", end_date=window)] == [
         "primary-old", "secondary-new",
     ]
-    assert "unknown-new" in caplog.text
-    assert "foreign-new" in caplog.text
+    assert _ambiguous_post_ref(rows[3]) in caplog.text
+    assert _ambiguous_post_ref(rows[4]) in caplog.text
+    assert "private-secret" not in caplog.text
+    assert "https://example.com/unknown-new" not in caplog.text
 
 
 def test_internal_attach_does_not_fall_back_to_earlier_active_round_after_later_completed(monkeypatch):
