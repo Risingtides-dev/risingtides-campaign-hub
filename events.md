@@ -339,3 +339,27 @@ Independent review found that the first candidate allowed distinct 06:00 campaig
 
 Focused Python checks passed 73/73; full repository Python suite passed 975/975 with 6 opt-in PostgreSQL tests skipped; separate disposable PostgreSQL targeted checks passed 26/26, and frontend TypeScript/Vite build plus changed-file ESLint passed. A test-owned local PostgreSQL connection confirmed that distinct job types can hold their own keys while the shared capacity key admits one backend, rejects another, and releases afterward. No live scrape, node POST, paid request, publication, push, merge or deployment was used. Exact-head independent review and hosted checks remain required. The Mac runner has a separate host-local guard rather than the Hub DB lease; cross-host exclusion and node outcome parity remain explicit holds. Rollback is a revert of this Hub branch after reconciling queued/delegated/unknown receipts.
 _________________________________________________________________________________
+
+
+_________________________________________________________________________________
+time: [3:35pm] [10-07-26] EDT; actual UTC: 2026-10-07T19:35:25Z
+agent: [Codex desktop delegating to AC Mac mini] [GPT-6] [builder]
+worktree: [codex/issue-124-scheduler-lease] /Users/risingtidesdev/hub-issue-124-scheduler on macmini-ip
+type: [issues]: Risingtides-dev/risingtides-campaign-hub #124 crash window repair
+area: [backend], [testing], [review]
+entry-id: hub-local-dispatch-crash-receipt-20261007
+
+Independent exact-head review identified a crash window after the local-node POST: a merely queued receipt could be reaped as never started even though the irreversible dispatch may have reached the node. The revised caller atomically commits dispatching before sending; if reservation fails it refuses to POST. The janitor closes stale dispatching receipts as unknown with explicit original-attempt reconciliation rather than failed-never-started. Synthetic crash-after-POST and reservation-failure tests exercise both boundaries without a live node POST. Focused checks passed 28/28 with disposable local PostgreSQL; full repository Python suite passed 979/979 with six opt-in PostgreSQL tests skipped, and the earlier frontend build/changed-file ESLint remained clean. Fresh independent exact-head rereview remains required. No push, merge, deployment or live scrape is claimed.
+_________________________________________________________________________________
+
+
+_________________________________________________________________________________
+time: [3:37pm] [10-07-26] EDT; actual UTC: 2026-10-07T19:37:11Z
+agent: [Codex desktop delegating to AC Mac mini] [GPT-6] [builder]
+worktree: [codex/issue-124-scheduler-lease] /Users/risingtidesdev/hub-issue-124-scheduler on macmini-ip
+type: [issues]: Risingtides-dev/risingtides-campaign-hub #124 local runner status alignment
+area: [backend], [testing], [review]
+entry-id: hub-local-runner-skip-20261007
+
+Exact-head review found that the Mac active-campaign runner treated a Hub same-type duplicate skip as a failed scrape process. The runner now records skipped and the explicit scrape outcome, exits successfully for the exact already-running no-op, and does not run the queue export that belongs to a completed scrape. An isolated fake-DB/fake-scheduler test confirms no scrape or export is invoked, report and exit semantics are accurate, and the local lock is released. No live scrape or local runner replacement was used. The production Mac service is still on its existing installed checkout; this candidate does not claim rollout parity.
+_________________________________________________________________________________

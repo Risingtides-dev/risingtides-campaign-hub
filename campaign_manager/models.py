@@ -483,7 +483,7 @@ class CronLog(Base):
 
     id = Column(Integer, primary_key=True)
     job_type = Column(String(50), nullable=False, index=True)   # 'campaign_refresh' | 'internal_scrape'
-    status = Column(String(20), nullable=False, index=True)     # queued | running | skipped | completed | failed | delegated | unknown
+    status = Column(String(20), nullable=False, index=True)     # queued | dispatching | running | skipped | completed | failed | delegated | unknown
     started_at = Column(DateTime, nullable=False)
     finished_at = Column(DateTime, nullable=True)
     summary = Column(JSONB, nullable=True)

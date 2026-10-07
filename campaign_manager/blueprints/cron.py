@@ -64,6 +64,18 @@ def cron_trigger():
             except Exception:
                 log.exception("Could not record delegated cron request")
                 return jsonify({"error": "Could not record cron request"}), 503
+            # Once this durable state commits, a crash at any point around the
+            # node POST is ambiguous. The janitor closes stale dispatching
+            # receipts as unknown, never as "never started".
+            try:
+                if not _db.transition_cron_log(log_id, "queued", "dispatching"):
+                    raise RuntimeError("delegated request receipt was already closed")
+            except Exception:
+                log.exception("Could not reserve local dispatch for %s", log_id)
+                return jsonify({
+                    "status": "failed", "ok": False, "log_id": log_id,
+                    "error": "Could not reserve local dispatch",
+                }), 503
             result = dispatch_scrape(None)
             node = result.get("node") or {}
             if result.get("ok") and node.get("started") is True:
@@ -76,7 +88,7 @@ def cron_trigger():
                 state, http_status = "failed", 502
             try:
                 changed = _db.transition_cron_log(
-                    log_id, "queued", state,
+                    log_id, "dispatching", state,
                     {"dispatch": result, "note": "Node acknowledgment only; reconcile node for scrape outcome"},
                 )
                 if not changed:

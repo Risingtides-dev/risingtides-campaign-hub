@@ -211,14 +211,20 @@ def main() -> int:
                     or ([summary.get("error")] if summary.get("error") else [])
                 )[:10],
             }
+            status = refresh_result.get("status")
+            report["scrape_outcome"] = status
             report["ok"] = (
-                refresh_result.get("status") == "completed"
-                and not bool(summary.get("degraded"))
+                status == "skipped" and summary.get("reason") == "already_running"
+            ) or (
+                status == "completed" and not bool(summary.get("degraded"))
             )
+            if status == "skipped":
+                report["skipped"] = True
+                report["skip_reason"] = summary.get("reason")
         else:
             report["ok"] = True
 
-        if args.export:
+        if args.export and not report.get("skipped"):
             report["export"] = export_queue()
             report["ok"] = bool(report["ok"] and report["export"].get("ok"))
 

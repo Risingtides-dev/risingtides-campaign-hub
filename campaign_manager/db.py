@@ -1927,7 +1927,7 @@ def create_cron_log(job_type: str, status: str = "running") -> int:
 
 
 def transition_cron_log(log_id: int, expected: str, status: str, summary: dict | None = None) -> bool:
-    """Atomic queued-to-running/terminal transition; a reaped request stays dead."""
+    """Atomic receipt transition; a reaped request stays dead."""
     values = {"status": status}
     if status in ("completed", "failed", "skipped", "delegated", "unknown"):
         values["finished_at"] = datetime.now(EST).replace(tzinfo=None)
@@ -1986,12 +1986,11 @@ def get_cron_log_by_id(log_id: int) -> Optional[Dict]:
 
 
 def reap_orphaned_cron_logs(threshold_minutes: int = 30) -> List[int]:
-    """Mark cron_log rows stuck in 'running' beyond threshold as 'failed'.
+    """Close stale cron receipts without replaying effects.
 
-    Daemon threads spawned by /api/cron/trigger die on worker recycle, leaving
-    the cron_log row at status='running' forever. This sweeps those and
-    surfaces them in the cron logs view as failures rather than lying about
-    in-flight work.
+    A queued job with no live lock failed before work; a running job with no
+    live lock lost its worker. A local dispatching receipt is ambiguous because
+    its node POST may already have happened, so it becomes unknown.
     """
     threshold = datetime.now(EST).replace(tzinfo=None) - timedelta(
         minutes=threshold_minutes,
@@ -2000,7 +1999,7 @@ def reap_orphaned_cron_logs(threshold_minutes: int = 30) -> List[int]:
     with get_session() as s:
         stale = (
             s.query(CronLog)
-            .filter(CronLog.status.in_(("running", "queued")),
+            .filter(CronLog.status.in_(("running", "queued", "dispatching")),
                     CronLog.started_at < threshold)
             .all()
         )
@@ -2017,11 +2016,13 @@ def reap_orphaned_cron_logs(threshold_minutes: int = 30) -> List[int]:
             if row.job_type in active_types:
                 continue
             old_status = row.status
-            row.status = "failed"
+            row.status = "unknown" if old_status == "dispatching" else "failed"
             row.finished_at = datetime.now(EST).replace(tzinfo=None)
             row.summary = {
                 "error": (
                     "orphaned: queued request never started" if old_status == "queued"
+                    else "orphaned: local dispatch may have reached node; reconcile before retry"
+                    if old_status == "dispatching"
                     else "orphaned: worker recycle killed the daemon thread"
                 ),
                 "threshold_minutes": threshold_minutes,

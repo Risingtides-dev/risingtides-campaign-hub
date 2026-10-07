@@ -405,7 +405,8 @@ def test_local_delegation_has_durable_receipt(monkeypatch, dispatch, state, code
     )
     assert response.status_code == code
     assert response.get_json()["log_id"] == 91
-    assert transitions[0][:3] == (91, "queued", state)
+    assert transitions[0] == (91, "queued", "dispatching")
+    assert transitions[1][:3] == (91, "dispatching", state)
 
 
 def test_local_delegation_refuses_post_without_receipt(monkeypatch):
@@ -450,3 +451,48 @@ def test_real_postgres_shared_capacity_across_connections(monkeypatch):
         assert not db.scrape_job_lock_held("scrape_capacity")
     finally:
         engine.dispose()
+
+
+def test_crash_after_node_post_leaves_dispatching_receipt(monkeypatch):
+    from flask import Flask
+    from campaign_manager.blueprints import cron
+    from campaign_manager.services import local_agent
+
+    app = Flask(__name__)
+    app.register_blueprint(cron.cron_bp)
+    monkeypatch.setattr(local_agent, "is_configured", lambda: True)
+    monkeypatch.setattr(db, "create_cron_log", lambda _job, status: 97)
+    transitions = []
+    monkeypatch.setattr(db, "transition_cron_log",
+                        lambda *args: transitions.append(args) or True)
+
+    def crash_after_post(_scope):
+        # Emulate process loss after sending an irreversible node POST.
+        raise SystemExit("worker recycled after POST")
+
+    monkeypatch.setattr(local_agent, "dispatch_scrape", crash_after_post)
+    with app.test_request_context("/api/cron/trigger", method="POST",
+                                  json={"job_type": "campaign_refresh"}):
+        with pytest.raises(SystemExit, match="worker recycled"):
+            cron.cron_trigger()
+    assert transitions == [(97, "queued", "dispatching")]
+
+
+def test_local_dispatch_reservation_failure_never_posts(monkeypatch):
+    from flask import Flask
+    from campaign_manager.blueprints import cron
+    from campaign_manager.services import local_agent
+
+    app = Flask(__name__)
+    app.register_blueprint(cron.cron_bp)
+    monkeypatch.setattr(local_agent, "is_configured", lambda: True)
+    monkeypatch.setattr(db, "create_cron_log", lambda _job, status: 98)
+    monkeypatch.setattr(db, "transition_cron_log",
+                        lambda *_args: False)
+    monkeypatch.setattr(local_agent, "dispatch_scrape",
+                        lambda *_args: pytest.fail("must not POST without durable reservation"))
+    response = app.test_client().post(
+        "/api/cron/trigger", json={"job_type": "campaign_refresh"}
+    )
+    assert response.status_code == 503
+    assert response.get_json()["log_id"] == 98
