@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """internal_groups_cli.py — manage internal creator groups on the Campaign Hub.
 
-Talks to the Campaign Hub REST API (defaults to Railway production). Use it
+Talks to the Campaign Hub REST API (defaults to the canonical Campaign Hub origin). Use it
 to create groups, add members, and inspect per-group / per-creator stats
 without needing direct DB access.
 
@@ -17,7 +17,7 @@ Usage:
     python scripts/internal_groups_cli.py seed                # create the default 7 groups + members
 
 Environment:
-    CAMPAIGN_HUB_API  base URL (default: Railway production)
+    CAMPAIGN_HUB_API  base URL (default: canonical Campaign Hub origin)
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ import requests
 
 DEFAULT_BASE = os.environ.get(
     "CAMPAIGN_HUB_API",
-    "https://risingtides-campaign-hub-production.up.railway.app",
+    "https://campaignhub.risingtidesviral.com",
 ).rstrip("/")
 
 TIMEOUT = 30

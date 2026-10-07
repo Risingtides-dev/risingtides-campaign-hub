@@ -10,12 +10,13 @@ from pathlib import Path
 import sqlite3
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List
-from urllib.parse import urlencode
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[2]
 OUTPUT_ROOT = ROOT / "output" / "local-scraper"
-DEFAULT_HUB_BASE = "https://risingtides-campaign-hub-production.up.railway.app"
+DEFAULT_HUB_BASE = "https://campaignhub.risingtidesviral.com"
 
 CSV_FIELDS = [
     "campaign_slug",
@@ -66,23 +67,47 @@ def load_env() -> List[str]:
 
 def hub_base() -> str:
     raw = os.environ.get("CAMPAIGN_HUB_API_URL", "").strip() or DEFAULT_HUB_BASE
-    raw = raw.rstrip("/")
-    if raw.endswith("/api"):
-        raw = raw[:-4]
-    return raw
+    try:
+        parts = urlsplit(raw)
+    except ValueError as exc:
+        raise ValueError("CAMPAIGN_HUB_API_URL is not a valid URL") from exc
+    if (
+        parts.scheme not in {"http", "https"}
+        or not parts.hostname
+        or parts.username is not None
+        or parts.password is not None
+        or parts.query
+        or parts.fragment
+        or parts.path.rstrip("/") not in {"", "/api"}
+    ):
+        raise ValueError("CAMPAIGN_HUB_API_URL must be an HTTP(S) origin, optionally ending in /api")
+    try:
+        _ = parts.port
+    except ValueError as exc:
+        raise ValueError("CAMPAIGN_HUB_API_URL has an invalid port") from exc
+    return f"{parts.scheme}://{parts.netloc}"
 
 
 def queue_url(limit: int) -> str:
+    if not 1 <= limit <= 5000:
+        raise ValueError("queue export limit must be between 1 and 5000")
     return f"{hub_base()}/api/scrape-tasks/queue?{urlencode({'limit': limit})}"
 
 
 def fetch_queue(limit: int) -> Dict[str, Any]:
     url = queue_url(limit)
     req = Request(url, headers={"Accept": "application/json"})
-    with urlopen(req, timeout=45) as resp:
-        payload = json.loads(resp.read().decode("utf-8"))
-    if not isinstance(payload, dict) or "campaigns" not in payload:
-        raise RuntimeError(f"unexpected queue payload from {url}")
+    try:
+        with urlopen(req, timeout=45) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except HTTPError as exc:
+        raise RuntimeError(f"Campaign Hub queue request failed with HTTP {exc.code}") from exc
+    except URLError as exc:
+        raise RuntimeError("Campaign Hub queue request could not reach the configured origin") from exc
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("Campaign Hub queue returned invalid JSON") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("campaigns"), list):
+        raise RuntimeError("Campaign Hub queue returned an unexpected payload")
     payload["_source_url"] = url
     return payload
 

@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 TOOLS_DIR = ROOT / "tools" / "yt-scraper"
 OUTPUT_ROOT = ROOT / "output" / "local-scraper"
 EXPORT_ROOT = OUTPUT_ROOT / "hub_queue_export"
-DEFAULT_HUB_BASE = "https://risingtides-campaign-hub-production.up.railway.app"
+DEFAULT_HUB_BASE = "https://campaignhub.risingtidesviral.com"
 
 EXPECTED_ENV = [
     "DATABASE_URL",
