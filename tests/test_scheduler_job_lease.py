@@ -20,6 +20,9 @@ class _Result:
     def scalar_one(self):
         return self.value
 
+    def first(self):
+        return self.value
+
 
 class _FakeConnection:
     def __init__(self, shared, pid):
@@ -30,8 +33,14 @@ class _FakeConnection:
 
     def execute(self, sql, params=None):
         statement = str(sql)
+        if "SELECT EXTRACT(EPOCH FROM backend_start)::text" in statement:
+            return _Result(f"session-{self.pid}")
         if "pg_backend_pid()" in statement:
             return _Result(self.pid)
+        if "SELECT l.pid, EXTRACT(EPOCH FROM a.backend_start)::text" in statement:
+            key = (params["high"] << 32) | params["low"]
+            owner = self.shared["owners"].get(key)
+            return _Result((owner, f"session-{owner}") if owner else None)
         if "FROM pg_locks" in statement:
             key = (params["high"] << 32) | params["low"]
             owner = self.shared["owners"].get(key)
@@ -451,6 +460,56 @@ def test_real_postgres_shared_capacity_across_connections(monkeypatch):
         assert not db.scrape_job_lock_held("scrape_capacity")
     finally:
         engine.dispose()
+
+
+def test_real_postgres_janitor_distinguishes_reused_pid(monkeypatch):
+    """A matching backend PID without the matching backend start is an orphan."""
+    url = os.environ.get("TEST_POSTGRES_DATABASE_URL")
+    if not url:
+        pytest.skip("set TEST_POSTGRES_DATABASE_URL for real PostgreSQL lock test")
+    from datetime import datetime, timedelta
+    from uuid import uuid4
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.orm import sessionmaker
+    from campaign_manager.models import CronLog
+
+    schema = f"test_janitor_{uuid4().hex}"
+    admin = create_engine(url)
+    with admin.begin() as connection:
+        connection.execute(text(f"CREATE SCHEMA {schema}"))
+    engine = create_engine(url, connect_args={"options": f"-csearch_path={schema}"})
+    previous_session = db._SessionLocal
+    monkeypatch.setattr(db, "_engine", engine)
+    monkeypatch.setattr(db, "_SessionLocal", sessionmaker(bind=engine))
+    try:
+        CronLog.__table__.create(engine)
+        with db.scrape_job_lease("campaign_refresh") as lease:
+            assert lease is not None
+            current_owner = db.scrape_job_lock_owner("campaign_refresh")
+            assert current_owner == {"pid": lease.backend_pid,
+                                     "backend_start": lease.backend_start}
+            old_id = db.create_cron_log("campaign_refresh", status="queued")
+            current_id = db.create_cron_log("campaign_refresh", status="queued")
+            assert db.bind_cron_log_to_scrape_lease(current_id, "campaign_refresh", lease)
+            with db.get_session() as session:
+                old = session.query(CronLog).filter_by(id=old_id).one()
+                current = session.query(CronLog).filter_by(id=current_id).one()
+                stale_at = datetime.now(db.EST).replace(tzinfo=None) - timedelta(hours=1)
+                old.started_at = stale_at
+                current.started_at = stale_at
+                old.summary = {"_scrape_lock_owner": {
+                    "pid": lease.backend_pid,
+                    "backend_start": "0",  # a prior session that reused the PID
+                }}
+                session.commit()
+            assert db.reap_orphaned_cron_logs(threshold_minutes=30) == [old_id]
+            assert db.get_cron_log_by_id(current_id)["status"] == "queued"
+    finally:
+        db._SessionLocal = previous_session
+        engine.dispose()
+        with admin.begin() as connection:
+            connection.execute(text(f"DROP SCHEMA {schema} CASCADE"))
+        admin.dispose()
 
 
 def test_crash_after_node_post_leaves_dispatching_receipt(monkeypatch):

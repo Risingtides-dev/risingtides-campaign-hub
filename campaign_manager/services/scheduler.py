@@ -560,6 +560,9 @@ def run_campaign_refresh(only_slugs=None, on_progress=None, request_log_id: int 
                 return {"status": "skipped", "summary": summary}
             if request_log_id is None:
                 request_log_id = _db.create_cron_log("campaign_refresh", status="queued")
+            if lease.backend_pid is not None and not _db.bind_cron_log_to_scrape_lease(
+                    request_log_id, "campaign_refresh", lease):
+                return {"status": "skipped", "summary": {"reason": "request_expired"}}
             with _wait_for_scrape_capacity(lease) as guarded_lease:
                 log_id = _begin_scrape_run("campaign_refresh", request_log_id)
                 if log_id is None:
@@ -1135,6 +1138,9 @@ def run_internal_scrape(request_log_id: int | None = None):
                 return {"status": "skipped", "summary": summary}
             if request_log_id is None:
                 request_log_id = _db.create_cron_log("internal_scrape", status="queued")
+            if lease.backend_pid is not None and not _db.bind_cron_log_to_scrape_lease(
+                    request_log_id, "internal_scrape", lease):
+                return {"status": "skipped", "summary": {"reason": "request_expired"}}
             with _wait_for_scrape_capacity(lease) as guarded_lease:
                 log_id = _begin_scrape_run("internal_scrape", request_log_id)
                 if log_id is None:

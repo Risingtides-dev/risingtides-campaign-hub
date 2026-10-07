@@ -852,9 +852,11 @@ class ScrapeJobLockLost(RuntimeError):
 
 
 class _ScrapeJobLease:
-    def __init__(self, connection=None, backend_pid=None, file_fd=None, key=None):
+    def __init__(self, connection=None, backend_pid=None, file_fd=None, key=None,
+                 backend_start=None):
         self.connection = connection
         self.backend_pid = backend_pid
+        self.backend_start = backend_start
         self.file_fd = file_fd
         self.key = key
 
@@ -897,14 +899,26 @@ def _postgres_advisory_lock_held(connection, backend_pid: int | None, key: int) 
 
 def scrape_job_lock_held(job_type: str) -> bool:
     """Whether any PostgreSQL backend holds this job lock; for log reaping."""
+    return scrape_job_lock_owner(job_type) is not None
+
+
+def scrape_job_lock_owner(job_type: str) -> dict | None:
+    """Identify the exact PostgreSQL session holding a job-type lease."""
     if job_type not in _SCRAPE_JOB_LOCK_KEYS:
         raise ValueError(f"Unknown scrape job type: {job_type}")
     if _engine is None or _engine.dialect.name != "postgresql":
-        return False
+        return None
+    key = _SCRAPE_JOB_LOCK_KEYS[job_type]
     with _engine.connect() as connection:
-        return _postgres_advisory_lock_held(
-            connection, None, _SCRAPE_JOB_LOCK_KEYS[job_type]
-        )
+        row = connection.execute(text(
+            "SELECT l.pid, EXTRACT(EPOCH FROM a.backend_start)::text FROM pg_locks l "
+            "JOIN pg_stat_activity a ON a.pid = l.pid "
+            "WHERE l.locktype = 'advisory' AND l.granted "
+            "AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database()) "
+            "AND CAST(l.classid AS bigint) = :high "
+            "AND CAST(l.objid AS bigint) = :low AND l.objsubid = 1 LIMIT 1"
+        ), {"high": key >> 32, "low": key & 0xFFFFFFFF}).first()
+    return {"pid": row[0], "backend_start": row[1]} if row else None
 
 
 @contextmanager
@@ -928,8 +942,15 @@ def scrape_job_lease(job_type: str):
             acquired = bool(connection.execute(
                 text("SELECT pg_try_advisory_lock(:key)"), {"key": key}
             ).scalar_one())
+            backend_start = None
+            if acquired:
+                backend_start = connection.execute(text(
+                    "SELECT EXTRACT(EPOCH FROM backend_start)::text FROM pg_stat_activity "
+                    "WHERE pid = pg_backend_pid()"
+                )).scalar_one()
             connection.commit()
-            yield _ScrapeJobLease(connection, backend_pid, key=key) if acquired else None
+            yield _ScrapeJobLease(connection, backend_pid, key=key,
+                                  backend_start=backend_start) if acquired else None
         finally:
             if acquired:
                 try:
@@ -1943,6 +1964,25 @@ def transition_cron_log(log_id: int, expected: str, status: str, summary: dict |
         return bool(changed)
 
 
+def bind_cron_log_to_scrape_lease(log_id: int, job_type: str,
+                                  lease: _ScrapeJobLease) -> bool:
+    """Bind a queued receipt to the exact session holding its job lease."""
+    lease.assert_held()
+    owner = None
+    if lease.backend_pid is not None:
+        if not lease.backend_start:
+            raise ScrapeJobLockLost("scrape job lock session identity unavailable")
+        owner = {"pid": lease.backend_pid, "backend_start": lease.backend_start}
+    with get_session() as s:
+        row = s.query(CronLog).filter_by(id=log_id, job_type=job_type, status="queued").first()
+        if row is None:
+            return False
+        if owner is not None:
+            row.summary = {**(row.summary or {}), "_scrape_lock_owner": owner}
+        s.commit()
+        return True
+
+
 def active_cron_log_id(job_type: str) -> Optional[int]:
     """Offer a current run ID only when there is exactly one recent candidate."""
     cutoff = datetime.now(EST).replace(tzinfo=None) - timedelta(minutes=30)
@@ -1975,14 +2015,22 @@ def get_cron_logs(limit: int = 20, offset: int = 0) -> List[Dict]:
         logs = s.query(CronLog)\
             .order_by(desc(CronLog.started_at))\
             .offset(offset).limit(limit).all()
-        return [l.to_dict() for l in logs]
+        return [_public_cron_log(l) for l in logs]
+
+
+def _public_cron_log(log: CronLog) -> Dict:
+    """Keep internal lease identity out of the unauthenticated cron log API."""
+    result = log.to_dict()
+    result["summary"] = dict(result["summary"])
+    result["summary"].pop("_scrape_lock_owner", None)
+    return result
 
 
 def get_cron_log_by_id(log_id: int) -> Optional[Dict]:
     """Get a single cron log entry by ID."""
     with get_session() as s:
         log = s.query(CronLog).filter_by(id=log_id).first()
-        return log.to_dict() if log else None
+        return _public_cron_log(log) if log else None
 
 
 def reap_orphaned_cron_logs(threshold_minutes: int = 30) -> List[int]:
@@ -2004,18 +2052,33 @@ def reap_orphaned_cron_logs(threshold_minutes: int = 30) -> List[int]:
             .all()
         )
         # A scrape waiting for shared capacity can remain queued, and a long
-        # scrape can remain running past the age threshold. Their per-type
-        # session lock is authoritative; preserve both until that lock goes
-        # away. CAS prevents a reaped queued request from starting later.
-        active_types = {
-            row.job_type for row in stale
-            if row.status in ("queued", "running")
-            and row.job_type in ("campaign_refresh", "internal_scrape")
-            and scrape_job_lock_held(row.job_type)
-        }
+        # scrape can remain running. Preserve only its exact lease owner.
+        # Legacy unbound receipts survive up to one day while no bound receipt
+        # identifies the current lock, allowing a pre-deployment job to finish
+        # without letting an unrelated lock preserve an orphan indefinitely.
+        legacy_cutoff = datetime.now(EST).replace(tzinfo=None) - timedelta(hours=24)
+        job_types = {row.job_type for row in stale if row.status in ("queued", "running")
+                     and row.job_type in ("campaign_refresh", "internal_scrape")}
+        lock_owners = {job: scrape_job_lock_owner(job) for job in job_types}
+        identified_types = set()
+        if any(lock_owners.values()):
+            open_rows = s.query(CronLog).filter(
+                CronLog.job_type.in_(job_types),
+                CronLog.status.in_(("queued", "running")),
+            ).all()
+            identified_types = {
+                row.job_type for row in open_rows
+                if lock_owners.get(row.job_type) is not None
+                and (row.summary or {}).get("_scrape_lock_owner") == lock_owners[row.job_type]
+            }
         for row in stale:
-            if row.status in ("queued", "running") and row.job_type in active_types:
-                continue
+            if row.status in ("queued", "running"):
+                owner = lock_owners.get(row.job_type)
+                receipt_owner = (row.summary or {}).get("_scrape_lock_owner")
+                if owner is not None and (receipt_owner == owner or
+                        (receipt_owner is None and row.job_type not in identified_types
+                         and row.started_at >= legacy_cutoff)):
+                    continue
             old_status = row.status
             row.status = "unknown" if old_status == "dispatching" else "failed"
             row.finished_at = datetime.now(EST).replace(tzinfo=None)
