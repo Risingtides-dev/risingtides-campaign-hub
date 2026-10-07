@@ -130,12 +130,20 @@ def _instagram_outcome_counts(requested: set[str], outcomes: dict) -> dict[str, 
     """Count only requested creators; absence/unknown status is not success."""
     names = {clean_username(name) for name in requested}
     names.discard("")
-    normalized = {clean_username(name): outcome for name, outcome in outcomes.items()}
+    normalized: dict[str, set[str]] = {}
+    for raw_name, outcome in outcomes.items():
+        name = clean_username(raw_name)
+        if not name or name not in names:
+            continue
+        status = outcome.get("status") if isinstance(outcome, dict) else None
+        normalized.setdefault(name, set()).add(
+            status if isinstance(status, str) and status in {"ok", "empty", "error"}
+            else "missing"
+        )
     counts = {"ok": 0, "empty": 0, "error": 0, "missing": 0}
     for name in names:
-        outcome = normalized.get(name)
-        status = outcome.get("status") if isinstance(outcome, dict) else None
-        counts[status if status in {"ok", "empty", "error"} else "missing"] += 1
+        statuses = normalized.get(name, set())
+        counts[next(iter(statuses)) if len(statuses) == 1 else "missing"] += 1
     return counts
 
 
@@ -1592,7 +1600,10 @@ def _post_campaign_refresh_slack(summary: dict):
 
     if degraded:
         if instagram_complete_failure:
-            lines.append("_All Instagram creator scrapes failed; Instagram results are unavailable. Check cron errors and Apify configuration._")
+            if instagram_outcomes.get("missing", 0):
+                lines.append("_No usable Instagram creator scrape outcomes; results are unavailable. Check cron errors and Apify configuration._")
+            else:
+                lines.append("_All Instagram creator scrapes failed; Instagram results are unavailable. Check cron errors and Apify configuration._")
         else:
             lines.append(
                 "_Scrape anomaly detected. Check TikTok empty/crash rates and matching in cron logs._"

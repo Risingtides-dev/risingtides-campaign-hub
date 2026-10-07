@@ -523,3 +523,12 @@ area: [backend], [testing], [review]
 
 Independent review found that a missing Apify outcome map could be called 0 errored in Slack, and an unrelated successful outcome key could mask a complete failure. Instagram accounting now normalizes each requested creator name, counts only those creators, and records unknown or absent entries as missing outcomes. The complete-failure decision requires at least one requested creator and no requested ok/empty outcome. Slack reports missing separately. Synthetic tests cover all-error, partial, empty and extraneous maps plus normalized names. Backend verification: 958 passed, 8 PostgreSQL-only tests skipped without TEST_POSTGRES_DATABASE_URL. No scrape, publication, push, PR, merge or deployment performed.
 _________________________________________________________________________________
+_________________________________________________________________________________
+time: [06:18pm] [10-07-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/instagram-total-failure-degraded] /Users/smathdaddy-macbook/campaign-hub-instagram-degraded
+type: [bug report]: preserve uncertainty in Instagram cron outcome reporting
+area: [backend], [testing], [review]
+
+Final-head review found that missing-only outcomes were described as all scrapes failed, and conflicting normalized aliases could overwrite each other by map order. Conflicting aliases now count as missing regardless of insertion order. A degraded notice distinguishes all reported Instagram errors from no usable Instagram outcome evidence. Focused regressions cover both alias orders and each notice wording. Backend verification: 960 passed, 8 PostgreSQL-only tests skipped without TEST_POSTGRES_DATABASE_URL. No scrape, publication, push, PR, merge or deployment performed.
+_________________________________________________________________________________

@@ -105,6 +105,16 @@ def test_instagram_outcome_accounting_normalizes_requested_names_only():
     ) == {"ok": 1, "empty": 0, "error": 1, "missing": 0}
 
 
+@pytest.mark.parametrize("reverse", [False, True])
+def test_conflicting_normalized_alias_outcomes_are_missing_in_any_order(reverse):
+    entries = [("artist", {"status": "error"}), ("@ARTIST", {"status": "ok"})]
+    if reverse:
+        entries.reverse()
+    assert scheduler._instagram_outcome_counts({"artist"}, dict(entries)) == {
+        "ok": 0, "empty": 0, "error": 0, "missing": 1,
+    }
+
+
 @pytest.mark.parametrize("outcome_mode, expected_degraded, expected_counts", [
     ("all_errors", True, {"ok": 0, "empty": 0, "error": 18, "missing": 0}),
     ("partial", False, {"ok": 0, "empty": 1, "error": 17, "missing": 0}),
@@ -178,8 +188,17 @@ def test_instagram_notification_names_failure_without_tiktok_diagnosis(monkeypat
     })
     assert "DEGRADED" in sent[0]
     assert "0 errored, 18 missing outcomes" in sent[0]
-    assert "All Instagram creator scrapes failed" in sent[0]
+    assert "No usable Instagram creator scrape outcomes" in sent[0]
     assert "TikTok rate-limited" not in sent[0]
+
+    sent.clear()
+    scheduler._post_campaign_refresh_slack({
+        "campaigns_refreshed": 1, "campaigns_total": 1, "degraded": True,
+        "instagram_creators_total": 18,
+        "instagram_outcome_counts": {"ok": 0, "empty": 0, "error": 18, "missing": 0},
+        "instagram_complete_failure": True,
+    })
+    assert "All Instagram creator scrapes failed" in sent[0]
 
 
 def test_on_demand_trigger_surfaces_failed_refresh(monkeypatch):
