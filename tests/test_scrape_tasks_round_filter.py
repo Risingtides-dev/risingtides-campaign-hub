@@ -6,8 +6,7 @@ the same creators show up on both). Cobrand only dedupes within a
 single round, so leaking those pre-start-date posts into the round-2
 queue produces duplicate uploads in the client report.
 
-The queue endpoint now filters matched_videos by the campaign's
-``start_date`` and the ``video_posted_before_start`` helper.
+The queue endpoint filters dated rounds to the exact post-date window.
 """
 from __future__ import annotations
 
@@ -89,8 +88,8 @@ def test_queue_excludes_videos_before_campaign_start(client, round2_campaign):
     assert "https://www.tiktok.com/@r2user2/video/3" in queue_urls
 
 
-def test_queue_keeps_legacy_rows_without_dates(client, round2_campaign):
-    """Rows with no timestamp/upload_date should fail open (kept in queue)."""
+def test_queue_excludes_undated_rows_from_dated_round(client, round2_campaign):
+    """An undated row cannot prove membership in an exclusive round."""
     with db.get_session() as s:
         s.add(MatchedVideo(
             campaign_id=round2_campaign["campaign_id"],
@@ -104,7 +103,7 @@ def test_queue_keeps_legacy_rows_without_dates(client, round2_campaign):
 
     body = client.get("/api/scrape-tasks/queue").get_json()
     urls = {v["url"] for c in body["campaigns"] for v in c["videos"]}
-    assert "https://www.tiktok.com/@legacy/video/9" in urls
+    assert "https://www.tiktok.com/@legacy/video/9" not in urls
 
 
 def test_queue_no_start_date_passes_everything(client):
@@ -194,3 +193,28 @@ def test_video_posted_before_start_no_campaign_start():
         {"timestamp": "2020-01-01T00:00:00"},
         "",
     )
+
+
+def test_queue_and_bulk_track_exclude_posts_after_completed_next_round(client):
+    """A completed R2 still closes R1's upload window."""
+    with db.get_session() as s:
+        r1 = Campaign(slug="same-sound-r1", title="Round 1", sound_id="1234567890", start_date="2026-04-01")
+        r2 = Campaign(slug="same-sound-r2", title="Round 2", sound_id="1234567890", start_date="2026-05-01", completion_status="completed")
+        s.add_all([r1, r2])
+        s.flush()
+        s.add_all([
+            MatchedVideo(campaign_id=r1.id, url="https://example.com/r1", timestamp="2026-04-15T00:00:00", upload_date="20260415"),
+            MatchedVideo(campaign_id=r1.id, url="https://example.com/r2-in-r1", timestamp="2026-05-15T00:00:00", upload_date="20260515"),
+        ])
+        s.commit()
+
+    body = client.get("/api/scrape-tasks/queue").get_json()
+    urls = {v["url"] for camp in body["campaigns"] for v in camp["videos"]}
+    assert "https://example.com/r1" in urls
+    assert "https://example.com/r2-in-r1" not in urls
+
+    response = client.post("/api/scrape-tasks/mark-campaign-tracked", json={"slug": "same-sound-r1"})
+    assert response.get_json()["marked_tracked"] == 1
+    with db.get_session() as s:
+        later = s.query(MatchedVideo).filter_by(url="https://example.com/r2-in-r1").one()
+        assert later.tracked_at is None

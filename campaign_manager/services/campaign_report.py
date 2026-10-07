@@ -21,7 +21,9 @@ def build_report(slug: str) -> Optional[Dict[str, Any]]:
     """Build the client report payload for a campaign, or None if not found."""
     from campaign_manager import db as _db
     from campaign_manager.services.campaign_stats import get_campaign_stats, overlay_video_stats
-    from campaign_manager.utils.helpers import campaign_title, round_qualified_videos
+    from campaign_manager.utils.helpers import (
+        build_round_end_by_slug, campaign_title, round_qualified_videos,
+    )
 
     if not _db.is_active():
         return None
@@ -44,7 +46,10 @@ def build_report(slug: str) -> Optional[Dict[str, Any]]:
     # A stored match can predate a later round. Keep the historical row in the
     # database but never count it (or an undated row) in that round's report.
     start_raw = str(meta.get("start_date") or "").strip()
-    live = round_qualified_videos(matched_videos, start_raw, exclude_dismissed=True)
+    round_end = build_round_end_by_slug(_db.list_campaigns(exclude_completed=False)).get(slug)
+    live = round_qualified_videos(
+        matched_videos, start_raw, end_date=round_end, exclude_dismissed=True,
+    )
 
     total_views = sum(int(v.get("views", 0) or 0) for v in live)
     total_likes = sum(int(v.get("likes", 0) or 0) for v in live)

@@ -18,7 +18,7 @@ from campaign_manager import db as _db
 from campaign_manager.models import Campaign
 from campaign_manager.services import chartmetric
 from campaign_manager.utils.attribution import calculate_attribution
-from campaign_manager.utils.helpers import video_posted_before_start
+from campaign_manager.utils.helpers import build_round_end_by_slug, video_in_round
 
 log = logging.getLogger(__name__)
 
@@ -149,13 +149,17 @@ def get_pop_score(slug: str):
     if ugc_error:
         result["ugc_error"] = ugc_error
     from campaign_manager.models import MatchedVideo
+    round_end = build_round_end_by_slug(_db.list_campaigns(exclude_completed=False)).get(slug)
     with _db.get_session() as s:
         campaign = s.query(Campaign).filter_by(slug=slug).first()
         events = {}
         if campaign:
             for video in s.query(MatchedVideo).filter(MatchedVideo.campaign_id == campaign.id, MatchedVideo.dismissed_at.is_(None)).all():
                 upload_date = video.upload_date
-                if video_posted_before_start({"timestamp": video.timestamp, "upload_date": upload_date}, row["start_date"]):
+                if not video_in_round(
+                    {"timestamp": video.timestamp, "upload_date": upload_date},
+                    row["start_date"], end_date=round_end,
+                ):
                     continue
                 raw = (upload_date or "").strip()
                 day = raw[:4] + "-" + raw[4:6] + "-" + raw[6:8] if len(raw) == 8 and raw.isdigit() else raw[:10]

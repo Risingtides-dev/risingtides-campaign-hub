@@ -1,4 +1,5 @@
 """Round reuse must not move or report posts from an earlier window."""
+from datetime import date
 from types import SimpleNamespace
 
 from campaign_manager.services import campaign_report, campaign_stats, scheduler
@@ -47,8 +48,12 @@ def test_report_filters_historical_and_undated_rows_from_all_totals(monkeypatch)
     ]
     from campaign_manager import db
     monkeypatch.setattr(db, "is_active", lambda: True)
-    meta = {"title": "Round 2", "start_date": "2026-05-01", "cobrand_share_url": "share"}
+    meta = {"title": "Round 2", "sound_id": "123456789012345", "start_date": "2026-05-01", "cobrand_share_url": "share"}
     monkeypatch.setattr(db, "get_campaign", lambda slug: {"slug": slug, **meta})
+    monkeypatch.setattr(db, "list_campaigns", lambda **kw: [
+        {"slug": "r1", "sound_id": "123456789012345", "start_date": "2026-04-01"},
+        {"slug": "r2", "sound_id": "123456789012345", "start_date": "2026-05-01"},
+    ])
     monkeypatch.setattr(db, "get_creators", lambda slug: [{"username": "creator"}])
     monkeypatch.setattr(db, "get_matched_videos", lambda slug: rows)
     monkeypatch.setattr(campaign_stats, "get_campaign_stats", lambda *a, **kw: SimpleNamespace(submissions=[], source="scraper_fallback", stale_since=""))
@@ -62,6 +67,13 @@ def test_report_filters_historical_and_undated_rows_from_all_totals(monkeypatch)
     assert report["headline"] == {"total_views": 200, "total_likes": 20, "post_count": 1, "creator_count": 1}
     assert [p["url"] for p in report["top_posts"]] == ["r2-post"]
     assert report["creators"] == [{"username": "creator", "posts": 1, "views": 200, "likes": 20, "shares": 2, "comments": 3}]
+
+    meta["start_date"] = "2026-04-01"
+    first_round = campaign_report.build_report("r1")
+    assert first_round["headline"] == {"total_views": 100, "total_likes": 10, "post_count": 1, "creator_count": 1}
+    assert first_round["creators"][0]["shares"] == 100
+
+    meta["start_date"] = "2026-05-01"
 
     meta["start_date"] = "2026-99-99"
     invalid = campaign_report.build_report("r2")
@@ -126,6 +138,15 @@ def test_scheduled_refresh_scopes_stats_creator_counts_and_snapshot(monkeypatch)
     assert writes["snapshot"]["post_count"] == 1
     assert {v["url"] for v in writes["stored"]} == {"old", "current"}
 
+    writes.clear()
+    first_round = scheduler._refresh_single_campaign(
+        "r1", {"sound_id": "123456789012345", "start_date": "2026-04-01"},
+        shared_videos={"creator": [old, current]}, round_end=date(2026, 5, 1),
+    )
+    assert first_round["total_matches"] == 1
+    assert writes["totals"] == (900, 90)
+    assert writes["snapshot"]["post_count"] == 1
+
 
 def test_manual_refresh_scopes_existing_rows_and_response(monkeypatch):
     from flask import Flask
@@ -140,6 +161,10 @@ def test_manual_refresh_scopes_existing_rows_and_response(monkeypatch):
     meta = {"sound_id": "123456789012345", "start_date": "2026-05-01", "song": "Song", "artist": "Artist", "stats": {}}
     monkeypatch.setattr(campaigns._db, "is_active", lambda: True)
     monkeypatch.setattr(campaigns._db, "get_campaign", lambda slug: meta)
+    monkeypatch.setattr(campaigns._db, "list_campaigns", lambda **kw: [
+        {"slug": "r1", "sound_id": "123456789012345", "start_date": "2026-04-01"},
+        {"slug": "r2", "sound_id": "123456789012345", "start_date": "2026-05-01"},
+    ])
     monkeypatch.setattr(campaigns._db, "get_creators", lambda slug: [{"username": "creator", "platform": "tiktok", "status": "active"}])
     monkeypatch.setattr(campaigns._db, "get_matched_videos", lambda slug: persisted)
     monkeypatch.setattr(campaigns._db, "replace_matched_videos", lambda slug, rows: writes.__setitem__("stored", rows))
@@ -160,3 +185,80 @@ def test_manual_refresh_scopes_existing_rows_and_response(monkeypatch):
     assert writes["creators"][0]["posts_done"] == 1
     assert writes["log"]["total_matches"] == 1
     assert {v["url"] for v in writes["stored"]} == {"old", "current"}
+
+    meta["start_date"] = "2026-04-01"
+    with app.test_client() as client:
+        first_round = client.post("/api/campaign/r1/refresh")
+    assert first_round.status_code == 200, first_round.get_json()
+    assert (first_round.get_json()["total_views"], first_round.get_json()["total_matches"]) == (900, 1)
+
+
+def test_no_active_creators_reconciles_dated_totals_without_faking_scrape(monkeypatch):
+    videos = [
+        {"url": "old", "account": "@creator", "timestamp": "2026-04-10T00:00:00", "views": 900, "likes": 90},
+        {"url": "current", "account": "@creator", "timestamp": "2026-05-10T00:00:00", "views": 20, "likes": 2},
+        {"url": "undated", "account": "@creator", "views": 500, "likes": 50},
+        {"url": "dismissed", "account": "@creator", "timestamp": "2026-05-11T00:00:00", "views": 700, "likes": 70, "dismissed_at": "2026-05-12"},
+    ]
+    writes = {}
+    monkeypatch.setattr(scheduler, "_import_scraper", lambda: (None, None))
+    monkeypatch.setattr(scheduler._db, "get_creators", lambda slug: [{"username": "creator", "status": "removed", "platform": "tiktok"}])
+    monkeypatch.setattr(scheduler._db, "get_matched_videos", lambda slug: videos)
+    monkeypatch.setattr(scheduler._db, "save_creators", lambda slug, rows: writes.__setitem__("creators", rows))
+    monkeypatch.setattr(scheduler._db, "update_campaign_fields", lambda slug, fields: writes.__setitem__("fields", fields))
+    monkeypatch.setattr(scheduler._db, "update_campaign_stats", lambda *args: (_ for _ in ()).throw(AssertionError("no scrape timestamp")))
+    monkeypatch.setattr(scheduler._db, "save_scrape_log", lambda *args: (_ for _ in ()).throw(AssertionError("no scrape log")))
+
+    result = scheduler._refresh_single_campaign(
+        "r2", {"sound_id": "123456789012345", "start_date": "2026-05-01"},
+        shared_videos={},
+    )
+    assert result == {"new_matches": 0, "total_matches": 1, "videos_checked": 0}
+    assert writes["fields"] == {"total_views": 20, "total_likes": 2}
+    assert writes["creators"][0]["posts_done"] == 1
+    assert len(videos) == 4  # history was not deleted
+
+    writes.clear()
+    legacy = scheduler._refresh_single_campaign(
+        "legacy", {"sound_id": "123456789012345", "start_date": ""},
+        shared_videos={},
+    )
+    assert legacy["total_matches"] == 4
+    assert writes == {}  # no-start early return keeps its prior no-write behavior
+
+
+def test_round_end_includes_completed_later_round_and_same_day_tie():
+    from campaign_manager.utils.helpers import build_round_end_by_slug, round_qualified_videos
+
+    roster = [
+        {"slug": "r1", "sound_id": "123456", "start_date": "2026-04-01", "created_at": "2026-04-01"},
+        {"slug": "r2", "additional_sounds": ["123456"], "start_date": "2026-05-01", "created_at": "2026-05-01", "completion_status": "completed"},
+        {"slug": "same-a", "sound_id": "789012", "start_date": "2026-06-01", "created_at": "2026-05-01"},
+        {"slug": "same-b", "sound_id": "789012", "start_date": "2026-06-01", "created_at": "2026-05-02"},
+        {"slug": "unrelated", "sound_id": "999999", "start_date": "2026-03-01"},
+    ]
+    ends = build_round_end_by_slug(roster)
+    assert ends == {"r1": date(2026, 5, 1), "same-a": date(2026, 6, 1)}
+    videos = [
+        {"timestamp": "2026-04-30T23:59:59"},
+        {"timestamp": "2026-05-01T00:00:00"},
+    ]
+    assert round_qualified_videos(videos, "2026-04-01", end_date=ends["r1"]) == [videos[0]]
+    assert round_qualified_videos(videos, "") == videos
+
+
+def test_internal_attach_does_not_fall_back_to_earlier_active_round_after_later_completed(monkeypatch):
+    roster = [
+        {"slug": "r1", "sound_id": "123456", "start_date": "2026-04-01", "completion_status": "none"},
+        {"slug": "r2", "sound_id": "123456", "start_date": "2026-05-01", "completion_status": "completed"},
+    ]
+    writes = []
+    monkeypatch.setattr(scheduler._db, "list_campaigns", lambda **kw: roster)
+    monkeypatch.setattr(scheduler._db, "get_matched_videos", lambda slug: [])
+    monkeypatch.setattr(scheduler._db, "replace_matched_videos", lambda slug, rows: writes.append((slug, rows)))
+    result = scheduler._attach_internal_to_campaigns([
+        {"url": "late", "music_id": "123456", "timestamp": "2026-05-15T00:00:00"},
+    ])
+    assert result["attached_count"] == 0
+    assert result["skipped_no_active_campaign"] == 1
+    assert writes == []

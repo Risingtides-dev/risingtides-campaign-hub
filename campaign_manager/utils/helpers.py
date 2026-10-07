@@ -223,26 +223,69 @@ def video_post_date(video: Dict) -> date | None:
             return datetime.strptime(upload.strip(), "%Y%m%d").date()
         except ValueError:
             pass
+    if isinstance(upload, str) and upload.strip():
+        try:
+            return datetime.fromisoformat(upload.strip().replace("Z", "+00:00")).date()
+        except ValueError:
+            pass
     return None
 
 
+def build_round_end_by_slug(campaigns: Iterable[Dict]) -> dict[str, date]:
+    """Upper-exclusive start of the next campaign sharing an exact sound ID.
+
+    Include completed rounds: completion stops writes, not the previous
+    round's date window. Same-day rounds use created_at then slug to select
+    one deterministic owner for that date.
+    """
+    rows = list(campaigns)
+    keyed = []
+    for meta in rows:
+        slug = str(meta.get("slug") or "")
+        start = round_start_date(meta.get("start_date"))
+        if not slug or start is None:
+            continue
+        additional = meta.get("additional_sounds")
+        raw_ids = [meta.get("sound_id")] + (list(additional) if isinstance(additional, (list, tuple)) else [])
+        sound_ids = {str(raw).strip() for raw in raw_ids if raw is not None and len(str(raw).strip()) >= 5 and str(raw).strip() != "-"}
+        if sound_ids:
+            keyed.append((slug, start, str(meta.get("created_at") or ""), sound_ids))
+
+    end_by_slug: dict[str, date] = {}
+    for slug, start, created, sound_ids in keyed:
+        current_key = (start, created, slug)
+        later_starts = [other_start for other_slug, other_start, other_created, other_ids in keyed
+                        if other_ids & sound_ids and (other_start, other_created, other_slug) > current_key]
+        if later_starts:
+            end_by_slug[slug] = min(later_starts)
+    return end_by_slug
+
+
 def round_qualified_videos(
-    videos: Iterable[Dict], start_date: object, *, exclude_dismissed: bool = False,
+    videos: Iterable[Dict], start_date: object, *, end_date: date | None = None,
+    exclude_dismissed: bool = False,
 ) -> list[Dict]:
     """Scope stored matches to a campaign round without deleting history.
 
     A missing campaign start retains legacy behavior. A malformed nonempty
     start or missing/malformed post date cannot prove round membership.
     """
+    return [video for video in videos if video_in_round(
+        video, start_date, end_date=end_date, exclude_dismissed=exclude_dismissed,
+    )]
+
+
+def video_in_round(
+    video: Dict, start_date: object, *, end_date: date | None = None,
+    exclude_dismissed: bool = False,
+) -> bool:
+    """Whether one matched row can be shown or counted in a round."""
+    if exclude_dismissed and video.get("dismissed_at"):
+        return False
     raw = str(start_date or "").strip()
+    if not raw:
+        return True
     start = round_start_date(raw)
-    qualified = []
-    for video in videos:
-        if exclude_dismissed and video.get("dismissed_at"):
-            continue
-        if raw:
-            posted = video_post_date(video)
-            if start is None or posted is None or posted < start:
-                continue
-        qualified.append(video)
-    return qualified
+    posted = video_post_date(video)
+    return bool(start is not None and posted is not None and posted >= start
+                and (end_date is None or posted < end_date))

@@ -30,7 +30,7 @@ from campaign_manager.utils.helpers import (
     parse_sort_datetime,
     load_json,
     save_json,
-    video_posted_before_start,
+    build_round_end_by_slug,
     round_qualified_videos,
 )
 from campaign_manager.utils.budget import (
@@ -299,6 +299,7 @@ def get_campaigns(completion: Optional[str] = None) -> List[Dict]:
         _t_rows = _time.monotonic()
         tracker_map = _db.get_campaign_to_tracker_map()
         _t_map = _time.monotonic()
+        round_ends = build_round_end_by_slug(_db.list_campaigns(exclude_completed=False))
 
         # Bulk-resolve stats with a parallel cache pre-warm. The previous
         # per-slug loop went serial across the Tides Tracker API on every
@@ -307,7 +308,12 @@ def get_campaigns(completion: Optional[str] = None) -> List[Dict]:
         # fetches concurrently and returns the same per-slug results.
         from campaign_manager.services.campaign_stats import get_campaign_stats_bulk
         slugs = [meta["slug"] for meta, _c, _mv in rows]
-        matched_videos_by_slug = {meta["slug"]: mv for meta, _c, mv in rows}
+        matched_videos_by_slug = {
+            meta["slug"]: round_qualified_videos(
+                mv, meta.get("start_date"), end_date=round_ends.get(meta["slug"]),
+            )
+            for meta, _c, mv in rows
+        }
         start_date_by_slug = {meta["slug"]: meta.get("start_date", "") for meta, _c, _mv in rows}
         # Completed campaigns' stats are frozen — never spend the live-fetch
         # budget on them. Their trackers aren't warmed by the cron (it only
@@ -338,7 +344,7 @@ def get_campaigns(completion: Optional[str] = None) -> List[Dict]:
                 # don't break the listing if it does.
                 result = get_campaign_stats(
                     slug,
-                    matched_videos=matched_videos,
+                    matched_videos=matched_videos_by_slug[slug],
                     tracker_id=tracker_map.get(slug, ""),
                     start_date=meta.get("start_date", ""),
                 )
@@ -954,6 +960,7 @@ def campaign_detail(slug: str):
         meta = _db.get_campaign(slug)
         if not meta:
             return jsonify({"error": "Campaign not found"}), 404
+        round_end = build_round_end_by_slug(_db.list_campaigns(exclude_completed=False)).get(slug)
         creators = _db.get_creators(slug, include_rate_quality=True)
         matched_videos = _db.get_matched_videos(slug)
     else:
@@ -961,8 +968,13 @@ def campaign_detail(slug: str):
         if not campaign_dir.exists():
             return jsonify({"error": "Campaign not found"}), 404
         meta = load_json(campaign_dir / "campaign.json")
+        round_end = None
         creators = load_creators(campaign_dir, include_rate_quality=True)
         matched_videos = load_matched_videos(campaign_dir)
+
+    matched_videos = round_qualified_videos(
+        matched_videos, meta.get("start_date"), end_date=round_end,
+    )
 
     active = [c for c in creators if c.get("status", "active") != "removed"]
     active.sort(key=lambda c: c.get("username", ""))
@@ -984,17 +996,6 @@ def campaign_detail(slug: str):
         # File-mode dev path keeps the legacy calc — file-mode doesn't
         # carry tracker links.
         stats = calc_stats(meta, creators)
-
-    # CAMP-42: scope matched_videos to this campaign's date window. When
-    # a round-2 campaign shares creators with round 1, the round-1 posts
-    # persist in matched_videos and would otherwise show up in the
-    # round-2 view (and then leak into Cobrand uploads as duplicates).
-    campaign_start = (meta.get("start_date") or "").strip()
-    if campaign_start:
-        matched_videos = [
-            v for v in matched_videos
-            if not video_posted_before_start(v, campaign_start)
-        ]
 
     return jsonify({
         "slug": slug,
@@ -1077,6 +1078,7 @@ def _refresh_stats_inner(slug: str):
         meta = _db.get_campaign(slug)
         if not meta:
             return jsonify({"error": "Campaign not found."}), 404
+        round_end = build_round_end_by_slug(_db.list_campaigns(exclude_completed=False)).get(slug)
         creators = _db.get_creators(slug)
         campaign_dir = None  # not used in DB mode
     else:
@@ -1084,6 +1086,7 @@ def _refresh_stats_inner(slug: str):
         if not campaign_dir.exists():
             return jsonify({"error": "Campaign not found."}), 404
         meta = load_json(campaign_dir / "campaign.json")
+        round_end = None  # file mode has no cross-worker all-round roster
         creators = load_creators(campaign_dir)
 
     active_creators = [c for c in creators if c.get("status", "active") != "removed"]
@@ -1268,7 +1271,7 @@ def _refresh_stats_inner(slug: str):
 
     # The scraper's start hint is not authoritative; apply the same round
     # eligibility check before matching and before any aggregate write.
-    all_videos = round_qualified_videos(all_videos, meta.get("start_date"))
+    all_videos = round_qualified_videos(all_videos, meta.get("start_date"), end_date=round_end)
 
     # Match videos using shared matching logic
     from campaign_manager.services.matching import (
@@ -1319,7 +1322,7 @@ def _refresh_stats_inner(slug: str):
     # doesn't see this flag, so we re-read after the upsert.
     persisted = _db.get_matched_videos(slug) if _db.is_active() else all_matched
     active_matched = round_qualified_videos(
-        persisted, meta.get("start_date"),
+        persisted, meta.get("start_date"), end_date=round_end,
         exclude_dismissed=_db.is_active() or bool(meta.get("start_date")),
     )
 
@@ -1399,6 +1402,7 @@ def campaign_links(slug: str):
         meta = _db.get_campaign(slug)
         if not meta:
             return jsonify({"error": "Campaign not found."}), 404
+        round_end = build_round_end_by_slug(_db.list_campaigns(exclude_completed=False)).get(slug)
         matched = _db.get_matched_videos(slug)
         scrape_log = _db.get_scrape_log(slug)
     else:
@@ -1406,17 +1410,11 @@ def campaign_links(slug: str):
         if not campaign_dir.exists():
             return jsonify({"error": "Campaign not found."}), 404
         meta = load_json(campaign_dir / "campaign.json")
+        round_end = None
         matched = load_matched_videos(campaign_dir)
         scrape_log = load_json(campaign_dir / "scrape_log.json")
 
-    # CAMP-42: keep round 1 posts out of round 2's link list when the
-    # two campaigns share creators (see campaign_detail for context).
-    campaign_start = (meta.get("start_date") or "").strip()
-    if campaign_start:
-        matched = [
-            v for v in matched
-            if not video_posted_before_start(v, campaign_start)
-        ]
+    matched = round_qualified_videos(matched, meta.get("start_date"), end_date=round_end)
 
     return jsonify({
         "slug": slug,
@@ -1960,6 +1958,12 @@ def _get_all_campaigns_data():
                 "matched_videos": matched_videos,
                 "tracker_id": tracker_map.get(slug, ""),
             })
+        round_ends = build_round_end_by_slug(item["meta"] for item in results)
+        for item in results:
+            item["matched_videos"] = round_qualified_videos(
+                item["matched_videos"], item["meta"].get("start_date"),
+                end_date=round_ends.get(item["slug"]),
+            )
     else:
         ensure_dirs()
         for parent_dir in (ACTIVE_DIR, COMPLETED_DIR):

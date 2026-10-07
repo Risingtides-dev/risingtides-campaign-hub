@@ -21,7 +21,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 
 from campaign_manager import db as _db
-from campaign_manager.utils.helpers import round_qualified_videos
+from campaign_manager.utils.helpers import build_round_end_by_slug, round_qualified_videos
 
 log = logging.getLogger(__name__)
 
@@ -610,7 +610,9 @@ def _run_campaign_refresh(only_slugs, on_progress, lease, request_log_id=None) -
     per_campaign = {}
 
     try:
-        campaigns = _db.list_campaigns(exclude_completed=True)
+        all_campaigns = _db.list_campaigns(exclude_completed=False)
+        round_ends = build_round_end_by_slug(all_campaigns)
+        campaigns = [c for c in all_campaigns if c.get("completion_status") != "completed"]
         if only_slugs:
             wanted = {s for s in only_slugs}
             campaigns = [c for c in campaigns if c.get("slug", "") in wanted]
@@ -697,7 +699,10 @@ def _run_campaign_refresh(only_slugs, on_progress, lease, request_log_id=None) -
             slug = meta.get("slug", "")
             try:
                 lease.assert_held()
-                result = _refresh_single_campaign(slug, meta, shared_videos=shared_videos, lease=lease)
+                result = _refresh_single_campaign(
+                    slug, meta, shared_videos=shared_videos, lease=lease,
+                    round_end=round_ends.get(slug),
+                )
                 campaigns_refreshed += 1
                 total_new_matches += result.get("new_matches", 0)
                 total_videos_checked += result.get("videos_checked", 0)
@@ -827,7 +832,8 @@ def _run_campaign_refresh(only_slugs, on_progress, lease, request_log_id=None) -
         }
 
 
-def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None, lease=None) -> dict:
+def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None, lease=None,
+                             round_end=None) -> dict:
     """Refresh a single campaign using yt-dlp + HTML sound extraction (free).
 
     Pipeline:
@@ -858,9 +864,28 @@ def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None, 
     ig_usernames = [c["username"] for c in active if c.get("platform") == "instagram"]
 
     if not usernames and not ig_usernames:
+        start_raw = str(meta.get("start_date") or "").strip()
+        countable = round_qualified_videos(
+            existing_videos, start_raw, end_date=round_end,
+            exclude_dismissed=bool(start_raw),
+        )
+        if start_raw:
+            # No scrape can run, but old cross-round rows may still leave the
+            # stored aggregates contaminated. Reconcile without touching rows.
+            if lease is not None:
+                lease.assert_held()
+            _db.save_creators(
+                slug, update_creator_post_counts(creators, countable),
+            )
+            if lease is not None:
+                lease.assert_held()
+            _db.update_campaign_fields(slug, {
+                "total_views": sum(v.get("views", 0) or 0 for v in countable),
+                "total_likes": sum(v.get("likes", 0) or 0 for v in countable),
+            })
         return {
             "new_matches": 0,
-            "total_matches": len(round_qualified_videos(existing_videos, meta.get("start_date"))),
+            "total_matches": len(countable),
             "videos_checked": 0,
         }
 
@@ -911,7 +936,7 @@ def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None, 
 
     # Scope candidates before matching; malformed dates cannot prove round
     # membership. No-start campaigns retain the full legacy candidate set.
-    all_videos = round_qualified_videos(all_videos, meta.get("start_date"))
+    all_videos = round_qualified_videos(all_videos, meta.get("start_date"), end_date=round_end)
 
     # Step 3: Match using strategy specified by the campaign.
     # "strict" disables fuzzy fallback + auto-discovery. Critical for
@@ -1032,7 +1057,8 @@ def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None, 
     # Update creator post counts
     start_raw = str(meta.get("start_date") or "").strip()
     countable = round_qualified_videos(
-        all_matched, start_raw, exclude_dismissed=bool(start_raw),
+        all_matched, start_raw, end_date=round_end,
+        exclude_dismissed=bool(start_raw),
     )
     updated_creators = update_creator_post_counts(creators, countable)
     if lease is not None:
@@ -1395,7 +1421,9 @@ def _attach_internal_to_campaigns(internal_videos: list, lease=None) -> dict:
         }
 
     # Keep every candidate: the winner depends on the video's post date.
-    campaigns = _db.list_campaigns(exclude_completed=True)
+    all_campaigns = _db.list_campaigns(exclude_completed=False)
+    round_ends = build_round_end_by_slug(all_campaigns)
+    campaigns = [c for c in all_campaigns if c.get("completion_status") != "completed"]
     sound_to_campaigns: dict = {}  # sound_id -> [meta]
 
     for meta in campaigns:
@@ -1428,12 +1456,13 @@ def _attach_internal_to_campaigns(internal_videos: list, lease=None) -> dict:
         for meta in candidates:
             start_raw = str(meta.get("start_date") or "").strip()
             start = round_start_date(start_raw)
-            if not start_raw or (start is not None and posted >= start):
-                eligible.append((start or datetime.min.date(), str(meta.get("created_at") or ""), meta))
+            end = round_ends.get(str(meta.get("slug") or ""))
+            if (not start_raw or (start is not None and posted >= start)) and (end is None or posted < end):
+                eligible.append((start or datetime.min.date(), str(meta.get("created_at") or ""), str(meta.get("slug") or ""), meta))
         if not eligible:
             skipped_no_active_campaign += 1
             continue
-        winning = max(eligible, key=lambda item: item[:2])[2]
+        winning = max(eligible, key=lambda item: item[:3])[3]
         # Tag and stage for attach
         attach_v = dict(v)
         attach_v["match_strategy"] = "internal_creator"
@@ -1464,6 +1493,7 @@ def _attach_internal_to_campaigns(internal_videos: list, lease=None) -> dict:
             if new_count > 0 or start is not None:
                 countable = round_qualified_videos(
                     all_matched, attached_meta[slug].get("start_date"),
+                    end_date=round_ends.get(slug),
                     exclude_dismissed=start is not None,
                 )
                 total_views = sum(v.get("views", 0) or 0 for v in countable)

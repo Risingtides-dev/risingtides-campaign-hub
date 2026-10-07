@@ -18,7 +18,7 @@ from typing import Callable, Dict, List, Optional
 
 from campaign_manager import db as _db
 from campaign_manager.models import Campaign, MatchedVideo
-from campaign_manager.utils.helpers import video_posted_before_start
+from campaign_manager.utils.helpers import build_round_end_by_slug, video_in_round
 
 from .client import CobrandSideloadClient
 from .config import SideloadConfig
@@ -93,6 +93,7 @@ def sync_campaign(
 
     report = SyncReport(slug=slug, dry_run=dry_run)
     client = client or CobrandSideloadClient(config)
+    round_end = build_round_end_by_slug(_db.list_campaigns(exclude_completed=False)).get(slug)
 
     # 1) Load campaign + 2) build the untracked batch (mirrors the Scrape
     #    Tasks queue filters, incl. CAMP-42 pre-start-date exclusion).
@@ -116,9 +117,10 @@ def sync_campaign(
         start = camp.start_date or ""
         batch: List[Dict] = []
         for mv in rows:
-            if video_posted_before_start(
+            if not video_in_round(
                 {"timestamp": mv.timestamp or "", "upload_date": mv.upload_date or ""},
                 start,
+                end_date=round_end,
             ):
                 continue
             if mv.url:
