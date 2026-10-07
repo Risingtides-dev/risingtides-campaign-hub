@@ -311,3 +311,13 @@ The Hub previously treated every HTTP 200 from the local scraper as a successful
 
 On code head 37cafedda326976eded1af7f96ba353dfca244e0, focused and adjacent checks passed 31/31; a separate isolated Python 3.13 environment with requirements.txt and requirements-dev.txt passed the full repository pytest suite 952/952 with five PostgreSQL DDL tests skipped because no disposable PostgreSQL fixture was provided. Exact final-head review and hosted checks remain required after this ledger and contract commit. The Hub caller routes still return HTTP 502 for unknown outcomes and the local node has no durable receipt/idempotency key, so ambiguous original attempts must not be retried automatically. Rollback is a revert of the candidate code after checking original local-run status. No push, merge, deployment or live outcome is claimed here.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [04:19pm] [07-10-26] EDT UTC-04:00
+agent: [Codex] [GPT-6] [root release owner]
+worktree: [codex/hub258-crm-repair -> PR258] [/private/tmp/hub258-crm-repair-20261007/repo]
+type: [bug report]
+area: [backend] [testing] [review]
+
+Repair draft258 minuteCRMdiscovery so Clients after the first50 are reached through one bounded query page per tick and cursor wrap/retry. Reuse current property parser to distinguish unknown from explicit empty categories; discovery creates new campaigns only and skips every existing slug, preserving stored exact-page identity/categories/captions rather than transferring same-title CRM ownership. Remove minuteall-linked refresh duplication; existing active exact-page15minute refresh owns updates. Integrated actual GitHubmain5874b621 preserving native local-agent acknowledgment contract; scheduler bytes remain identical originalPR e1b94c and db/models/localagent match currentmain. Full existing Python3.10 backend968passed,5existing disposablePostgreSQLDDLskips; meaningful16CRMcases and4RPAconsumercases verified in preparation. Private integrationc401a384/tree791f69f6 precedes this finalledger/freeze; independent final-head review and fresh requiredhostedchecks remain necessary after expected-originalhead lease push. Keep258draft; no deployment/jobenable/campaigncreate/Notionwrite or productionoutcome claim. Existing manualwebhook behavior outside scope is not claimed repaired. Devlog pass adds concise root discovery/refreshownership contract and preserves all unrelated contracts; emptychildindex unchanged. Canonicalledgerappend respects existing lockfile/inode and preserves primarydirtycheckout/head/index.
+_________________________________________________________________________________
