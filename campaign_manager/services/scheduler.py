@@ -21,6 +21,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 
 from campaign_manager import db as _db
+from campaign_manager.services.apify_instagram import clean_username
 from campaign_manager.utils.helpers import build_round_end_by_slug, round_end_for_video, round_qualified_videos
 
 log = logging.getLogger(__name__)
@@ -100,6 +101,7 @@ def _scrape_run_is_degraded(
     campaigns_refreshed: int,
     total_new_matches: int,
     total_videos_checked: int,
+    instagram_complete_failure: bool = False,
 ) -> bool:
     """Return whether scrape results are unsafe to report as healthy."""
     empty_rate = (
@@ -113,7 +115,8 @@ def _scrape_run_is_degraded(
         else 0.0
     )
     return bool(
-        (empty_rate > 0.7 and total_creators > 5)
+        instagram_complete_failure
+        or (empty_rate > 0.7 and total_creators > 5)
         or (native_crash_rate > 0.2 and total_creators > 5)
         or (
             campaigns_refreshed > 5
@@ -121,6 +124,27 @@ def _scrape_run_is_degraded(
             and total_videos_checked == 0
         )
     )
+
+
+def _instagram_outcome_counts(requested: set[str], outcomes: dict) -> dict[str, int]:
+    """Count only requested creators; absence/unknown status is not success."""
+    names = {clean_username(name) for name in requested}
+    names.discard("")
+    normalized: dict[str, set[str]] = {}
+    for raw_name, outcome in outcomes.items():
+        name = clean_username(raw_name)
+        if not name or name not in names:
+            continue
+        status = outcome.get("status") if isinstance(outcome, dict) else None
+        normalized.setdefault(name, set()).add(
+            status if isinstance(status, str) and status in {"ok", "empty", "error"}
+            else "missing"
+        )
+    counts = {"ok": 0, "empty": 0, "error": 0, "missing": 0}
+    for name in names:
+        statuses = normalized.get(name, set())
+        counts[next(iter(statuses)) if len(statuses) == 1 else "missing"] += 1
+    return counts
 
 
 def _scrape_creator_accounts(usernames, start_date=None, max_workers=DEFAULT_MAX_WORKERS):
@@ -769,6 +793,11 @@ def _run_campaign_refresh(only_slugs, on_progress, lease, request_log_id=None) -
         #    new. Could be legit (slow day) but combined with high empty rate
         #    means the system is broken, not just quiet.
         total_creators_scraped = len(scrape_outcomes)
+        instagram_counts = _instagram_outcome_counts(ig_usernames, ig_outcomes)
+        instagram_total = sum(instagram_counts.values())
+        instagram_complete_failure = instagram_total > 0 and not (
+            instagram_counts["ok"] or instagram_counts["empty"]
+        )
         empty_rate = (
             outcome_counts["empty"] / total_creators_scraped
             if total_creators_scraped > 0
@@ -780,6 +809,7 @@ def _run_campaign_refresh(only_slugs, on_progress, lease, request_log_id=None) -
             campaigns_refreshed=campaigns_refreshed,
             total_new_matches=total_new_matches,
             total_videos_checked=total_videos_checked,
+            instagram_complete_failure=instagram_complete_failure,
         )
 
         summary = {
@@ -793,10 +823,9 @@ def _run_campaign_refresh(only_slugs, on_progress, lease, request_log_id=None) -
             "per_campaign": per_campaign,
             # New observability fields
             "scrape_outcome_counts": outcome_counts,
-            "instagram_outcome_counts": {
-                st: sum(1 for o in ig_outcomes.values() if o.get("status") == st)
-                for st in ("ok", "empty", "error")
-            },
+            "instagram_outcome_counts": instagram_counts,
+            "instagram_creators_total": instagram_total,
+            "instagram_complete_failure": instagram_complete_failure,
             "creators_scraped_total": total_creators_scraped,
             "empty_creator_rate": round(empty_rate, 3),
             "degraded": is_degraded,
@@ -1534,6 +1563,9 @@ def _post_campaign_refresh_slack(summary: dict):
     creators_total = summary.get("creators_scraped_total", 0)
     empty_rate = summary.get("empty_creator_rate", 0)
     videos_checked = summary.get("total_videos_checked", 0)
+    instagram_total = summary.get("instagram_creators_total", 0)
+    instagram_outcomes = summary.get("instagram_outcome_counts", {})
+    instagram_complete_failure = summary.get("instagram_complete_failure", False)
 
     header = (
         ":warning: *Daily campaign refresh DEGRADED*"
@@ -1557,11 +1589,25 @@ def _post_campaign_refresh_slack(summary: dict):
             f"({int(empty_rate * 100)}% empty rate)"
         )
 
-    if degraded:
+    if instagram_total > 0:
         lines.append(
-            "_Run produced no useful data. Likely TikTok rate-limited yt-dlp "
-            "(empty rate over 70%) or matching is broken. Check logs._"
+            f"Instagram creators: {instagram_total} attempted — "
+            f"{instagram_outcomes.get('ok', 0)} returned videos, "
+            f"{instagram_outcomes.get('empty', 0)} empty, "
+            f"{instagram_outcomes.get('error', 0)} errored, "
+            f"{instagram_outcomes.get('missing', 0)} missing outcomes"
         )
+
+    if degraded:
+        if instagram_complete_failure:
+            if instagram_outcomes.get("missing", 0):
+                lines.append("_No usable Instagram creator scrape outcomes; results are unavailable. Check cron errors and Apify configuration._")
+            else:
+                lines.append("_All Instagram creator scrapes failed; Instagram results are unavailable. Check cron errors and Apify configuration._")
+        else:
+            lines.append(
+                "_Scrape anomaly detected. Check TikTok empty/crash rates and matching in cron logs._"
+            )
 
     if failed:
         lines.append(f":x: {failed} campaign(s) failed")

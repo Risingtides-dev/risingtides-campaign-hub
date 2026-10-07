@@ -504,3 +504,31 @@ area: [backend], [testing], [review]
 
 The scheduler called db.save_stats_snapshot after each campaign refresh, but no such DB function, model, table, API reader, or active frontend consumer exists; every call produced a swallowed warning and stored no history. The call entered with an April matching change without a schema. The closed September attribution report says Chartmetric supplies history without local daily snapshots, and separate creator-history work leaves capture as an explicit design decision. Removed the dead best-effort call and its misleading monkeypatched test assertion. Scheduled round-scoped campaign/creator/scrape-log aggregates remain verified, and the test checks no snapshot-failure warning is emitted. A new durable time-series feature needs an explicit writer, reader, migration, timezone, and retention contract; no historical snapshot data can be backfilled from this removed call. Focused tests passed 53/53; the full Python suite passed 1015 with eight optional PostgreSQL cases skipped. After PR #265 merged, the prepared source change was rebased onto its current main with both chronological ledger entries preserved. No scrape, publication, PR, merge or deployment occurred for this cleanup. Rollback is a revert of this deletion; no schema changes.
 _________________________________________________________________________________
+_________________________________________________________________________________
+time: [06:12pm] [10-07-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/instagram-total-failure-degraded] /Users/smathdaddy-macbook/campaign-hub-instagram-degraded
+base: [origin/main] 1f1654e82b89f1c59898b9790bd04335edcc83b7
+type: [bug report]: classify complete Instagram scrape failure in campaign refresh
+area: [backend], [testing], [review]
+
+Natural cron log id 982 showed 18 Instagram creator errors from missing APIFY_API_TOKEN while the run recorded degraded=false and Slack said complete. Campaign refresh now marks an all-error or missing-outcome Instagram batch degraded independently of TikTok anomaly thresholds, retains completed as execution status, and persists Instagram total/failure/counts in the summary. Slack reports Instagram counts and an Instagram-specific degraded explanation without claiming TikTok rate limiting. Synthetic tests reproduce 18/18 failure and 17/18 partial failure, verify the persisted summary and notice dispatch, and check actual Slack wording. Backend verification: 955 passed, 8 PostgreSQL-only tests skipped because TEST_POSTGRES_DATABASE_URL was unavailable. No scrape, publication, push, PR, merge or deployment performed.
+_________________________________________________________________________________
+_________________________________________________________________________________
+time: [06:16pm] [10-07-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/instagram-total-failure-degraded] /Users/smathdaddy-macbook/campaign-hub-instagram-degraded
+type: [bug report]: reconcile requested Instagram creator outcomes
+area: [backend], [testing], [review]
+
+Independent review found that a missing Apify outcome map could be called 0 errored in Slack, and an unrelated successful outcome key could mask a complete failure. Instagram accounting now normalizes each requested creator name, counts only those creators, and records unknown or absent entries as missing outcomes. The complete-failure decision requires at least one requested creator and no requested ok/empty outcome. Slack reports missing separately. Synthetic tests cover all-error, partial, empty and extraneous maps plus normalized names. Backend verification: 958 passed, 8 PostgreSQL-only tests skipped without TEST_POSTGRES_DATABASE_URL. No scrape, publication, push, PR, merge or deployment performed.
+_________________________________________________________________________________
+_________________________________________________________________________________
+time: [06:18pm] [10-07-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/instagram-total-failure-degraded] /Users/smathdaddy-macbook/campaign-hub-instagram-degraded
+type: [bug report]: preserve uncertainty in Instagram cron outcome reporting
+area: [backend], [testing], [review]
+
+Final-head review found that missing-only outcomes were described as all scrapes failed, and conflicting normalized aliases could overwrite each other by map order. Conflicting aliases now count as missing regardless of insertion order. A degraded notice distinguishes all reported Instagram errors from no usable Instagram outcome evidence. Focused regressions cover both alias orders and each notice wording. Backend verification: 960 passed, 8 PostgreSQL-only tests skipped without TEST_POSTGRES_DATABASE_URL. No scrape, publication, push, PR, merge or deployment performed.
+_________________________________________________________________________________
