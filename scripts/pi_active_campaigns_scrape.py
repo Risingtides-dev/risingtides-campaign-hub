@@ -233,7 +233,9 @@ def main() -> int:
         if args.write_report:
             write_json(run_dir / "report.json", report)
         print(json.dumps(report, indent=2, sort_keys=True, default=str))
-        return 0 if report["ok"] else 1
+        # The launchd wrapper maps this reserved no-op code to a neutral
+        # skipped status rather than a completed or failed scrape.
+        return 76 if report.get("skipped") else (0 if report["ok"] else 1)
     except FileExistsError:
         report.update({
             "ok": False,

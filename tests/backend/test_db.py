@@ -340,6 +340,20 @@ class TestCronLog:
         assert "reconcile before retry" in receipt["summary"]["error"]
         assert not db.transition_cron_log(log_id, "dispatching", "delegated")
 
+    def test_janitor_dispatching_unknown_despite_unrelated_hub_lock(self, db, monkeypatch):
+        from datetime import datetime, timedelta
+        from campaign_manager.models import CronLog
+
+        log_id = db.create_cron_log("campaign_refresh", status="queued")
+        assert db.transition_cron_log(log_id, "queued", "dispatching")
+        with db.get_session() as session:
+            row = session.query(CronLog).filter_by(id=log_id).one()
+            row.started_at = datetime.now() - timedelta(hours=1)
+            session.commit()
+        monkeypatch.setattr(db, "scrape_job_lock_held", lambda _job: True)
+        assert db.reap_orphaned_cron_logs(threshold_minutes=30) == [log_id]
+        assert db.get_cron_log_by_id(log_id)["status"] == "unknown"
+
     def test_janitor_keeps_queued_capacity_waiter_with_live_job_lock(self, db, monkeypatch):
         from datetime import datetime, timedelta
         from campaign_manager.models import CronLog

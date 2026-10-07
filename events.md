@@ -363,3 +363,15 @@ entry-id: hub-local-runner-skip-20261007
 
 Exact-head review found that the Mac active-campaign runner treated a Hub same-type duplicate skip as a failed scrape process. The runner now records skipped and the explicit scrape outcome, exits successfully for the exact already-running no-op, and does not run the queue export that belongs to a completed scrape. An isolated fake-DB/fake-scheduler test confirms no scrape or export is invoked, report and exit semantics are accurate, and the local lock is released. No live scrape or local runner replacement was used. The production Mac service is still on its existing installed checkout; this candidate does not claim rollout parity.
 _________________________________________________________________________________
+
+
+_________________________________________________________________________________
+time: [3:40pm] [10-07-26] EDT; actual UTC: 2026-10-07T19:40:51Z
+agent: [Codex desktop delegating to AC Mac mini] [GPT-6] [builder]
+worktree: [codex/issue-124-scheduler-lease] /Users/risingtidesdev/hub-issue-124-scheduler on macmini-ip
+type: [issues]: Risingtides-dev/risingtides-campaign-hub #124 wrapper status correction
+area: [backend], [testing], [review]
+entry-id: hub-hourly-wrapper-skip-status-20261007
+
+Independent review found the local child could exit zero on a duplicate skip while the installed hourly wrapper wrote SCRAPER_STATUS stage completed, misrepresenting a no-op as a scrape. The child now uses reserved exit 76 only for the exact already-running skip; the wrapper maps that code to a neutral skipped stage and exits zero, while other nonzero results remain failures. The child's report still records skipped and omits export. The janitor now marks a stale local dispatching receipt unknown even if an unrelated same-type Hub job holds its database lock. Focused synthetic child and actual-wrapper-footer checks covered no-op, failure and completion exit paths; zsh syntax passed. Full repository Python suite passed 981/981 with six opt-in PostgreSQL tests skipped; disposable PostgreSQL focused checks passed 31/31. Independent exact-head rereview remains required. No live scraper, launchd restart, node POST, push, merge or deployment occurred.
+_________________________________________________________________________________

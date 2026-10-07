@@ -2009,11 +2009,12 @@ def reap_orphaned_cron_logs(threshold_minutes: int = 30) -> List[int]:
         # away. CAS prevents a reaped queued request from starting later.
         active_types = {
             row.job_type for row in stale
-            if row.job_type in ("campaign_refresh", "internal_scrape")
+            if row.status in ("queued", "running")
+            and row.job_type in ("campaign_refresh", "internal_scrape")
             and scrape_job_lock_held(row.job_type)
         }
         for row in stale:
-            if row.job_type in active_types:
+            if row.status in ("queued", "running") and row.job_type in active_types:
                 continue
             old_status = row.status
             row.status = "unknown" if old_status == "dispatching" else "failed"
