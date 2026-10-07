@@ -311,6 +311,81 @@ The Hub previously treated every HTTP 200 from the local scraper as a successful
 
 On code head 37cafedda326976eded1af7f96ba353dfca244e0, focused and adjacent checks passed 31/31; a separate isolated Python 3.13 environment with requirements.txt and requirements-dev.txt passed the full repository pytest suite 952/952 with five PostgreSQL DDL tests skipped because no disposable PostgreSQL fixture was provided. Exact final-head review and hosted checks remain required after this ledger and contract commit. The Hub caller routes still return HTTP 502 for unknown outcomes and the local node has no durable receipt/idempotency key, so ambiguous original attempts must not be retried automatically. Rollback is a revert of the candidate code after checking original local-run status. No push, merge, deployment or live outcome is claimed here.
 _________________________________________________________________________________
+_________________________________________________________________________________
+time: [3:18pm] [10-07-26] EDT; actual UTC: 2026-10-07T19:18:55Z
+agent: [Codex desktop delegating to AC Mac mini] [GPT-6] [builder]
+worktree: [codex/issue-124-scheduler-lease] /Users/risingtidesdev/hub-issue-124-scheduler on macmini-ip; base 5874b62102d275761ec1b064691862f0665cb67d
+type: [issues]: Risingtides-dev/risingtides-campaign-hub #124 concurrent cron scrapes
+area: [backend], [frontend], [testing]
+entry-id: hub-cron-cross-worker-lease-20261007
+
+The observed manual campaign refresh and APScheduler campaign refresh could overlap because only the manual trigger checked an in-process set. The candidate moves a nonblocking same-type gate into the campaign_refresh and internal_scrape job bodies, shared by Hub scheduler, manual and on-demand entrypoints. PostgreSQL uses a dedicated session advisory lock per job type; before persisted scrape results the worker checks that its backend session still owns the lock. Local SQLite/file-mode uses a same-host OS file lock. A duplicate skips before creating a run log. Manual /api/cron/trigger now records a durable queued cron_log receipt and returns accepted plus log_id; the worker CAS-transitions it to running or records skipped/failed, and the janitor fails orphaned queued requests without replaying them. The on-demand UI distinguishes a skipped duplicate from a completed scrape.
+
+On rebased code head c120100c2fc41aabe7578ac53b416c8dcfbf60a4, the full Python suite passed 966 with 5 existing disposable-PostgreSQL DDL tests skipped; frontend TypeScript/Vite build and changed-file ESLint passed. Separate local PostgreSQL checks used only a test-owned connection in the postgres database: another connection could not claim the same job key, the distinct job key stayed runnable, release cleared the lock, and terminating the test-owned backend made the lease fail closed. No scrape, local-node POST, paid request or publication was triggered for verification.
+
+This is a held candidate, not a delivered fix. The Mac local-agent /api/run-now path and its launchd runner do not share the Hub database lock; the runner has its own host-local guard and currently uses --no-proxy. Campaign and internal jobs still have distinct locks, so their 06:00/06:02 overlap and possible shared-capacity contention remain. Exact-head independent review, hosted checks, merge, intended deployment and live outcome proof remain open. Rollback is a revert of the Hub candidate; reconcile any accepted queued/running receipts before repeating work. Root AGENTS records the current lock and receipt contract; child index remains empty because ownership stays at root.
+_________________________________________________________________________________
+
+
+_________________________________________________________________________________
+time: [3:30pm] [10-07-26] EDT; actual UTC: 2026-10-07T19:30:31Z
+agent: [Codex desktop delegating to AC Mac mini] [GPT-6] [builder]
+worktree: [codex/issue-124-scheduler-lease] /Users/risingtidesdev/hub-issue-124-scheduler on macmini-ip; base 5874b62102d275761ec1b064691862f0665cb67d
+type: [issues]: Risingtides-dev/risingtides-campaign-hub #124 follow-up
+area: [backend], [frontend], [testing], [review]
+entry-id: hub-cron-shared-capacity-delegated-receipt-20261007
+
+Independent review found that the first candidate allowed distinct 06:00 campaign and 06:02 internal Hub jobs to compete for shared scraper capacity, configured manual local delegation lacked a durable receipt, and the Mac node ignored requested slugs. This follow-up gives distinct Hub job types one shared advisory capacity lease with a queued receipt, bounded wait/backoff and explicit timeout failure; same-type duplicates still skip. The janitor preserves active queued waiters. Configured manual local dispatch now writes a receipt before the node POST and records delegated/skipped/failed/unknown dispatch outcomes. Scoped local requests are refused before POST, and the UI distinguishes node acknowledgment from scrape completion.
+
+Focused Python checks passed 73/73; full repository Python suite passed 975/975 with 6 opt-in PostgreSQL tests skipped; separate disposable PostgreSQL targeted checks passed 26/26, and frontend TypeScript/Vite build plus changed-file ESLint passed. A test-owned local PostgreSQL connection confirmed that distinct job types can hold their own keys while the shared capacity key admits one backend, rejects another, and releases afterward. No live scrape, node POST, paid request, publication, push, merge or deployment was used. Exact-head independent review and hosted checks remain required. The Mac runner has a separate host-local guard rather than the Hub DB lease; cross-host exclusion and node outcome parity remain explicit holds. Rollback is a revert of this Hub branch after reconciling queued/delegated/unknown receipts.
+_________________________________________________________________________________
+
+
+_________________________________________________________________________________
+time: [3:35pm] [10-07-26] EDT; actual UTC: 2026-10-07T19:35:25Z
+agent: [Codex desktop delegating to AC Mac mini] [GPT-6] [builder]
+worktree: [codex/issue-124-scheduler-lease] /Users/risingtidesdev/hub-issue-124-scheduler on macmini-ip
+type: [issues]: Risingtides-dev/risingtides-campaign-hub #124 crash window repair
+area: [backend], [testing], [review]
+entry-id: hub-local-dispatch-crash-receipt-20261007
+
+Independent exact-head review identified a crash window after the local-node POST: a merely queued receipt could be reaped as never started even though the irreversible dispatch may have reached the node. The revised caller atomically commits dispatching before sending; if reservation fails it refuses to POST. The janitor closes stale dispatching receipts as unknown with explicit original-attempt reconciliation rather than failed-never-started. Synthetic crash-after-POST and reservation-failure tests exercise both boundaries without a live node POST. Focused checks passed 28/28 with disposable local PostgreSQL; full repository Python suite passed 979/979 with six opt-in PostgreSQL tests skipped, and the earlier frontend build/changed-file ESLint remained clean. Fresh independent exact-head rereview remains required. No push, merge, deployment or live scrape is claimed.
+_________________________________________________________________________________
+
+
+_________________________________________________________________________________
+time: [3:37pm] [10-07-26] EDT; actual UTC: 2026-10-07T19:37:11Z
+agent: [Codex desktop delegating to AC Mac mini] [GPT-6] [builder]
+worktree: [codex/issue-124-scheduler-lease] /Users/risingtidesdev/hub-issue-124-scheduler on macmini-ip
+type: [issues]: Risingtides-dev/risingtides-campaign-hub #124 local runner status alignment
+area: [backend], [testing], [review]
+entry-id: hub-local-runner-skip-20261007
+
+Exact-head review found that the Mac active-campaign runner treated a Hub same-type duplicate skip as a failed scrape process. The runner now records skipped and the explicit scrape outcome, exits successfully for the exact already-running no-op, and does not run the queue export that belongs to a completed scrape. An isolated fake-DB/fake-scheduler test confirms no scrape or export is invoked, report and exit semantics are accurate, and the local lock is released. No live scrape or local runner replacement was used. The production Mac service is still on its existing installed checkout; this candidate does not claim rollout parity.
+_________________________________________________________________________________
+
+
+_________________________________________________________________________________
+time: [3:40pm] [10-07-26] EDT; actual UTC: 2026-10-07T19:40:51Z
+agent: [Codex desktop delegating to AC Mac mini] [GPT-6] [builder]
+worktree: [codex/issue-124-scheduler-lease] /Users/risingtidesdev/hub-issue-124-scheduler on macmini-ip
+type: [issues]: Risingtides-dev/risingtides-campaign-hub #124 wrapper status correction
+area: [backend], [testing], [review]
+entry-id: hub-hourly-wrapper-skip-status-20261007
+
+Independent review found the local child could exit zero on a duplicate skip while the installed hourly wrapper wrote SCRAPER_STATUS stage completed, misrepresenting a no-op as a scrape. The child now uses reserved exit 76 only for the exact already-running skip; the wrapper maps that code to a neutral skipped stage and exits zero, while other nonzero results remain failures. The child's report still records skipped and omits export. The janitor now marks a stale local dispatching receipt unknown even if an unrelated same-type Hub job holds its database lock. Focused synthetic child and actual-wrapper-footer checks covered no-op, failure and completion exit paths; zsh syntax passed. Full repository Python suite passed 981/981 with six opt-in PostgreSQL tests skipped; disposable PostgreSQL focused checks passed 31/31. Independent exact-head rereview remains required. No live scraper, launchd restart, node POST, push, merge or deployment occurred.
+_________________________________________________________________________________
+
+
+_________________________________________________________________________________
+time: [3:44pm] [10-07-26] EDT; actual UTC: 2026-10-07T19:44:28Z
+agent: [Codex desktop delegating to AC Mac mini] [GPT-6] [builder]
+worktree: [codex/issue-124-scheduler-lease] /Users/risingtidesdev/hub-issue-124-scheduler on macmini-ip
+type: [bug report]: Risingtides-dev/risingtides-campaign-hub local export failure classification
+area: [backend], [testing], [review]
+entry-id: hub-hourly-export-failure-stage-20261007
+
+Read-only production evidence showed the 19:00 Mac child completed Hub cron_log 982 but its later queue export failed; the hourly wrapper wrote scrape-exit, obscuring the successful core scrape. This candidate preserves the child's completed scrape outcome, records failure_stage export and reserves exit 77 only when the core scrape was healthy; a degraded core scrape remains a scrape failure even when export also fails. The wrapper maps only code 77 to export-exit; no original scrape is retried. Isolated child-report and actual wrapper-footer tests cover core success with export failure, non-benign request_expired remains a failure, and the 0/1/76/77 mappings. The export script itself is owned by a separate worker and remains untouched here. No live run, installed-script replacement, push, merge or deployment occurred. Full exact-head checks and independent review remain required.
 
 _________________________________________________________________________________
 time: [4:15pm] [10-07-26] EDT; actual UTC: 2026-10-07T20:15:49.582725+00:00
@@ -331,4 +406,14 @@ type: [bug report]
 area: [backend] [testing] [review]
 
 Repair draft258 minuteCRMdiscovery so Clients after the first50 are reached through one bounded query page per tick and cursor wrap/retry. Reuse current property parser to distinguish unknown from explicit empty categories; discovery creates new campaigns only and skips every existing slug, preserving stored exact-page identity/categories/captions rather than transferring same-title CRM ownership. Remove minuteall-linked refresh duplication; existing active exact-page15minute refresh owns updates. Integrated actual GitHubmain5874b621 preserving native local-agent acknowledgment contract; scheduler bytes remain identical originalPR e1b94c and db/models/localagent match currentmain. Full existing Python3.10 backend968passed,5existing disposablePostgreSQLDDLskips; meaningful16CRMcases and4RPAconsumercases verified in preparation. Private integrationc401a384/tree791f69f6 precedes this finalledger/freeze; independent final-head review and fresh requiredhostedchecks remain necessary after expected-originalhead lease push. Keep258draft; no deployment/jobenable/campaigncreate/Notionwrite or productionoutcome claim. Existing manualwebhook behavior outside scope is not claimed repaired. Devlog pass adds concise root discovery/refreshownership contract and preserves all unrelated contracts; emptychildindex unchanged. Canonicalledgerappend respects existing lockfile/inode and preserves primarydirtycheckout/head/index.
+
+_________________________________________________________________________________
+time: [4:32pm] [10-07-26] EDT; actual UTC: 2026-10-07T20:32:00Z
+agent: [Codex desktop] [GPT-6] [root release owner]
+worktree: [codex/issue-124-scheduler-lease] /Users/risingtidesdev/hub-issue-124-scheduler on macmini-ip
+type: [gh actions]: Risingtides-dev/risingtides-campaign-hub PR #261 hosted test parity
+area: [testing], [review]
+entry-id: hub-issue124-hosted-test-portability-20261007
+
+The first exact-head hosted backend run failed in test fixtures: five janitor tests constructed stale timestamps using the runner local timezone while the production ledger uses America/New_York naive values, and the Mac zsh wrapper test invoked /bin/zsh on Linux. The fixtures now construct stale timestamps in the ledger timezone. The wrapper executes on the Mac release host; environments without zsh explicitly skip that platform-specific subprocess check. Under TZ=UTC, 13 focused local tests passed. The owning AGENTS.md contract is unchanged because production behavior did not change. The prior code head passed 994 Python tests, 28 tests against a disposable PostgreSQL 16 cluster, and the frontend build. This test-fix head requires independent review and new exact-head hosted verification. No live scrape, node POST or posting was triggered.
 _________________________________________________________________________________

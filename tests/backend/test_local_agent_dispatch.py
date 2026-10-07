@@ -109,3 +109,13 @@ def test_dispatch_strips_node_diagnostics_from_success(monkeypatch):
     assert result['ok'] is True
     assert result['node'] == {'ok': True, 'action': 'scrape', 'started': True}
     assert 'private-token' not in json.dumps(result)
+
+
+def test_scoped_request_is_refused_before_node_post(monkeypatch):
+    monkeypatch.setenv('LOCAL_AGENT_URL', 'https://node.example')
+    monkeypatch.setattr(local_agent.urllib.request, 'urlopen',
+                        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                            AssertionError('node POST must not happen')))
+    result = local_agent.dispatch_scrape(['campaign-one'])
+    assert result['ok'] is False
+    assert result['outcome'] == 'unsupported_scope'

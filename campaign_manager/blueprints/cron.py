@@ -5,6 +5,7 @@ Provides status, logs, manual trigger, and toggle for the daily scraping schedul
 from __future__ import annotations
 
 import threading
+import logging
 
 from flask import Blueprint, jsonify, request
 
@@ -16,6 +17,7 @@ from campaign_manager.services.scheduler import (
 )
 
 cron_bp = Blueprint("cron", __name__)
+log = logging.getLogger(__name__)
 
 
 @cron_bp.route("/api/cron/status")
@@ -57,14 +59,76 @@ def cron_trigger():
     if job_type == "campaign_refresh":
         from campaign_manager.services.local_agent import is_configured, dispatch_scrape
         if is_configured():
+            try:
+                log_id = _db.create_cron_log(job_type, status="queued")
+            except Exception:
+                log.exception("Could not record delegated cron request")
+                return jsonify({"error": "Could not record cron request"}), 503
+            # Once this durable state commits, a crash at any point around the
+            # node POST is ambiguous. The janitor closes stale dispatching
+            # receipts as unknown, never as "never started".
+            try:
+                if not _db.transition_cron_log(log_id, "queued", "dispatching"):
+                    raise RuntimeError("delegated request receipt was already closed")
+            except Exception:
+                log.exception("Could not reserve local dispatch for %s", log_id)
+                return jsonify({
+                    "status": "failed", "ok": False, "log_id": log_id,
+                    "error": "Could not reserve local dispatch",
+                }), 503
             result = dispatch_scrape(None)
-            return jsonify({"status": "delegated_to_local", **result}), (202 if result.get("ok") else 502)
+            node = result.get("node") or {}
+            if result.get("ok") and node.get("started") is True:
+                state, http_status = "delegated", 202
+            elif result.get("ok") and node.get("started") is False:
+                state, http_status = "skipped", 200
+            elif result.get("outcome") == "unknown":
+                state, http_status = "unknown", 502
+            else:
+                state, http_status = "failed", 502
+            try:
+                changed = _db.transition_cron_log(
+                    log_id, "dispatching", state,
+                    {"dispatch": result, "note": "Node acknowledgment only; reconcile node for scrape outcome"},
+                )
+                if not changed:
+                    raise RuntimeError("delegated request receipt was already closed")
+            except Exception:
+                log.exception("Could not record delegated cron outcome for %s", log_id)
+                return jsonify({
+                    "status": "unknown", "ok": False, "log_id": log_id,
+                    "error": "Local dispatch receipt update failed; reconcile before retry",
+                }), 503
+            return jsonify({
+                "status": "delegated_to_local" if state == "delegated" else state,
+                "log_id": log_id, **result,
+            }), http_status
 
-    # Run in background thread so we return immediately
-    thread = threading.Thread(target=trigger_job, args=(job_type,), daemon=True)
-    thread.start()
+    # Persist the accepted request before returning. The background worker
+    # changes this receipt to running, skipped, completed or failed; a process
+    # recycle before it starts is reaped as an orphaned queued request.
+    try:
+        log_id = _db.create_cron_log(job_type, status="queued")
+    except Exception:
+        log.exception("Could not record manual cron request")
+        return jsonify({"error": "Could not record cron request"}), 503
 
-    return jsonify({"status": "triggered", "job_type": job_type})
+    try:
+        thread = threading.Thread(
+            target=trigger_job, args=(job_type, log_id), daemon=True
+        )
+        thread.start()
+    except Exception:
+        log.exception("Could not start manual cron worker")
+        try:
+            _db.transition_cron_log(
+                log_id, "queued", "failed", {"error": "Could not start cron worker"}
+            )
+        except Exception:
+            log.exception("Could not close manual cron request %s", log_id)
+        return jsonify({"error": "Could not start cron worker", "log_id": log_id}), 503
+
+    return jsonify({"status": "accepted", "job_type": job_type, "log_id": log_id}), 202
 
 
 @cron_bp.route("/api/cron/toggle", methods=["POST"])
