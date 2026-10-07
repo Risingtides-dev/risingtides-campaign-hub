@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -51,6 +52,9 @@ def test_hourly_wrapper_maps_only_noop_to_neutral_status(tmp_path):
     marker = 'write_status null "scraping" 0'
     assert marker in source
     footer = source[source.index(marker):]
+    zsh = shutil.which("zsh")
+    if zsh is None:
+        pytest.skip("the hourly wrapper requires zsh; executed on the Mac release host")
     for child_rc, expected_rc, expected in (
         (76, 0, "STATUS:null skipped 0"),
         (1, 1, "STATUS:false scrape-exit 1"),
@@ -67,7 +71,7 @@ def test_hourly_wrapper_maps_only_noop_to_neutral_status(tmp_path):
             'fail(){ write_status false "$1" "$2"; exit "$2"; }\n'
         )
         run = subprocess.run(
-            ["/bin/zsh", "-c", prelude + footer],
+            [zsh, "-c", prelude + footer],
             cwd=root, text=True, capture_output=True, timeout=5,
         )
         assert run.returncode == expected_rc

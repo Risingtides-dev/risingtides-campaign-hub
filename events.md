@@ -397,3 +397,15 @@ entry-id: hub-queue-export-origin-20261007-root
 
 The original 2026-10-07 19:00 UTC Mac run completed Hub cron_log 982 (37 campaigns refreshed, 35 new matches) but queue export failed HTTP 404 against the obsolete Railway fallback URL. The isolated code candidate changes exporter, Pi ops helper and internal-groups CLI defaults to the verified canonical Hub origin. The exporter validates configured origin and limit and reports bounded HTTP/transport/JSON errors before output creation; it never retries the completed scrape. Read-only GET to the canonical queue endpoint returned HTTP 200. Code head 648fec10259d83cd925c98c704d55457c4d2e0eb passed 962 Python tests with five optional PostgreSQL DDL skips; ten focused origin/failure tests passed. Independent exact-code-head review found no blocker for the URL correction and noted the pre-existing unbounded response read as a follow-up. This entry and owning contract precede final-head review/checks. No live export, scrape, post, push, merge or deployment is claimed here. Rollback requires reconciling original export and setting CAMPAIGN_HUB_API_URL to a verified origin rather than restoring the dead default.
 _________________________________________________________________________________
+
+
+_________________________________________________________________________________
+time: [4:32pm] [10-07-26] EDT; actual UTC: 2026-10-07T20:32:00Z
+agent: [Codex desktop] [GPT-6] [root release owner]
+worktree: [codex/issue-124-scheduler-lease] /Users/risingtidesdev/hub-issue-124-scheduler on macmini-ip
+type: [gh actions]: Risingtides-dev/risingtides-campaign-hub PR #261 hosted test parity
+area: [testing], [review]
+entry-id: hub-issue124-hosted-test-portability-20261007
+
+The first exact-head hosted backend run failed in test fixtures: five janitor tests constructed stale timestamps using the runner local timezone while the production ledger uses America/New_York naive values, and the Mac zsh wrapper test invoked /bin/zsh on Linux. The fixtures now construct stale timestamps in the ledger timezone. The wrapper executes on the Mac release host; environments without zsh explicitly skip that platform-specific subprocess check. Under TZ=UTC, 13 focused local tests passed. The owning AGENTS.md contract is unchanged because production behavior did not change. The prior code head passed 994 Python tests, 28 tests against a disposable PostgreSQL 16 cluster, and the frontend build. This test-fix head requires independent review and new exact-head hosted verification. No live scrape, node POST or posting was triggered.
+_________________________________________________________________________________

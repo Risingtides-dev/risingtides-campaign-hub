@@ -318,7 +318,7 @@ class TestCronLog:
         log_id = db.create_cron_log("campaign_refresh", status="queued")
         with db.get_session() as session:
             row = session.query(CronLog).filter_by(id=log_id).one()
-            row.started_at = datetime.now() - timedelta(hours=1)
+            row.started_at = datetime.now(db.EST).replace(tzinfo=None) - timedelta(hours=1)
             session.commit()
         assert db.reap_orphaned_cron_logs(threshold_minutes=30) == [log_id]
         assert db.get_cron_log_by_id(log_id)["status"] == "failed"
@@ -332,7 +332,7 @@ class TestCronLog:
         assert db.transition_cron_log(log_id, "queued", "dispatching")
         with db.get_session() as session:
             row = session.query(CronLog).filter_by(id=log_id).one()
-            row.started_at = datetime.now() - timedelta(hours=1)
+            row.started_at = datetime.now(db.EST).replace(tzinfo=None) - timedelta(hours=1)
             session.commit()
         assert db.reap_orphaned_cron_logs(threshold_minutes=30) == [log_id]
         receipt = db.get_cron_log_by_id(log_id)
@@ -348,7 +348,7 @@ class TestCronLog:
         assert db.transition_cron_log(log_id, "queued", "dispatching")
         with db.get_session() as session:
             row = session.query(CronLog).filter_by(id=log_id).one()
-            row.started_at = datetime.now() - timedelta(hours=1)
+            row.started_at = datetime.now(db.EST).replace(tzinfo=None) - timedelta(hours=1)
             session.commit()
         monkeypatch.setattr(db, "scrape_job_lock_held", lambda _job: True)
         assert db.reap_orphaned_cron_logs(threshold_minutes=30) == [log_id]
@@ -361,7 +361,7 @@ class TestCronLog:
         log_id = db.create_cron_log("internal_scrape", status="queued")
         with db.get_session() as session:
             row = session.query(CronLog).filter_by(id=log_id).one()
-            row.started_at = datetime.now() - timedelta(hours=1)
+            row.started_at = datetime.now(db.EST).replace(tzinfo=None) - timedelta(hours=1)
             session.commit()
         monkeypatch.setattr(db, "scrape_job_lock_held",
                             lambda job: job == "internal_scrape")
@@ -375,7 +375,7 @@ class TestCronLog:
         log_id = db.create_cron_log("campaign_refresh")
         with db.get_session() as session:
             row = session.query(CronLog).filter_by(id=log_id).one()
-            row.started_at = datetime.now() - timedelta(hours=1)
+            row.started_at = datetime.now(db.EST).replace(tzinfo=None) - timedelta(hours=1)
             session.commit()
         monkeypatch.setattr(db, "scrape_job_lock_held", lambda _job: True)
         assert db.reap_orphaned_cron_logs(threshold_minutes=30) == []
