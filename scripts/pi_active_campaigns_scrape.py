@@ -225,8 +225,11 @@ def main() -> int:
             report["ok"] = True
 
         if args.export and not report.get("skipped"):
+            core_ok = bool(report["ok"])
             report["export"] = export_queue()
-            report["ok"] = bool(report["ok"] and report["export"].get("ok"))
+            report["ok"] = bool(core_ok and report["export"].get("ok"))
+            if core_ok and not report["export"].get("ok"):
+                report["failure_stage"] = "export"
 
         report["finished_at"] = now_iso()
         report["duration_seconds"] = round(time.monotonic() - started, 1)
@@ -235,7 +238,11 @@ def main() -> int:
         print(json.dumps(report, indent=2, sort_keys=True, default=str))
         # The launchd wrapper maps this reserved no-op code to a neutral
         # skipped status rather than a completed or failed scrape.
-        return 76 if report.get("skipped") else (0 if report["ok"] else 1)
+        return (
+            76 if report.get("ok") and report.get("skip_reason") == "already_running"
+            else 77 if report.get("failure_stage") == "export"
+            else 0 if report["ok"] else 1
+        )
     except FileExistsError:
         report.update({
             "ok": False,

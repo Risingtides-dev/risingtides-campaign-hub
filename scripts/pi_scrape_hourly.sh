@@ -126,6 +126,7 @@ if [[ $rc -eq 76 ]]; then
   print -- "[pi_scrape_hourly] skipped: another campaign refresh owns the Hub lease at $(stamp)"
   exit 0
 fi
+[[ $rc -eq 77 ]] && fail "export-exit" "$rc"
 [[ $rc -eq 0 ]] || fail "scrape-exit" "$rc"
 
 write_status true "completed" 0

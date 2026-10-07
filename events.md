@@ -375,3 +375,15 @@ entry-id: hub-hourly-wrapper-skip-status-20261007
 
 Independent review found the local child could exit zero on a duplicate skip while the installed hourly wrapper wrote SCRAPER_STATUS stage completed, misrepresenting a no-op as a scrape. The child now uses reserved exit 76 only for the exact already-running skip; the wrapper maps that code to a neutral skipped stage and exits zero, while other nonzero results remain failures. The child's report still records skipped and omits export. The janitor now marks a stale local dispatching receipt unknown even if an unrelated same-type Hub job holds its database lock. Focused synthetic child and actual-wrapper-footer checks covered no-op, failure and completion exit paths; zsh syntax passed. Full repository Python suite passed 981/981 with six opt-in PostgreSQL tests skipped; disposable PostgreSQL focused checks passed 31/31. Independent exact-head rereview remains required. No live scraper, launchd restart, node POST, push, merge or deployment occurred.
 _________________________________________________________________________________
+
+
+_________________________________________________________________________________
+time: [3:44pm] [10-07-26] EDT; actual UTC: 2026-10-07T19:44:28Z
+agent: [Codex desktop delegating to AC Mac mini] [GPT-6] [builder]
+worktree: [codex/issue-124-scheduler-lease] /Users/risingtidesdev/hub-issue-124-scheduler on macmini-ip
+type: [bug report]: Risingtides-dev/risingtides-campaign-hub local export failure classification
+area: [backend], [testing], [review]
+entry-id: hub-hourly-export-failure-stage-20261007
+
+Read-only production evidence showed the 19:00 Mac child completed Hub cron_log 982 but its later queue export failed; the hourly wrapper wrote scrape-exit, obscuring the successful core scrape. This candidate preserves the child's completed scrape outcome, records failure_stage export and reserves exit 77 only when the core scrape was healthy; a degraded core scrape remains a scrape failure even when export also fails. The wrapper maps only code 77 to export-exit; no original scrape is retried. Isolated child-report and actual wrapper-footer tests cover core success with export failure, non-benign request_expired remains a failure, and the 0/1/76/77 mappings. The export script itself is owned by a separate worker and remains untouched here. No live run, installed-script replacement, push, merge or deployment occurred. Full exact-head checks and independent review remain required.
+_________________________________________________________________________________
