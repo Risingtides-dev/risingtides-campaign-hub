@@ -4,7 +4,7 @@ import json
 import re
 from datetime import date, datetime
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Iterable
 
 import requests
 
@@ -224,3 +224,25 @@ def video_post_date(video: Dict) -> date | None:
         except ValueError:
             pass
     return None
+
+
+def round_qualified_videos(
+    videos: Iterable[Dict], start_date: object, *, exclude_dismissed: bool = False,
+) -> list[Dict]:
+    """Scope stored matches to a campaign round without deleting history.
+
+    A missing campaign start retains legacy behavior. A malformed nonempty
+    start or missing/malformed post date cannot prove round membership.
+    """
+    raw = str(start_date or "").strip()
+    start = round_start_date(raw)
+    qualified = []
+    for video in videos:
+        if exclude_dismissed and video.get("dismissed_at"):
+            continue
+        if raw:
+            posted = video_post_date(video)
+            if start is None or posted is None or posted < start:
+                continue
+        qualified.append(video)
+    return qualified

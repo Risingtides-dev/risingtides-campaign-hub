@@ -21,6 +21,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 
 from campaign_manager import db as _db
+from campaign_manager.utils.helpers import round_qualified_videos
 
 log = logging.getLogger(__name__)
 
@@ -857,7 +858,11 @@ def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None, 
     ig_usernames = [c["username"] for c in active if c.get("platform") == "instagram"]
 
     if not usernames and not ig_usernames:
-        return {"new_matches": 0, "total_matches": len(existing_videos), "videos_checked": 0}
+        return {
+            "new_matches": 0,
+            "total_matches": len(round_qualified_videos(existing_videos, meta.get("start_date"))),
+            "videos_checked": 0,
+        }
 
     # Step 1: Get videos — use shared cache if available, otherwise scrape
     if shared_videos is not None:
@@ -904,14 +909,9 @@ def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None, 
             for err in scrape_errors[:5]:
                 log.warning("CRON: scrape error for %s: %s", slug, err)
 
-    # Filter by campaign start_date
-    start_date_str = meta.get("start_date", "")
-    if start_date_str:
-        try:
-            scrape_start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
-            all_videos = _filter_by_date(all_videos, scrape_start_date)
-        except ValueError:
-            pass
+    # Scope candidates before matching; malformed dates cannot prove round
+    # membership. No-start campaigns retain the full legacy candidate set.
+    all_videos = round_qualified_videos(all_videos, meta.get("start_date"))
 
     # Step 3: Match using strategy specified by the campaign.
     # "strict" disables fuzzy fallback + auto-discovery. Critical for
@@ -1030,14 +1030,18 @@ def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None, 
     _db.replace_matched_videos(slug, all_matched)
 
     # Update creator post counts
-    updated_creators = update_creator_post_counts(creators, all_matched)
+    start_raw = str(meta.get("start_date") or "").strip()
+    countable = round_qualified_videos(
+        all_matched, start_raw, exclude_dismissed=bool(start_raw),
+    )
+    updated_creators = update_creator_post_counts(creators, countable)
     if lease is not None:
         lease.assert_held()
     _db.save_creators(slug, updated_creators)
 
     # Update campaign stats (now with fresh view counts!)
-    total_views = sum(v.get("views", 0) or 0 for v in all_matched)
-    total_likes = sum(v.get("likes", 0) or 0 for v in all_matched)
+    total_views = sum(v.get("views", 0) or 0 for v in countable)
+    total_likes = sum(v.get("likes", 0) or 0 for v in countable)
     if lease is not None:
         lease.assert_held()
     _db.update_campaign_stats(slug, total_views, total_likes)
@@ -1048,7 +1052,7 @@ def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None, 
         "accounts_scraped": len(usernames) + len(ig_usernames),
         "videos_checked": len(all_videos),
         "new_matches": new_count,
-        "total_matches": len(all_matched),
+        "total_matches": len(countable),
     })
 
     # Save daily stats snapshot for dashboard time-series
@@ -1056,8 +1060,8 @@ def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None, 
         from datetime import date as date_type
         cid = _db.get_campaign_id(slug)
         if cid:
-            total_shares = sum(v.get("shares", 0) or 0 for v in all_matched)
-            total_comments = sum(v.get("comments", 0) or 0 for v in all_matched)
+            total_shares = sum(v.get("shares", 0) or 0 for v in countable)
+            total_comments = sum(v.get("comments", 0) or 0 for v in countable)
             if lease is not None:
                 lease.assert_held()
             _db.save_stats_snapshot(
@@ -1067,7 +1071,7 @@ def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None, 
                 likes=total_likes,
                 shares=total_shares,
                 comments=total_comments,
-                post_count=len(all_matched),
+                post_count=len(countable),
             )
     except _db.ScrapeJobLockLost:
         raise
@@ -1076,7 +1080,7 @@ def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None, 
 
     return {
         "new_matches": new_count,
-        "total_matches": len(all_matched),
+        "total_matches": len(countable),
         "videos_checked": len(all_videos),
         "discovered_sound_ids": discovered_sound_ids,
         "strategy_breakdown": strategy_breakdown,
@@ -1454,12 +1458,14 @@ def _attach_internal_to_campaigns(internal_videos: list, lease=None) -> dict:
             attached_count += new_count
             per_campaign[slug] = new_count
 
-            # Refresh campaign-level totals when there were new attaches
-            if new_count > 0:
-                start = round_start_date(attached_meta[slug].get("start_date"))
-                countable = [v for v in all_matched if start is None or (
-                    (posted := video_post_date(v)) is not None and posted >= start
-                )]
+            # Reconcile dated-round totals even when every URL already exists:
+            # old cross-round rows may still be stored from earlier scrapes.
+            start = round_start_date(attached_meta[slug].get("start_date"))
+            if new_count > 0 or start is not None:
+                countable = round_qualified_videos(
+                    all_matched, attached_meta[slug].get("start_date"),
+                    exclude_dismissed=start is not None,
+                )
                 total_views = sum(v.get("views", 0) or 0 for v in countable)
                 total_likes = sum(v.get("likes", 0) or 0 for v in countable)
                 if lease is not None:

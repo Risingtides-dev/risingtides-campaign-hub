@@ -31,6 +31,7 @@ from campaign_manager.utils.helpers import (
     load_json,
     save_json,
     video_posted_before_start,
+    round_qualified_videos,
 )
 from campaign_manager.utils.budget import (
     calc_budget, calc_cpm, calc_stats, creator_rates_complete,
@@ -1265,6 +1266,10 @@ def _refresh_stats_inner(slug: str):
             1 for o in ig_result.outcomes.values() if o.get("status") != "error"
         )
 
+    # The scraper's start hint is not authoritative; apply the same round
+    # eligibility check before matching and before any aggregate write.
+    all_videos = round_qualified_videos(all_videos, meta.get("start_date"))
+
     # Match videos using shared matching logic
     from campaign_manager.services.matching import (
         core_song_name as _csn, match_videos, merge_matched_videos,
@@ -1312,11 +1317,11 @@ def _refresh_stats_inner(slug: str):
     # has flagged as false-positives (issue #32). Falsy dismissed_at
     # (None or "") means active match — count it. The scraper itself
     # doesn't see this flag, so we re-read after the upsert.
-    if _db.is_active():
-        persisted = _db.get_matched_videos(slug)
-        active_matched = [v for v in persisted if not v.get("dismissed_at")]
-    else:
-        active_matched = all_matched
+    persisted = _db.get_matched_videos(slug) if _db.is_active() else all_matched
+    active_matched = round_qualified_videos(
+        persisted, meta.get("start_date"),
+        exclude_dismissed=_db.is_active() or bool(meta.get("start_date")),
+    )
 
     # Update stats (now with fresh view counts!)
     total_views = sum(int(v.get("views", 0)) for v in active_matched)
@@ -1351,7 +1356,7 @@ def _refresh_stats_inner(slug: str):
         f"Scrape complete: {accounts_scraped} accounts scraped, "
         f"{len(all_videos)} videos checked, "
         f"{new_count} new matches found, "
-        f"{len(all_matched)} total matched videos. "
+        f"{len(active_matched)} total matched videos. "
         f"Views: {total_views:,} | Likes: {total_likes:,}"
     )
     if errors:
@@ -1363,7 +1368,7 @@ def _refresh_stats_inner(slug: str):
         "accounts_scraped": accounts_scraped,
         "videos_checked": len(all_videos),
         "new_matches": new_count,
-        "total_matches": len(all_matched),
+        "total_matches": len(active_matched),
     }
     if _db.is_active():
         _db.save_scrape_log(slug, scrape_log)
@@ -1377,7 +1382,7 @@ def _refresh_stats_inner(slug: str):
         "accounts_scraped": accounts_scraped,
         "videos_checked": len(all_videos),
         "new_matches": new_count,
-        "total_matches": len(all_matched),
+        "total_matches": len(active_matched),
         "total_views": total_views,
         "total_likes": total_likes,
         "errors": errors,

@@ -447,3 +447,12 @@ area: [backend], [testing]
 
 Same-sound internal posts previously auto-attached to the latest active campaign regardless of post date, and the client report summed raw historical matched rows. This candidate selects only rounds eligible on the post date and scopes campaign-level stats plus report headline, top-post, creator, and Cobrand outcome totals to eligible stored matches. Historical rows are preserved; missing or malformed post dates do not auto-attach or count in a dated report. A campaign without a start date keeps its legacy report behavior. Focused scheduler/report/stat tests passed 55/55. The full Python suite passed 1004 tests, with eight optional PostgreSQL cases skipped. No scrape, post, PR, merge or deployment occurred. Rollback is a code revert; existing stored rows require no migration.
 _________________________________________________________________________________
+_________________________________________________________________________________
+time: [05:23pm] [10-07-26] EDT; actual UTC: 2026-10-07T21:23:40Z
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/hub-issue46-round-isolation] /Users/smathdaddy-macbook/hub-issue46-round-isolation
+type: [bug report]: issue #46 independent-review follow-up
+area: [backend], [testing], [review]
+
+Independent review found two further round-integrity leaks: a URL-less eligible matched row could join an unrelated URL-less Cobrand outcome, and a dated round with no newly attached URLs could retain contaminated campaign totals. The candidate now requires nonempty normalized URLs for Cobrand outcome joins and reconciles every touched dated round. The same date-eligibility helper scopes scheduled and manual scrape candidates, campaign totals, creator counts, scrape-log counts, response counts, and the scheduled snapshot call arguments. Historical stored rows remain untouched, and no-start legacy behavior remains. Five focused regressions passed; the full Python suite passed 1007 tests with eight optional PostgreSQL tests skipped. The scheduled snapshot call remains best-effort and currently invokes an unimplemented db.save_stats_snapshot method; its side effect is not verified. No live scrape, post, PR, merge or deployment occurred. Rollback is a code revert; no migration is involved.
+_________________________________________________________________________________

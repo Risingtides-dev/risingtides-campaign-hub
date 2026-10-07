@@ -31,6 +31,12 @@ def test_internal_attach_selects_round_at_post_date(monkeypatch):
     assert result["skipped_no_active_campaign"] == 3
     assert totals == {"r1": (100, 0), "r2": (200, 0)}
 
+    # An already-matched URL must still repair stale campaign-level totals.
+    totals["r2"] = (5200, 50)
+    again = scheduler._attach_internal_to_campaigns([videos[1]])
+    assert again["attached_count"] == 0
+    assert totals["r2"] == (200, 0)
+
 
 def test_report_filters_historical_and_undated_rows_from_all_totals(monkeypatch):
     rows = [
@@ -66,3 +72,91 @@ def test_report_filters_historical_and_undated_rows_from_all_totals(monkeypatch)
     legacy = campaign_report.build_report("r2")
     assert legacy["headline"]["post_count"] == 4
     assert legacy["creators"][0]["shares"] == 102
+
+
+def test_round_scoped_cobrand_outcomes_never_join_on_empty_url(monkeypatch):
+    from campaign_manager.services import cobrand_outcomes
+
+    monkeypatch.setattr(cobrand_outcomes, "fetch_submissions", lambda _: [
+        {"url": "", "username": "creator", "shares": 99, "comments": 33},
+        {"url": "r2-post", "username": "creator", "shares": 2, "comments": 3},
+    ])
+    rows = campaign_report._per_creator(
+        [
+            {"url": "", "account": "@creator", "views": 10},
+            {"url": "r2-post", "account": "@creator", "views": 20},
+        ],
+        [{"username": "creator"}],
+        "share",
+        round_scoped=True,
+    )
+    assert rows == [{"username": "creator", "posts": 2, "views": 30, "likes": 0, "shares": 2, "comments": 3}]
+
+
+def test_scheduled_refresh_scopes_stats_creator_counts_and_snapshot(monkeypatch):
+    from campaign_manager.services import matching, tracker_discovery
+
+    old = {"url": "old", "account": "@creator", "timestamp": "2026-04-15T10:00:00", "views": 900, "likes": 90, "shares": 9}
+    current = {"url": "current", "account": "@creator", "timestamp": "2026-05-15T10:00:00", "views": 20, "likes": 2, "shares": 1}
+    persisted = [old, current]
+    creators = [{"username": "creator", "platform": "tiktok", "status": "active"}]
+    writes = {}
+    monkeypatch.setattr(scheduler, "_import_scraper", lambda: (None, lambda *a: None))
+    monkeypatch.setattr(scheduler._db, "get_creators", lambda slug: creators)
+    monkeypatch.setattr(scheduler._db, "get_matched_videos", lambda slug: persisted)
+    monkeypatch.setattr(scheduler._db, "replace_matched_videos", lambda slug, rows: writes.__setitem__("stored", rows))
+    monkeypatch.setattr(scheduler._db, "save_creators", lambda slug, rows: writes.__setitem__("creators", rows))
+    monkeypatch.setattr(scheduler._db, "update_campaign_stats", lambda slug, views, likes: writes.__setitem__("totals", (views, likes)))
+    monkeypatch.setattr(scheduler._db, "save_scrape_log", lambda slug, row: writes.__setitem__("log", row))
+    monkeypatch.setattr(scheduler._db, "get_campaign_id", lambda slug: 1)
+    monkeypatch.setattr(scheduler._db, "save_stats_snapshot", lambda **kw: writes.__setitem__("snapshot", kw), raising=False)
+    monkeypatch.setattr(matching, "match_videos", lambda videos, *args, **kw: videos)
+    monkeypatch.setattr(matching, "discover_original_sounds", lambda *args, **kw: ([], []))
+    monkeypatch.setattr(tracker_discovery, "find_trackers_for_campaign", lambda meta: [])
+    result = scheduler._refresh_single_campaign(
+        "r2", {"sound_id": "123456789012345", "start_date": "2026-05-01"},
+        shared_videos={"creator": [old, current]},
+    )
+    assert result["total_matches"] == 1
+    assert writes["totals"] == (20, 2)
+    assert writes["creators"][0]["posts_done"] == 1
+    assert writes["log"]["total_matches"] == 1
+    assert writes["snapshot"]["views"] == 20
+    assert writes["snapshot"]["shares"] == 1
+    assert writes["snapshot"]["post_count"] == 1
+    assert {v["url"] for v in writes["stored"]} == {"old", "current"}
+
+
+def test_manual_refresh_scopes_existing_rows_and_response(monkeypatch):
+    from flask import Flask
+    from campaign_manager.blueprints import campaigns
+    from campaign_manager.services import matching
+    from src.scrapers import master_tracker
+
+    old = {"url": "old", "account": "@creator", "timestamp": "2026-04-15T10:00:00", "views": 900, "likes": 90}
+    current = {"url": "current", "account": "@creator", "timestamp": "2026-05-15T10:00:00", "views": 20, "likes": 2}
+    persisted = [old, current]
+    writes = {}
+    meta = {"sound_id": "123456789012345", "start_date": "2026-05-01", "song": "Song", "artist": "Artist", "stats": {}}
+    monkeypatch.setattr(campaigns._db, "is_active", lambda: True)
+    monkeypatch.setattr(campaigns._db, "get_campaign", lambda slug: meta)
+    monkeypatch.setattr(campaigns._db, "get_creators", lambda slug: [{"username": "creator", "platform": "tiktok", "status": "active"}])
+    monkeypatch.setattr(campaigns._db, "get_matched_videos", lambda slug: persisted)
+    monkeypatch.setattr(campaigns._db, "replace_matched_videos", lambda slug, rows: writes.__setitem__("stored", rows))
+    monkeypatch.setattr(campaigns._db, "update_campaign_fields", lambda slug, fields: writes.__setitem__("fields", fields))
+    monkeypatch.setattr(campaigns._db, "save_creators", lambda slug, rows: writes.__setitem__("creators", rows))
+    monkeypatch.setattr(campaigns._db, "save_scrape_log", lambda slug, row: writes.__setitem__("log", row))
+    monkeypatch.setattr(master_tracker, "scrape_tiktok_account", lambda *args, **kw: [old, current])
+    monkeypatch.setattr(matching, "match_videos", lambda videos, *args, **kw: videos)
+    app = Flask(__name__)
+    app.register_blueprint(campaigns.campaigns_bp)
+    with app.test_client() as client:
+        response = client.post("/api/campaign/r2/refresh")
+    assert response.status_code == 200, response.get_json()
+    body = response.get_json()
+    assert body["total_matches"] == 1
+    assert (body["total_views"], body["total_likes"]) == (20, 2)
+    assert writes["fields"]["total_views"] == 20
+    assert writes["creators"][0]["posts_done"] == 1
+    assert writes["log"]["total_matches"] == 1
+    assert {v["url"] for v in writes["stored"]} == {"old", "current"}
