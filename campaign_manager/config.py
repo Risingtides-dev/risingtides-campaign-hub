@@ -34,6 +34,9 @@ class Config:
 
     # Scheduler (daily cron)
     SCHEDULER_ENABLED = os.environ.get("SCHEDULER_ENABLED", "false").lower() == "true"
+    CAMPAIGN_REFRESH_SCHEDULER_ENABLED = (
+        os.environ.get("CAMPAIGN_REFRESH_SCHEDULER_ENABLED", "true").lower() == "true"
+    )
     SLACK_CRON_CHANNEL = os.environ.get("SLACK_CRON_CHANNEL", "")
     SLACK_SOUNDS_CHANNEL = os.environ.get("SLACK_SOUNDS_CHANNEL", "")
     CRON_HOUR = int(os.environ.get("CRON_HOUR", "6"))

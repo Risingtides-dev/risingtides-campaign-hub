@@ -532,3 +532,13 @@ area: [backend], [testing], [review]
 
 Final-head review found that missing-only outcomes were described as all scrapes failed, and conflicting normalized aliases could overwrite each other by map order. Conflicting aliases now count as missing regardless of insertion order. A degraded notice distinguishes all reported Instagram errors from no usable Instagram outcome evidence. Focused regressions cover both alias orders and each notice wording. Backend verification: 960 passed, 8 PostgreSQL-only tests skipped without TEST_POSTGRES_DATABASE_URL. No scrape, publication, push, PR, merge or deployment performed.
 _________________________________________________________________________________
+_________________________________________________________________________________
+time: [06:34pm] [10-07-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/campaign-refresh-schedule-toggle] /Users/smathdaddy-macbook/campaign-hub-schedule-toggle
+base: [origin/main] 4a0a0f54adda950da4247c056f3d450fed575bfd
+type: [feature-request]: stage campaign-refresh-only scheduler switch
+area: [backend], [testing], [review]
+
+Added CAMPAIGN_REFRESH_SCHEDULER_ENABLED, default true, and passed it from app config to APScheduler initialization. False omits automatic campaign_refresh registration and starts the persistent SQLAlchemy scheduler paused, removes any retained campaign_refresh job, then resumes the other jobs. Removal failure stops the scheduler and clears its singleton for readiness retry. Manual and on-demand refresh entrypoints, their leases, and receipts were unchanged. Disposable SQLite tests prove an overdue old job cannot fire, other jobs remain, re-enabling registers campaign_refresh, the app forwards the setting, and removal failure never resumes. Backend verification: 945 passed, 8 PostgreSQL-only tests skipped without TEST_POSTGRES_DATABASE_URL. Transition is staged only: Railway remains unchanged until Mac Apify credential and delivery are approved/verified. Rollback is true plus restart and scheduled-job readback. Local disk held roughly 175 MiB available after removing only this agent's regenerable Content Lab test venv; no production environment, scrape, publication, push, PR, merge or deployment was touched.
+_________________________________________________________________________________

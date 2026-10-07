@@ -63,6 +63,7 @@ def _maybe_start_scheduler(app):
             database_url=app.config["DATABASE_URL"],
             hour=app.config.get("CRON_HOUR", 6),
             minute=app.config.get("CRON_MINUTE", 0),
+            campaign_refresh_enabled=app.config.get("CAMPAIGN_REFRESH_SCHEDULER_ENABLED", True),
         )
         # Keep the descriptor open for the process lifetime to retain the lock.
         app._scheduler_lock = lock_file

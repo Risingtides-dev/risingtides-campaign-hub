@@ -233,6 +233,7 @@ def test_scheduler_starts_once_after_schema_repair_recovers_across_apps(monkeypa
         "database_url": "postgresql://synthetic.invalid/campaigns",
         "hour": 6,
         "minute": 0,
+        "campaign_refresh_enabled": True,
     }]
 
 
