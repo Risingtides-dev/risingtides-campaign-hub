@@ -121,6 +121,12 @@ FREEZE_TMP=""
 write_status null "scraping" 0
 "$PY" scripts/pi_active_campaigns_scrape.py --run --write-report --export --no-proxy
 rc=$?
+if [[ $rc -eq 76 ]]; then
+  write_status null "skipped" 0
+  print -- "[pi_scrape_hourly] skipped: another campaign refresh owns the Hub lease at $(stamp)"
+  exit 0
+fi
+[[ $rc -eq 77 ]] && fail "export-exit" "$rc"
 [[ $rc -eq 0 ]] || fail "scrape-exit" "$rc"
 
 write_status true "completed" 0

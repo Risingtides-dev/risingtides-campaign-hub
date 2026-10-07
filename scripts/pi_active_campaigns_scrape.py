@@ -211,23 +211,38 @@ def main() -> int:
                     or ([summary.get("error")] if summary.get("error") else [])
                 )[:10],
             }
+            status = refresh_result.get("status")
+            report["scrape_outcome"] = status
             report["ok"] = (
-                refresh_result.get("status") == "completed"
-                and not bool(summary.get("degraded"))
+                status == "skipped" and summary.get("reason") == "already_running"
+            ) or (
+                status == "completed" and not bool(summary.get("degraded"))
             )
+            if status == "skipped":
+                report["skipped"] = True
+                report["skip_reason"] = summary.get("reason")
         else:
             report["ok"] = True
 
-        if args.export:
+        if args.export and not report.get("skipped"):
+            core_ok = bool(report["ok"])
             report["export"] = export_queue()
-            report["ok"] = bool(report["ok"] and report["export"].get("ok"))
+            report["ok"] = bool(core_ok and report["export"].get("ok"))
+            if core_ok and not report["export"].get("ok"):
+                report["failure_stage"] = "export"
 
         report["finished_at"] = now_iso()
         report["duration_seconds"] = round(time.monotonic() - started, 1)
         if args.write_report:
             write_json(run_dir / "report.json", report)
         print(json.dumps(report, indent=2, sort_keys=True, default=str))
-        return 0 if report["ok"] else 1
+        # The launchd wrapper maps this reserved no-op code to a neutral
+        # skipped status rather than a completed or failed scrape.
+        return (
+            76 if report.get("ok") and report.get("skip_reason") == "already_running"
+            else 77 if report.get("failure_stage") == "export"
+            else 0 if report["ok"] else 1
+        )
     except FileExistsError:
         report.update({
             "ok": False,

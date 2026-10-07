@@ -11,9 +11,10 @@ from __future__ import annotations
 import logging
 import os
 import re
-import threading
+import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Set
+from typing import Optional
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -256,9 +257,6 @@ def _scrape_creator_accounts_v2(usernames, start_date=None, max_workers=DEFAULT_
 EST = ZoneInfo("America/New_York")
 
 _scheduler: Optional[BackgroundScheduler] = None
-_running_jobs: Set[str] = set()
-_running_lock = threading.Lock()
-
 
 # ── Scheduler lifecycle ──────────────────────────────────────────────
 
@@ -475,29 +473,115 @@ def toggle_scheduler(enabled: bool):
         log.info("Scheduler paused")
 
 
-def trigger_job(job_type: str):
-    """Manually trigger a job right now. Prevents concurrent runs of the same job."""
-    with _running_lock:
-        if job_type in _running_jobs:
-            log.warning("Job %s is already running, skipping trigger", job_type)
-            return
-        _running_jobs.add(job_type)
-
-    try:
-        if job_type == "campaign_refresh":
-            run_campaign_refresh()
-        elif job_type == "internal_scrape":
-            run_internal_scrape()
-        else:
-            raise ValueError(f"Unknown job type: {job_type}")
-    finally:
-        with _running_lock:
-            _running_jobs.discard(job_type)
+def trigger_job(job_type: str, request_log_id: int | None = None):
+    """Run an accepted manual request and update its durable cron receipt."""
+    if job_type == "campaign_refresh":
+        return run_campaign_refresh(request_log_id=request_log_id)
+    if job_type == "internal_scrape":
+        return run_internal_scrape(request_log_id=request_log_id)
+    raise ValueError(f"Unknown job type: {job_type}")
 
 
 # ── Job 1: Campaign Refresh ──────────────────────────────────────────
 
-def run_campaign_refresh(only_slugs=None, on_progress=None) -> dict:
+def _active_run_id(job_type: str) -> int | None:
+    try:
+        return _db.active_cron_log_id(job_type)
+    except Exception:
+        log.warning("CRON: active run receipt unavailable for %s", job_type, exc_info=True)
+        return None
+
+
+def _finish_unstarted_request(request_log_id: int | None, status: str, summary: dict) -> None:
+    if request_log_id is None:
+        return
+    try:
+        _db.transition_cron_log(request_log_id, "queued", status, summary)
+    except Exception:
+        log.exception("CRON: could not finish accepted request %s", request_log_id)
+
+
+CAPACITY_WAIT_SECONDS = 3600
+
+
+class ScrapeCapacityTimeout(TimeoutError):
+    """A distinct scrape could not claim shared capacity within the bound."""
+
+
+class _CombinedScrapeLease:
+    def __init__(self, job_lease, capacity_lease):
+        self.job_lease = job_lease
+        self.capacity_lease = capacity_lease
+
+    def assert_held(self):
+        self.job_lease.assert_held()
+        self.capacity_lease.assert_held()
+
+
+@contextmanager
+def _wait_for_scrape_capacity(job_lease):
+    """Bounded shared scraper admission; unlike duplicate jobs, distinct jobs wait."""
+    deadline = time.monotonic() + CAPACITY_WAIT_SECONDS
+    delay = 0.5
+    while True:
+        job_lease.assert_held()
+        with _db.scrape_job_lease("scrape_capacity") as capacity_lease:
+            if capacity_lease is not None:
+                yield _CombinedScrapeLease(job_lease, capacity_lease)
+                return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ScrapeCapacityTimeout("shared scrape capacity wait expired")
+        time.sleep(min(delay, remaining))
+        delay = min(delay * 2, 15.0)
+
+
+def _begin_scrape_run(job_type: str, request_log_id: int | None) -> int | None:
+    log_id = request_log_id if request_log_id is not None else _db.create_cron_log(
+        job_type, status="queued"
+    )
+    if not _db.transition_cron_log(log_id, "queued", "running"):
+        log.warning("CRON: %s request %s was already closed", job_type, log_id)
+        return None
+    return log_id
+
+
+def run_campaign_refresh(only_slugs=None, on_progress=None, request_log_id: int | None = None) -> dict:
+    """Run one refresh across scheduler, manual and on-demand entrypoints."""
+    try:
+        with _db.scrape_job_lease("campaign_refresh") as lease:
+            if lease is None:
+                summary = {"reason": "already_running"}
+                active_id = _active_run_id("campaign_refresh")
+                if active_id is not None:
+                    summary["active_log_id"] = active_id
+                _finish_unstarted_request(request_log_id, "skipped", summary)
+                log.warning("CRON: campaign_refresh already running; skipping duplicate")
+                return {"status": "skipped", "summary": summary}
+            if request_log_id is None:
+                request_log_id = _db.create_cron_log("campaign_refresh", status="queued")
+            with _wait_for_scrape_capacity(lease) as guarded_lease:
+                log_id = _begin_scrape_run("campaign_refresh", request_log_id)
+                if log_id is None:
+                    return {"status": "skipped", "summary": {"reason": "request_expired"}}
+                return _run_campaign_refresh(only_slugs, on_progress, guarded_lease, log_id)
+    except ScrapeCapacityTimeout as exc:
+        _finish_unstarted_request(request_log_id, "failed", {"error": str(exc)})
+        log.error("CRON: campaign_refresh capacity wait expired: %s", exc)
+        return {"status": "failed", "summary": {"error": str(exc)}}
+    except _db.ScrapeJobLockLost as exc:
+        _finish_unstarted_request(request_log_id, "failed", {"error": str(exc)})
+        log.error("CRON: campaign_refresh lock lost; aborted: %s", exc)
+        return {"status": "failed", "summary": {"error": str(exc)}}
+    except Exception:
+        _finish_unstarted_request(
+            request_log_id, "failed", {"error": "scrape job lock unavailable"}
+        )
+        log.exception("CRON: campaign_refresh lock unavailable; refusing to run")
+        return {"status": "failed", "summary": {"error": "scrape job lock unavailable"}}
+
+
+def _run_campaign_refresh(only_slugs, on_progress, lease, request_log_id=None) -> dict:
     """Refresh active campaigns: scrape creators via yt-dlp, run matching, update stats.
 
     only_slugs: optional iterable of campaign slugs to limit the refresh to
@@ -510,7 +594,7 @@ def run_campaign_refresh(only_slugs=None, on_progress=None) -> dict:
     """
     log.info("CRON: starting campaign_refresh%s",
              f" (scoped to {list(only_slugs)})" if only_slugs else "")
-    log_id = _db.create_cron_log("campaign_refresh")
+    log_id = request_log_id if request_log_id is not None else _db.create_cron_log("campaign_refresh")
 
     campaigns_total = 0
     campaigns_refreshed = 0
@@ -608,7 +692,8 @@ def run_campaign_refresh(only_slugs=None, on_progress=None) -> dict:
         for meta in campaigns:
             slug = meta.get("slug", "")
             try:
-                result = _refresh_single_campaign(slug, meta, shared_videos=shared_videos)
+                lease.assert_held()
+                result = _refresh_single_campaign(slug, meta, shared_videos=shared_videos, lease=lease)
                 campaigns_refreshed += 1
                 total_new_matches += result.get("new_matches", 0)
                 total_videos_checked += result.get("videos_checked", 0)
@@ -624,6 +709,8 @@ def run_campaign_refresh(only_slugs=None, on_progress=None) -> dict:
                         "title": meta.get("title") or meta.get("name") or slug,
                         "links": result["new_match_links"],
                     }
+            except _db.ScrapeJobLockLost:
+                raise
             except Exception as e:
                 campaigns_failed += 1
                 errors.append(f"{slug}: {e}")
@@ -644,6 +731,7 @@ def run_campaign_refresh(only_slugs=None, on_progress=None) -> dict:
             from campaign_manager.services.tides_tracker import (
                 auto_track_submitted_videos,
             )
+            lease.assert_held()
             dedupe_result = auto_track_submitted_videos(triggered_by="cron")
             auto_dedupe_stats = {
                 "trackers_polled": dedupe_result.trackers_polled,
@@ -659,6 +747,8 @@ def run_campaign_refresh(only_slugs=None, on_progress=None) -> dict:
                 dedupe_result.submission_ids_found,
                 dedupe_result.queue_rows_auto_tracked,
             )
+        except _db.ScrapeJobLockLost:
+            raise
         except Exception as e:
             # Dedupe is a hygiene pass; never let it sink the whole cron run.
             log.warning("CRON: auto-dedupe failed (non-fatal): %s", e)
@@ -704,6 +794,7 @@ def run_campaign_refresh(only_slugs=None, on_progress=None) -> dict:
             "auto_dedupe": auto_dedupe_stats,
         }
 
+        lease.assert_held()
         _db.finish_cron_log(log_id, "completed", summary)
         _post_campaign_refresh_slack(summary)
         _post_new_matches_digest_slack(new_matches_by_campaign)
@@ -732,7 +823,7 @@ def run_campaign_refresh(only_slugs=None, on_progress=None) -> dict:
         }
 
 
-def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None) -> dict:
+def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None, lease=None) -> dict:
     """Refresh a single campaign using yt-dlp + HTML sound extraction (free).
 
     Pipeline:
@@ -844,6 +935,8 @@ def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None) 
 
     # Auto-add discovered sounds to campaign (only happens in fuzzy mode now)
     if discovered_sound_ids:
+        if lease is not None:
+            lease.assert_held()
         _save_discovered_sounds(slug, meta, discovered_sound_ids)
 
     # Cobrand cross-check — for every tracker that covers any of this
@@ -929,17 +1022,25 @@ def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None) 
         if isinstance(v.get("timestamp"), datetime):
             v["timestamp"] = v["timestamp"].isoformat()
 
+    if lease is not None:
+        lease.assert_held()
     _db.replace_matched_videos(slug, all_matched)
 
     # Update creator post counts
     updated_creators = update_creator_post_counts(creators, all_matched)
+    if lease is not None:
+        lease.assert_held()
     _db.save_creators(slug, updated_creators)
 
     # Update campaign stats (now with fresh view counts!)
     total_views = sum(v.get("views", 0) or 0 for v in all_matched)
     total_likes = sum(v.get("likes", 0) or 0 for v in all_matched)
+    if lease is not None:
+        lease.assert_held()
     _db.update_campaign_stats(slug, total_views, total_likes)
 
+    if lease is not None:
+        lease.assert_held()
     _db.save_scrape_log(slug, {
         "accounts_scraped": len(usernames) + len(ig_usernames),
         "videos_checked": len(all_videos),
@@ -954,6 +1055,8 @@ def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None) 
         if cid:
             total_shares = sum(v.get("shares", 0) or 0 for v in all_matched)
             total_comments = sum(v.get("comments", 0) or 0 for v in all_matched)
+            if lease is not None:
+                lease.assert_held()
             _db.save_stats_snapshot(
                 campaign_id=cid,
                 snapshot_date=date_type.today(),
@@ -963,6 +1066,8 @@ def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None) 
                 comments=total_comments,
                 post_count=len(all_matched),
             )
+    except _db.ScrapeJobLockLost:
+        raise
     except Exception as e:
         log.warning("CRON: stats snapshot failed for %s: %s", slug, e)
 
@@ -1016,10 +1121,45 @@ def _filter_by_date(videos, start_date):
 
 # ── Job 2: Internal Scrape ───────────────────────────────────────────
 
-def run_internal_scrape():
+def run_internal_scrape(request_log_id: int | None = None):
+    """Run one internal scrape across scheduler and manual entrypoints."""
+    try:
+        with _db.scrape_job_lease("internal_scrape") as lease:
+            if lease is None:
+                summary = {"reason": "already_running"}
+                active_id = _active_run_id("internal_scrape")
+                if active_id is not None:
+                    summary["active_log_id"] = active_id
+                _finish_unstarted_request(request_log_id, "skipped", summary)
+                log.warning("CRON: internal_scrape already running; skipping duplicate")
+                return {"status": "skipped", "summary": summary}
+            if request_log_id is None:
+                request_log_id = _db.create_cron_log("internal_scrape", status="queued")
+            with _wait_for_scrape_capacity(lease) as guarded_lease:
+                log_id = _begin_scrape_run("internal_scrape", request_log_id)
+                if log_id is None:
+                    return {"status": "skipped", "summary": {"reason": "request_expired"}}
+                return _run_internal_scrape(guarded_lease, log_id)
+    except ScrapeCapacityTimeout as exc:
+        _finish_unstarted_request(request_log_id, "failed", {"error": str(exc)})
+        log.error("CRON: internal_scrape capacity wait expired: %s", exc)
+        return {"status": "failed", "summary": {"error": str(exc)}}
+    except _db.ScrapeJobLockLost as exc:
+        _finish_unstarted_request(request_log_id, "failed", {"error": str(exc)})
+        log.error("CRON: internal_scrape lock lost; aborted: %s", exc)
+        return {"status": "failed", "summary": {"error": str(exc)}}
+    except Exception:
+        _finish_unstarted_request(
+            request_log_id, "failed", {"error": "scrape job lock unavailable"}
+        )
+        log.exception("CRON: internal_scrape lock unavailable; refusing to run")
+        return {"status": "failed", "summary": {"error": "scrape job lock unavailable"}}
+
+
+def _run_internal_scrape(lease, request_log_id=None):
     """Scrape all internal creators, update caches and song groupings."""
     log.info("CRON: starting internal_scrape")
-    log_id = _db.create_cron_log("internal_scrape")
+    log_id = request_log_id if request_log_id is not None else _db.create_cron_log("internal_scrape")
 
     try:
         creators = _db.get_internal_creators()
@@ -1074,9 +1214,12 @@ def run_internal_scrape():
             try:
                 creator_lower = creator.lower()
                 creator_videos = by_account.get(creator_lower, [])
+                lease.assert_held()
                 _db.merge_internal_cache(creator_lower, creator_videos)
                 if creator_videos:
                     accounts_successful += 1
+            except _db.ScrapeJobLockLost:
+                raise
             except Exception as e:
                 accounts_failed += 1
                 log.warning("CRON: internal cache merge failed for %s: %s", creator, e)
@@ -1142,6 +1285,7 @@ def run_internal_scrape():
             sanitized_songs.append(entry_copy)
 
         # Save results
+        lease.assert_held()
         _db.save_internal_results({
             "hours": 48,
             "start_dt": cutoff.replace(tzinfo=None).isoformat(),
@@ -1173,13 +1317,17 @@ def run_internal_scrape():
         # in the campaign's tracking queue, not just the internal song
         # discovery view.
         try:
-            campaign_attach_summary = _attach_internal_to_campaigns(filtered)
+            lease.assert_held()
+            campaign_attach_summary = _attach_internal_to_campaigns(filtered, lease=lease)
             summary_attach_info = campaign_attach_summary
+        except _db.ScrapeJobLockLost:
+            raise
         except Exception as e:
             log.error("CRON: internal->campaign attach failed: %s", e)
             summary_attach_info = {"error": str(e)}
 
         summary["campaign_attach"] = summary_attach_info
+        lease.assert_held()
         _db.finish_cron_log(log_id, "completed", summary)
         _post_internal_scrape_slack(summary)
         log.info(
@@ -1196,7 +1344,7 @@ def run_internal_scrape():
         log.error("CRON: internal_scrape failed: %s", e)
 
 
-def _attach_internal_to_campaigns(internal_videos: list) -> dict:
+def _attach_internal_to_campaigns(internal_videos: list, lease=None) -> dict:
     """For each internal-scrape video whose sound ID matches an active
     campaign sound, attach it to that campaign's matched_videos.
 
@@ -1289,6 +1437,8 @@ def _attach_internal_to_campaigns(internal_videos: list) -> dict:
             for v in all_matched:
                 if isinstance(v.get("timestamp"), datetime):
                     v["timestamp"] = v["timestamp"].isoformat()
+            if lease is not None:
+                lease.assert_held()
             _db.replace_matched_videos(slug, all_matched)
             attached_count += new_count
             per_campaign[slug] = new_count
@@ -1297,7 +1447,11 @@ def _attach_internal_to_campaigns(internal_videos: list) -> dict:
             if new_count > 0:
                 total_views = sum(v.get("views", 0) or 0 for v in all_matched)
                 total_likes = sum(v.get("likes", 0) or 0 for v in all_matched)
+                if lease is not None:
+                    lease.assert_held()
                 _db.update_campaign_stats(slug, total_views, total_likes)
+        except _db.ScrapeJobLockLost:
+            raise
         except Exception as e:
             log.warning(
                 "CRON: failed to attach internal videos to %s: %s", slug, e

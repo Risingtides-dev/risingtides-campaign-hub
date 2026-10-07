@@ -36,7 +36,7 @@ def _prune_locked() -> None:
     now = time.monotonic()
     stale = [
         jid for jid, j in _jobs.items()
-        if j.get("state") in ("done", "error")
+        if j.get("state") in ("done", "error", "skipped")
         and (now - j.get("_ended_mono", now)) > _JOB_TTL_SECS
     ]
     for jid in stale:
@@ -111,8 +111,9 @@ def _run(job_id: str, only_slugs: Optional[List[str]]) -> None:
         with _jobs_lock:
             j = _jobs.get(job_id)
             if j is not None:
-                failed = result.get("status") == "failed"
-                j["state"] = "error" if failed else "done"
+                status = result.get("status")
+                failed = status == "failed"
+                j["state"] = "error" if failed else ("skipped" if status == "skipped" else "done")
                 j["result"] = result
                 if failed:
                     j["error"] = (result.get("summary") or {}).get("error") or "campaign refresh failed"

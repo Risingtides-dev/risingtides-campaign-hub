@@ -588,7 +588,7 @@ export const api = {
     ),
 
   triggerCron: (job_type: "campaign_refresh" | "internal_scrape") =>
-    request<{ status: string; job_type: string }>("/api/cron/trigger", {
+    request<{ status: string; job_type?: string; log_id?: number }>("/api/cron/trigger", {
       method: "POST",
       body: JSON.stringify({ job_type }),
     }),
