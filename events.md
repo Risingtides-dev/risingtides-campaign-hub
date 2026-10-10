@@ -551,3 +551,12 @@ area: [backend], [testing], [review]
 
 Railway campaign_refresh calls master_tracker.scrape_tiktok_account through scheduler._scrape_creator_accounts_v2. A nonzero yt-dlp exit, empty stdout, timeout, or exception previously returned [] or cached rows; the scheduler then recorded that creator as empty or ok. The isolated repair raises fixed-reason TikTokScrapeError, retries once with bounded backoff, preserves cached rows for matching without treating them as fresh fetch success, and persists sanitized per-creator outcomes in the cron summary. A >70% source-failure rate across at least six creators now marks the run degraded. Synthetic tests cover source errors, secret redaction, cache retention, valid date-filtered empty results, bounded retry and durable cron outcome. Focused 42 passed; full backend 1046 passed with eight existing opt-in PostgreSQL tests skipped because TEST_POSTGRES_DATABASE_URL was not supplied. No real scrape, credential change, schedule change, push, PR, merge, or deployment occurred. Independent review remains required before release.
 _________________________________________________________________________________
+_________________________________________________________________________________
+time: [12:23am] [10-10-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/hub-tiktok-source-outcomes] /Users/risingtidesdev/worktrees/hub-tiktok-source-outcomes
+type: [bug report]: mark complete small-roster TikTok source failure degraded
+area: [backend], [testing]
+
+Pre-review edge check showed that a sole requested creator failing to fetch would still report degraded=false under the fleet-size threshold. Complete source failure now degrades any nonempty requested TikTok roster; the >70% threshold remains for larger partial failures. Focused synthetic checks passed 42 and diff check passed. No live scrape or release action occurred.
+_________________________________________________________________________________

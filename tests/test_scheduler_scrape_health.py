@@ -253,6 +253,7 @@ def test_source_failure_preserves_cached_rows_but_records_error(monkeypatch):
 
 def test_source_failure_majority_degrades_even_with_prior_work():
     assert _degraded({"ok": 2, "empty": 0, "error": 8}) is True
+    assert _degraded({"ok": 0, "empty": 0, "error": 1}, total_creators=1) is True
 
 
 def test_source_failure_outcome_is_durable_in_cron_summary(monkeypatch):

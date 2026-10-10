@@ -122,6 +122,7 @@ def _scrape_run_is_degraded(
     return bool(
         instagram_complete_failure
         or (empty_rate > 0.7 and total_creators > 5)
+        or (total_creators > 0 and source_failure_rate == 1.0)
         or (source_failure_rate > 0.7 and total_creators > 5)
         or (native_crash_rate > 0.2 and total_creators > 5)
         or (
