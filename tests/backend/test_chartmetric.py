@@ -711,6 +711,30 @@ class TestPopScoreEndpoints:
             events = client.get(f"/api/campaign/{slug}/pop-score").get_json()["post_events"]
         assert events == [{"date": "2026-09-06", "count": 1}]
 
+    def test_post_events_exclude_later_round_even_when_completed(self, client):
+        from campaign_manager import db
+        from campaign_manager.models import Campaign
+        first = self._campaign(client, start="2026-09-01", title="First Window")
+        second = self._campaign(client, start="2026-09-05", title="Second Window")
+        with db.get_session() as session:
+            earlier = session.query(Campaign).filter_by(slug=first).one()
+            earlier.sound_id = "1234567890"
+            earlier.additional_sounds = ["2222222222"]
+            later = session.query(Campaign).filter_by(slug=second).one()
+            later.sound_id = "1234567890"
+            later.completion_status = "completed"
+            session.commit()
+        db.save_matched_videos(first, [
+            {"url": "https://tiktok/first", "upload_date": "20260903"},
+            {"url": "https://tiktok/second", "upload_date": "20260906"},
+            {"url": "https://tiktok/secondary", "upload_date": "20260907", "music_id": "2222222222"},
+        ])
+        fake = self._fake()
+        with patch.object(cm, "get_client", return_value=fake):
+            client.post(f"/api/campaign/{first}/pop-score/track", json={"link": "USUM72403305"})
+            events = client.get(f"/api/campaign/{first}/pop-score").get_json()["post_events"]
+        assert events == [{"date": "2026-09-03", "count": 1}, {"date": "2026-09-07", "count": 1}]
+
     def test_two_campaigns_alternating_through_one_real_client_stay_segmented(self, client):
         from campaign_manager import db
         a, b = self._campaign(client, "2026-09-01"), self._campaign(client, "2026-09-01", title="Second Pop Test")

@@ -21,6 +21,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 
 from campaign_manager import db as _db
+from campaign_manager.services.apify_instagram import clean_username
+from campaign_manager.utils.helpers import build_round_end_by_slug, round_end_for_video, round_qualified_videos
 
 log = logging.getLogger(__name__)
 
@@ -99,6 +101,7 @@ def _scrape_run_is_degraded(
     campaigns_refreshed: int,
     total_new_matches: int,
     total_videos_checked: int,
+    instagram_complete_failure: bool = False,
 ) -> bool:
     """Return whether scrape results are unsafe to report as healthy."""
     empty_rate = (
@@ -112,7 +115,8 @@ def _scrape_run_is_degraded(
         else 0.0
     )
     return bool(
-        (empty_rate > 0.7 and total_creators > 5)
+        instagram_complete_failure
+        or (empty_rate > 0.7 and total_creators > 5)
         or (native_crash_rate > 0.2 and total_creators > 5)
         or (
             campaigns_refreshed > 5
@@ -120,6 +124,27 @@ def _scrape_run_is_degraded(
             and total_videos_checked == 0
         )
     )
+
+
+def _instagram_outcome_counts(requested: set[str], outcomes: dict) -> dict[str, int]:
+    """Count only requested creators; absence/unknown status is not success."""
+    names = {clean_username(name) for name in requested}
+    names.discard("")
+    normalized: dict[str, set[str]] = {}
+    for raw_name, outcome in outcomes.items():
+        name = clean_username(raw_name)
+        if not name or name not in names:
+            continue
+        status = outcome.get("status") if isinstance(outcome, dict) else None
+        normalized.setdefault(name, set()).add(
+            status if isinstance(status, str) and status in {"ok", "empty", "error"}
+            else "missing"
+        )
+    counts = {"ok": 0, "empty": 0, "error": 0, "missing": 0}
+    for name in names:
+        statuses = normalized.get(name, set())
+        counts[next(iter(statuses)) if len(statuses) == 1 else "missing"] += 1
+    return counts
 
 
 def _scrape_creator_accounts(usernames, start_date=None, max_workers=DEFAULT_MAX_WORKERS):
@@ -260,7 +285,10 @@ _scheduler: Optional[BackgroundScheduler] = None
 
 # ── Scheduler lifecycle ──────────────────────────────────────────────
 
-def init_scheduler(database_url: str, hour: int = 6, minute: int = 0):
+def init_scheduler(
+    database_url: str, hour: int = 6, minute: int = 0,
+    campaign_refresh_enabled: bool = True,
+):
     """Initialize and start the APScheduler BackgroundScheduler.
 
     Only one gunicorn worker runs the scheduler (enforced by file lock in create_app).
@@ -294,15 +322,16 @@ def init_scheduler(database_url: str, hour: int = 6, minute: int = 0):
     if internal_hour >= 24:
         internal_hour = internal_hour % 24
 
-    _scheduler.add_job(
-        run_campaign_refresh,
-        "cron",
-        hour=hour,
-        minute=minute,
-        id="campaign_refresh",
-        replace_existing=True,
-        misfire_grace_time=3600,
-    )
+    if campaign_refresh_enabled:
+        _scheduler.add_job(
+            run_campaign_refresh,
+            "cron",
+            hour=hour,
+            minute=minute,
+            id="campaign_refresh",
+            replace_existing=True,
+            misfire_grace_time=3600,
+        )
 
     _scheduler.add_job(
         run_internal_scrape,
@@ -433,13 +462,31 @@ def init_scheduler(database_url: str, hour: int = 6, minute: int = 0):
         kwargs={"threshold_minutes": reap_threshold},
     )
 
-    _scheduler.start()
+    try:
+        if campaign_refresh_enabled:
+            _scheduler.start()
+        else:
+            # Persistent SQLAlchemy jobstores can retain the old cron job across
+            # deploys. Load them while paused, remove it, then allow any due jobs
+            # to run; never expose the old campaign job to a running scheduler.
+            _scheduler.start(paused=True)
+            if _scheduler.get_job("campaign_refresh") is not None:
+                _scheduler.remove_job("campaign_refresh")
+            _scheduler.resume()
+    except Exception:
+        # A failed removal must not be retried by resuming a stale scheduler.
+        # Clear the singleton so the readiness path can retry initialization.
+        if _scheduler.running:
+            _scheduler.shutdown(wait=False)
+        _scheduler = None
+        raise
     log.info(
-        "Scheduler started: campaign_refresh at %02d:%02d, internal_scrape at "
+        "Scheduler started: campaign_refresh enabled=%s at %02d:%02d, internal_scrape at "
         "%02d:%02d EST, notion_sync every %d minutes, crm_sync every %d minutes, "
         "tides_tracker_pull every %d minutes, "
         "cron_log_janitor every 5 minutes (threshold=%d min)",
-        hour, minute, internal_hour, internal_minute, notion_interval, crm_interval,
+        campaign_refresh_enabled, hour, minute, internal_hour, internal_minute,
+        notion_interval, crm_interval,
         tides_interval, reap_threshold,
     )
 
@@ -576,6 +623,9 @@ def run_campaign_refresh(only_slugs=None, on_progress=None, request_log_id: int 
                 return {"status": "skipped", "summary": summary}
             if request_log_id is None:
                 request_log_id = _db.create_cron_log("campaign_refresh", status="queued")
+            if lease.backend_pid is not None and not _db.bind_cron_log_to_scrape_lease(
+                    request_log_id, "campaign_refresh", lease):
+                return {"status": "skipped", "summary": {"reason": "request_expired"}}
             with _wait_for_scrape_capacity(lease) as guarded_lease:
                 log_id = _begin_scrape_run("campaign_refresh", request_log_id)
                 if log_id is None:
@@ -622,7 +672,9 @@ def _run_campaign_refresh(only_slugs, on_progress, lease, request_log_id=None) -
     per_campaign = {}
 
     try:
-        campaigns = _db.list_campaigns(exclude_completed=True)
+        all_campaigns = _db.list_campaigns(exclude_completed=False)
+        round_ends = build_round_end_by_slug(all_campaigns)
+        campaigns = [c for c in all_campaigns if c.get("completion_status") != "completed"]
         if only_slugs:
             wanted = {s for s in only_slugs}
             campaigns = [c for c in campaigns if c.get("slug", "") in wanted]
@@ -709,7 +761,10 @@ def _run_campaign_refresh(only_slugs, on_progress, lease, request_log_id=None) -
             slug = meta.get("slug", "")
             try:
                 lease.assert_held()
-                result = _refresh_single_campaign(slug, meta, shared_videos=shared_videos, lease=lease)
+                result = _refresh_single_campaign(
+                    slug, meta, shared_videos=shared_videos, lease=lease,
+                    round_end=round_ends.get(slug),
+                )
                 campaigns_refreshed += 1
                 total_new_matches += result.get("new_matches", 0)
                 total_videos_checked += result.get("videos_checked", 0)
@@ -776,6 +831,11 @@ def _run_campaign_refresh(only_slugs, on_progress, lease, request_log_id=None) -
         #    new. Could be legit (slow day) but combined with high empty rate
         #    means the system is broken, not just quiet.
         total_creators_scraped = len(scrape_outcomes)
+        instagram_counts = _instagram_outcome_counts(ig_usernames, ig_outcomes)
+        instagram_total = sum(instagram_counts.values())
+        instagram_complete_failure = instagram_total > 0 and not (
+            instagram_counts["ok"] or instagram_counts["empty"]
+        )
         empty_rate = (
             outcome_counts["empty"] / total_creators_scraped
             if total_creators_scraped > 0
@@ -787,6 +847,7 @@ def _run_campaign_refresh(only_slugs, on_progress, lease, request_log_id=None) -
             campaigns_refreshed=campaigns_refreshed,
             total_new_matches=total_new_matches,
             total_videos_checked=total_videos_checked,
+            instagram_complete_failure=instagram_complete_failure,
         )
 
         summary = {
@@ -800,10 +861,9 @@ def _run_campaign_refresh(only_slugs, on_progress, lease, request_log_id=None) -
             "per_campaign": per_campaign,
             # New observability fields
             "scrape_outcome_counts": outcome_counts,
-            "instagram_outcome_counts": {
-                st: sum(1 for o in ig_outcomes.values() if o.get("status") == st)
-                for st in ("ok", "empty", "error")
-            },
+            "instagram_outcome_counts": instagram_counts,
+            "instagram_creators_total": instagram_total,
+            "instagram_complete_failure": instagram_complete_failure,
             "creators_scraped_total": total_creators_scraped,
             "empty_creator_rate": round(empty_rate, 3),
             "degraded": is_degraded,
@@ -839,7 +899,8 @@ def _run_campaign_refresh(only_slugs, on_progress, lease, request_log_id=None) -
         }
 
 
-def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None, lease=None) -> dict:
+def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None, lease=None,
+                             round_end=None) -> dict:
     """Refresh a single campaign using yt-dlp + HTML sound extraction (free).
 
     Pipeline:
@@ -870,7 +931,30 @@ def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None, 
     ig_usernames = [c["username"] for c in active if c.get("platform") == "instagram"]
 
     if not usernames and not ig_usernames:
-        return {"new_matches": 0, "total_matches": len(existing_videos), "videos_checked": 0}
+        start_raw = str(meta.get("start_date") or "").strip()
+        countable = round_qualified_videos(
+            existing_videos, start_raw, end_date=round_end,
+            exclude_dismissed=bool(start_raw),
+        )
+        if start_raw:
+            # No scrape can run, but old cross-round rows may still leave the
+            # stored aggregates contaminated. Reconcile without touching rows.
+            if lease is not None:
+                lease.assert_held()
+            _db.save_creators(
+                slug, update_creator_post_counts(creators, countable),
+            )
+            if lease is not None:
+                lease.assert_held()
+            _db.update_campaign_fields(slug, {
+                "total_views": sum(v.get("views", 0) or 0 for v in countable),
+                "total_likes": sum(v.get("likes", 0) or 0 for v in countable),
+            })
+        return {
+            "new_matches": 0,
+            "total_matches": len(countable),
+            "videos_checked": 0,
+        }
 
     # Step 1: Get videos — use shared cache if available, otherwise scrape
     if shared_videos is not None:
@@ -917,14 +1001,9 @@ def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None, 
             for err in scrape_errors[:5]:
                 log.warning("CRON: scrape error for %s: %s", slug, err)
 
-    # Filter by campaign start_date
-    start_date_str = meta.get("start_date", "")
-    if start_date_str:
-        try:
-            scrape_start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
-            all_videos = _filter_by_date(all_videos, scrape_start_date)
-        except ValueError:
-            pass
+    # Scope candidates before matching; malformed dates cannot prove round
+    # membership. No-start campaigns retain the full legacy candidate set.
+    all_videos = round_qualified_videos(all_videos, meta.get("start_date"), end_date=round_end)
 
     # Step 3: Match using strategy specified by the campaign.
     # "strict" disables fuzzy fallback + auto-discovery. Critical for
@@ -1043,14 +1122,19 @@ def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None, 
     _db.replace_matched_videos(slug, all_matched)
 
     # Update creator post counts
-    updated_creators = update_creator_post_counts(creators, all_matched)
+    start_raw = str(meta.get("start_date") or "").strip()
+    countable = round_qualified_videos(
+        all_matched, start_raw, end_date=round_end,
+        exclude_dismissed=bool(start_raw),
+    )
+    updated_creators = update_creator_post_counts(creators, countable)
     if lease is not None:
         lease.assert_held()
     _db.save_creators(slug, updated_creators)
 
     # Update campaign stats (now with fresh view counts!)
-    total_views = sum(v.get("views", 0) or 0 for v in all_matched)
-    total_likes = sum(v.get("likes", 0) or 0 for v in all_matched)
+    total_views = sum(v.get("views", 0) or 0 for v in countable)
+    total_likes = sum(v.get("likes", 0) or 0 for v in countable)
     if lease is not None:
         lease.assert_held()
     _db.update_campaign_stats(slug, total_views, total_likes)
@@ -1061,35 +1145,12 @@ def _refresh_single_campaign(slug: str, meta: dict, shared_videos: dict = None, 
         "accounts_scraped": len(usernames) + len(ig_usernames),
         "videos_checked": len(all_videos),
         "new_matches": new_count,
-        "total_matches": len(all_matched),
+        "total_matches": len(countable),
     })
-
-    # Save daily stats snapshot for dashboard time-series
-    try:
-        from datetime import date as date_type
-        cid = _db.get_campaign_id(slug)
-        if cid:
-            total_shares = sum(v.get("shares", 0) or 0 for v in all_matched)
-            total_comments = sum(v.get("comments", 0) or 0 for v in all_matched)
-            if lease is not None:
-                lease.assert_held()
-            _db.save_stats_snapshot(
-                campaign_id=cid,
-                snapshot_date=date_type.today(),
-                views=total_views,
-                likes=total_likes,
-                shares=total_shares,
-                comments=total_comments,
-                post_count=len(all_matched),
-            )
-    except _db.ScrapeJobLockLost:
-        raise
-    except Exception as e:
-        log.warning("CRON: stats snapshot failed for %s: %s", slug, e)
 
     return {
         "new_matches": new_count,
-        "total_matches": len(all_matched),
+        "total_matches": len(countable),
         "videos_checked": len(all_videos),
         "discovered_sound_ids": discovered_sound_ids,
         "strategy_breakdown": strategy_breakdown,
@@ -1151,6 +1212,9 @@ def run_internal_scrape(request_log_id: int | None = None):
                 return {"status": "skipped", "summary": summary}
             if request_log_id is None:
                 request_log_id = _db.create_cron_log("internal_scrape", status="queued")
+            if lease.backend_pid is not None and not _db.bind_cron_log_to_scrape_lease(
+                    request_log_id, "internal_scrape", lease):
+                return {"status": "skipped", "summary": {"reason": "request_expired"}}
             with _wait_for_scrape_capacity(lease) as guarded_lease:
                 log_id = _begin_scrape_run("internal_scrape", request_log_id)
                 if log_id is None:
@@ -1366,8 +1430,10 @@ def _attach_internal_to_campaigns(internal_videos: list, lease=None) -> dict:
 
     Disambiguation rule when multiple campaigns share a sound ID
     (typical for rounds: r3, r4, r6 may all use the same sound):
-        Latest active round wins (highest start_date).
+        Latest active round whose start is no later than the post wins.
         If start_dates tie, latest created_at wins.
+        Posts without a parseable date may attach only to campaigns
+        without a start date, preserving their legacy behavior.
 
     Returns a dict summary:
         {
@@ -1383,6 +1449,7 @@ def _attach_internal_to_campaigns(internal_videos: list, lease=None) -> dict:
     because the match is sound-ID-exact (the whole point of strict).
     """
     from campaign_manager.services.matching import merge_matched_videos
+    from campaign_manager.utils.helpers import round_start_date, video_in_round
 
     attached_count = 0
     skipped_no_sound_id = 0
@@ -1398,9 +1465,11 @@ def _attach_internal_to_campaigns(internal_videos: list, lease=None) -> dict:
             "per_campaign": {},
         }
 
-    # Build sound_id -> winning campaign lookup
-    campaigns = _db.list_campaigns(exclude_completed=True)
-    sound_to_campaign: dict = {}  # sound_id -> meta
+    # Keep every candidate: the winner depends on the video's post date.
+    all_campaigns = _db.list_campaigns(exclude_completed=False)
+    round_ends = build_round_end_by_slug(all_campaigns)
+    campaigns = [c for c in all_campaigns if c.get("completion_status") != "completed"]
+    sound_to_campaigns: dict = {}  # sound_id -> [meta]
 
     for meta in campaigns:
         sids = []
@@ -1413,29 +1482,30 @@ def _attach_internal_to_campaigns(internal_videos: list, lease=None) -> dict:
                 sids.append(s)
 
         for sid in sids:
-            existing = sound_to_campaign.get(sid)
-            if existing is None:
-                sound_to_campaign[sid] = meta
-                continue
-
-            # Disambiguation: latest start_date wins
-            def _start_key(m):
-                return (m.get("start_date") or "", m.get("created_at") or "")
-
-            if _start_key(meta) > _start_key(existing):
-                sound_to_campaign[sid] = meta
+            sound_to_campaigns.setdefault(sid, []).append(meta)
 
     # Group internal videos by which campaign they should attach to
     by_campaign: dict = {}  # campaign_slug -> [video_dicts_to_attach]
+    attached_meta: dict = {}  # campaign_slug -> meta for round-scoped totals
     for v in internal_videos:
         sid = (v.get("extracted_sound_id") or v.get("music_id") or "").strip()
         if not sid:
             skipped_no_sound_id += 1
             continue
-        winning = sound_to_campaign.get(sid)
-        if winning is None:
+        candidates = sound_to_campaigns.get(sid, [])
+        if not candidates:
             skipped_no_active_campaign += 1
             continue
+        eligible = []
+        for meta in candidates:
+            start_raw = str(meta.get("start_date") or "").strip()
+            start = round_start_date(start_raw)
+            if video_in_round(v, start_raw, end_date=round_ends.get(str(meta.get("slug") or ""))):
+                eligible.append((start or datetime.min.date(), str(meta.get("created_at") or ""), str(meta.get("slug") or ""), meta))
+        if not eligible:
+            skipped_no_active_campaign += 1
+            continue
+        winning = max(eligible, key=lambda item: item[:3])[3]
         # Tag and stage for attach
         attach_v = dict(v)
         attach_v["match_strategy"] = "internal_creator"
@@ -1443,6 +1513,7 @@ def _attach_internal_to_campaigns(internal_videos: list, lease=None) -> dict:
         if not slug:
             continue
         by_campaign.setdefault(slug, []).append(attach_v)
+        attached_meta[slug] = winning
 
     # Merge into each campaign's matched_videos
     for slug, vids in by_campaign.items():
@@ -1459,10 +1530,17 @@ def _attach_internal_to_campaigns(internal_videos: list, lease=None) -> dict:
             attached_count += new_count
             per_campaign[slug] = new_count
 
-            # Refresh campaign-level totals when there were new attaches
-            if new_count > 0:
-                total_views = sum(v.get("views", 0) or 0 for v in all_matched)
-                total_likes = sum(v.get("likes", 0) or 0 for v in all_matched)
+            # Reconcile dated-round totals even when every URL already exists:
+            # old cross-round rows may still be stored from earlier scrapes.
+            start = round_start_date(attached_meta[slug].get("start_date"))
+            if new_count > 0 or start is not None:
+                countable = round_qualified_videos(
+                    all_matched, attached_meta[slug].get("start_date"),
+                    end_date=round_ends.get(slug),
+                    exclude_dismissed=start is not None,
+                )
+                total_views = sum(v.get("views", 0) or 0 for v in countable)
+                total_likes = sum(v.get("likes", 0) or 0 for v in countable)
                 if lease is not None:
                     lease.assert_held()
                 _db.update_campaign_stats(slug, total_views, total_likes)
@@ -1523,6 +1601,9 @@ def _post_campaign_refresh_slack(summary: dict):
     creators_total = summary.get("creators_scraped_total", 0)
     empty_rate = summary.get("empty_creator_rate", 0)
     videos_checked = summary.get("total_videos_checked", 0)
+    instagram_total = summary.get("instagram_creators_total", 0)
+    instagram_outcomes = summary.get("instagram_outcome_counts", {})
+    instagram_complete_failure = summary.get("instagram_complete_failure", False)
 
     header = (
         ":warning: *Daily campaign refresh DEGRADED*"
@@ -1546,11 +1627,25 @@ def _post_campaign_refresh_slack(summary: dict):
             f"({int(empty_rate * 100)}% empty rate)"
         )
 
-    if degraded:
+    if instagram_total > 0:
         lines.append(
-            "_Run produced no useful data. Likely TikTok rate-limited yt-dlp "
-            "(empty rate over 70%) or matching is broken. Check logs._"
+            f"Instagram creators: {instagram_total} attempted — "
+            f"{instagram_outcomes.get('ok', 0)} returned videos, "
+            f"{instagram_outcomes.get('empty', 0)} empty, "
+            f"{instagram_outcomes.get('error', 0)} errored, "
+            f"{instagram_outcomes.get('missing', 0)} missing outcomes"
         )
+
+    if degraded:
+        if instagram_complete_failure:
+            if instagram_outcomes.get("missing", 0):
+                lines.append("_No usable Instagram creator scrape outcomes; results are unavailable. Check cron errors and Apify configuration._")
+            else:
+                lines.append("_All Instagram creator scrapes failed; Instagram results are unavailable. Check cron errors and Apify configuration._")
+        else:
+            lines.append(
+                "_Scrape anomaly detected. Check TikTok empty/crash rates and matching in cron logs._"
+            )
 
     if failed:
         lines.append(f":x: {failed} campaign(s) failed")

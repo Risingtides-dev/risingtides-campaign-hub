@@ -25,7 +25,7 @@ from campaign_manager import db as _db
 from sqlalchemy import or_
 
 from campaign_manager.models import MatchedVideo, Campaign
-from campaign_manager.utils.helpers import video_posted_before_start
+from campaign_manager.utils.helpers import build_round_end_by_slug, video_in_round
 
 scrape_tasks_bp = Blueprint("scrape_tasks", __name__)
 
@@ -134,6 +134,7 @@ def queue():
     """
     if not _db.is_active():
         return jsonify({"error": "DB mode required."}), 400
+    round_ends = build_round_end_by_slug(_db.list_campaigns(exclude_completed=False))
 
     campaign_filter = request.args.get("campaign", "").strip()
     since_str = request.args.get("since", "").strip()
@@ -176,9 +177,11 @@ def queue():
         # rows. Cobrand only dedupes within a single round, so leaking
         # them into the queue produces duplicate uploads in the client
         # report. Exclude videos posted before the campaign's start_date.
-        if video_posted_before_start(
-            {"timestamp": mv.timestamp or "", "upload_date": mv.upload_date or ""},
+        if not video_in_round(
+            {"id": mv.id, "url": mv.url or "", "timestamp": mv.timestamp or "", "upload_date": mv.upload_date or "",
+             "extracted_sound_id": mv.extracted_sound_id or "", "music_id": mv.music_id or ""},
             camp.start_date or "",
+            end_date=round_ends.get(camp.slug or ""),
         ):
             continue
         slug = camp.slug or ""
@@ -377,6 +380,7 @@ def mark_campaign_tracked():
     if not slug:
         return jsonify({"error": "slug is required"}), 400
 
+    round_end = build_round_end_by_slug(_db.list_campaigns(exclude_completed=False)).get(slug)
     now = datetime.now()
     with _db.get_session() as s:
         camp = s.query(Campaign).filter_by(slug=slug).first()
@@ -397,9 +401,11 @@ def mark_campaign_tracked():
             # doesn't claim we uploaded round-1 posts under round 2 — the
             # queue itself hides those rows, so they're not part of what
             # the user just sent to Cobrand.
-            if video_posted_before_start(
-                {"timestamp": row.timestamp or "", "upload_date": row.upload_date or ""},
+            if not video_in_round(
+                {"id": row.id, "url": row.url or "", "timestamp": row.timestamp or "", "upload_date": row.upload_date or "",
+                 "extracted_sound_id": row.extracted_sound_id or "", "music_id": row.music_id or ""},
                 campaign_start,
+                end_date=round_end,
             ):
                 continue
             row.tracked_at = now

@@ -311,6 +311,22 @@ class TestCronLog:
         db.finish_cron_log(log_id, "completed", {"runs": 1})
         assert db.get_cron_log_by_id(log_id)["status"] == "completed"
 
+    def test_bind_requires_queued_receipt_and_keeps_lease_identity(self, db):
+        log_id = db.create_cron_log("campaign_refresh", status="queued")
+        lease = db._ScrapeJobLease(backend_pid=17, backend_start="session-17")
+        assert db.bind_cron_log_to_scrape_lease(log_id, "campaign_refresh", lease)
+        from campaign_manager.models import CronLog
+        with db.get_session() as session:
+            row = session.query(CronLog).filter_by(id=log_id).one()
+            assert row.summary["_scrape_lock_owner"] == {
+                "pid": 17, "backend_start": "session-17",
+            }
+        assert "_scrape_lock_owner" not in db.get_cron_log_by_id(log_id)["summary"]
+        assert "_scrape_lock_owner" not in db.get_cron_logs()[0]["summary"]
+        assert not db.bind_cron_log_to_scrape_lease(log_id, "internal_scrape", lease)
+        assert db.transition_cron_log(log_id, "queued", "running")
+        assert not db.bind_cron_log_to_scrape_lease(log_id, "campaign_refresh", lease)
+
     def test_janitor_reaps_orphaned_queued_request_without_restarting(self, db):
         from datetime import datetime, timedelta
         from campaign_manager.models import CronLog
@@ -350,7 +366,7 @@ class TestCronLog:
             row = session.query(CronLog).filter_by(id=log_id).one()
             row.started_at = datetime.now(db.EST).replace(tzinfo=None) - timedelta(hours=1)
             session.commit()
-        monkeypatch.setattr(db, "scrape_job_lock_held", lambda _job: True)
+        monkeypatch.setattr(db, "scrape_job_lock_owner", lambda _job: {"pid": 9, "backend_start": "old"})
         assert db.reap_orphaned_cron_logs(threshold_minutes=30) == [log_id]
         assert db.get_cron_log_by_id(log_id)["status"] == "unknown"
 
@@ -363,8 +379,9 @@ class TestCronLog:
             row = session.query(CronLog).filter_by(id=log_id).one()
             row.started_at = datetime.now(db.EST).replace(tzinfo=None) - timedelta(hours=1)
             session.commit()
-        monkeypatch.setattr(db, "scrape_job_lock_held",
-                            lambda job: job == "internal_scrape")
+        monkeypatch.setattr(db, "scrape_job_lock_owner",
+                            lambda job: {"pid": 9, "backend_start": "old"}
+                            if job == "internal_scrape" else None)
         assert db.reap_orphaned_cron_logs(threshold_minutes=30) == []
         assert db.get_cron_log_by_id(log_id)["status"] == "queued"
 
@@ -377,9 +394,64 @@ class TestCronLog:
             row = session.query(CronLog).filter_by(id=log_id).one()
             row.started_at = datetime.now(db.EST).replace(tzinfo=None) - timedelta(hours=1)
             session.commit()
-        monkeypatch.setattr(db, "scrape_job_lock_held", lambda _job: True)
+        monkeypatch.setattr(db, "scrape_job_lock_owner", lambda _job: {"pid": 9, "backend_start": "old"})
         assert db.reap_orphaned_cron_logs(threshold_minutes=30) == []
         assert db.get_cron_log_by_id(log_id)["status"] == "running"
+
+    def test_janitor_reaps_old_receipt_while_newer_same_type_lock_is_held(self, db, monkeypatch):
+        from datetime import datetime, timedelta
+        from campaign_manager.models import CronLog
+
+        old_id = db.create_cron_log("campaign_refresh", status="queued")
+        current_id = db.create_cron_log("campaign_refresh", status="queued")
+        old_owner = {"pid": 8, "backend_start": "old-session"}
+        current_owner = {"pid": 9, "backend_start": "new-session"}
+        with db.get_session() as session:
+            old = session.query(CronLog).filter_by(id=old_id).one()
+            current = session.query(CronLog).filter_by(id=current_id).one()
+            old.started_at = datetime.now(db.EST).replace(tzinfo=None) - timedelta(hours=2)
+            current.started_at = datetime.now(db.EST).replace(tzinfo=None) - timedelta(hours=1)
+            old.summary = {"_scrape_lock_owner": old_owner}
+            current.summary = {"_scrape_lock_owner": current_owner}
+            session.commit()
+        monkeypatch.setattr(db, "scrape_job_lock_owner", lambda _job: current_owner)
+
+        assert db.reap_orphaned_cron_logs(threshold_minutes=30) == [old_id]
+        assert db.get_cron_log_by_id(old_id)["status"] == "failed"
+        assert db.get_cron_log_by_id(current_id)["status"] == "queued"
+        assert not db.transition_cron_log(old_id, "queued", "running")
+
+    def test_janitor_reaps_legacy_orphan_when_new_bound_lock_is_held(self, db, monkeypatch):
+        from datetime import datetime, timedelta
+        from campaign_manager.models import CronLog
+
+        old_id = db.create_cron_log("internal_scrape", status="running")
+        current_id = db.create_cron_log("internal_scrape", status="queued")
+        owner = {"pid": 9, "backend_start": "new-session"}
+        with db.get_session() as session:
+            old = session.query(CronLog).filter_by(id=old_id).one()
+            current = session.query(CronLog).filter_by(id=current_id).one()
+            old.started_at = datetime.now(db.EST).replace(tzinfo=None) - timedelta(hours=2)
+            current.summary = {"_scrape_lock_owner": owner}
+            session.commit()
+        monkeypatch.setattr(db, "scrape_job_lock_owner", lambda _job: owner)
+
+        assert db.reap_orphaned_cron_logs(threshold_minutes=30) == [old_id]
+        assert db.get_cron_log_by_id(current_id)["status"] == "queued"
+
+    def test_janitor_bounds_legacy_unbound_receipt_under_unrelated_lock(self, db, monkeypatch):
+        from datetime import datetime, timedelta
+        from campaign_manager.models import CronLog
+
+        log_id = db.create_cron_log("campaign_refresh", status="running")
+        with db.get_session() as session:
+            row = session.query(CronLog).filter_by(id=log_id).one()
+            row.started_at = datetime.now(db.EST).replace(tzinfo=None) - timedelta(hours=25)
+            session.commit()
+        monkeypatch.setattr(db, "scrape_job_lock_owner",
+                            lambda _job: {"pid": 9, "backend_start": "unrelated"})
+        assert db.reap_orphaned_cron_logs(threshold_minutes=30) == [log_id]
+        assert db.get_cron_log_by_id(log_id)["status"] == "failed"
 
 
 class TestNetworkCreators:

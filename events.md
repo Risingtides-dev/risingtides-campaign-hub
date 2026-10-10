@@ -430,3 +430,135 @@ Correct the earlier draft258 preparation claim: skipping existing slugs before p
 
 Integrated actual GitHub main fad83b11696862dad9041637139a70c0ffa8cfbf, preserving native job/capacity leases, dispatch receipts, export contract and append-only history. Source changes remain limited to CRM discovery, the existing save_campaign function, regression tests and root discovery contract; no lease/model/local-agent edits. Existing scheduler registration from the original draft is retained, not enabled or deployed. This corrective canonical and versioned ledger entry precedes final freeze, independent exact-head review and full backend verification. Push requires the unchanged original draft head e1b94c425507712a6f8ba7654317ddb25360b329 with an explicit lease. Keep draft; no merge, deployment, production CRM request, campaign creation, scraper launch or publication claim. Root contract and empty child index were checked; only the concise discovery contract changed.
 _________________________________________________________________________________
+_________________________________________________________________________________
+time: [4:43pm] [10-07-26] EDT; actual UTC: 2026-10-07T20:43:00Z
+agent: [Codex desktop delegating to AC Mac mini] [GPT-6] [root release owner]
+worktree: [codex/hub-export-bounded] /Users/risingtidesdev/worktrees/hub-export-bounded on macmini-ip
+type: [bug report]: bounded Hub queue export response and deadline
+area: [backend], [testing], [review]
+entry-id: hub-export-bounded-response-20261007
+
+The production queue export previously read the whole HTTP response without a byte cap. In an isolated follow-up to PR #260, code head 95e4a228014c18bdae359c8542d63d273c8179b3 caps the response at 32 MiB, applies a 45-second whole-exchange POSIX main-thread deadline, and rejects an incomplete declared body before writing an output directory or completed SQLite receipt. Synthetic oversize, incomplete and stalled responses plus a loopback HTTP success/receipt test passed; 14 focused tests and 998 repository Python tests passed, with six optional PostgreSQL cases skipped. Independent code-head review found no blocker for the standalone Mac CLI, but noted that a pre-existing ITIMER_REAL alarm can be delayed and other-thread/non-POSIX callers have no strict whole-exchange deadline. The root AGENTS.md records those scope limits; no child AGENTS exists. No live export, scrape, paid request, post, push, merge or deployment was triggered. Rollback is a revert of this one focused change after checking export receipts; final-head review and hosted checks remain required.
+_________________________________________________________________________________
+_________________________________________________________________________________
+time: [04:58pm] [10-07-26]
+agent: [codex] [gpt-6.1-sol]
+worktree: [codex/hub-janitor-receipt-owner-20261007] /tmp/hub-janitor-receipt-owner
+type: [bug report]: Hub cron receipt janitor ownership
+area: [backend]: PostgreSQL scrape lease reconciliation
+
+A stale queued/running receipt could remain open indefinitely when a newer same-type run held the advisory lock, because the janitor knew only the job type. This candidate binds PostgreSQL receipts to the exact lease backend PID and start time before the shared-capacity wait. The janitor preserves the matching receipt, reaps stale mismatches, and conservatively handles pre-deployment unbound receipts. The final full Python suite passed 1002 tests with seven optional PostgreSQL skips. A disposable real PostgreSQL 16 cluster passed two advisory-lock integration tests, including reuse of a backend PID with a different start time; the cluster was stopped and removed. The pre-deployment fallback is capped at 24 hours; internal lease identity is excluded from public cron log reads. No scrape, publication, PR, deployment, or live outcome is claimed. Rollback is a revert after reconciling any open cron receipts; no schema migration is involved.
+_________________________________________________________________________________
+_________________________________________________________________________________
+time: [05:05pm] [10-07-26]
+agent: [codex] [gpt-6.1-sol]
+worktree: [codex/hub-janitor-receipt-owner-20261007] /Users/risingtidesdev/worktrees/hub-janitor-receipt-owner
+type: [bug report]: janitor binding race found in independent review
+area: [backend], [testing], [review]
+
+Independent review of be6f319 found that the janitor could cache a stale unbound ORM row while another session bound it, then fail the now-live receipt. The revision locks stale rows during janitor reconciliation, serializing with the binding write, and adds a disposable PostgreSQL interleaving regression. The new regression failed against the prior unlocked janitor and passed with the fix; three disposable PostgreSQL 16 lock tests passed. The final full Python suite passed 1002 tests with eight optional PostgreSQL skips; the disposable cluster was stopped and removed. The 24-hour compatibility cap can mark a pre-deployment receipt failed while its original worker remains active; that receipt is not evidence the worker stopped and its effects require reconciliation before retry. An active-owner lookup currently reads all open rows of affected job types; indexing or a targeted lookup is a later performance follow-up. No scrape, publication, push, PR, deployment or live outcome is claimed.
+_________________________________________________________________________________
+_________________________________________________________________________________
+time: [05:16pm] [10-07-26] EDT; actual UTC: 2026-10-07T21:16:00Z
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/hub-issue46-round-isolation] /Users/smathdaddy-macbook/hub-issue46-round-isolation
+type: [bug report]: cross-round same-sound post attribution and report totals
+area: [backend], [testing]
+
+Same-sound internal posts previously auto-attached to the latest active campaign regardless of post date, and the client report summed raw historical matched rows. This candidate selects only rounds eligible on the post date and scopes campaign-level stats plus report headline, top-post, creator, and Cobrand outcome totals to eligible stored matches. Historical rows are preserved; missing or malformed post dates do not auto-attach or count in a dated report. A campaign without a start date keeps its legacy report behavior. Focused scheduler/report/stat tests passed 55/55. The full Python suite passed 1004 tests, with eight optional PostgreSQL cases skipped. No scrape, post, PR, merge or deployment occurred. Rollback is a code revert; existing stored rows require no migration.
+_________________________________________________________________________________
+_________________________________________________________________________________
+time: [05:23pm] [10-07-26] EDT; actual UTC: 2026-10-07T21:23:40Z
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/hub-issue46-round-isolation] /Users/smathdaddy-macbook/hub-issue46-round-isolation
+type: [bug report]: issue #46 independent-review follow-up
+area: [backend], [testing], [review]
+
+Independent review found two further round-integrity leaks: a URL-less eligible matched row could join an unrelated URL-less Cobrand outcome, and a dated round with no newly attached URLs could retain contaminated campaign totals. The candidate now requires nonempty normalized URLs for Cobrand outcome joins and reconciles every touched dated round. The same date-eligibility helper scopes scheduled and manual scrape candidates, campaign totals, creator counts, scrape-log counts, response counts, and the scheduled snapshot call arguments. Historical stored rows remain untouched, and no-start legacy behavior remains. Five focused regressions passed; the full Python suite passed 1007 tests with eight optional PostgreSQL tests skipped. The scheduled snapshot call remains best-effort and currently invokes an unimplemented db.save_stats_snapshot method; its side effect is not verified. No live scrape, post, PR, merge or deployment occurred. Rollback is a code revert; no migration is involved.
+_________________________________________________________________________________
+_________________________________________________________________________________
+time: [05:33pm] [10-07-26] EDT; actual UTC: 2026-10-07T21:33:15Z
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/hub-issue46-round-isolation] /Users/smathdaddy-macbook/hub-issue46-round-isolation
+type: [bug report]: issue #46 exclusive same-sound round windows
+area: [backend], [testing], [review]
+
+Independent review found that a lower-bound-only round filter let later-round posts remain visible and uploadable in the earlier round. This revision derives an exclusive end boundary from the next campaign sharing an exact primary or additional sound, including completed rounds; same-day ties use creation time then slug. DB-backed scheduled/manual scrapes, internal attachment, stored aggregates, campaign detail/list/links/creator views, client report, Cobrand untracked queue/bulk tracking, Cobrand sideload upload batch, and Chartmetric post events now use the bounded window. Historical rows remain stored. Invalid or undated posts cannot prove dated-round membership; campaigns without a start date retain legacy behavior. File-mode cross-worker upper boundaries remain unverified because there is no authoritative all-campaign roster. Focused tests passed 108/108; the full Python suite passed 1013 with eight optional PostgreSQL cases skipped. The scheduled snapshot call remains a best-effort call to an unimplemented db.save_stats_snapshot method and is not durable proof. No live scrape, external upload, post, PR, merge or deployment occurred. Rollback is a code revert; no migration is involved.
+_________________________________________________________________________________
+_________________________________________________________________________________
+time: [05:37pm] [10-07-26] EDT; actual UTC: 2026-10-07T21:37:23Z
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/hub-issue46-round-isolation] /Users/smathdaddy-macbook/hub-issue46-round-isolation
+type: [bug report]: issue #46 partial sound-overlap review repair
+area: [backend], [testing], [review]
+
+Independent review found that a campaign-wide upper boundary discarded valid later posts on an unaffected secondary sound when only the primary sound moved to a new round. The boundary is now resolved by each video's exact campaign-owned sound ID. A missing or foreign sound ID after a partial-overlap boundary uses the earliest successor cutoff and logs its URL for reconciliation, avoiding an uncertain duplicate Cobrand upload; the stored row is retained. Scheduled and manual matching, report aggregates, Cobrand queue and sideload upload, and Chartmetric post events have partial-overlap regressions. Focused tests passed 110/110; the full Python suite passed 1015 with eight optional PostgreSQL cases skipped. No live scrape, Cobrand upload, publication, PR, merge or deployment occurred. Rollback remains a code revert with no migration.
+_________________________________________________________________________________
+_________________________________________________________________________________
+time: [05:40pm] [10-07-26] EDT; actual UTC: 2026-10-07T21:40:32Z
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/hub-issue46-round-isolation] /Users/smathdaddy-macbook/hub-issue46-round-isolation
+type: [bug report]: safe ambiguous-post reconciliation reference
+area: [backend], [testing], [review]
+
+Independent review found that ambiguity warnings logged raw matched URLs, which may contain query tokens, and that ORM queue, bulk, sideload, and Chartmetric filters omitted URL identity entirely from their eligibility dictionaries. Those call sites now carry URL and row ID to the shared filter. The warning emits only a stable SHA-256 prefix of the query/fragment-stripped URL, or a row ID when URL is absent, so the excluded row can be reconciled without exposing the token. Focused token-redaction and Cobrand queue identity regressions passed with 110 focused tests; the full Python suite passed 1015 with eight optional PostgreSQL tests skipped. No external upload, scrape, publication, PR, merge or deployment occurred. Rollback is a code revert; no migration is involved.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [05:52pm] [07-10-26] EDT UTC-04:00
+agent: [Codex] [GPT-6] [hub258_finish]
+worktree: [codex/hub-no-start-attachment-20261007] [/private/tmp/hub-no-start-repair-20261007/repo]
+type: [bug report]
+area: [backend]: Restore internal attachment for campaigns without a start date
+
+On authoritative GitHub main 4daca326, six regressions reproduced skipped exact-sound internal posts with absent/malformed dates for sole or mixed no-start campaigns. Reused existing video_in_round membership in _attach_internal_to_campaigns, restoring the current legacy no-start contract while retaining dated/invalid-start exclusions, completed filtering, sound boundaries, creation/slug ties and historical rows. Added six original-failing/new-passing cases and three dated exclusion cases; focused round/report/scrape/Cobrand/Chartmetric/stats checks passed 163, full Python3.10.19 suite passed 1024 with eight existing disposable-PostgreSQL skips. Independent source review found no issue; AGENTS.md unchanged because this restores its existing contract. No real scrape, upload, publication or deployment occurred in this repair.
+
+Root observed predecessor PR264 head a425205e hosted Backend run37691175906/job113031441150 success and merge4daca326 at21:43:42UTC, Railway deployment6921624606 success, and both canonical sombr report routes HTTP200 around21:46UTC with18 headline posts and ten dated top-post URLs each in their respective rounds; this proves those report outputs only, not all stored dates or attachment/scrape/Cobrand execution or publication.
+_________________________________________________________________________________
+time: [05:58pm] [10-07-26] EDT; actual UTC: 2026-10-07T21:58:12Z
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/hub-stats-snapshot-persistence] /Users/smathdaddy-macbook/hub-stats-snapshot-persistence
+base: [origin/main] 4daca3262b78b9696e90c21c7d265426884c039b
+type: [bug report]: dead scheduled stats-snapshot call
+area: [backend], [testing], [review]
+
+The scheduler called db.save_stats_snapshot after each campaign refresh, but no such DB function, model, table, API reader, or active frontend consumer exists; every call produced a swallowed warning and stored no history. The call entered with an April matching change without a schema. The closed September attribution report says Chartmetric supplies history without local daily snapshots, and separate creator-history work leaves capture as an explicit design decision. Removed the dead best-effort call and its misleading monkeypatched test assertion. Scheduled round-scoped campaign/creator/scrape-log aggregates remain verified, and the test checks no snapshot-failure warning is emitted. A new durable time-series feature needs an explicit writer, reader, migration, timezone, and retention contract; no historical snapshot data can be backfilled from this removed call. Focused tests passed 53/53; the full Python suite passed 1015 with eight optional PostgreSQL cases skipped. After PR #265 merged, the prepared source change was rebased onto its current main with both chronological ledger entries preserved. No scrape, publication, PR, merge or deployment occurred for this cleanup. Rollback is a revert of this deletion; no schema changes.
+_________________________________________________________________________________
+_________________________________________________________________________________
+time: [06:12pm] [10-07-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/instagram-total-failure-degraded] /Users/smathdaddy-macbook/campaign-hub-instagram-degraded
+base: [origin/main] 1f1654e82b89f1c59898b9790bd04335edcc83b7
+type: [bug report]: classify complete Instagram scrape failure in campaign refresh
+area: [backend], [testing], [review]
+
+Natural cron log id 982 showed 18 Instagram creator errors from missing APIFY_API_TOKEN while the run recorded degraded=false and Slack said complete. Campaign refresh now marks an all-error or missing-outcome Instagram batch degraded independently of TikTok anomaly thresholds, retains completed as execution status, and persists Instagram total/failure/counts in the summary. Slack reports Instagram counts and an Instagram-specific degraded explanation without claiming TikTok rate limiting. Synthetic tests reproduce 18/18 failure and 17/18 partial failure, verify the persisted summary and notice dispatch, and check actual Slack wording. Backend verification: 955 passed, 8 PostgreSQL-only tests skipped because TEST_POSTGRES_DATABASE_URL was unavailable. No scrape, publication, push, PR, merge or deployment performed.
+_________________________________________________________________________________
+_________________________________________________________________________________
+time: [06:16pm] [10-07-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/instagram-total-failure-degraded] /Users/smathdaddy-macbook/campaign-hub-instagram-degraded
+type: [bug report]: reconcile requested Instagram creator outcomes
+area: [backend], [testing], [review]
+
+Independent review found that a missing Apify outcome map could be called 0 errored in Slack, and an unrelated successful outcome key could mask a complete failure. Instagram accounting now normalizes each requested creator name, counts only those creators, and records unknown or absent entries as missing outcomes. The complete-failure decision requires at least one requested creator and no requested ok/empty outcome. Slack reports missing separately. Synthetic tests cover all-error, partial, empty and extraneous maps plus normalized names. Backend verification: 958 passed, 8 PostgreSQL-only tests skipped without TEST_POSTGRES_DATABASE_URL. No scrape, publication, push, PR, merge or deployment performed.
+_________________________________________________________________________________
+_________________________________________________________________________________
+time: [06:18pm] [10-07-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/instagram-total-failure-degraded] /Users/smathdaddy-macbook/campaign-hub-instagram-degraded
+type: [bug report]: preserve uncertainty in Instagram cron outcome reporting
+area: [backend], [testing], [review]
+
+Final-head review found that missing-only outcomes were described as all scrapes failed, and conflicting normalized aliases could overwrite each other by map order. Conflicting aliases now count as missing regardless of insertion order. A degraded notice distinguishes all reported Instagram errors from no usable Instagram outcome evidence. Focused regressions cover both alias orders and each notice wording. Backend verification: 960 passed, 8 PostgreSQL-only tests skipped without TEST_POSTGRES_DATABASE_URL. No scrape, publication, push, PR, merge or deployment performed.
+_________________________________________________________________________________
+_________________________________________________________________________________
+time: [06:34pm] [10-07-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/campaign-refresh-schedule-toggle] /Users/smathdaddy-macbook/campaign-hub-schedule-toggle
+base: [origin/main] 4a0a0f54adda950da4247c056f3d450fed575bfd
+type: [feature-request]: stage campaign-refresh-only scheduler switch
+area: [backend], [testing], [review]
+
+Added CAMPAIGN_REFRESH_SCHEDULER_ENABLED, default true, and passed it from app config to APScheduler initialization. False omits automatic campaign_refresh registration and starts the persistent SQLAlchemy scheduler paused, removes any retained campaign_refresh job, then resumes the other jobs. Removal failure stops the scheduler and clears its singleton for readiness retry. Manual and on-demand refresh entrypoints, their leases, and receipts were unchanged. Disposable SQLite tests prove an overdue old job cannot fire, other jobs remain, re-enabling registers campaign_refresh, the app forwards the setting, and removal failure never resumes. Backend verification: 945 passed, 8 PostgreSQL-only tests skipped without TEST_POSTGRES_DATABASE_URL. Transition is staged only: Railway remains unchanged until Mac Apify credential and delivery are approved/verified. Rollback is true plus restart and scheduled-job readback. Local disk held roughly 175 MiB available after removing only this agent's regenerable Content Lab test venv; no production environment, scrape, publication, push, PR, merge or deployment was touched.
+_________________________________________________________________________________

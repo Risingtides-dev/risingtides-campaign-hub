@@ -21,7 +21,9 @@ def build_report(slug: str) -> Optional[Dict[str, Any]]:
     """Build the client report payload for a campaign, or None if not found."""
     from campaign_manager import db as _db
     from campaign_manager.services.campaign_stats import get_campaign_stats, overlay_video_stats
-    from campaign_manager.utils.helpers import campaign_title
+    from campaign_manager.utils.helpers import (
+        build_round_end_by_slug, campaign_title, round_qualified_videos,
+    )
 
     if not _db.is_active():
         return None
@@ -41,8 +43,13 @@ def build_report(slug: str) -> Optional[Dict[str, Any]]:
     )
     matched_videos = overlay_video_stats(matched_videos, stats_result.submissions)
 
-    # Exclude dismissed (false-positive) matches from everything client-facing.
-    live = [v for v in matched_videos if not v.get("dismissed_at")]
+    # A stored match can predate a later round. Keep the historical row in the
+    # database but never count it (or an undated row) in that round's report.
+    start_raw = str(meta.get("start_date") or "").strip()
+    round_end = build_round_end_by_slug(_db.list_campaigns(exclude_completed=False)).get(slug)
+    live = round_qualified_videos(
+        matched_videos, start_raw, end_date=round_end, exclude_dismissed=True,
+    )
 
     total_views = sum(int(v.get("views", 0) or 0) for v in live)
     total_likes = sum(int(v.get("likes", 0) or 0) for v in live)
@@ -67,7 +74,9 @@ def build_report(slug: str) -> Optional[Dict[str, Any]]:
 
     # Per-creator delivery: posts + views from matched data; Cobrand
     # shares/comments from the outcome layer where reachable.
-    creator_rows = _per_creator(live, creators, meta.get("cobrand_share_url", ""))
+    creator_rows = _per_creator(
+        live, creators, meta.get("cobrand_share_url", ""), round_scoped=bool(start_raw),
+    )
 
     # Source / freshness badge (so a client knows how fresh the numbers are).
     source = getattr(stats_result, "source", "") or ""
@@ -126,6 +135,8 @@ def _per_creator(
     live_videos: List[Dict[str, Any]],
     creators: List[Dict[str, Any]],
     cobrand_share_url: str,
+    *,
+    round_scoped: bool = False,
 ) -> List[Dict[str, Any]]:
     """Per-creator rollup: posts + views from matched data, enriched with
     Cobrand shares/comments when the campaign exposes a share URL."""
@@ -142,10 +153,15 @@ def _per_creator(
 
     # Cobrand outcomes (shares/comments) keyed by account, best-effort.
     outcomes_by_account: Dict[str, Dict[str, Any]] = {}
+    live_urls = {url for v in live_videos if (url := _norm_url(v.get("url", "")))}
     if cobrand_share_url:
         try:
             from campaign_manager.services.cobrand_outcomes import fetch_submissions
             for sub in fetch_submissions(cobrand_share_url):
+                if round_scoped:
+                    sub_url = _norm_url(sub.get("url", ""))
+                    if not sub_url or sub_url not in live_urls:
+                        continue
                 acct = (sub.get("username", "") or "").lstrip("@").lower()
                 if not acct:
                     continue
