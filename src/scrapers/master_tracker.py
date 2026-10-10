@@ -80,6 +80,17 @@ class ValidationError(Exception):
     pass
 
 
+class TikTokScrapeError(RuntimeError):
+    """A profile fetch failed; cached rows remain usable but are not fresh proof."""
+
+    def __init__(self, reason: str, cached_videos: Optional[List[Dict]] = None):
+        self.reason = reason
+        self.cached_videos = cached_videos or []
+        # Only fixed reason codes may enter cron receipts or logs. yt-dlp stderr,
+        # exception text and command arguments can contain proxy credentials.
+        super().__init__(f"TikTok source fetch failed: {reason}")
+
+
 def log(message, level="INFO"):
     """Enhanced logging with timestamps"""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -321,8 +332,7 @@ def scrape_tiktok_account(account: str, start_date: Optional[datetime] = None,
     """
     username = get_profile_username(account)
     if not username:
-        log(f"Could not extract username from: {account}", "ERROR")
-        return []
+        raise TikTokScrapeError("invalid_account")
 
     profile_url = f"https://www.tiktok.com/@{username}"
     print(f"  -> Starting scrape for @{username}...")
@@ -368,16 +378,17 @@ def scrape_tiktok_account(account: str, start_date: Optional[datetime] = None,
 
         if result.returncode != 0:
             reason = diagnose_failure(result.stderr)
-            log(f"yt-dlp failed for @{username} [{reason}]: {result.stderr[:500]}", "ERROR")
-            return cached_videos if cached_videos else []
+            log(f"yt-dlp failed for @{username} [{reason}]", "ERROR")
+            raise TikTokScrapeError(reason, cached_videos)
         # Empty stdout with returncode 0 is the silent-fail mode TikTok
         # serves when it doesn't want to give us anything — log it loud.
         if not (result.stdout or "").strip():
             log(f"yt-dlp returned empty for @{username} — likely rate-limited / soft-block", "WARNING")
-            return cached_videos if cached_videos else []
+            raise TikTokScrapeError("empty_output", cached_videos)
 
         new_videos = []
         total_fetched = 0
+        usable_rows = 0
         skipped_old = 0
         skipped_cached = 0
         consecutive_cached = 0  # Track consecutive cached videos for early termination
@@ -402,6 +413,14 @@ def scrape_tiktok_account(account: str, start_date: Optional[datetime] = None,
 
                 if not video_url:
                     continue
+                # A structurally valid older/cached row proves yt-dlp returned
+                # usable profile data even if the date filter leaves no new
+                # videos. Invalid URLs must not masquerade as healthy empty.
+                try:
+                    validate_video_data({"url": video_url, "account": f"@{username}"}, "tiktok")
+                except ValidationError:
+                    continue
+                usable_rows += 1
 
                 # Parse timestamp
                 video_dt = None
@@ -463,6 +482,9 @@ def scrape_tiktok_account(account: str, start_date: Optional[datetime] = None,
 
             except json.JSONDecodeError:
                 continue
+
+        if usable_rows == 0:
+            raise TikTokScrapeError("invalid_output", cached_videos)
 
         # Combine cached and new
         all_videos = (cached_videos or []) + new_videos
@@ -530,12 +552,14 @@ def scrape_tiktok_account(account: str, start_date: Optional[datetime] = None,
         # fails the cron run without retrying the corrupted native path.
         log(f"Native crash scraping TikTok @{username}: {e}", "ERROR")
         raise
+    except TikTokScrapeError:
+        raise
     except subprocess.TimeoutExpired:
         log(f"Timeout scraping TikTok @{username} (exceeded {TIKTOK_SCRAPE_TIMEOUT}s)", "ERROR")
-        return cached_videos if cached_videos else []
-    except Exception as e:
-        log(f"Error scraping TikTok @{username}: {e}", "ERROR")
-        return cached_videos if cached_videos else []
+        raise TikTokScrapeError("timeout", cached_videos)
+    except Exception:
+        log(f"Unexpected TikTok source failure for @{username}", "ERROR")
+        raise TikTokScrapeError("unexpected", cached_videos)
 
 
 def scrape_instagram_account(account: str, start_date: Optional[datetime] = None,

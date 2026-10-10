@@ -542,3 +542,30 @@ area: [backend], [testing], [review]
 
 Added CAMPAIGN_REFRESH_SCHEDULER_ENABLED, default true, and passed it from app config to APScheduler initialization. False omits automatic campaign_refresh registration and starts the persistent SQLAlchemy scheduler paused, removes any retained campaign_refresh job, then resumes the other jobs. Removal failure stops the scheduler and clears its singleton for readiness retry. Manual and on-demand refresh entrypoints, their leases, and receipts were unchanged. Disposable SQLite tests prove an overdue old job cannot fire, other jobs remain, re-enabling registers campaign_refresh, the app forwards the setting, and removal failure never resumes. Backend verification: 945 passed, 8 PostgreSQL-only tests skipped without TEST_POSTGRES_DATABASE_URL. Transition is staged only: Railway remains unchanged until Mac Apify credential and delivery are approved/verified. Rollback is true plus restart and scheduled-job readback. Local disk held roughly 175 MiB available after removing only this agent's regenerable Content Lab test venv; no production environment, scrape, publication, push, PR, merge or deployment was touched.
 _________________________________________________________________________________
+_________________________________________________________________________________
+time: [12:18am] [10-10-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/hub-tiktok-source-outcomes] /Users/risingtidesdev/worktrees/hub-tiktok-source-outcomes
+type: [bug report]: classify failed TikTok profile fetches in scheduled campaign refresh
+area: [backend], [testing], [review]
+
+Railway campaign_refresh calls master_tracker.scrape_tiktok_account through scheduler._scrape_creator_accounts_v2. A nonzero yt-dlp exit, empty stdout, timeout, or exception previously returned [] or cached rows; the scheduler then recorded that creator as empty or ok. The isolated repair raises fixed-reason TikTokScrapeError, retries once with bounded backoff, preserves cached rows for matching without treating them as fresh fetch success, and persists sanitized per-creator outcomes in the cron summary. A >70% source-failure rate across at least six creators now marks the run degraded. Synthetic tests cover source errors, secret redaction, cache retention, valid date-filtered empty results, bounded retry and durable cron outcome. Focused 42 passed; full backend 1046 passed with eight existing opt-in PostgreSQL tests skipped because TEST_POSTGRES_DATABASE_URL was not supplied. No real scrape, credential change, schedule change, push, PR, merge, or deployment occurred. Independent review remains required before release.
+_________________________________________________________________________________
+_________________________________________________________________________________
+time: [12:23am] [10-10-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/hub-tiktok-source-outcomes] /Users/risingtidesdev/worktrees/hub-tiktok-source-outcomes
+type: [bug report]: mark complete small-roster TikTok source failure degraded
+area: [backend], [testing]
+
+Pre-review edge check showed that a sole requested creator failing to fetch would still report degraded=false under the fleet-size threshold. Complete source failure now degrades any nonempty requested TikTok roster; the >70% threshold remains for larger partial failures. Focused synthetic checks passed 42 and diff check passed. No live scrape or release action occurred.
+_________________________________________________________________________________
+_________________________________________________________________________________
+time: [12:27am] [10-10-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/hub-tiktok-source-outcomes] /Users/risingtidesdev/worktrees/hub-tiktok-source-outcomes
+type: [bug report]: reject invalid-only yt-dlp profile output
+area: [backend], [testing], [review]
+
+Independent review reproduced a malformed webpage_url-only yt-dlp output that incremented the usable-row counter before URL validation, leaving an incorrect healthy empty result. The parser now validates TikTok video/photo URL shape before counting a row as usable; date-filtered valid old rows still prove a successful source fetch. Added an original-failing synthetic regression. Focused 43 passed. No source fetch, push, PR, merge or deployment occurred.
+_________________________________________________________________________________

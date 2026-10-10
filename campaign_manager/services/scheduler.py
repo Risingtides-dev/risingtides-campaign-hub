@@ -109,6 +109,11 @@ def _scrape_run_is_degraded(
         if total_creators > 0
         else 0.0
     )
+    source_failure_rate = (
+        outcome_counts.get("error", 0) / total_creators
+        if total_creators > 0
+        else 0.0
+    )
     native_crash_rate = (
         outcome_counts.get("native_crash", 0) / total_creators
         if total_creators > 0
@@ -117,6 +122,8 @@ def _scrape_run_is_degraded(
     return bool(
         instagram_complete_failure
         or (empty_rate > 0.7 and total_creators > 5)
+        or (total_creators > 0 and source_failure_rate == 1.0)
+        or (source_failure_rate > 0.7 and total_creators > 5)
         or (native_crash_rate > 0.2 and total_creators > 5)
         or (
             campaigns_refreshed > 5
@@ -178,8 +185,8 @@ def _scrape_creator_accounts_v2(usernames, start_date=None, max_workers=DEFAULT_
                         nothing. Not distinguishable per-creator but a high
                         rate of `empty` across the run is the rate-limit
                         signal.
-        error         — yt-dlp raised an exception
-        max_retries   — both attempts failed
+        error         — yt-dlp source fetch failed, or both attempts raised
+        native_crash  — the child terminated by a native signal
 
     This is the observability layer that fixes the "133/133 refreshed,
     0 new matches" lie. The cron summary now reports the outcome
@@ -187,6 +194,7 @@ def _scrape_creator_accounts_v2(usernames, start_date=None, max_workers=DEFAULT_
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
     from src.scrapers.yt_dlp_runner import NativeSubprocessCrash
+    from src.scrapers.master_tracker import TikTokScrapeError
 
     scrape_tiktok_account, _ = _import_scraper()
 
@@ -220,9 +228,16 @@ def _scrape_creator_accounts_v2(usernames, start_date=None, max_workers=DEFAULT_
                 # cancel the fleet. Report it as a per-creator failure; the
                 # systemic guard below still fails the run if crashes are
                 # widespread rather than isolated.
-                return username, [], f"{NATIVE_CRASH_PREFIX}{e}"
-            except Exception as e:
-                last_err = str(e)
+                return username, [], f"{NATIVE_CRASH_PREFIX}{e.signal_name}"
+            except TikTokScrapeError as e:
+                # Keep the previously confirmed cache available to matching,
+                # but never call a failed source fetch an empty/success outcome.
+                if attempt == 0 and e.reason != "invalid_account":
+                    time.sleep(random.uniform(5.0, 10.0))
+                    continue
+                return username, e.cached_videos, f"source_fetch_failed:{e.reason}"
+            except Exception:
+                last_err = "unexpected_scrape_error"
                 if attempt == 0:
                     # Backoff before retry — TikTok 429s can take 30s+ to clear
                     time.sleep(random.uniform(5.0, 10.0))
@@ -237,13 +252,15 @@ def _scrape_creator_accounts_v2(usernames, start_date=None, max_workers=DEFAULT_
         for future in as_completed(futures):
             username, videos, error = future.result()
             if error:
+                if videos:
+                    all_videos.extend(videos)
                 errors.append(f"@{username}: {error}")
                 is_native = error.startswith(NATIVE_CRASH_PREFIX)
                 if is_native:
                     native_crashes.append(username)
                 outcomes[username] = {
                     "status": "native_crash" if is_native else "error",
-                    "video_count": 0,
+                    "video_count": len(videos),
                     "error": error,
                 }
             else:
@@ -844,6 +861,7 @@ def _run_campaign_refresh(only_slugs, on_progress, lease, request_log_id=None) -
             "per_campaign": per_campaign,
             # New observability fields
             "scrape_outcome_counts": outcome_counts,
+            "scrape_outcomes": scrape_outcomes,
             "instagram_outcome_counts": instagram_counts,
             "instagram_creators_total": instagram_total,
             "instagram_complete_failure": instagram_complete_failure,

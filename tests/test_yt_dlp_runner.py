@@ -281,3 +281,72 @@ def test_song_scrape_escaped_cookie_diagnostic_is_redacted(
     assert "fixture runner diagnostic" in error
     assert error.count("[redacted]") == 2
     assert suffix in error
+
+
+@pytest.mark.parametrize("mode,reason", [
+    ("nonzero", "forbidden"),
+    ("empty", "empty_output"),
+    ("timeout", "timeout"),
+    ("exception", "unexpected"),
+    ("invalid_json", "invalid_output"),
+])
+def test_master_tracker_source_failure_is_typed_and_does_not_print_secrets(
+    monkeypatch, capsys, mode, reason,
+):
+    from src.scrapers import master_tracker
+    from src.scrapers.yt_dlp_runner import NativeSubprocessCrash
+
+    secret = "fixture-proxy-password"
+    cached = [{"url": "https://www.tiktok.com/@creator/video/123", "account": "@creator"}]
+    monkeypatch.setattr(master_tracker, "load_account_cache", lambda *_args: (cached, None))
+    monkeypatch.setattr(master_tracker, "enrich_videos_with_sound_ids", lambda *_args: None)
+
+    def run(cmd, **_kwargs):
+        if mode == "timeout":
+            raise subprocess.TimeoutExpired(cmd, 120, stderr=secret)
+        if mode == "exception":
+            raise RuntimeError(f"failed argv: {secret}")
+        return subprocess.CompletedProcess(
+            cmd, 1 if mode == "nonzero" else 0,
+            stdout="bad json" if mode == "invalid_json" else "",
+            stderr=f"HTTP Error 403: {secret}" if mode == "nonzero" else "",
+        )
+
+    monkeypatch.setattr(master_tracker.subprocess, "run", run)
+    with pytest.raises(master_tracker.TikTokScrapeError) as exc_info:
+        master_tracker.scrape_tiktok_account("@creator", use_cache=True)
+    assert exc_info.value.reason == reason
+    assert exc_info.value.cached_videos == cached
+    assert secret not in str(exc_info.value) + capsys.readouterr().out
+
+
+def test_master_tracker_valid_old_post_is_genuine_empty_not_fetch_error(monkeypatch):
+    import json
+    from datetime import date, datetime
+    from src.scrapers import master_tracker
+
+    row = {"webpage_url": "https://www.tiktok.com/@creator/video/123",
+           "timestamp": datetime(2020, 1, 1).timestamp()}
+    monkeypatch.setattr(
+        master_tracker.subprocess, "run",
+        lambda cmd, **_kwargs: subprocess.CompletedProcess(
+            cmd, 0, stdout=json.dumps(row), stderr=""),
+    )
+    assert master_tracker.scrape_tiktok_account(
+        "@creator", start_date=date(2026, 10, 1), use_cache=False,
+    ) == []
+
+
+def test_master_tracker_invalid_only_urls_are_source_failure(monkeypatch):
+    import json
+    from src.scrapers import master_tracker
+
+    row = {"webpage_url": "https://www.tiktok.com/@x/not-a-video"}
+    monkeypatch.setattr(
+        master_tracker.subprocess, "run",
+        lambda cmd, **_kwargs: subprocess.CompletedProcess(
+            cmd, 0, stdout=json.dumps(row), stderr=""),
+    )
+    with pytest.raises(master_tracker.TikTokScrapeError) as exc_info:
+        master_tracker.scrape_tiktok_account("@creator", use_cache=False)
+    assert exc_info.value.reason == "invalid_output"
