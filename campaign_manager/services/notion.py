@@ -8,6 +8,8 @@ CRM Database ID: 1961465b-b829-80c9-a1b5-c4cb3284149a
 Integration: "Rising Tides AI" bot (internal integration)
 """
 import hashlib
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 import logging
 import os
 import threading
@@ -196,7 +198,7 @@ def _parse_content_types(props: Dict) -> Optional[List[str]]:
 
 
 def _fetch_full_rich_text(notion_page_id: str, property_id: str, *,
-                          deadline=None, strict=False) -> Optional[str]:
+                          deadline=None, strict=False, before_request=None) -> Optional[str]:
     """Read a whole rich-text property, page by page. None on any failure."""
     url = f"{NOTION_API_BASE}/pages/{notion_page_id}/properties/{property_id}"
     parts: List[str] = []
@@ -205,6 +207,15 @@ def _fetch_full_rich_text(notion_page_id: str, property_id: str, *,
         params = {"page_size": 100}
         if cursor:
             params["start_cursor"] = cursor
+        remaining = deadline - time.monotonic() if deadline is not None else 15
+        if remaining <= 0:
+            if strict:
+                raise CrmSourceUnavailable("property_deadline")
+            return None
+        if before_request is not None and not before_request(deadline=deadline):
+            if strict:
+                raise CrmSourceUnavailable("property_deadline")
+            return None
         remaining = deadline - time.monotonic() if deadline is not None else 15
         if remaining <= 0:
             if strict:
@@ -247,7 +258,7 @@ def _fetch_full_rich_text(notion_page_id: str, property_id: str, *,
 
 
 def _parse_internal_captions(notion_page_id: str, props: Dict, *,
-                             deadline=None, strict=False) -> Optional[str]:
+                             deadline=None, strict=False, before_request=None) -> Optional[str]:
     """Internal Captions text from a page's properties, or None if unreadable.
 
     An empty property is an explicit "no captions" and returns "". A missing
@@ -265,7 +276,8 @@ def _parse_internal_captions(notion_page_id: str, props: Dict, *,
         if not isinstance(property_id, str) or not property_id:
             return None
         return _fetch_full_rich_text(notion_page_id, property_id,
-                                     deadline=deadline, strict=strict)
+                                     deadline=deadline, strict=strict,
+                                     before_request=before_request)
     return "".join(part["plain_text"] for part in parts)
 
 
@@ -378,7 +390,8 @@ def log_crm_row_skip(page_id: str, reason: str) -> None:
 
 
 
-def parse_client_pages(pages: List[Dict], synced_page_ids: Set[str]) -> List[Dict]:
+def parse_client_pages(pages: List[Dict], synced_page_ids: Set[str], *,
+                       strict_captions=False, deadline=None, before_request=None) -> List[Dict]:
     """Parse CRM page objects into create-only campaign candidates."""
     results = []
     for page in pages:
@@ -410,7 +423,16 @@ def parse_client_pages(pages: List[Dict], synced_page_ids: Set[str]) -> List[Dic
             content_types = _parse_content_types(props)
             tiktok_pct = _get_multi_select(props.get("TikTok", {}))
             insta_pct = _get_multi_select(props.get("Instagram", {}))
-            internal_captions = _parse_internal_captions(page_id, props)
+            internal_captions = _parse_internal_captions(
+                page_id, props, deadline=deadline, strict=strict_captions,
+                before_request=before_request,
+            )
+            captions_prop = props.get(CAPTIONS_PROPERTY)
+            if (strict_captions and isinstance(captions_prop, dict) and
+                isinstance(captions_prop.get("rich_text"), list) and
+                len(captions_prop["rich_text"]) >= _INLINE_RICH_TEXT_LIMIT and
+                internal_captions is None):
+                raise CrmSourceUnavailable("caption_property_unreadable")
 
             platform_split = _parse_platform_split(tiktok_pct, insta_pct)
 
@@ -607,16 +629,29 @@ class CrmSourceUnavailable(RuntimeError):
     def __init__(self, reason: str, retry_after: int = 2):
         super().__init__(reason)
         self.reason = reason
-        self.retry_after = min(3600, max(1, retry_after))
+        self.retry_after = max(1, int(retry_after))
 
 
-def _crm_read_response(response):
-    if response.status_code == 429:
+def _crm_read_response(response, *, query_cursor=None):
+    if response.status_code in (429, 529):
+        raw_retry = response.headers.get("Retry-After", "2")
         try:
-            retry_after = int(response.headers.get("Retry-After", "2"))
+            retry_after = int(raw_retry)
         except (TypeError, ValueError):
-            retry_after = 2
+            try:
+                when = parsedate_to_datetime(raw_retry)
+                retry_after = int((when - datetime.now(timezone.utc)).total_seconds()) + 1
+            except (TypeError, ValueError, OverflowError):
+                retry_after = 2
         raise CrmSourceUnavailable("rate_limited", retry_after)
+    if response.status_code == 400 and query_cursor:
+        try:
+            error = response.json()
+        except ValueError:
+            error = None
+        if (isinstance(error, dict) and error.get("code") == "validation_error" and
+            "cursor" in str(error.get("message", "")).lower()):
+            raise CrmSourceUnavailable("expired_query_cursor")
     if response.status_code != 200:
         raise CrmSourceUnavailable("http_status")
     try:
@@ -657,7 +692,7 @@ def query_crm_edit_window(*, lower, upper, cursor=None):
         )
     except Exception as error:
         raise CrmSourceUnavailable("transport") from error
-    body = _crm_read_response(response)
+    body = _crm_read_response(response, query_cursor=cursor)
     request_status = body.get("request_status")
     if isinstance(request_status, dict) and request_status.get("type") == "incomplete":
         raise CrmSourceUnavailable("query_result_limit", 60)

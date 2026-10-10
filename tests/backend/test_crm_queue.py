@@ -334,3 +334,103 @@ def test_superseded_worker_cannot_overwrite_newer_claim(db):
         assert error.reason == "claim_superseded"
     assert db.get_campaign("owned")["content_types"] == ["Coffee"]
     assert db.get_campaign("owned")["internal_captions"] == "Keep"
+
+
+def test_new_client_caption_pagination_failure_does_not_create_or_ack(db, monkeypatch):
+    from unittest.mock import Mock
+    monkeypatch.setenv("NOTION_API_KEY", "test-only")
+    page = _page("new-long", categories=["Coffee"])
+    page["properties"]["Internal Captions"] = {
+        "id": "captions", "rich_text": [{"plain_text": "part"} for _ in range(25)],
+    }
+    edited = datetime.now(timezone.utc) - timedelta(seconds=1)
+    with db._SessionLocal.begin() as session:
+        session.add(CrmPageQueue(page_id="new-long", edited_at=edited,
+                                 queued_at=edited, due_at=edited))
+    overloaded = Mock(status_code=429, headers={"Retry-After": "5"})
+    complete = Mock(status_code=200)
+    complete.json.return_value = {"results": [
+        {"rich_text": {"plain_text": "Complete caption"}}],
+        "has_more": False, "next_cursor": None}
+    with patch.object(notion, "fetch_crm_page_for_queue", return_value=page), patch.object(
+            notion.requests, "get", side_effect=[overloaded, complete]) as get, patch.object(
+                crm_queue, "_rate_slot", return_value=True) as slot:
+        assert crm_queue.work(deadline=time.monotonic() + 10)["failed"] == 1
+        assert db.get_campaign("new_long") is None
+        with db._SessionLocal.begin() as session:
+            row = session.get(CrmPageQueue, "new-long")
+            assert row.completed_at is None and row.last_reason == "rate_limited"
+            row.due_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+            session.get(CrmScanState, 1).source_pause_until = datetime.now(timezone.utc) - timedelta(seconds=1)
+        assert crm_queue.work(deadline=time.monotonic() + 10)["handled"] == 1
+    assert get.call_count == 2
+    assert slot.call_count == 4  # exact page plus property GET on both attempts
+    assert db.get_campaign("new_long")["internal_captions"] == "Complete caption"
+
+
+def test_overload_529_preserves_long_retry_after(db, monkeypatch):
+    from unittest.mock import Mock
+    monkeypatch.setenv("NOTION_API_KEY", "test-only")
+    response = Mock(status_code=529, headers={"Retry-After": "7200"})
+    with patch.object(notion.requests, "get", return_value=response):
+        try:
+            notion.fetch_crm_page_for_queue("page")
+            assert False
+        except notion.CrmSourceUnavailable as error:
+            assert error.reason == "rate_limited" and error.retry_after == 7200
+    crm_queue._pause_source(7200)
+    with db._SessionLocal() as session:
+        until = crm_queue._aware(session.get(CrmScanState, 1).source_pause_until)
+    assert until > datetime.now(timezone.utc) + timedelta(seconds=7100)
+    edited = datetime.now(timezone.utc) - timedelta(seconds=1)
+    with db._SessionLocal.begin() as session:
+        session.add(CrmPageQueue(page_id="pause", edited_at=edited, queued_at=edited, due_at=edited))
+    claim = crm_queue._claim()
+    crm_queue._finish(claim, reason="rate_limited", retry_after=7200)
+    with db._SessionLocal() as session:
+        due = crm_queue._aware(session.get(CrmPageQueue, "pause").due_at)
+    assert due > datetime.now(timezone.utc) + timedelta(seconds=7100)
+
+
+def test_confirmed_expired_cursor_resets_once_and_keeps_window(db):
+    original = crm_queue._state()
+    edited = (original[1] - timedelta(seconds=1)).isoformat()
+    assert crm_queue._save_scan_page(original, [("first", edited)], "expired")
+    with db._SessionLocal() as session:
+        before = session.get(CrmScanState, 1)
+        upper = crm_queue._aware(before.window_end)
+    with patch.object(notion, "query_crm_edit_window", side_effect=[
+        notion.CrmSourceUnavailable("expired_query_cursor"),
+        ([("first", edited)], "new-cursor"),
+        notion.CrmSourceUnavailable("expired_query_cursor"),
+    ]) as query:
+        crm_queue.scan(deadline=time.monotonic() + 10)
+    assert [c.kwargs["cursor"] for c in query.call_args_list] == ["expired", None, "new-cursor"]
+    with db._SessionLocal() as session:
+        state = session.get(CrmScanState, 1)
+        assert state.cursor == "new-cursor" and state.cursor_reset_count == 1
+        assert crm_queue._aware(state.window_end) == upper and state.watermark is None
+        assert session.query(CrmPageQueue).count() == 1
+    with patch.object(notion, "query_crm_edit_window", side_effect=notion.CrmSourceUnavailable(
+            "expired_query_cursor")) as query:
+        crm_queue.scan(deadline=time.monotonic() + 10)
+    assert query.call_count == 1
+
+
+def test_only_confirmed_cursor_400_triggers_reset(monkeypatch):
+    from unittest.mock import Mock
+    monkeypatch.setenv("NOTION_API_KEY", "test-only")
+    response = Mock(status_code=400, headers={})
+    response.json.return_value = {"code": "validation_error", "message": "Invalid start_cursor"}
+    with patch.object(notion, "resolve_data_source_id", return_value="source"), patch.object(
+            notion.requests, "post", return_value=response):
+        try:
+            notion.query_crm_edit_window(lower=None, upper=datetime.now(timezone.utc), cursor="bad")
+            assert False
+        except notion.CrmSourceUnavailable as error:
+            assert error.reason == "expired_query_cursor"
+        try:
+            notion.query_crm_edit_window(lower=None, upper=datetime.now(timezone.utc), cursor=None)
+            assert False
+        except notion.CrmSourceUnavailable as error:
+            assert error.reason == "http_status"

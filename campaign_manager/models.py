@@ -22,6 +22,7 @@ class CrmScanState(Base):
     watermark = Column(DateTime(timezone=True), nullable=True)
     window_end = Column(DateTime(timezone=True), nullable=True)
     cursor = Column(Text, nullable=True)
+    cursor_reset_count = Column(Integer, nullable=False, default=0)
     source_pause_until = Column(DateTime(timezone=True), nullable=True)
     next_request_at = Column(DateTime(timezone=True), nullable=True)
     full_audit_active = Column(Boolean, nullable=False, default=False)

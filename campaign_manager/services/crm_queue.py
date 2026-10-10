@@ -90,6 +90,7 @@ def _state():
         if row.window_end is None:
             row.window_end = _utcnow()
             row.cursor = None
+            row.cursor_reset_count = 0
             row.full_audit_active = (row.watermark is None or row.last_full_audit_at is None
                                      or _utcnow() - _aware(row.last_full_audit_at) >= AUDIT_INTERVAL)
         return (_aware(row.watermark), _aware(row.window_end), row.cursor,
@@ -97,7 +98,7 @@ def _state():
 
 
 def _pause_source(seconds):
-    until = _utcnow() + timedelta(seconds=min(3600, max(1, seconds)))
+    until = _utcnow() + timedelta(seconds=max(1, seconds))
     with db._SessionLocal.begin() as session:
         session.execute(db.dialect_insert(CrmScanState.__table__).values(id=1)
                         .on_conflict_do_nothing(index_elements=[CrmScanState.id]))
@@ -146,13 +147,33 @@ def _save_scan_page(expected, candidates, next_cursor):
             row.full_audit_active = False
             row.window_end = None
             row.cursor = None
+            row.cursor_reset_count = 0
         row.updated_at = now
     return True
+
+
+def _reset_expired_cursor(expected):
+    # One reset per pinned window; persistent malformed 400s remain held for
+    # diagnosis instead of rescanning the same prefix indefinitely.
+    with db._SessionLocal.begin() as session:
+        row = session.execute(select(CrmScanState).where(CrmScanState.id == 1)
+                              .with_for_update()).scalar_one()
+        current = (_aware(row.watermark), _aware(row.window_end), row.cursor,
+                   bool(row.full_audit_active))
+        if current != expected:
+            return False
+        if row.cursor_reset_count >= 1:
+            return None
+        row.cursor = None
+        row.cursor_reset_count += 1
+        row.updated_at = _utcnow()
+        return True
 
 
 def scan(*, deadline):
     count = 0
     pages = 0
+    resets = 0
     while pages < MAX_SCAN_PAGES_PER_TICK and time.monotonic() < deadline:
         expected = _state()
         if expected is None:
@@ -169,6 +190,15 @@ def scan(*, deadline):
                 # cursor rather than writing duplicate or stale state.
                 continue
         except notion.CrmSourceUnavailable as error:
+            if error.reason == "expired_query_cursor" and resets < 1:
+                reset = _reset_expired_cursor(expected)
+                if reset is True:
+                    resets += 1
+                    continue
+                if reset is False:
+                    continue
+                logger.warning("CRM scan held: cursor reset exhausted")
+                break
             if error.reason == "rate_limited":
                 _pause_source(error.retry_after)
             logger.warning("CRM scan held: %s", error.reason)
@@ -225,7 +255,7 @@ def _finish(claim, *, reason=None, retry_after=1):
             row.last_reason = None
         else:
             row.attempts += 1
-            delay = min(3600, max(retry_after, 2 ** min(row.attempts, 8)))
+            delay = max(retry_after, min(3600, 2 ** min(row.attempts, 8)))
             row.due_at = now + timedelta(seconds=delay)
             row.last_reason = reason[:40]
         return True
@@ -252,7 +282,8 @@ def _reconcile_page(page, *, deadline=None, claim=None):
     if owner_slug:
         captions_prop = props.get(notion.CAPTIONS_PROPERTY)
         captions = notion._parse_internal_captions(page_id, props,
-                                                    deadline=deadline, strict=True)
+                                                    deadline=deadline, strict=True,
+                                                    before_request=_rate_slot)
         if (isinstance(captions_prop, dict) and
             isinstance(captions_prop.get("rich_text"), list) and
             len(captions_prop["rich_text"]) >= notion._INLINE_RICH_TEXT_LIMIT and
@@ -277,7 +308,10 @@ def _reconcile_page(page, *, deadline=None, claim=None):
         return
     if notion._get_status(props.get("Pipeline Status", {})) != "Client":
         return
-    entries = notion.parse_client_pages([page], set())
+    entries = notion.parse_client_pages(
+        [page], set(), strict_captions=True, deadline=deadline,
+        before_request=_rate_slot,
+    )
     if not entries:
         # Malformed source content is not proof that the edit was reconciled.
         raise notion.CrmSourceUnavailable("malformed_client_row", 60)
