@@ -599,3 +599,23 @@ area: [writing], [review]
 
 Independent review found docs/SECURITY_HANDOFF.md still described unauthenticated /api/cron/toggle as able to disable the daily scheduler. The handoff now records its HTTP 410 no-mutation contract and keeps the separate unauthenticated /api/cron/trigger exposure explicit. A source change is not production proof; the handoff calls for deployed-revision verification. No push, PR, deployment, or live cron action occurred.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [01:07am] [10-10-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/cron-diag-failclosed-20261010] /Users/risingtidesdev/worktrees/hub-cron-diag-failclosed
+type: [bug report]: retire public cron diagnostic execution
+area: [backend], [testing]
+
+Public GET /api/cron/diag spawned yt-dlp version and impersonation probes by default, exposed scraper configuration, and allowed unauthenticated ?run=1 callers to launch a TikTok scrape and proxy-backed enrichment fetch, returning raw stderr tail. Retired the complete public route with fixed HTTP 410 before any subprocess, network, or environment reads. Added repeated synthetic requests covering default and run query variants, no subprocess/network invocation, and no secret-bearing response. Focused diagnostic, retired toggle, and smoke checks passed 12. No live run=1 request, scheduler mutation, push, PR, merge or deployment occurred. Independent review, hosted checks and production verification remain required.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [01:09am] [10-10-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/cron-diag-failclosed-20261010] /Users/risingtidesdev/worktrees/hub-cron-diag-failclosed
+type: [gh actions]: verify cron diagnostic retirement candidate
+area: [testing], [review]
+
+Full Python suite passed 1057 with eight opt-in PostgreSQL tests skipped because TEST_POSTGRES_DATABASE_URL is unset. The only behavior change is fixed HTTP 410 for the previously public diagnostic; scheduled jobs, logs, status, and manual trigger are untouched. Reviewed the root AGENTS.md chain; no child AGENTS.md governs changed paths. Root contract and verification instructions were updated for the retired route. Rollback is to redeploy the previous revision; reopening this route would restore the public subprocess and proxy-fetch exposure, so an authenticated and rate-bounded replacement is required before reintroducing active probes.
+_________________________________________________________________________________
