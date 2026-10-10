@@ -619,3 +619,13 @@ area: [testing], [review]
 
 Full Python suite passed 1057 with eight opt-in PostgreSQL tests skipped because TEST_POSTGRES_DATABASE_URL is unset. The only behavior change is fixed HTTP 410 for the previously public diagnostic; scheduled jobs, logs, status, and manual trigger are untouched. Reviewed the root AGENTS.md chain; no child AGENTS.md governs changed paths. Root contract and verification instructions were updated for the retired route. Rollback is to redeploy the previous revision; reopening this route would restore the public subprocess and proxy-fetch exposure, so an authenticated and rate-bounded replacement is required before reintroducing active probes.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [01:11am] [10-10-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/cron-diag-failclosed-20261010] /Users/risingtidesdev/worktrees/hub-cron-diag-failclosed
+type: [bug report]: correct security handoff after diagnostic retirement
+area: [writing], [review]
+
+Independent review found docs/SECURITY_HANDOFF.md still described the public cron diagnostic as always-on cheap diagnostics with active probes behind ?run=1. It now distinguishes the earlier #187 mitigation from this source candidate, records fixed HTTP 410 for all query variants, and explicitly holds production closure until deployment and live parity are verified. No production diagnostic request, push, merge, or deployment occurred.
+_________________________________________________________________________________
