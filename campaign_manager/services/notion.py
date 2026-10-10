@@ -195,7 +195,8 @@ def _parse_content_types(props: Dict) -> Optional[List[str]]:
     return [option["name"] for option in options]
 
 
-def _fetch_full_rich_text(notion_page_id: str, property_id: str) -> Optional[str]:
+def _fetch_full_rich_text(notion_page_id: str, property_id: str, *,
+                          deadline=None, strict=False) -> Optional[str]:
     """Read a whole rich-text property, page by page. None on any failure."""
     url = f"{NOTION_API_BASE}/pages/{notion_page_id}/properties/{property_id}"
     parts: List[str] = []
@@ -204,12 +205,22 @@ def _fetch_full_rich_text(notion_page_id: str, property_id: str) -> Optional[str
         params = {"page_size": 100}
         if cursor:
             params["start_cursor"] = cursor
+        remaining = deadline - time.monotonic() if deadline is not None else 15
+        if remaining <= 0:
+            if strict:
+                raise CrmSourceUnavailable("property_deadline")
+            return None
         try:
-            resp = requests.get(url, headers=_headers(), params=params, timeout=15)
-        except Exception as e:
-            logger.warning("CRM property fetch failed for %s: %s", notion_page_id, e)
+            resp = requests.get(url, headers=_headers(), params=params,
+                                timeout=min(15, remaining))
+        except Exception:
+            if strict:
+                raise CrmSourceUnavailable("property_transport")
+            logger.warning("CRM property fetch failed for %s", notion_page_id)
             return None
         if resp.status_code != 200:
+            if strict:
+                _crm_read_response(resp)
             logger.warning("CRM property fetch %s -> %s", notion_page_id, resp.status_code)
             return None
         try:
@@ -229,11 +240,14 @@ def _fetch_full_rich_text(notion_page_id: str, property_id: str) -> Optional[str
             return None
         if not cursor:
             return None
+    if strict:
+        raise CrmSourceUnavailable("caption_too_long", 300)
     logger.warning("CRM property for %s is longer than this sync reads", notion_page_id)
     return None
 
 
-def _parse_internal_captions(notion_page_id: str, props: Dict) -> Optional[str]:
+def _parse_internal_captions(notion_page_id: str, props: Dict, *,
+                             deadline=None, strict=False) -> Optional[str]:
     """Internal Captions text from a page's properties, or None if unreadable.
 
     An empty property is an explicit "no captions" and returns "". A missing
@@ -250,7 +264,8 @@ def _parse_internal_captions(notion_page_id: str, props: Dict) -> Optional[str]:
         property_id = target.get("id")
         if not isinstance(property_id, str) or not property_id:
             return None
-        return _fetch_full_rich_text(notion_page_id, property_id)
+        return _fetch_full_rich_text(notion_page_id, property_id,
+                                     deadline=deadline, strict=strict)
     return "".join(part["plain_text"] for part in parts)
 
 
@@ -363,55 +378,10 @@ def log_crm_row_skip(page_id: str, reason: str) -> None:
 
 
 
-def query_new_clients(synced_page_ids: Set[str], *, resume: bool = False) -> List[Dict]:
-    """Query Notion CRM for entries with Pipeline Status = 'Client' not yet synced.
-
-    Args:
-        synced_page_ids: Set of Notion page IDs already imported to Campaign Hub.
-        resume: Continue the bounded one-page discovery scan across scheduler ticks.
-
-    Returns:
-        List of campaign dicts ready to be saved via db.save_campaign().
-    """
-    global _client_discovery_cursor
-    api_key = _get_api_key()
-    if not api_key:
-        return []
-
-    database_id = _get_database_id()
-    ds_id = resolve_data_source_id(database_id, env_override="NOTION_CRM_DATA_SOURCE_ID")
-    if not ds_id:
-        logger.warning("CRM sync skipped: could not resolve a data source for %s", database_id)
-        return []
-    url = f"{NOTION_API_BASE}/data_sources/{ds_id}/query"
-
-    payload = {
-        "filter": {
-            "property": "Pipeline Status",
-            "status": {"equals": "Client"},
-        },
-        "page_size": 50,
-    }
-
-    if resume and _client_discovery_cursor:
-        payload["start_cursor"] = _client_discovery_cursor
-
-    try:
-        resp = requests.post(url, headers=_headers(), json=payload, timeout=15)
-        if resp.status_code != 200:
-            if resume and resp.status_code == 400:
-                _client_discovery_cursor = None
-            logger.warning(
-                "CRM sync query returned HTTP %s: %s", resp.status_code, resp.text[:300]
-            )
-            return []
-    except Exception as e:
-        logger.warning("CRM sync query failed: %s", e)
-        return []
-
-    response = resp.json()
+def parse_client_pages(pages: List[Dict], synced_page_ids: Set[str]) -> List[Dict]:
+    """Parse CRM page objects into create-only campaign candidates."""
     results = []
-    for page in response.get("results", []):
+    for page in pages:
         page_id = page.get("id", "") if isinstance(page, dict) else ""
         try:
             if not page_id:
@@ -485,6 +455,58 @@ def query_new_clients(synced_page_ids: Set[str], *, resume: bool = False) -> Lis
             })
         except (KeyError, TypeError, ValueError, AttributeError) as error:
             log_crm_row_skip(page_id, type(error).__name__)
+
+    return results
+
+
+def query_new_clients(synced_page_ids: Set[str], *, resume: bool = False) -> List[Dict]:
+    """Query Notion CRM for entries with Pipeline Status = 'Client' not yet synced.
+
+    Args:
+        synced_page_ids: Set of Notion page IDs already imported to Campaign Hub.
+        resume: Continue the bounded one-page discovery scan across scheduler ticks.
+
+    Returns:
+        List of campaign dicts ready to be saved via db.save_campaign().
+    """
+    global _client_discovery_cursor
+    api_key = _get_api_key()
+    if not api_key:
+        return []
+
+    database_id = _get_database_id()
+    ds_id = resolve_data_source_id(database_id, env_override="NOTION_CRM_DATA_SOURCE_ID")
+    if not ds_id:
+        logger.warning("CRM sync skipped: could not resolve a data source for %s", database_id)
+        return []
+    url = f"{NOTION_API_BASE}/data_sources/{ds_id}/query"
+
+    payload = {
+        "filter": {
+            "property": "Pipeline Status",
+            "status": {"equals": "Client"},
+        },
+        "page_size": 50,
+    }
+
+    if resume and _client_discovery_cursor:
+        payload["start_cursor"] = _client_discovery_cursor
+
+    try:
+        resp = requests.post(url, headers=_headers(), json=payload, timeout=15)
+        if resp.status_code != 200:
+            if resume and resp.status_code == 400:
+                _client_discovery_cursor = None
+            logger.warning(
+                "CRM sync query returned HTTP %s: %s", resp.status_code, resp.text[:300]
+            )
+            return []
+    except Exception as e:
+        logger.warning("CRM sync query failed: %s", e)
+        return []
+
+    response = resp.json()
+    results = parse_client_pages(response.get("results", []), synced_page_ids)
 
     if resume:
         _client_discovery_cursor = response.get("next_cursor") if response.get("has_more") else None
@@ -578,3 +600,97 @@ def request_campaign_niche_refresh():
         logger.exception("Could not start CRM niche refresh")
         return False
     return True
+
+class CrmSourceUnavailable(RuntimeError):
+    """A CRM read cannot be treated as an empty source result."""
+
+    def __init__(self, reason: str, retry_after: int = 2):
+        super().__init__(reason)
+        self.reason = reason
+        self.retry_after = min(3600, max(1, retry_after))
+
+
+def _crm_read_response(response):
+    if response.status_code == 429:
+        try:
+            retry_after = int(response.headers.get("Retry-After", "2"))
+        except (TypeError, ValueError):
+            retry_after = 2
+        raise CrmSourceUnavailable("rate_limited", retry_after)
+    if response.status_code != 200:
+        raise CrmSourceUnavailable("http_status")
+    try:
+        body = response.json()
+    except ValueError as error:
+        raise CrmSourceUnavailable("invalid_json") from error
+    if not isinstance(body, dict):
+        raise CrmSourceUnavailable("invalid_body")
+    return body
+
+
+def query_crm_edit_window(*, lower, upper, cursor=None):
+    """One sorted page of CRM edits, inclusive of both timestamp boundaries.
+
+    Caller persists its cursor and enqueued page IDs in one DB transaction.
+    Failure raises; it must never advance a durable cursor or watermark.
+    """
+    if not _get_api_key():
+        raise CrmSourceUnavailable("missing_api_key", 60)
+    source_id = resolve_data_source_id(
+        _get_database_id(), env_override="NOTION_CRM_DATA_SOURCE_ID"
+    )
+    if not source_id:
+        raise CrmSourceUnavailable("missing_data_source", 60)
+    predicates = [{"timestamp": "last_edited_time", "last_edited_time":
+                   {"on_or_before": upper.isoformat()}}]
+    if lower is not None:
+        predicates.append({"timestamp": "last_edited_time", "last_edited_time":
+                           {"on_or_after": lower.isoformat()}})
+    payload = {"filter": {"and": predicates}, "sorts": [
+        {"timestamp": "last_edited_time", "direction": "ascending"}], "page_size": 100}
+    if cursor:
+        payload["start_cursor"] = cursor
+    try:
+        response = requests.post(
+            f"{NOTION_API_BASE}/data_sources/{source_id}/query",
+            headers=_headers(), json=payload, timeout=15,
+        )
+    except Exception as error:
+        raise CrmSourceUnavailable("transport") from error
+    body = _crm_read_response(response)
+    request_status = body.get("request_status")
+    if isinstance(request_status, dict) and request_status.get("type") == "incomplete":
+        raise CrmSourceUnavailable("query_result_limit", 60)
+    pages = body.get("results")
+    if not isinstance(pages, list):
+        raise CrmSourceUnavailable("missing_results")
+    has_more = body.get("has_more")
+    next_cursor = body.get("next_cursor")
+    if not isinstance(has_more, bool) or (has_more and not isinstance(next_cursor, str)):
+        raise CrmSourceUnavailable("invalid_cursor")
+    if has_more and (not next_cursor or next_cursor == cursor):
+        raise CrmSourceUnavailable("stalled_cursor")
+    candidates = []
+    for page in pages:
+        if not isinstance(page, dict) or not isinstance(page.get("id"), str) or not page["id"]:
+            raise CrmSourceUnavailable("invalid_page")
+        edited = page.get("last_edited_time")
+        if not isinstance(edited, str):
+            raise CrmSourceUnavailable("invalid_edit_time")
+        candidates.append((page["id"], edited))
+    return candidates, next_cursor if has_more else None
+
+
+def fetch_crm_page_for_queue(page_id):
+    """Read exact current source page; failed reads are retryable, not empty."""
+    if not _get_api_key():
+        raise CrmSourceUnavailable("missing_api_key", 60)
+    try:
+        response = requests.get(f"{NOTION_API_BASE}/pages/{page_id}",
+                                headers=_headers(), timeout=15)
+    except Exception as error:
+        raise CrmSourceUnavailable("transport") from error
+    body = _crm_read_response(response)
+    if body.get("id") != page_id or not isinstance(body.get("properties"), dict):
+        raise CrmSourceUnavailable("invalid_page")
+    return body

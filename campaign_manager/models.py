@@ -15,6 +15,36 @@ class Base(DeclarativeBase):
     pass
 
 
+class CrmScanState(Base):
+    __tablename__ = "crm_scan_state"
+
+    id = Column(Integer, primary_key=True)
+    watermark = Column(DateTime(timezone=True), nullable=True)
+    window_end = Column(DateTime(timezone=True), nullable=True)
+    cursor = Column(Text, nullable=True)
+    source_pause_until = Column(DateTime(timezone=True), nullable=True)
+    next_request_at = Column(DateTime(timezone=True), nullable=True)
+    full_audit_active = Column(Boolean, nullable=False, default=False)
+    last_full_audit_at = Column(DateTime(timezone=True), nullable=True)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(_timezone.utc))
+
+
+class CrmPageQueue(Base):
+    __tablename__ = "crm_page_queue"
+
+    page_id = Column(String(100), primary_key=True)
+    edited_at = Column(DateTime(timezone=True), nullable=False)
+    queued_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(_timezone.utc))
+    due_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(_timezone.utc))
+    attempts = Column(Integer, nullable=False, default=0)
+    lease_until = Column(DateTime(timezone=True), nullable=True)
+    lease_token = Column(String(36), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    last_reason = Column(String(40), nullable=True)
+
+    __table_args__ = (Index("ix_crm_page_queue_due", "due_at", "lease_until"),)
+
+
 class Campaign(Base):
     __tablename__ = "campaigns"
 

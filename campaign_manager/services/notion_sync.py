@@ -895,6 +895,19 @@ def run_crm_sync() -> None:
     15-minute lane. A slug match never transfers ownership from another CRM page.
     The in-flight guard prevents overlapping discovery scans in this process.
     """
+    from campaign_manager import db as _database
+    engine = getattr(_database, "_engine", None)
+    if engine is not None and engine.dialect.name == "postgresql":
+        from campaign_manager.services.crm_queue import run_tick
+        try:
+            run_tick()
+        except Exception as error:
+            # Missing queue schema or database outage must not fall through to
+            # the in-memory cursor path or expose CRM values in a traceback.
+            logger.error("CRON: crm_queue unavailable (%s); scan and queue held",
+                         type(error).__name__)
+        return
+
     global _crm_sync_in_progress
 
     with _crm_sync_lock:
