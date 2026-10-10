@@ -230,3 +230,76 @@ def test_on_demand_trigger_surfaces_failed_refresh(monkeypatch):
 
     with scrape_trigger._jobs_lock:
         scrape_trigger._jobs.clear()
+
+
+def test_source_failure_preserves_cached_rows_but_records_error(monkeypatch):
+    from src.scrapers.master_tracker import TikTokScrapeError
+
+    cached = [{"url": "https://www.tiktok.com/@creator/video/123", "account": "@creator"}]
+    def failed(_handle, **_kwargs):
+        raise TikTokScrapeError("forbidden", cached)
+
+    monkeypatch.setattr(scheduler, "_import_scraper", lambda: (failed, None))
+    monkeypatch.setattr(random, "uniform", lambda *_args: 0.0)
+    videos, scraped, errors, outcomes = _scrape_creator_accounts_v2(["creator"], max_workers=1)
+    assert videos == cached
+    assert scraped == 0
+    assert errors == ["@creator: source_fetch_failed:forbidden"]
+    assert outcomes == {"creator": {
+        "status": "error", "video_count": 1,
+        "error": "source_fetch_failed:forbidden",
+    }}
+
+
+def test_source_failure_majority_degrades_even_with_prior_work():
+    assert _degraded({"ok": 2, "empty": 0, "error": 8}) is True
+
+
+def test_source_failure_outcome_is_durable_in_cron_summary(monkeypatch):
+    campaign = {"slug": "fixture", "completion_status": "none", "start_date": "2026-10-01"}
+    saved = {}
+    monkeypatch.setattr(scheduler._db, "list_campaigns", lambda **_kwargs: [campaign])
+    monkeypatch.setattr(scheduler._db, "get_creators", lambda _slug: [
+        {"username": "creator", "platform": "tiktok", "status": "active"},
+    ])
+    monkeypatch.setattr(scheduler, "_scrape_creator_accounts_v2", lambda *_args, **_kwargs: (
+        [], 0, ["@creator: source_fetch_failed:forbidden"],
+        {"creator": {"status": "error", "video_count": 0,
+                     "error": "source_fetch_failed:forbidden"}},
+    ))
+    monkeypatch.setattr(scheduler, "_refresh_single_campaign", lambda *_args, **_kwargs: {
+        "new_matches": 0, "total_matches": 0, "videos_checked": 0,
+    })
+    monkeypatch.setattr(scheduler._db, "finish_cron_log", lambda _id, state, summary: saved.update(
+        status=state, summary=summary,
+    ))
+    monkeypatch.setattr(scheduler._db, "get_cron_log_by_id", lambda _id: None)
+    monkeypatch.setattr(scheduler, "_post_campaign_refresh_slack", lambda *_args: None)
+    monkeypatch.setattr(scheduler, "_post_new_matches_digest_slack", lambda *_args: None)
+    monkeypatch.setattr(scheduler, "_post_active_sounds_slack", lambda: None)
+    monkeypatch.setattr(
+        "campaign_manager.services.tides_tracker.auto_track_submitted_videos",
+        lambda **_kwargs: SimpleNamespace(trackers_polled=0, trackers_failed=0,
+                                           submission_ids_found=0, queue_rows_auto_tracked=0),
+    )
+    result = scheduler._run_campaign_refresh(None, None, SimpleNamespace(assert_held=lambda: None), 1983)
+    assert result["status"] == saved["status"] == "completed"
+    assert result["summary"]["scrape_outcome_counts"] == {"ok": 0, "empty": 0, "error": 1}
+    assert result["summary"]["scrape_outcomes"] == {"creator": {
+        "status": "error", "video_count": 0, "error": "source_fetch_failed:forbidden",
+    }}
+
+
+def test_source_failure_retry_is_bounded_and_keeps_reason(monkeypatch):
+    from src.scrapers.master_tracker import TikTokScrapeError
+
+    calls = []
+    def failed(_handle, **_kwargs):
+        calls.append(1)
+        raise TikTokScrapeError("empty_output")
+
+    monkeypatch.setattr(scheduler, "_import_scraper", lambda: (failed, None))
+    monkeypatch.setattr(random, "uniform", lambda *_args: 0.0)
+    _videos, _scraped, _errors, outcomes = _scrape_creator_accounts_v2(["creator"], max_workers=1)
+    assert len(calls) == 2
+    assert outcomes["creator"]["error"] == "source_fetch_failed:empty_output"
