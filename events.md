@@ -569,3 +569,23 @@ area: [backend], [testing], [review]
 
 Independent review reproduced a malformed webpage_url-only yt-dlp output that incremented the usable-row counter before URL validation, leaving an incorrect healthy empty result. The parser now validates TikTok video/photo URL shape before counting a row as usable; date-filtered valid old rows still prove a successful source fetch. Added an original-failing synthetic regression. Focused 43 passed. No source fetch, push, PR, merge or deployment occurred.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [12:32am] [10-10-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/cron-toggle-failclosed] /Users/risingtidesdev/worktrees/hub-cron-toggle-failclosed
+type: [bug report]: retire unsafe public scheduler toggle
+area: [backend], [testing]
+
+Public POST /api/cron/toggle previously called a process-local APScheduler pause/resume with no caller authentication. In a multiworker service a request reaching a nonowner worker returned success without changing the scheduler; a request reaching its owner could pause scheduled work. The endpoint now always returns HTTP 410 with no scheduler mutation and directs operators to the existing SCHEDULER_ENABLED configuration and controlled restart. Repeated synthetic requests cover enabled, disabled, absent, and malformed bodies; focused 7 passed. No live POST, scheduler mutation, push, PR, merge or deployment occurred. Independent review and production verification remain required.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [12:35am] [10-10-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/cron-toggle-failclosed] /Users/risingtidesdev/worktrees/hub-cron-toggle-failclosed
+type: [bug report]: verify retired scheduler toggle cannot pause or resume
+area: [backend], [testing]
+
+Strengthened synthetic coverage to assert repeated public requests neither invoke the old toggle function nor pause or resume a present scheduler. Backend suite passed 927 with five opt-in PostgreSQL cases skipped; complete Python suite passed 1052 with eight opt-in PostgreSQL cases skipped. The stronger focused regression passed 5. No production toggle request or deployment occurred.
+_________________________________________________________________________________

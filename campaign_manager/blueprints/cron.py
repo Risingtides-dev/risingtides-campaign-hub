@@ -1,6 +1,6 @@
 """Cron scheduler API endpoints.
 
-Provides status, logs, manual trigger, and toggle for the daily scraping scheduler.
+Provides status, logs, and manual trigger for the daily scraping scheduler.
 """
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ from flask import Blueprint, jsonify, request
 from campaign_manager import db as _db
 from campaign_manager.services.scheduler import (
     get_scheduler_status,
-    toggle_scheduler,
     trigger_job,
 )
 
@@ -133,12 +132,10 @@ def cron_trigger():
 
 @cron_bp.route("/api/cron/toggle", methods=["POST"])
 def cron_toggle():
-    """Enable or disable the scheduler. Body: {"enabled": true|false}"""
-    data = request.get_json(silent=True) or {}
-    enabled = data.get("enabled", True)
-
-    toggle_scheduler(enabled)
-    return jsonify({"enabled": enabled})
+    """Retired: per-worker mutation cannot control the fleet scheduler."""
+    return jsonify({
+        "error": "Scheduler toggle retired; configure SCHEDULER_ENABLED and restart the service",
+    }), 410
 
 
 @cron_bp.route("/api/cron/diag")
