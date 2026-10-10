@@ -216,3 +216,24 @@ def test_one_save_exception_does_not_starve_next_client(db, caplog):
     assert db.get_campaign('valid_save')['notion_page_id'] == 'valid-save-page'
     assert 'private CRM content' not in caplog.text
     assert sum('save RuntimeError' in record.message for record in caplog.records) == 1
+
+
+def test_database_outage_stops_page_and_retries_same_cursor_next_tick(db, caplog):
+    from sqlalchemy.exc import OperationalError
+
+    first = response([page('peer-one'), page('peer-two')], cursor='page-2')
+    with patch.object(notion, 'resolve_data_source_id', return_value='crm'), patch.object(
+            notion.requests, 'post', side_effect=[first, first]) as post:
+        with patch.object(db, 'campaign_exists', side_effect=OperationalError(
+                'SELECT private CRM content', {}, RuntimeError('connection lost'))) as exists:
+            notion_sync.run_crm_sync()
+        assert exists.call_count == 1
+        assert notion._client_discovery_cursor is None
+        assert db.get_campaign('peer_one') is None
+        assert db.get_campaign('peer_two') is None
+        notion_sync.run_crm_sync()
+    assert post.call_count == 2
+    assert all('start_cursor' not in call.kwargs['json'] for call in post.call_args_list)
+    assert db.get_campaign('peer_one')['notion_page_id'] == 'peer-one'
+    assert db.get_campaign('peer_two')['notion_page_id'] == 'peer-two'
+    assert 'private CRM content' not in caplog.text
