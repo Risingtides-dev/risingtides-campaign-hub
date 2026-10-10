@@ -562,3 +562,12 @@ area: [backend], [testing], [review]
 
 Added CAMPAIGN_REFRESH_SCHEDULER_ENABLED, default true, and passed it from app config to APScheduler initialization. False omits automatic campaign_refresh registration and starts the persistent SQLAlchemy scheduler paused, removes any retained campaign_refresh job, then resumes the other jobs. Removal failure stops the scheduler and clears its singleton for readiness retry. Manual and on-demand refresh entrypoints, their leases, and receipts were unchanged. Disposable SQLite tests prove an overdue old job cannot fire, other jobs remain, re-enabling registers campaign_refresh, the app forwards the setting, and removal failure never resumes. Backend verification: 945 passed, 8 PostgreSQL-only tests skipped without TEST_POSTGRES_DATABASE_URL. Transition is staged only: Railway remains unchanged until Mac Apify credential and delivery are approved/verified. Rollback is true plus restart and scheduled-job readback. Local disk held roughly 175 MiB available after removing only this agent's regenerable Content Lab test venv; no production environment, scrape, publication, push, PR, merge or deployment was touched.
 _________________________________________________________________________________
+_________________________________________________________________________________
+time: [01:20pm] [09-10-26] EDT
+agent: [claude code], [claude-opus-5-5]
+worktree: [claude/issue-257-crm-sync-scheduler] ~/dev/oceanwork/rch-257 on macmini-ip
+type: [feature-request]: issue #257 PR #258 brought current with main
+area: [backend], [testing]
+
+Merged origin/main cd16752 into the #257 CRM discovery branch without rewriting history. The only code conflict was the scheduler startup log, now reporting both the campaign_refresh toggle and the crm_sync interval; crm_sync registers unconditionally, so CAMPAIGN_REFRESH_SCHEDULER_ENABLED=false keeps the one-minute CRM discovery job, now pinned in the toggle regression. Full Python 3.11 suite: 1055 passed, 8 PostgreSQL-only skips. No deployment, production CRM request or campaign creation occurred; the job runs on Railway after merge and deploy with SCHEDULER_ENABLED=true and no new env vars.
+_________________________________________________________________________________
