@@ -44,6 +44,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from uuid import UUID
 
 import requests
+from sqlalchemy.exc import DBAPIError, DisconnectionError, InterfaceError, OperationalError, TimeoutError as PoolTimeoutError
 
 from campaign_manager import db as _db
 from campaign_manager.models import (
@@ -849,3 +850,174 @@ def run_notion_sync() -> None:
     finally:
         with _notion_sync_lock:
             _notion_sync_in_progress = False
+
+
+# ── CRM sync scheduler job (issue #257) ─────────────────────────────
+
+CRM_SYNC_DEFAULT_INTERVAL_MINUTES = 1
+CRM_SYNC_MIN_INTERVAL_MINUTES = 1
+CRM_SYNC_MAX_INTERVAL_MINUTES = 60
+
+_crm_sync_in_progress = False
+_crm_sync_lock = __import__("threading").Lock()
+
+
+def get_crm_sync_interval_minutes() -> int:
+    """Resolve the CRM-poll interval from the env var, clamped to sane bounds.
+
+    Env var: ``NOTION_CRM_SYNC_INTERVAL_MINUTES`` (default 1, clamped 1–60).
+    """
+    raw = os.environ.get("NOTION_CRM_SYNC_INTERVAL_MINUTES", "")
+    if not raw:
+        return CRM_SYNC_DEFAULT_INTERVAL_MINUTES
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "NOTION_CRM_SYNC_INTERVAL_MINUTES=%r is not an integer; using default %d",
+            raw, CRM_SYNC_DEFAULT_INTERVAL_MINUTES,
+        )
+        return CRM_SYNC_DEFAULT_INTERVAL_MINUTES
+    if n < CRM_SYNC_MIN_INTERVAL_MINUTES or n > CRM_SYNC_MAX_INTERVAL_MINUTES:
+        logger.warning(
+            "NOTION_CRM_SYNC_INTERVAL_MINUTES=%d out of bounds [%d, %d]; using default %d",
+            n, CRM_SYNC_MIN_INTERVAL_MINUTES, CRM_SYNC_MAX_INTERVAL_MINUTES,
+            CRM_SYNC_DEFAULT_INTERVAL_MINUTES,
+        )
+        return CRM_SYNC_DEFAULT_INTERVAL_MINUTES
+    return n
+
+
+def run_crm_sync() -> None:
+    """Discover one page of new CRM Client rows per scheduler tick.
+
+    Existing campaigns are refreshed only by the bounded active-campaign
+    15-minute lane. A slug match never transfers ownership from another CRM page.
+    The in-flight guard prevents overlapping discovery scans in this process.
+    """
+    from campaign_manager import db as _database
+    engine = getattr(_database, "_engine", None)
+    if engine is not None and engine.dialect.name == "postgresql":
+        from campaign_manager.services.crm_queue import run_tick
+        try:
+            run_tick()
+        except Exception as error:
+            # Missing queue schema or database outage must not fall through to
+            # the in-memory cursor path or expose CRM values in a traceback.
+            logger.error("CRON: crm_queue unavailable (%s); scan and queue held",
+                         type(error).__name__)
+        return
+
+    global _crm_sync_in_progress
+
+    with _crm_sync_lock:
+        if _crm_sync_in_progress:
+            logger.info("CRON: crm_sync skipped (previous tick still in flight)")
+            return
+        _crm_sync_in_progress = True
+
+    try:
+        from datetime import datetime as _dt
+        from campaign_manager import db as _db
+        from campaign_manager.services import notion as _notion
+        from campaign_manager.services.notion import log_crm_row_skip, query_new_clients
+
+        if not _db.is_active():
+            logger.warning("CRON: crm_sync skipped (database not active)")
+            return
+
+        logger.info("CRON: starting crm_sync")
+
+        previous_cursor = _notion._client_discovery_cursor
+        new_entries = query_new_clients(set(), resume=True)
+
+        created = []
+        skipped = []
+        errors = []
+
+        for entry in new_entries:
+            try:
+                slug = entry["slug"]
+
+                if _db.campaign_exists(slug):
+                    skipped.append({"slug": slug, "reason": "already exists"})
+                    continue
+
+                meta = {
+                    "title": entry["title"],
+                    "name": entry["title"],
+                    "slug": slug,
+                    "artist": entry["artist"],
+                    "song": entry["song"],
+                    "official_sound": entry["official_sound"],
+                    "sound_id": entry["sound_id"],
+                    "start_date": entry["start_date"],
+                    "budget": entry["budget"],
+                    "status": "queued",
+                    "platform": "tiktok",
+                    "created_at": _dt.now().isoformat(),
+                    "stats": {"total_views": 0, "total_likes": 0},
+                    "source": "notion",
+                    "notion_page_id": entry["notion_page_id"],
+                    "insta_sound": entry.get("insta_sound", ""),
+                    "cobrand_share_url": entry.get("cobrand_share_url", ""),
+                    "campaign_stage": entry.get("campaign_stage", ""),
+                    "round": entry.get("round", ""),
+                    "label": entry.get("label", ""),
+                    "project_lead": entry.get("project_lead", []),
+                    "client_email": entry.get("client_email", ""),
+                    "content_types": entry.get("content_types") or [],
+                    "internal_captions": entry.get("internal_captions"),
+                    "platform_split": entry.get("platform_split", {}),
+                }
+
+                sound_url = _db._canonical_sound_url(meta["official_sound"])
+                result = _db.save_campaign(
+                    slug, meta, expected_official_sound="" if sound_url is not None else None,
+                    create_only=True,
+                )
+                if result not in (None, "updated"):
+                    if result == "duplicate":
+                        skipped.append({"slug": slug, "reason": "duplicate sound URL"})
+                    elif result in ("conflict", "missing_revision"):
+                        skipped.append({"slug": slug, "reason": "campaign changed during creation"})
+                    else:
+                        errors.append({"reason": "campaign save failed"})
+                    continue
+                created.append({"slug": slug, "title": entry["title"]})
+            except (DBAPIError, DisconnectionError, PoolTimeoutError) as error:
+                if isinstance(error, (OperationalError, InterfaceError, DisconnectionError, PoolTimeoutError)) or (
+                    isinstance(error, DBAPIError) and error.connection_invalidated
+                ):
+                    # A database outage is not a bad CRM row. Retry this exact
+                    # Notion page on the next scheduled tick, without probing
+                    # the remaining rows while the database is unavailable.
+                    _notion._client_discovery_cursor = previous_cursor
+                    logger.warning("CRON: crm_sync database unavailable; page will retry next tick")
+                    return
+                page_id = entry.get("notion_page_id", "") if isinstance(entry, dict) else ""
+                log_crm_row_skip(page_id, "save " + type(error).__name__)
+                errors.append({"reason": "campaign save raised"})
+            except Exception as error:
+                page_id = entry.get("notion_page_id", "") if isinstance(entry, dict) else ""
+                log_crm_row_skip(page_id, "save " + type(error).__name__)
+                errors.append({"reason": "campaign save raised"})
+
+        if created or errors:
+            logger.info(
+                "CRON: crm_sync done — created=%d skipped=%d errors=%d",
+                len(created), len(skipped), len(errors),
+            )
+            if errors:
+                logger.warning("CRON: crm_sync had %d row errors", len(errors))
+        else:
+            logger.debug(
+                "CRON: crm_sync done — no new campaigns (skipped=%d)",
+                len(skipped),
+            )
+
+    except Exception:
+        logger.exception("CRON: crm_sync raised an unhandled exception")
+    finally:
+        with _crm_sync_lock:
+            _crm_sync_in_progress = False
