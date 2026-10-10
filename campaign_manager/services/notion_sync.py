@@ -905,7 +905,7 @@ def run_crm_sync() -> None:
     try:
         from datetime import datetime as _dt
         from campaign_manager import db as _db
-        from campaign_manager.services.notion import query_new_clients
+        from campaign_manager.services.notion import log_crm_row_skip, query_new_clients
 
         if not _db.is_active():
             logger.warning("CRON: crm_sync skipped (database not active)")
@@ -920,54 +920,59 @@ def run_crm_sync() -> None:
         errors = []
 
         for entry in new_entries:
-            slug = entry["slug"]
+            try:
+                slug = entry["slug"]
 
-            if _db.campaign_exists(slug):
-                skipped.append({"slug": slug, "reason": "already exists"})
-                continue
+                if _db.campaign_exists(slug):
+                    skipped.append({"slug": slug, "reason": "already exists"})
+                    continue
 
-            meta = {
-                "title": entry["title"],
-                "name": entry["title"],
-                "slug": slug,
-                "artist": entry["artist"],
-                "song": entry["song"],
-                "official_sound": entry["official_sound"],
-                "sound_id": entry["sound_id"],
-                "start_date": entry["start_date"],
-                "budget": entry["budget"],
-                "status": "queued",
-                "platform": "tiktok",
-                "created_at": _dt.now().isoformat(),
-                "stats": {"total_views": 0, "total_likes": 0},
-                "source": "notion",
-                "notion_page_id": entry["notion_page_id"],
-                "insta_sound": entry.get("insta_sound", ""),
-                "cobrand_share_url": entry.get("cobrand_share_url", ""),
-                "campaign_stage": entry.get("campaign_stage", ""),
-                "round": entry.get("round", ""),
-                "label": entry.get("label", ""),
-                "project_lead": entry.get("project_lead", []),
-                "client_email": entry.get("client_email", ""),
-                "content_types": entry.get("content_types") or [],
-                "internal_captions": entry.get("internal_captions"),
-                "platform_split": entry.get("platform_split", {}),
-            }
+                meta = {
+                    "title": entry["title"],
+                    "name": entry["title"],
+                    "slug": slug,
+                    "artist": entry["artist"],
+                    "song": entry["song"],
+                    "official_sound": entry["official_sound"],
+                    "sound_id": entry["sound_id"],
+                    "start_date": entry["start_date"],
+                    "budget": entry["budget"],
+                    "status": "queued",
+                    "platform": "tiktok",
+                    "created_at": _dt.now().isoformat(),
+                    "stats": {"total_views": 0, "total_likes": 0},
+                    "source": "notion",
+                    "notion_page_id": entry["notion_page_id"],
+                    "insta_sound": entry.get("insta_sound", ""),
+                    "cobrand_share_url": entry.get("cobrand_share_url", ""),
+                    "campaign_stage": entry.get("campaign_stage", ""),
+                    "round": entry.get("round", ""),
+                    "label": entry.get("label", ""),
+                    "project_lead": entry.get("project_lead", []),
+                    "client_email": entry.get("client_email", ""),
+                    "content_types": entry.get("content_types") or [],
+                    "internal_captions": entry.get("internal_captions"),
+                    "platform_split": entry.get("platform_split", {}),
+                }
 
-            sound_url = _db._canonical_sound_url(meta["official_sound"])
-            result = _db.save_campaign(
-                slug, meta, expected_official_sound="" if sound_url is not None else None,
-                create_only=True,
-            )
-            if result not in (None, "updated"):
-                if result == "duplicate":
-                    skipped.append({"slug": slug, "reason": "duplicate sound URL"})
-                elif result in ("conflict", "missing_revision"):
-                    skipped.append({"slug": slug, "reason": "campaign changed during creation"})
-                else:
-                    errors.append({"slug": slug, "reason": "campaign save failed"})
-                continue
-            created.append({"slug": slug, "title": entry["title"]})
+                sound_url = _db._canonical_sound_url(meta["official_sound"])
+                result = _db.save_campaign(
+                    slug, meta, expected_official_sound="" if sound_url is not None else None,
+                    create_only=True,
+                )
+                if result not in (None, "updated"):
+                    if result == "duplicate":
+                        skipped.append({"slug": slug, "reason": "duplicate sound URL"})
+                    elif result in ("conflict", "missing_revision"):
+                        skipped.append({"slug": slug, "reason": "campaign changed during creation"})
+                    else:
+                        errors.append({"reason": "campaign save failed"})
+                    continue
+                created.append({"slug": slug, "title": entry["title"]})
+            except Exception as error:
+                page_id = entry.get("notion_page_id", "") if isinstance(entry, dict) else ""
+                log_crm_row_skip(page_id, "save " + type(error).__name__)
+                errors.append({"reason": "campaign save raised"})
 
         if created or errors:
             logger.info(
@@ -975,7 +980,7 @@ def run_crm_sync() -> None:
                 len(created), len(skipped), len(errors),
             )
             if errors:
-                logger.warning("CRON: crm_sync errors: %s", errors)
+                logger.warning("CRON: crm_sync had %d row errors", len(errors))
         else:
             logger.debug(
                 "CRON: crm_sync done — no new campaigns (skipped=%d)",

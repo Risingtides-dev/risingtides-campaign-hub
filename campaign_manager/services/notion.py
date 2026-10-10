@@ -7,6 +7,7 @@ that entry to Campaign Hub as a new campaign.
 CRM Database ID: 1961465b-b829-80c9-a1b5-c4cb3284149a
 Integration: "Rising Tides AI" bot (internal integration)
 """
+import hashlib
 import logging
 import os
 import threading
@@ -343,6 +344,23 @@ def fetch_page_content_types(notion_page_id: str) -> Optional[List[str]]:
 
 
 _client_discovery_cursor = None
+_crm_row_warning_at = {}
+
+
+def log_crm_row_skip(page_id: str, reason: str) -> None:
+    """Rate-limit per-row diagnostics without logging CRM property values."""
+    key = (str(page_id), reason)
+    now = time.monotonic()
+    last = _crm_row_warning_at.get(key)
+    if last is not None and now - last < 3600:
+        return
+    if len(_crm_row_warning_at) >= 256:
+        oldest = min(_crm_row_warning_at, key=_crm_row_warning_at.get)
+        del _crm_row_warning_at[oldest]
+    _crm_row_warning_at[key] = now
+    page_ref = hashlib.sha256(str(page_id).encode()).hexdigest()[:12]
+    logger.warning("CRM discovery skipped page %s: %s", page_ref, reason)
+
 
 
 def query_new_clients(synced_page_ids: Set[str], *, resume: bool = False) -> List[Dict]:
@@ -394,71 +412,79 @@ def query_new_clients(synced_page_ids: Set[str], *, resume: bool = False) -> Lis
     response = resp.json()
     results = []
     for page in response.get("results", []):
-        page_id = page["id"]
-        if page_id in synced_page_ids:
-            continue
+        page_id = page.get("id", "") if isinstance(page, dict) else ""
+        try:
+            if not page_id:
+                raise ValueError("missing page id")
+            if page_id in synced_page_ids:
+                continue
 
-        props = page.get("properties", {})
+            props = page.get("properties", {})
 
-        # Extract all mapped fields from the CRM schema
-        artist = _get_title(props.get("Artist Name", {}))
-        song = _get_rich_text(props.get("Song Name", {}))
-        tiktok_sound = _get_url(props.get("TikTok Sound Link", {})).strip()
-        insta_sound = _get_url(props.get("Insta Sound Link", {})).strip()
-        cobrand = _get_url(props.get("Co Brand Link", {})).strip()
-        start_date = _get_date(props.get("Desired Start Date", {}))
-        budget = _get_number(props.get("Media Spend", {}))
-        campaign_stage = _get_status(props.get("Campaign Stage", {}))
-        round_val = _get_select(props.get("Round", {}))
-        label = _get_rich_text(props.get("Label/Distro Partner", {}))
-        lead = _get_multi_select(props.get("Project Lead", {}))
-        email = _get_email(props.get("Key Contact Email", {}))
-        content_types = _parse_content_types(props)
-        tiktok_pct = _get_multi_select(props.get("TikTok", {}))
-        insta_pct = _get_multi_select(props.get("Instagram", {}))
-        internal_captions = _parse_internal_captions(page_id, props)
+            # Extract all mapped fields from the CRM schema
+            artist = _get_title(props.get("Artist Name", {}))
+            song = _get_rich_text(props.get("Song Name", {}))
+            if len(artist) > 255 or len(song) > 255:
+                log_crm_row_skip(page_id, "artist or song exceeds 255 chars")
+                continue
+            tiktok_sound = _get_url(props.get("TikTok Sound Link", {})).strip()
+            insta_sound = _get_url(props.get("Insta Sound Link", {})).strip()
+            cobrand = _get_url(props.get("Co Brand Link", {})).strip()
+            start_date = _get_date(props.get("Desired Start Date", {}))
+            budget = _get_number(props.get("Media Spend", {}))
+            campaign_stage = _get_status(props.get("Campaign Stage", {}))
+            round_val = _get_select(props.get("Round", {}))
+            label = _get_rich_text(props.get("Label/Distro Partner", {}))
+            lead = _get_multi_select(props.get("Project Lead", {}))
+            email = _get_email(props.get("Key Contact Email", {}))
+            content_types = _parse_content_types(props)
+            tiktok_pct = _get_multi_select(props.get("TikTok", {}))
+            insta_pct = _get_multi_select(props.get("Instagram", {}))
+            internal_captions = _parse_internal_captions(page_id, props)
 
-        platform_split = _parse_platform_split(tiktok_pct, insta_pct)
+            platform_split = _parse_platform_split(tiktok_pct, insta_pct)
 
-        # Extract sound ID from TikTok sound link if available
-        sound_id = ""
-        if tiktok_sound:
-            sound_id = extract_sound_id(tiktok_sound)
+            # Extract sound ID from TikTok sound link if available
+            sound_id = ""
+            if tiktok_sound:
+                sound_id = extract_sound_id(tiktok_sound)
 
-        # Build campaign title
-        if artist and song:
-            title = f"{artist} - {song}"
-        elif artist:
-            title = artist
-        elif song:
-            title = song
-        else:
-            title = f"Untitled ({page_id[:8]})"
+            # Build campaign title
+            if artist and song:
+                title = f"{artist} - {song}"
+            elif artist:
+                title = artist
+            elif song:
+                title = song
+            else:
+                title = f"Untitled ({page_id[:8]})"
 
-        slug = slugify(title)
+            slug = slugify(title)
 
-        results.append({
-            "notion_page_id": page_id,
-            "title": title,
-            "slug": slug,
-            "artist": artist,
-            "song": song,
-            "official_sound": tiktok_sound,
-            "sound_id": sound_id,
-            "insta_sound": insta_sound,
-            "cobrand_share_url": cobrand,
-            "start_date": start_date,
-            "budget": float(budget) if budget else 0.0,
-            "campaign_stage": campaign_stage,
-            "round": round_val,
-            "label": label,
-            "project_lead": lead,
-            "client_email": email,
-            "content_types": content_types,
-            "internal_captions": internal_captions,
-            "platform_split": platform_split,
-            "source": "notion",
-        })
+            results.append({
+                "notion_page_id": page_id,
+                "title": title,
+                "slug": slug,
+                "artist": artist,
+                "song": song,
+                "official_sound": tiktok_sound,
+                "sound_id": sound_id,
+                "insta_sound": insta_sound,
+                "cobrand_share_url": cobrand,
+                "start_date": start_date,
+                "budget": float(budget) if budget else 0.0,
+                "campaign_stage": campaign_stage,
+                "round": round_val,
+                "label": label,
+                "project_lead": lead,
+                "client_email": email,
+                "content_types": content_types,
+                "internal_captions": internal_captions,
+                "platform_split": platform_split,
+                "source": "notion",
+            })
+        except (KeyError, TypeError, ValueError, AttributeError) as error:
+            log_crm_row_skip(page_id, type(error).__name__)
 
     if resume:
         _client_discovery_cursor = response.get("next_cursor") if response.get("has_more") else None

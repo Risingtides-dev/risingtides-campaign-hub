@@ -177,3 +177,42 @@ def test_create_only_conflict_preserves_row_and_legacy_update_still_works(db):
     assert db.get_campaign("existing")["title"] == "Original"
     assert db.save_campaign("existing", {"title": "Intentional update"}) is None
     assert db.get_campaign("existing")["title"] == "Intentional update"
+
+
+def test_long_crm_row_does_not_starve_later_client_or_repeat_its_warning(db, caplog):
+    poison = page('poison-page')
+    poison['properties']['Artist Name']['title'][0]['plain_text'] = 'private-artist-' + 'x' * 260
+    valid = page('valid-peer', [{'name': 'Coffee'}])
+    with patch.object(notion, 'resolve_data_source_id', return_value='crm'), patch.object(
+            notion.requests, 'post', return_value=response([poison, valid])) as post:
+        notion_sync.run_crm_sync()
+        notion_sync.run_crm_sync()
+    assert post.call_count == 2
+    assert db.get_campaign('valid_peer')['notion_page_id'] == 'valid-peer'
+    assert db.get_campaign('poison_page') is None
+    assert sum('artist or song exceeds 255 chars' in record.message for record in caplog.records) == 1
+    assert 'private-artist-' not in caplog.text
+
+
+def test_one_save_exception_does_not_starve_next_client(db, caplog):
+    poison = creation_entry()
+    poison['slug'] = 'poison_save'
+    poison['notion_page_id'] = 'poison-save-page'
+    valid = creation_entry()
+    valid['slug'] = 'valid_save'
+    valid['notion_page_id'] = 'valid-save-page'
+    real_save = db.save_campaign
+
+    def save_one_poison(slug, meta, **kwargs):
+        if slug == 'poison_save':
+            raise RuntimeError('private CRM content must not be logged')
+        return real_save(slug, meta, **kwargs)
+
+    with patch.object(notion, 'query_new_clients', return_value=[poison, valid]), patch.object(
+            db, 'save_campaign', side_effect=save_one_poison):
+        notion_sync.run_crm_sync()
+        notion_sync.run_crm_sync()
+    assert db.get_campaign('poison_save') is None
+    assert db.get_campaign('valid_save')['notion_page_id'] == 'valid-save-page'
+    assert 'private CRM content' not in caplog.text
+    assert sum('save RuntimeError' in record.message for record in caplog.records) == 1
