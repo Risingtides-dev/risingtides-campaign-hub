@@ -21,7 +21,7 @@ These were the *standalone-dangerous* endpoints — each patched narrowly withou
 | Fix | What it closed | PR |
 |---|---|---|
 | **notion_sync delete-floor** (CAMP-94) | A truncated Notion fetch could mass-delete the attribution mirror + group memberships. Now aborts on truncation + refuses to delete >50% of rows. | #186 |
-| **/api/cron/diag gate** | Fired a live scrape + proxy fetch on every unauthenticated GET (cost DoS) and leaked proxy stderr. Now the live tests + stderr need `?run=1`; cheap diagnostics stay always-on. | #187 |
+| **/api/cron/diag gate** | #187 moved live scrape and proxy-fetch probes behind `?run=1`, but left public default subprocess probes and scraper configuration readable. The current source retires the complete route with fixed HTTP 410, including `?run=1`; deployment and live parity must be verified before calling the exposure closed in production. | #187 + retirement candidate |
 | **/api/migrate/campaign-full** | Privileged campaign import requires `HUB_WRITE_KEY` in `X-Hub-Write-Key`; missing configuration fails closed with 503, bad/missing credentials return 401, and `?overwrite=1` does not bypass auth. Authorized writes retain duplicate-sound checks. | PR #240 |
 
 ## STAGED but NOT enabled — the umbrella fix (needs John)
@@ -36,7 +36,7 @@ These were the *standalone-dangerous* endpoints — each patched narrowly withou
 
 ### Remaining exposures the gate covers (do NOT need individual patches)
 - **IDOR — `GET /api/campaign/<slug>`**: returns budget, every creator's `total_rate`, `per_post_rate`, **`paypal_email`**, paid status. Slug is the only "credential" and slugs are guessable (artist-song). Anyone can harvest creator PayPal emails + negotiated rates across the whole campaign book. *(The dedicated client report `campaign_report.py` correctly strips all this — the problem is the full-detail endpoint being reachable.)*
-- **`POST /api/cron/trigger` / `/api/cron/toggle`**: unauthenticated — launch unbounded scrapes (cost/DoS) or disable the daily scheduler.
+- **`POST /api/cron/trigger`**: remains unauthenticated and can launch scrapes (cost/DoS). The retired `/api/cron/toggle` returns 410 without scheduler mutation; verify the deployed revision before treating that exposure as closed in production.
 - **`POST /api/webhooks/notion`**: unauthenticated campaign creation (insert-only, 409s on dup, but anyone can inject).
 - **`GET /api/campaign/<slug>/cobrand/raw`**: unauthenticated debug hatch dumping the full Cobrand promotion object.
 

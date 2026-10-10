@@ -571,3 +571,90 @@ area: [backend], [testing]
 
 Merged origin/main cd16752 into the #257 CRM discovery branch without rewriting history. The only code conflict was the scheduler startup log, now reporting both the campaign_refresh toggle and the crm_sync interval; crm_sync registers unconditionally, so CAMPAIGN_REFRESH_SCHEDULER_ENABLED=false keeps the one-minute CRM discovery job, now pinned in the toggle regression. Full Python 3.11 suite: 1055 passed, 8 PostgreSQL-only skips. No deployment, production CRM request or campaign creation occurred; the job runs on Railway after merge and deploy with SCHEDULER_ENABLED=true and no new env vars.
 _________________________________________________________________________________
+_________________________________________________________________________________
+time: [12:18am] [10-10-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/hub-tiktok-source-outcomes] /Users/risingtidesdev/worktrees/hub-tiktok-source-outcomes
+type: [bug report]: classify failed TikTok profile fetches in scheduled campaign refresh
+area: [backend], [testing], [review]
+
+Railway campaign_refresh calls master_tracker.scrape_tiktok_account through scheduler._scrape_creator_accounts_v2. A nonzero yt-dlp exit, empty stdout, timeout, or exception previously returned [] or cached rows; the scheduler then recorded that creator as empty or ok. The isolated repair raises fixed-reason TikTokScrapeError, retries once with bounded backoff, preserves cached rows for matching without treating them as fresh fetch success, and persists sanitized per-creator outcomes in the cron summary. A >70% source-failure rate across at least six creators now marks the run degraded. Synthetic tests cover source errors, secret redaction, cache retention, valid date-filtered empty results, bounded retry and durable cron outcome. Focused 42 passed; full backend 1046 passed with eight existing opt-in PostgreSQL tests skipped because TEST_POSTGRES_DATABASE_URL was not supplied. No real scrape, credential change, schedule change, push, PR, merge, or deployment occurred. Independent review remains required before release.
+_________________________________________________________________________________
+_________________________________________________________________________________
+time: [12:23am] [10-10-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/hub-tiktok-source-outcomes] /Users/risingtidesdev/worktrees/hub-tiktok-source-outcomes
+type: [bug report]: mark complete small-roster TikTok source failure degraded
+area: [backend], [testing]
+
+Pre-review edge check showed that a sole requested creator failing to fetch would still report degraded=false under the fleet-size threshold. Complete source failure now degrades any nonempty requested TikTok roster; the >70% threshold remains for larger partial failures. Focused synthetic checks passed 42 and diff check passed. No live scrape or release action occurred.
+_________________________________________________________________________________
+_________________________________________________________________________________
+time: [12:27am] [10-10-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/hub-tiktok-source-outcomes] /Users/risingtidesdev/worktrees/hub-tiktok-source-outcomes
+type: [bug report]: reject invalid-only yt-dlp profile output
+area: [backend], [testing], [review]
+
+Independent review reproduced a malformed webpage_url-only yt-dlp output that incremented the usable-row counter before URL validation, leaving an incorrect healthy empty result. The parser now validates TikTok video/photo URL shape before counting a row as usable; date-filtered valid old rows still prove a successful source fetch. Added an original-failing synthetic regression. Focused 43 passed. No source fetch, push, PR, merge or deployment occurred.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [12:32am] [10-10-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/cron-toggle-failclosed] /Users/risingtidesdev/worktrees/hub-cron-toggle-failclosed
+type: [bug report]: retire unsafe public scheduler toggle
+area: [backend], [testing]
+
+Public POST /api/cron/toggle previously called a process-local APScheduler pause/resume with no caller authentication. In a multiworker service a request reaching a nonowner worker returned success without changing the scheduler; a request reaching its owner could pause scheduled work. The endpoint now always returns HTTP 410 with no scheduler mutation and directs operators to the existing SCHEDULER_ENABLED configuration and controlled restart. Repeated synthetic requests cover enabled, disabled, absent, and malformed bodies; focused 7 passed. No live POST, scheduler mutation, push, PR, merge or deployment occurred. Independent review and production verification remain required.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [12:35am] [10-10-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/cron-toggle-failclosed] /Users/risingtidesdev/worktrees/hub-cron-toggle-failclosed
+type: [bug report]: verify retired scheduler toggle cannot pause or resume
+area: [backend], [testing]
+
+Strengthened synthetic coverage to assert repeated public requests neither invoke the old toggle function nor pause or resume a present scheduler. Backend suite passed 927 with five opt-in PostgreSQL cases skipped; complete Python suite passed 1052 with eight opt-in PostgreSQL cases skipped. The stronger focused regression passed 5. No production toggle request or deployment occurred.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [12:39am] [10-10-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/cron-toggle-failclosed] /Users/risingtidesdev/worktrees/hub-cron-toggle-failclosed
+type: [bug report]: correct stale security handoff for scheduler toggle
+area: [writing], [review]
+
+Independent review found docs/SECURITY_HANDOFF.md still described unauthenticated /api/cron/toggle as able to disable the daily scheduler. The handoff now records its HTTP 410 no-mutation contract and keeps the separate unauthenticated /api/cron/trigger exposure explicit. A source change is not production proof; the handoff calls for deployed-revision verification. No push, PR, deployment, or live cron action occurred.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [01:07am] [10-10-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/cron-diag-failclosed-20261010] /Users/risingtidesdev/worktrees/hub-cron-diag-failclosed
+type: [bug report]: retire public cron diagnostic execution
+area: [backend], [testing]
+
+Public GET /api/cron/diag spawned yt-dlp version and impersonation probes by default, exposed scraper configuration, and allowed unauthenticated ?run=1 callers to launch a TikTok scrape and proxy-backed enrichment fetch, returning raw stderr tail. Retired the complete public route with fixed HTTP 410 before any subprocess, network, or environment reads. Added repeated synthetic requests covering default and run query variants, no subprocess/network invocation, and no secret-bearing response. Focused diagnostic, retired toggle, and smoke checks passed 12. No live run=1 request, scheduler mutation, push, PR, merge or deployment occurred. Independent review, hosted checks and production verification remain required.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [01:09am] [10-10-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/cron-diag-failclosed-20261010] /Users/risingtidesdev/worktrees/hub-cron-diag-failclosed
+type: [gh actions]: verify cron diagnostic retirement candidate
+area: [testing], [review]
+
+Full Python suite passed 1057 with eight opt-in PostgreSQL tests skipped because TEST_POSTGRES_DATABASE_URL is unset. The only behavior change is fixed HTTP 410 for the previously public diagnostic; scheduled jobs, logs, status, and manual trigger are untouched. Reviewed the root AGENTS.md chain; no child AGENTS.md governs changed paths. Root contract and verification instructions were updated for the retired route. Rollback is to redeploy the previous revision; reopening this route would restore the public subprocess and proxy-fetch exposure, so an authenticated and rate-bounded replacement is required before reintroducing active probes.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [01:11am] [10-10-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/cron-diag-failclosed-20261010] /Users/risingtidesdev/worktrees/hub-cron-diag-failclosed
+type: [bug report]: correct security handoff after diagnostic retirement
+area: [writing], [review]
+
+Independent review found docs/SECURITY_HANDOFF.md still described the public cron diagnostic as always-on cheap diagnostics with active probes behind ?run=1. It now distinguishes the earlier #187 mitigation from this source candidate, records fixed HTTP 410 for all query variants, and explicitly holds production closure until deployment and live parity are verified. No production diagnostic request, push, merge, or deployment occurred.
+_________________________________________________________________________________
