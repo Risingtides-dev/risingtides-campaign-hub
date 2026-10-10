@@ -237,3 +237,24 @@ def test_database_outage_stops_page_and_retries_same_cursor_next_tick(db, caplog
     assert db.get_campaign('peer_one')['notion_page_id'] == 'peer-one'
     assert db.get_campaign('peer_two')['notion_page_id'] == 'peer-two'
     assert 'private CRM content' not in caplog.text
+
+
+def test_pool_exhaustion_stops_page_and_retries_same_cursor_next_tick(db, caplog):
+    from sqlalchemy.exc import TimeoutError as PoolTimeoutError
+
+    first = response([page('pool-one'), page('pool-two')], cursor='page-2')
+    with patch.object(notion, 'resolve_data_source_id', return_value='crm'), patch.object(
+            notion.requests, 'post', side_effect=[first, first]) as post:
+        with patch.object(db, 'campaign_exists', side_effect=PoolTimeoutError(
+                'private CRM content must not be logged')) as exists:
+            notion_sync.run_crm_sync()
+        assert exists.call_count == 1
+        assert notion._client_discovery_cursor is None
+        assert db.get_campaign('pool_one') is None
+        assert db.get_campaign('pool_two') is None
+        notion_sync.run_crm_sync()
+    assert post.call_count == 2
+    assert all('start_cursor' not in call.kwargs['json'] for call in post.call_args_list)
+    assert db.get_campaign('pool_one')['notion_page_id'] == 'pool-one'
+    assert db.get_campaign('pool_two')['notion_page_id'] == 'pool-two'
+    assert 'private CRM content' not in caplog.text

@@ -44,7 +44,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from uuid import UUID
 
 import requests
-from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
+from sqlalchemy.exc import DBAPIError, DisconnectionError, InterfaceError, OperationalError, TimeoutError as PoolTimeoutError
 
 from campaign_manager import db as _db
 from campaign_manager.models import (
@@ -972,8 +972,10 @@ def run_crm_sync() -> None:
                         errors.append({"reason": "campaign save failed"})
                     continue
                 created.append({"slug": slug, "title": entry["title"]})
-            except DBAPIError as error:
-                if isinstance(error, (OperationalError, InterfaceError)) or error.connection_invalidated:
+            except (DBAPIError, DisconnectionError, PoolTimeoutError) as error:
+                if isinstance(error, (OperationalError, InterfaceError, DisconnectionError, PoolTimeoutError)) or (
+                    isinstance(error, DBAPIError) and error.connection_invalidated
+                ):
                     # A database outage is not a bad CRM row. Retry this exact
                     # Notion page on the next scheduled tick, without probing
                     # the remaining rows while the database is unavailable.
