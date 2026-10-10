@@ -560,3 +560,12 @@ area: [backend], [testing]
 
 Pre-review edge check showed that a sole requested creator failing to fetch would still report degraded=false under the fleet-size threshold. Complete source failure now degrades any nonempty requested TikTok roster; the >70% threshold remains for larger partial failures. Focused synthetic checks passed 42 and diff check passed. No live scrape or release action occurred.
 _________________________________________________________________________________
+_________________________________________________________________________________
+time: [12:27am] [10-10-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/hub-tiktok-source-outcomes] /Users/risingtidesdev/worktrees/hub-tiktok-source-outcomes
+type: [bug report]: reject invalid-only yt-dlp profile output
+area: [backend], [testing], [review]
+
+Independent review reproduced a malformed webpage_url-only yt-dlp output that incremented the usable-row counter before URL validation, leaving an incorrect healthy empty result. The parser now validates TikTok video/photo URL shape before counting a row as usable; date-filtered valid old rows still prove a successful source fetch. Added an original-failing synthetic regression. Focused 43 passed. No source fetch, push, PR, merge or deployment occurred.
+_________________________________________________________________________________

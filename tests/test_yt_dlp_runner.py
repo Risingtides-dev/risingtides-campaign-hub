@@ -335,3 +335,18 @@ def test_master_tracker_valid_old_post_is_genuine_empty_not_fetch_error(monkeypa
     assert master_tracker.scrape_tiktok_account(
         "@creator", start_date=date(2026, 10, 1), use_cache=False,
     ) == []
+
+
+def test_master_tracker_invalid_only_urls_are_source_failure(monkeypatch):
+    import json
+    from src.scrapers import master_tracker
+
+    row = {"webpage_url": "https://www.tiktok.com/@x/not-a-video"}
+    monkeypatch.setattr(
+        master_tracker.subprocess, "run",
+        lambda cmd, **_kwargs: subprocess.CompletedProcess(
+            cmd, 0, stdout=json.dumps(row), stderr=""),
+    )
+    with pytest.raises(master_tracker.TikTokScrapeError) as exc_info:
+        master_tracker.scrape_tiktok_account("@creator", use_cache=False)
+    assert exc_info.value.reason == "invalid_output"

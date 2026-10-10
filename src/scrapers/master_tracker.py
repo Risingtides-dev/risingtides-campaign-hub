@@ -413,6 +413,13 @@ def scrape_tiktok_account(account: str, start_date: Optional[datetime] = None,
 
                 if not video_url:
                     continue
+                # A structurally valid older/cached row proves yt-dlp returned
+                # usable profile data even if the date filter leaves no new
+                # videos. Invalid URLs must not masquerade as healthy empty.
+                try:
+                    validate_video_data({"url": video_url, "account": f"@{username}"}, "tiktok")
+                except ValidationError:
+                    continue
                 usable_rows += 1
 
                 # Parse timestamp
