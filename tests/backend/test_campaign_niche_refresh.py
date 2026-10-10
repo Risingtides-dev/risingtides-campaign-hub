@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock, patch
 
 import pytest
@@ -376,3 +377,83 @@ def test_long_captions_reach_notion_in_pieces_it_accepts():
     pieces = notion._rich_text_pieces('a' * 4500)
     assert [len(piece['text']['content']) for piece in pieces] == [2000, 2000, 500]
     assert notion._rich_text_pieces('') == []
+
+
+# ── Minute CRM queue coverage (issue #257) ───────────────────────────
+
+def _queue_state(db, *, watermark_age=timedelta(seconds=30), audit_age=timedelta(hours=1),
+                 paused=False, rows=()):
+    from campaign_manager.models import CrmPageQueue, CrmScanState
+    now = datetime.now(timezone.utc)
+    with db._SessionLocal.begin() as session:
+        session.add(CrmScanState(
+            id=1, watermark=now - watermark_age, last_full_audit_at=now - audit_age,
+            source_pause_until=now + timedelta(minutes=1) if paused else None,
+            cursor_reset_count=0, full_audit_active=False, updated_at=now))
+        for page_id, completed, reason, leased in rows:
+            session.add(CrmPageQueue(
+                page_id=page_id, edited_at=now - timedelta(minutes=5),
+                queued_at=now - timedelta(minutes=5), due_at=now - timedelta(minutes=5),
+                attempts=0, completed_at=now - timedelta(minutes=4) if completed else None,
+                last_reason=reason, lease_token='lease' if leased else None))
+
+
+def _two_linked(db):
+    db.save_campaign('a', {'title': 'A', 'notion_page_id': 'aaaa-1111', 'content_types': ['Coffee']})
+    db.save_campaign('b', {'title': 'B', 'notion_page_id': 'bbbb-2222', 'content_types': ['Coffee']})
+
+
+def test_refresh_skips_pages_the_current_queue_reconciled(db):
+    _two_linked(db)
+    # Queue stores Notion's hyphenated form; matching ignores hyphens and case.
+    _queue_state(db, rows=[('AAAA1111', True, None, False)])
+    with patch.object(notion, 'fetch_page_campaign_fields', return_value=fields(['Trucktok'])) as fetch:
+        result = notion.refresh_campaign_niche_targets()
+    assert [call.args[0] for call in fetch.call_args_list] == ['bbbb-2222']
+    assert result == {'checked': 1, 'updated': 1, 'unavailable': 0}
+    assert db.get_campaign('a')['content_types'] == ['Coffee']
+    assert db.get_campaign('b')['content_types'] == ['Trucktok']
+
+
+@pytest.mark.parametrize('state', [
+    {'watermark_age': timedelta(minutes=11)},
+    {'audit_age': timedelta(hours=13)},
+    {'paused': True},
+])
+def test_stale_or_paused_queue_leaves_every_link_to_the_refresh(db, state):
+    _two_linked(db)
+    _queue_state(db, rows=[('aaaa-1111', True, None, False), ('bbbb-2222', True, None, False)], **state)
+    with patch.object(notion, 'fetch_page_campaign_fields', return_value=fields(['Coffee'])) as fetch:
+        notion.refresh_campaign_niche_targets()
+    assert sorted(call.args[0] for call in fetch.call_args_list) == ['aaaa-1111', 'bbbb-2222']
+
+
+def test_pending_failing_or_leased_queue_pages_are_still_refreshed(db):
+    db.save_campaign('a', {'title': 'A', 'notion_page_id': 'aaaa-1111', 'content_types': []})
+    db.save_campaign('b', {'title': 'B', 'notion_page_id': 'bbbb-2222', 'content_types': []})
+    db.save_campaign('c', {'title': 'C', 'notion_page_id': 'cccc-3333', 'content_types': []})
+    db.save_campaign('d', {'title': 'D', 'notion_page_id': 'dddd-4444', 'content_types': []})
+    _queue_state(db, rows=[('aaaa-1111', False, None, False),
+                           ('bbbb-2222', True, 'http_status', False),
+                           ('cccc-3333', True, None, True),
+                           ('dddd-4444', True, None, False)])
+    with patch.object(notion, 'fetch_page_campaign_fields', return_value=fields([])) as fetch:
+        notion.refresh_campaign_niche_targets()
+    assert sorted(call.args[0] for call in fetch.call_args_list) == ['aaaa-1111', 'bbbb-2222', 'cccc-3333']
+
+
+def test_no_queue_state_refreshes_every_link(db):
+    _two_linked(db)
+    with patch.object(notion, 'fetch_page_campaign_fields', return_value=fields(['Coffee'])) as fetch:
+        notion.refresh_campaign_niche_targets()
+    assert sorted(call.args[0] for call in fetch.call_args_list) == ['aaaa-1111', 'bbbb-2222']
+
+
+def test_coverage_lookup_failure_refreshes_every_link(db):
+    from campaign_manager.services import crm_queue
+    _two_linked(db)
+    _queue_state(db, rows=[('aaaa-1111', True, None, False)])
+    with patch.object(crm_queue, 'select', side_effect=RuntimeError('down')), \
+            patch.object(notion, 'fetch_page_campaign_fields', return_value=fields(['Coffee'])) as fetch:
+        notion.refresh_campaign_niche_targets()
+    assert sorted(call.args[0] for call in fetch.call_args_list) == ['aaaa-1111', 'bbbb-2222']

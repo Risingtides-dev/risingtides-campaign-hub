@@ -29,6 +29,9 @@ WARNING_LAG_SECONDS = 120
 AUDIT_INTERVAL = timedelta(hours=6)
 LOOKBACK = timedelta(minutes=2)
 MIN_SOURCE_SPACING = timedelta(milliseconds=500)
+# The 15-minute linked refresh trusts queue coverage only while the scan is
+# this current and a full audit has finished within two audit intervals.
+COVERAGE_MAX_SCAN_LAG = timedelta(minutes=10)
 
 
 def _utcnow():
@@ -380,6 +383,48 @@ def work(*, deadline):
             _finish(claim, reason="processing_error")
             failed += 1
     return {"handled": handled, "failed": failed}
+
+
+def _page_key(page_id):
+    return str(page_id or "").replace("-", "").lower()
+
+
+def reconciled_page_ids(page_ids):
+    """Linked CRM pages this queue has already reconciled at their latest edit.
+
+    The minute tick reads every edited CRM page and applies content_types and
+    internal_captions changes to its linked campaign, so the 15-minute linked
+    refresh does not need to read those pages again. Coverage holds only while
+    the edit scan is current and a full audit has completed recently; a stale,
+    paused or never-run queue returns an empty set and the 15-minute lane
+    refreshes every link as before. Pending, leased or failing pages are never
+    covered. Returns keys normalized without hyphens, lowercase.
+    """
+    wanted = {_page_key(page_id) for page_id in page_ids if page_id}
+    if not wanted:
+        return set()
+    now = _utcnow()
+    try:
+        with db._SessionLocal() as session:
+            state = session.get(CrmScanState, 1)
+            if state is None or state.watermark is None or state.last_full_audit_at is None:
+                return set()
+            if now - _aware(state.watermark) > COVERAGE_MAX_SCAN_LAG:
+                return set()
+            if now - _aware(state.last_full_audit_at) > 2 * AUDIT_INTERVAL:
+                return set()
+            if state.source_pause_until and _aware(state.source_pause_until) > now:
+                return set()
+            rows = session.execute(select(CrmPageQueue.page_id).where(
+                CrmPageQueue.completed_at.isnot(None),
+                CrmPageQueue.last_reason.is_(None),
+                CrmPageQueue.lease_token.is_(None),
+            )).scalars().all()
+    except Exception as error:
+        # Missing queue tables or a database fault: refresh everything.
+        logger.warning("CRM queue coverage unavailable (%s)", type(error).__name__)
+        return set()
+    return {key for key in (_page_key(page_id) for page_id in rows) if key in wanted}
 
 
 def metrics():
