@@ -658,3 +658,14 @@ area: [writing], [review]
 
 Independent review found docs/SECURITY_HANDOFF.md still described the public cron diagnostic as always-on cheap diagnostics with active probes behind ?run=1. It now distinguishes the earlier #187 mitigation from this source candidate, records fixed HTTP 410 for all query variants, and explicitly holds production closure until deployment and live parity are verified. No production diagnostic request, push, merge, or deployment occurred.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [04:27am] [10-10-26] EDT; actual UTC: 2026-10-10T08:27:21Z
+agent: [Codex desktop with Mac mini builder] [GPT-6.1] [root release owner]
+worktree: [codex/hub-crm-poison-row-20261010] /Users/risingtidesdev/worktrees/hub-crm-poison-row-20261010
+type: [bug report]: PR #258 CRM discovery poison-row repair candidate
+area: [backend], [testing], [review]
+entry-id: hub-crm-poison-row-20261010
+
+A malformed CRM Client row or one row-specific save failure formerly stopped later valid rows after the 50-row discovery cursor advanced. The isolated Mac mini repair skips malformed or overlong artist/song rows with hashed, rate-limited diagnostics, isolates row-specific save failures, and preserves create-only campaign insertion. Independent review reproduced that a broad per-row exception catch amplified a database outage to 50 attempts; the repair stops on SQLAlchemy operational, interface, invalidated-connection, pool-timeout and disconnection errors and restores the pre-query cursor so the original page is retried next tick. Synthetic regressions cover poison/valid peers, one-attempt outage and pool exhaustion, cursor rollback and replay. Current-main e941851 was merged with all unique PR and main ledger entries preserved; the only merge conflict was this ledger. Focused Mac mini tests passed 106; full final-head backend and hosted CI remain pending. This entry and root contract update precede final-head review. No production Notion call, campaign creation, push, merge, deployment or publication is claimed. Rollback is the previous deployed revision; after rollback, reconcile any discovered page before retrying the CRM job.
+_________________________________________________________________________________
