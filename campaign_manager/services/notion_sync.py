@@ -889,11 +889,15 @@ def get_crm_sync_interval_minutes() -> int:
 
 
 def run_crm_sync() -> None:
-    """Discover one page of new CRM Client rows per scheduler tick.
+    """Run one CRM tick.
 
-    Existing campaigns are refreshed only by the bounded active-campaign
-    15-minute lane. A slug match never transfers ownership from another CRM page.
-    The in-flight guard prevents overlapping discovery scans in this process.
+    On PostgreSQL the durable queue creates new Client campaigns and refreshes
+    content_types and internal_captions on existing linked campaigns for every
+    edited CRM page; the 15-minute linked refresh skips pages it has covered.
+    The SQLite development path discovers one page of new Client rows per tick
+    and leaves existing campaigns to the 15-minute lane. A slug match never
+    transfers ownership from another CRM page. The in-flight guard prevents
+    overlapping discovery scans in this process.
     """
     from campaign_manager import db as _database
     engine = getattr(_database, "_engine", None)

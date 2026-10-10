@@ -553,6 +553,12 @@ def refresh_campaign_niche_targets():
     if not db.is_active():
         return {"checked": 0, "updated": 0, "unavailable": 0}
     links = sorted(db.get_campaign_notion_links(active_only=True), key=lambda row: row["slug"])
+    # Pages the minute CRM queue already reconciled at their latest edit hold
+    # current fields; spend this bounded batch only on the rest.
+    from campaign_manager.services.crm_queue import _page_key, reconciled_page_ids
+    covered = reconciled_page_ids([row["notion_page_id"] for row in links])
+    if covered:
+        links = [row for row in links if _page_key(row["notion_page_id"]) not in covered]
     ahead = [row for row in links if row["slug"] > _niche_refresh_after]
     behind = [row for row in links if row["slug"] <= _niche_refresh_after]
     selected = (ahead + behind)[:50]
@@ -577,7 +583,7 @@ def refresh_campaign_niche_targets():
             counts["unavailable"] += 1
             logger.exception("CRM niche refresh failed for %s", link["slug"])
         _niche_refresh_after = link["slug"]
-    logger.info("CRM niche refresh: %s", counts)
+    logger.info("CRM niche refresh: %s queue_reconciled=%d", counts, len(covered))
     return counts
 
 

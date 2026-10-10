@@ -700,3 +700,13 @@ area: [backend], [testing], [review]
 
 Two independent reviews of private head 0e16a1c found new Client creation could acknowledge a page whose >=25-piece Internal Captions failed pagination, HTTP 529 and long Retry-After were not preserved, expired query cursors could strand a scan, and property pagination bypassed the shared rate slot. The private repair now requires complete captions before create or acknowledgement, preserves explicit empty and missing semantics, treats 429/529 with full server-directed Retry-After, permits one persisted same-window cursor reset on confirmed cursor validation errors, and reserves a shared paced slot before each queue-owned rich-text property GET within a 20-second property deadline. Focused real-PostgreSQL tests passed 43/43 and the complete backend suite passed 1108/1108 in 58.21 seconds. The 90-second page lease exceeds the bounded 15-second exact-page request plus 20-second property budget. Independent re-review, hosted checks, authenticated signal or load proof, deployment and live P95 evidence remain held; no PR branch, production source/database, push, merge or deployment was touched. Rollback preserves queued work in additive tables.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [07:05pm] [10-10-26] EDT; actual UTC: 2026-10-10T23:05Z
+agent: [claude code] [claude-opus-5-5]
+worktree: [claude/issue-257-refresh-dedupe] ~/dev/oceanwork/rch-257 (stacked on claude/issue-257-crm-sync-scheduler)
+type: [feature-request]: issue #257 existing-campaign refresh without duplicate reads
+area: [backend], [testing]
+
+The minute CRM queue in PR #258 already refreshes content_types and Internal Captions on linked campaigns for every edited CRM page, while the 15-minute linked refresh re-read up to 50 active campaign pages every pass outside the shared source pacer. The 15-minute lane now skips links the queue completed at their latest edit, but only while the queue scan watermark is within 10 minutes, a full audit finished within 12 hours, and the source is not paused; pending, leased or failing pages, and every link when the queue is stale, absent or unreadable (including SCHEDULER_ENABLED off), are refreshed as before. The run_crm_sync docstring now matches the queue behavior. Seven new tests; full backend suite 1115 passed against a disposable local PostgreSQL database, diff check clean. No production Notion or database call, merge or deployment.
+_________________________________________________________________________________
