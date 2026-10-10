@@ -589,3 +589,13 @@ area: [backend], [testing]
 
 Strengthened synthetic coverage to assert repeated public requests neither invoke the old toggle function nor pause or resume a present scheduler. Backend suite passed 927 with five opt-in PostgreSQL cases skipped; complete Python suite passed 1052 with eight opt-in PostgreSQL cases skipped. The stronger focused regression passed 5. No production toggle request or deployment occurred.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [12:39am] [10-10-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/cron-toggle-failclosed] /Users/risingtidesdev/worktrees/hub-cron-toggle-failclosed
+type: [bug report]: correct stale security handoff for scheduler toggle
+area: [writing], [review]
+
+Independent review found docs/SECURITY_HANDOFF.md still described unauthenticated /api/cron/toggle as able to disable the daily scheduler. The handoff now records its HTTP 410 no-mutation contract and keeps the separate unauthenticated /api/cron/trigger exposure explicit. A source change is not production proof; the handoff calls for deployed-revision verification. No push, PR, deployment, or live cron action occurred.
+_________________________________________________________________________________

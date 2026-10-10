@@ -36,7 +36,7 @@ These were the *standalone-dangerous* endpoints — each patched narrowly withou
 
 ### Remaining exposures the gate covers (do NOT need individual patches)
 - **IDOR — `GET /api/campaign/<slug>`**: returns budget, every creator's `total_rate`, `per_post_rate`, **`paypal_email`**, paid status. Slug is the only "credential" and slugs are guessable (artist-song). Anyone can harvest creator PayPal emails + negotiated rates across the whole campaign book. *(The dedicated client report `campaign_report.py` correctly strips all this — the problem is the full-detail endpoint being reachable.)*
-- **`POST /api/cron/trigger` / `/api/cron/toggle`**: unauthenticated — launch unbounded scrapes (cost/DoS) or disable the daily scheduler.
+- **`POST /api/cron/trigger`**: remains unauthenticated and can launch scrapes (cost/DoS). The retired `/api/cron/toggle` returns 410 without scheduler mutation; verify the deployed revision before treating that exposure as closed in production.
 - **`POST /api/webhooks/notion`**: unauthenticated campaign creation (insert-only, 409s on dup, but anyone can inject).
 - **`GET /api/campaign/<slug>/cobrand/raw`**: unauthenticated debug hatch dumping the full Cobrand promotion object.
 
