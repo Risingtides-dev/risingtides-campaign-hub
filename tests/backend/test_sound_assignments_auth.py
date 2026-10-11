@@ -10,6 +10,13 @@ import requests
 
 
 KEY = "synthetic-content-lab-service-key"
+HUB_KEY = "synthetic-hub-write-key"
+
+
+@pytest.fixture(autouse=True)
+def hub_key(monkeypatch):
+    monkeypatch.setenv("HUB_WRITE_KEY", HUB_KEY)
+
 
 
 @pytest.mark.parametrize(
@@ -50,7 +57,7 @@ def test_server_key_covers_existing_read_and_write_routes(
         "/api/sound-assignments" + path,
         method=method,
         json=body,
-        headers={"X-API-Key": "browser-forgery", "Authorization": "browser-token"},
+        headers={"X-API-Key": "browser-forgery", "Authorization": "browser-token", "X-Hub-Write-Key": HUB_KEY},
     )
     assert response.status_code == 201
     assert response.json == {"unchanged": True}
@@ -74,7 +81,7 @@ def test_absent_key_preserves_legacy_options_and_ignores_browser_forgery(app, cl
         return response
 
     monkeypatch.setattr("campaign_manager.blueprints.sound_assignments.requests.request", upstream_request)
-    assert client.get("/api/sound-assignments/pages", headers={"X-API-Key": "browser-forgery"}).json == []
+    assert client.get("/api/sound-assignments/pages", headers={"X-API-Key": "browser-forgery", "X-Hub-Write-Key": HUB_KEY}).json == []
     assert calls == [{"json": None, "timeout": 30}]
 
 
@@ -85,7 +92,7 @@ def test_configured_key_is_not_reflected_from_transport_error(app, client, monke
         raise requests.exceptions.InvalidHeader("invalid header value: " + KEY)
 
     monkeypatch.setattr("campaign_manager.blueprints.sound_assignments.requests.request", fail)
-    response = client.get("/api/sound-assignments/posters")
+    response = client.get("/api/sound-assignments/posters", headers={"X-Hub-Write-Key": HUB_KEY})
     assert response.status_code == 502
     assert response.json == {"error": "lab_unreachable", "detail": "Content Lab request failed"}
     assert KEY not in response.get_data(as_text=True)
@@ -123,7 +130,7 @@ def test_redirect_cannot_forward_configured_key_to_another_origin(
             CONTENT_LAB_URL=f"http://127.0.0.1:{source.server_port}",
             CONTENT_LAB_HUB_API_KEY=api_key,
         )
-        response = client.get("/api/sound-assignments/posters")
+        response = client.get("/api/sound-assignments/posters", headers={"X-Hub-Write-Key": HUB_KEY})
         assert response.status_code == (307 if api_key else 200)
         assert len(calls) == expected_requests
         assert calls[0] == (source.server_port, "/api/telegram/posters", api_key or None)
@@ -137,3 +144,34 @@ def test_redirect_cannot_forward_configured_key_to_another_origin(
             server.server_close()
         for thread in threads:
             thread.join(timeout=2)
+
+
+@pytest.mark.parametrize("method,path", [
+    ("GET", "/pages"),
+    ("GET", "/posters/poster-1/preview"),
+    ("PUT", "/pages/page-1/playlist"),
+    ("POST", "/sync"),
+    ("POST", "/send-all"),
+    ("DELETE", "/pages/page-1/playlist"),
+])
+def test_unauthenticated_requests_never_reach_lab(app, client, monkeypatch, method, path):
+    monkeypatch.setattr(
+        "campaign_manager.blueprints.sound_assignments.requests.request",
+        lambda *args, **kwargs: pytest.fail("unauthenticated request reached Content Lab"),
+    )
+    app.config["CONTENT_LAB_HUB_API_KEY"] = KEY
+    url = "/api/sound-assignments" + path
+    for headers in ({}, {"X-API-Key": KEY}, {"X-Hub-Write-Key": "wrong"}):
+        response = client.open(url, method=method, headers=headers, json={})
+        assert response.status_code == 401
+        assert KEY not in response.get_data(as_text=True)
+
+
+def test_missing_hub_key_fails_closed(app, client, monkeypatch):
+    monkeypatch.delenv("HUB_WRITE_KEY")
+    monkeypatch.setattr(
+        "campaign_manager.blueprints.sound_assignments.requests.request",
+        lambda *args, **kwargs: pytest.fail("unconfigured request reached Content Lab"),
+    )
+    response = client.get("/api/sound-assignments/pages", headers={"X-Hub-Write-Key": HUB_KEY})
+    assert response.status_code == 503

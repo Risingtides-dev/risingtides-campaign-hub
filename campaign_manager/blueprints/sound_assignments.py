@@ -8,12 +8,25 @@ Single-origin frontend → no CORS, no exposing the lab URL in the bundle.
 """
 from __future__ import annotations
 
+import hmac
+import os
 from urllib.parse import urlencode
 
 import requests
 from flask import Blueprint, current_app, jsonify, request
 
 sound_assignments_bp = Blueprint("sound_assignments", __name__, url_prefix="/api/sound-assignments")
+
+
+@sound_assignments_bp.before_request
+def require_hub_write_key():
+    """Authenticate callers before the Hub adds its Content Lab credential."""
+    key = (os.environ.get("HUB_WRITE_KEY") or "").strip()
+    if not key:
+        return jsonify({"error": "Sound Assignments is disabled until HUB_WRITE_KEY is configured."}), 503
+    supplied = request.headers.get("X-Hub-Write-Key", "")
+    if not hmac.compare_digest(supplied, key):
+        return jsonify({"error": "X-Hub-Write-Key does not match."}), 401
 
 
 def _lab_url(path: str, query: dict | None = None) -> str:
