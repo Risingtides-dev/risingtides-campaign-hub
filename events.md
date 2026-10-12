@@ -702,13 +702,6 @@ Two independent reviews of private head 0e16a1c found new Client creation could 
 _________________________________________________________________________________
 
 _________________________________________________________________________________
-time: [01:12PM] [10-12-26] EDT; actual UTC: 2026-10-12T17:12:44.059246+00:00
-agent: [Codex desktop] [GPT-6.1] [root release owner]
-worktree: [codex/hub-crm-delta-pr258-20261012] /Users/risingtidesdev/worktrees/hub-crm-delta-pr258-20261012
-type: [bug report]: PR #258 CRM full-audit starvation candidate
-area: [backend], [testing], [review]
-
-A six-hour CRM full audit could hold the only persisted scan cursor across many minute ticks and delay recent Client creation or caption/category edits. This isolated candidate adds a separate durable recent-edit lane ahead of the full audit, shares the Notion pacing/pause and serializes same-page queue revisions, and retains complete-audit reconciliation. Independent source review found no new P1/P2 on private head cbec1c2. Real disposable PostgreSQL focused checks passed 49/49 and the full Python suite passed 1114/1114 on Mac mini with no skipped cases. This event and the current root contract update precede final PR-head review and hosted checks. No Notion writes, production database change, PR push, merge or deployment occurred. The 1–2 minute target remains unproven under source lag, overload or outage; retain draft and measure natural delta watermark/queue lag after a verified release. Rollback is the prior app revision while retaining additive CRM state and queued page IDs for reconciliation.
 time: [12:10pm] [10-12-26] EDT
 agent: [codex] [gpt-6.1-sol] [focused builder]
 worktree: [codex/hub-fallback-scrape-log-20261012] /Users/risingtidesdev/worktrees/hub-fallback-scrape-log-20261012
@@ -716,4 +709,14 @@ type: [refactor]: batch campaign-list fallback scrape timestamps
 area: [backend], [testing]
 
 On the current e941851 main baseline, 30 fallback campaigns with preloaded videos produced 30 latest-scrape-log SELECTs; one produced one. The list stats path now lazily fetches each campaign's maximum last_scrape in one grouped query only if fallback submissions need a timestamp. A 1-versus-30 SQL listener regression measures one SELECT in both cases, and tests cover latest-log parity, absent logs, no-submission lazy behavior, and DB read failure preserving fallback totals. Focused campaign stats, campaigns blueprint, and DB tests passed 151; full Python suite passed 1061 with eight opt-in PostgreSQL tests skipped because TEST_POSTGRES_DATABASE_URL is unset. This isolated candidate has not been pushed, reviewed independently, merged, deployed, or live-verified.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [01:12PM] [10-12-26] EDT; actual UTC: 2026-10-12T17:12:44.059246+00:00
+agent: [Codex desktop] [GPT-6.1] [root release owner]
+worktree: [codex/hub-crm-delta-pr258-20261012] /Users/risingtidesdev/worktrees/hub-crm-delta-pr258-20261012
+type: [bug report]: PR #258 CRM full-audit starvation candidate
+area: [backend], [testing], [review]
+
+A six-hour CRM full audit could hold the only persisted scan cursor across many minute ticks and delay recent Client creation or caption/category edits. This isolated candidate adds a separate durable recent-edit lane ahead of the full audit, shares the Notion pacing/pause and serializes same-page queue revisions, and retains complete-audit reconciliation. Independent source review found no new P1/P2 on private head cbec1c2. Real disposable PostgreSQL focused checks passed 49/49 and the full Python suite passed 1114/1114 on Mac mini with no skipped cases. This event and the current root contract update precede final PR-head review and hosted checks. No Notion writes, production database change, PR push, merge or deployment occurred. The 1–2 minute target remains unproven under source lag, overload or outage; retain draft and measure natural delta watermark/queue lag after a verified release. Rollback is the prior app revision while retaining additive CRM state and queued page IDs for reconciliation.
 _________________________________________________________________________________
