@@ -303,8 +303,11 @@ def _campaign_detail(tracker_id: str, api: str, key: str) -> Dict:
     """Read the authoritative override; malformed responses cannot prove a rename."""
     try:
         response = _requests.get(
-            f"{api}/campaigns/{tracker_id}", headers={"x-service-key": key}, timeout=10,
+            f"{api}/campaigns/{tracker_id}", headers={"x-service-key": key},
+            timeout=10, allow_redirects=False,
         )
+        if 300 <= response.status_code < 400:
+            raise TidesTrackerError("Tracker name read redirected")
         response.raise_for_status()
         campaign = response.json().get("campaign")
     except (_requests.RequestException, ValueError, AttributeError) as exc:
@@ -315,6 +318,8 @@ def _campaign_detail(tracker_id: str, api: str, key: str) -> Dict:
         or not isinstance(campaign.get("name"), str)
         or not isinstance(campaign.get("display_name"), str)
         or "display_name_override" not in campaign
+        or type(campaign.get("display_name_override_revision")) is not int
+        or campaign["display_name_override_revision"] < 0
     ):
         raise TidesTrackerError("Tracker name read returned an invalid campaign")
     override = campaign["display_name_override"]
@@ -327,7 +332,7 @@ def set_tracker_display_name(tracker_id: str, override: Optional[str]) -> Dict:
     """Write an idempotent override and confirm it against the original tracker.
 
     A transport timeout can follow an applied PATCH. Re-read that exact UUID
-    once; never blindly replay the write or report an unconfirmed success.
+    and the expected next revision once; never blindly replay the write.
     """
     try:
         tracker_id = str(uuid.UUID(tracker_id))
@@ -337,13 +342,19 @@ def set_tracker_display_name(tracker_id: str, override: Optional[str]) -> Dict:
     before = _campaign_detail(tracker_id, api, key)
     if before["display_name_override"] == override:
         return before
+    revision = before["display_name_override_revision"]
     try:
         response = _requests.patch(
             f"{api}/campaigns/{tracker_id}",
-            json={"display_name_override": override},
+            json={"display_name_override": override, "expected_revision": revision},
             headers={"Content-Type": "application/json", "x-service-key": key},
             timeout=10,
+            allow_redirects=False,
         )
+        if response.status_code == 409:
+            raise TidesTrackerError("Tracker name changed concurrently", status_code=409)
+        if 300 <= response.status_code < 400:
+            raise TidesTrackerError("Tracker name write redirected", status_code=502)
         response.raise_for_status()
     except _requests.RequestException:
         # A transport failure or server error can follow an applied PATCH.
@@ -354,11 +365,17 @@ def set_tracker_display_name(tracker_id: str, override: Optional[str]) -> Dict:
             raise TidesTrackerError(
                 "Tracker name write outcome unknown", status_code=503
             ) from exc
-        if after["display_name_override"] != override:
+        if (
+            after["display_name_override"] != override
+            or after["display_name_override_revision"] != revision + 1
+        ):
             raise TidesTrackerError("Tracker name write outcome unknown", status_code=503)
         return after
     after = _campaign_detail(tracker_id, api, key)
-    if after["display_name_override"] != override:
+    if (
+        after["display_name_override"] != override
+        or after["display_name_override_revision"] != revision + 1
+    ):
         raise TidesTrackerError("Tracker name write was not confirmed", status_code=503)
     return after
 
