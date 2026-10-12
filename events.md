@@ -659,3 +659,13 @@ area: [backend], [testing]
 
 Added an isolated-schema PostgreSQL regression that creates the operator limiter table on first use, races two distinct browser clients at the lockout threshold, checks the durable count and lock, then verifies recovery after expiry. The backend PR workflow now provisions disposable PostgreSQL and supplies TEST_POSTGRES_DATABASE_URL to run both this and existing database regressions. Local focused tests passed with this opt-in case skipped because no disposable PostgreSQL server is available on the Mac mini; hosted validation of this new head remains pending. No production database, push, merge or deployment was touched.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [09:42am] [10-12-26] EDT
+agent: [codex] [gpt-6.1-sol] [builder]
+worktree: [codex/sound-operator-session-20261012] /Users/risingtidesdev/worktrees/hub-sound-operator-session-20261012
+type: [gh actions]: strengthen PostgreSQL lock interleaving proof
+area: [testing], [review]
+
+Independent review found that simultaneous HTTP starts could pass without proving the database lock. The disposable regression now holds the first worker after PostgreSQL grants SELECT FOR UPDATE, waits for a second worker to reach that query, and proves the second cannot complete before the first commits. It then checks the durable threshold and expiry behavior. The runtime contract is unchanged; hosted PostgreSQL execution of this amended test remains required.
+_________________________________________________________________________________
