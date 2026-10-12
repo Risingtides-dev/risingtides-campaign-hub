@@ -629,3 +629,13 @@ area: [writing], [review]
 
 Independent review found docs/SECURITY_HANDOFF.md still described the public cron diagnostic as always-on cheap diagnostics with active probes behind ?run=1. It now distinguishes the earlier #187 mitigation from this source candidate, records fixed HTTP 410 for all query variants, and explicitly holds production closure until deployment and live parity are verified. No production diagnostic request, push, merge, or deployment occurred.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [12:10pm] [10-12-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/hub-fallback-scrape-log-20261012] /Users/risingtidesdev/worktrees/hub-fallback-scrape-log-20261012
+type: [refactor]: batch campaign-list fallback scrape timestamps
+area: [backend], [testing]
+
+On the current e941851 main baseline, 30 fallback campaigns with preloaded videos produced 30 latest-scrape-log SELECTs; one produced one. The list stats path now lazily fetches each campaign's maximum last_scrape in one grouped query only if fallback submissions need a timestamp. A 1-versus-30 SQL listener regression measures one SELECT in both cases, and tests cover latest-log parity, absent logs, no-submission lazy behavior, and DB read failure preserving fallback totals. Focused campaign stats, campaigns blueprint, and DB tests passed 151; full Python suite passed 1061 with eight opt-in PostgreSQL tests skipped because TEST_POSTGRES_DATABASE_URL is unset. This isolated candidate has not been pushed, reviewed independently, merged, deployed, or live-verified.
+_________________________________________________________________________________
