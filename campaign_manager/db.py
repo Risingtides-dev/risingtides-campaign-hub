@@ -1515,6 +1515,21 @@ def get_scrape_log(slug: str) -> Dict:
         }
 
 
+def get_latest_scrape_times_for_campaigns(slugs: List[str]) -> Dict[str, str]:
+    """Read the latest scrape timestamp for each requested campaign in one query."""
+    if not slugs:
+        return {}
+    with get_session() as s:
+        rows = (
+            s.query(Campaign.slug, func.max(ScrapeLog.last_scrape))
+            .join(ScrapeLog, ScrapeLog.campaign_id == Campaign.id)
+            .filter(Campaign.slug.in_(slugs))
+            .group_by(Campaign.slug)
+            .all()
+        )
+    return {slug: last_scrape.isoformat() for slug, last_scrape in rows if last_scrape}
+
+
 def save_scrape_log(slug: str, log_data: Dict):
     """Save a scrape log entry."""
     with get_session() as s:
