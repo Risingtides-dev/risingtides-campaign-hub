@@ -25,6 +25,26 @@ describe("Sound Assignments browser auth", () => {
     expect(new Headers(write.headers).has("X-Hub-Write-Key")).toBe(false)
   })
 
+  it("keeps the operator session on an upstream 401 but expires on Hub's gate", async () => {
+    const fetcher = vi.spyOn(globalThis, "fetch")
+    const expired = vi.fn()
+    window.addEventListener("sound-operator-expired", expired)
+    try {
+      fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ authenticated: true, csrf_token: "retained-csrf" }), { status: 200 }))
+      fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ error: "Content Lab credentials rejected." }), { status: 401 }))
+      fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ error: "Operator login required." }), { status: 401 }))
+      expect(await operatorSession()).toBe(true)
+      await expect(api("/sync", { method: "POST" })).rejects.toThrow("Content Lab credentials rejected.")
+      expect(expired).not.toHaveBeenCalled()
+      await expect(api("/sync", { method: "POST" })).rejects.toThrow("Operator login required.")
+      expect(expired).toHaveBeenCalledTimes(1)
+      const retainedWrite = fetcher.mock.calls[2][1] as RequestInit
+      expect(new Headers(retainedWrite.headers).get("X-CSRF-Token")).toBe("retained-csrf")
+    } finally {
+      window.removeEventListener("sound-operator-expired", expired)
+    }
+  })
+
   it("logs in with an entered password without retaining it as an API key", async () => {
     const fetcher = vi.spyOn(globalThis, "fetch")
     fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ authenticated: true, csrf_token: "next-csrf" }), { status: 200 }))

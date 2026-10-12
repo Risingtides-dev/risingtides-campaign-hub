@@ -687,3 +687,12 @@ area: [backend], [testing], [review]
 
 Merged current main 3f09d0df into the isolated draft branch, preserving both chronological ledger histories and the batched fallback scrape-log change. On the integrated tree, 36 focused operator/auth/PostgreSQL tests and 1087 full backend tests passed using disposable local PostgreSQL; the focused frontend API tests passed 2 and the production frontend build passed. The PR remains a draft with production secret provisioning, same-origin ingress, all-worker database migration/revision parity, rollout and rollback evidence held. Independent exact-head review and hosted checks are required before any release decision. No production deployment or publication was triggered.
 _________________________________________________________________________________
+
+time: [03:17pm] [10-12-26] EDT
+agent: [codex] [gpt-6.1-sol] [release owner]
+worktree: [codex/sound-operator-session-20261012] /Users/risingtidesdev/worktrees/hub-sound-operator-session-20261012
+type: [bug report]: distinguish upstream Content Lab 401 from expired operator session in draft PR #273
+area: [frontend], [review], [testing]
+
+Independent exact-head review found the browser cleared its operator session for every 401, including a Content Lab credential failure relayed by the proxy. The API client now expires only on the Hub gate's own Operator login required response, preserving the upstream error and CSRF for diagnosis. A regression checks both responses. Focused frontend tests passed 3, full frontend tests passed 173, and the production build passed. The backend tree was unchanged after its 1087-test PostgreSQL run. The draft remains subject to fresh final-head review and hosted checks, plus the existing production secret, ingress, database and rollback hold. No deployment or publication occurred.
+_________________________________________________________________________________

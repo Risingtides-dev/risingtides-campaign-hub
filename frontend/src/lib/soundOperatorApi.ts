@@ -15,12 +15,14 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
     headers,
     credentials: "same-origin",
   })
-  if (res.status === 401) {
-    operatorCsrf = ""
-    window.dispatchEvent(new Event("sound-operator-expired"))
-  }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
+    // The proxy also forwards Content Lab 401s. Only Hub's own gate expires
+    // the browser session; upstream credential failure must stay visible.
+    if (res.status === 401 && body.error === "Operator login required.") {
+      operatorCsrf = ""
+      window.dispatchEvent(new Event("sound-operator-expired"))
+    }
     throw new Error(body.detail || body.error || `Request failed (${res.status})`)
   }
   return res.json()
