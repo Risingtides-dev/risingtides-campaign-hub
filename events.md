@@ -678,3 +678,12 @@ area: [backend], [testing]
 
 On the current e941851 main baseline, 30 fallback campaigns with preloaded videos produced 30 latest-scrape-log SELECTs; one produced one. The list stats path now lazily fetches each campaign's maximum last_scrape in one grouped query only if fallback submissions need a timestamp. A 1-versus-30 SQL listener regression measures one SELECT in both cases, and tests cover latest-log parity, absent logs, no-submission lazy behavior, and DB read failure preserving fallback totals. Focused campaign stats, campaigns blueprint, and DB tests passed 151; full Python suite passed 1061 with eight opt-in PostgreSQL tests skipped because TEST_POSTGRES_DATABASE_URL is unset. This isolated candidate has not been pushed, reviewed independently, merged, deployed, or live-verified.
 _________________________________________________________________________________
+
+time: [03:15pm] [10-12-26] EDT
+agent: [codex] [gpt-6.1-sol] [release owner]
+worktree: [codex/sound-operator-session-20261012] /Users/risingtidesdev/worktrees/hub-sound-operator-session-20261012
+type: [gh actions]: integrate Sound Assignments operator-session draft PR #273 with current main
+area: [backend], [testing], [review]
+
+Merged current main 3f09d0df into the isolated draft branch, preserving both chronological ledger histories and the batched fallback scrape-log change. On the integrated tree, 36 focused operator/auth/PostgreSQL tests and 1087 full backend tests passed using disposable local PostgreSQL; the focused frontend API tests passed 2 and the production frontend build passed. The PR remains a draft with production secret provisioning, same-origin ingress, all-worker database migration/revision parity, rollout and rollback evidence held. Independent exact-head review and hosted checks are required before any release decision. No production deployment or publication was triggered.
+_________________________________________________________________________________
