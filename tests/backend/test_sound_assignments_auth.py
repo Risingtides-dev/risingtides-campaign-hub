@@ -16,6 +16,7 @@ HUB_KEY = "synthetic-hub-write-key"
 @pytest.fixture(autouse=True)
 def hub_key(monkeypatch):
     monkeypatch.setenv("HUB_WRITE_KEY", HUB_KEY)
+    monkeypatch.setenv("SOUND_ASSIGNMENTS_OPERATOR_PASSWORD", "synthetic-operator-password-0123456789")
 
 
 

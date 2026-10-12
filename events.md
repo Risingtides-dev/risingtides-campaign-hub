@@ -639,3 +639,13 @@ area: [backend], [testing], [review]
 
 An anonymous production GET to /api/sound-assignments/pages returned HTTP 200 with 92,663 response bytes on 2026-10-11; the body was discarded and no write or Telegram send was attempted. The private candidate gates every Sound Assignments proxy route with the existing Hub write key before adding the server Content Lab key. Focused synthetic tests passed 25 in the project virtual environment; independent review found no route bypass but confirmed the existing browser page sends no operator credential and would fail closed. This candidate is held from merge/deployment pending a real operator identity and CSRF flow or explicit authorization for a temporary page outage. Reverting the gate would reopen the observed anonymous read, so rollback requires an edge restriction or authenticated replacement. No production change occurred.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [09:17am] [10-12-26] EDT
+agent: [codex] [gpt-6.1-sol] [builder]
+worktree: [codex/sound-operator-session-20261012] /Users/risingtidesdev/worktrees/hub-sound-operator-session-20261012
+type: [bug report]: prepare compatible Sound Assignments operator authentication
+area: [backend], [frontend], [testing]
+
+Prepared an isolated follow-up to the fail-closed Sound Assignments proxy gate. A signed same-origin operator session and CSRF token let the browser use the gated roster and mutation routes without exposing Hub or Content Lab service keys. A PostgreSQL row-locked login counter bounds attempts across workers and fails closed if its table is unavailable; normal additive schema creation provisions the table. Focused synthetic backend and browser tests plus the frontend build passed. No production key was used, no Telegram send or playlist mutation was made, and this branch was not pushed or deployed. Release remains held until operator credentials, same-origin HTTPS delivery, complete worker revision parity, and safe live read evidence are verified. Rollback must retain a closed proxy gate or an edge restriction so it does not restore anonymous roster access.
+_________________________________________________________________________________

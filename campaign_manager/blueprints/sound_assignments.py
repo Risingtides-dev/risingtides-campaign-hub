@@ -10,23 +10,135 @@ from __future__ import annotations
 
 import hmac
 import os
+import secrets
+import time
+from urllib.parse import urlsplit
 from urllib.parse import urlencode
 
 import requests
-from flask import Blueprint, current_app, jsonify, request
+from flask import Blueprint, current_app, jsonify, request, session
+
+from campaign_manager import db
+from campaign_manager.models import SoundOperatorLoginState
 
 sound_assignments_bp = Blueprint("sound_assignments", __name__, url_prefix="/api/sound-assignments")
 
 
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def _operator_password() -> str:
+    return (os.environ.get("SOUND_ASSIGNMENTS_OPERATOR_PASSWORD") or "").strip()
+
+
+def _same_origin() -> bool:
+    """Reject cross-site credentialed POSTs even when the browser omits Origin."""
+    origin = request.headers.get("Origin")
+    if origin:
+        parsed = urlsplit(origin)
+        expected_scheme = "https" if current_app.config.get("IS_RAILWAY") else request.scheme
+        return (parsed.scheme == expected_scheme and parsed.netloc == request.host
+                and not parsed.path.rstrip("/"))
+    return request.headers.get("Sec-Fetch-Site") == "same-origin"
+
+
 @sound_assignments_bp.before_request
-def require_hub_write_key():
-    """Authenticate callers before the Hub adds its Content Lab credential."""
+def require_operator_or_server_key():
+    """A same-origin operator session or a server-to-server key gates the proxy."""
     key = (os.environ.get("HUB_WRITE_KEY") or "").strip()
     if not key:
-        return jsonify({"error": "Sound Assignments is disabled until HUB_WRITE_KEY is configured."}), 503
+        return jsonify({"error": "Sound Assignments is not configured."}), 503
+
+    # Preserve the existing explicitly keyed service contract. Its callers do
+    # not receive browser sessions and never rely on operator configuration.
     supplied = request.headers.get("X-Hub-Write-Key", "")
-    if not hmac.compare_digest(supplied, key):
-        return jsonify({"error": "X-Hub-Write-Key does not match."}), 401
+    if (request.endpoint not in {"sound_assignments.login", "sound_assignments.operator_session"}
+            and supplied and hmac.compare_digest(supplied, key)):
+        return None
+
+    password = _operator_password()
+    if (len(password) < 32 or hmac.compare_digest(key, password)
+            or (not current_app.config.get("TESTING") and not (os.environ.get("SECRET_KEY") or "").strip())
+            or not current_app.config.get("CONTENT_LAB_HUB_API_KEY")):
+        return jsonify({"error": "Sound Assignments operator access is not configured."}), 503
+
+    if request.endpoint in {"sound_assignments.login", "sound_assignments.operator_session"}:
+        if request.method not in _SAFE_METHODS and not _same_origin():
+            return jsonify({"error": "Cross-origin request refused."}), 403
+        return None
+
+    if not session.get("sound_operator") or not session.get("sound_csrf"):
+        return jsonify({"error": "Operator login required."}), 401
+    if request.method not in _SAFE_METHODS:
+        token = session.get("sound_csrf")
+        if not token or not _same_origin() or not hmac.compare_digest(
+            request.headers.get("X-CSRF-Token", ""), token
+        ):
+            return jsonify({"error": "CSRF validation failed."}), 403
+
+
+def _check_operator_login(password: str) -> str:
+    """Serialize attempts in PostgreSQL so all workers share one bounded lockout."""
+    if db._SessionLocal is None or (
+        getattr(getattr(db._engine, "dialect", None), "name", "") != "postgresql"
+        and not current_app.config.get("TESTING")
+    ):
+        return "unavailable"
+    now = int(time.time())
+    try:
+        with db._SessionLocal.begin() as transaction:
+            transaction.execute(db.dialect_insert(SoundOperatorLoginState.__table__).values(
+                id=1, window_started_at=now, failed_count=0, locked_until=0
+            ).on_conflict_do_nothing(index_elements=["id"]))
+            state = transaction.get(SoundOperatorLoginState, 1, with_for_update=True)
+            if state.locked_until > now:
+                return "limited"
+            if now - state.window_started_at >= 300:
+                state.window_started_at = now
+                state.failed_count = 0
+            if hmac.compare_digest(password, _operator_password()):
+                state.failed_count = 0
+                state.locked_until = 0
+                return "ok"
+            state.failed_count += 1
+            if state.failed_count >= 10:
+                state.locked_until = now + 300
+                return "limited"
+            return "invalid"
+    except Exception:
+        # A broken or unavailable counter cannot turn into unlimited guesses.
+        return "unavailable"
+
+
+@sound_assignments_bp.post("/login")
+def login():
+    body = request.get_json(silent=True) or {}
+    password = body.get("password", "") if isinstance(body, dict) else ""
+    result = _check_operator_login(password if isinstance(password, str) else "")
+    if result == "unavailable":
+        return jsonify({"error": "Operator login unavailable."}), 503
+    if result == "limited":
+        return jsonify({"error": "Operator login temporarily limited."}), 429
+    if result != "ok":
+        return jsonify({"error": "Invalid operator credentials."}), 401
+    session.clear()
+    session.permanent = True
+    session["sound_operator"] = True
+    session["sound_csrf"] = secrets.token_urlsafe(32)
+    return jsonify({"authenticated": True, "csrf_token": session["sound_csrf"]})
+
+
+@sound_assignments_bp.get("/session")
+def operator_session():
+    if not session.get("sound_operator") or not session.get("sound_csrf"):
+        return jsonify({"authenticated": False}), 401
+    return jsonify({"authenticated": True, "csrf_token": session.get("sound_csrf", "")})
+
+
+@sound_assignments_bp.post("/logout")
+def logout():
+    session.clear()
+    return jsonify({"authenticated": False})
 
 
 def _lab_url(path: str, query: dict | None = None) -> str:
