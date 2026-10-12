@@ -639,3 +639,23 @@ area: [backend], [testing]
 
 On the current e941851 main baseline, 30 fallback campaigns with preloaded videos produced 30 latest-scrape-log SELECTs; one produced one. The list stats path now lazily fetches each campaign's maximum last_scrape in one grouped query only if fallback submissions need a timestamp. A 1-versus-30 SQL listener regression measures one SELECT in both cases, and tests cover latest-log parity, absent logs, no-submission lazy behavior, and DB read failure preserving fallback totals. Focused campaign stats, campaigns blueprint, and DB tests passed 151; full Python suite passed 1061 with eight opt-in PostgreSQL tests skipped because TEST_POSTGRES_DATABASE_URL is unset. This isolated candidate has not been pushed, reviewed independently, merged, deployed, or live-verified.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [06:53pm] [10-12-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/hub75-rename] /Users/smathdaddy-macbook/hub75-rename
+type: [bug report]: make Hub tracker renames authoritative in TidesTracker
+area: [backend], [testing]
+
+The Hub tracker PATCH previously stored name edits only in its local tracker_names overlay while TidesTracker retained its canonical display name. This isolated candidate validates all supplied fields before an authenticated remote write, patches only the nullable display_name_override for the exact tracker UUID, reads back the same UUID and value, and updates local state only after confirmation. Ambiguous write failures get one readback and no automatic replay; unconfirmed outcomes fail closed. Focused synthetic service and route tests cover success, timeout reconciliation, invalid inputs, mismatched readback, and unchanged local overlays on remote failure. The upstream TidesTracker service-key GET/PATCH contract is being built separately and must deploy before this Hub change. No production data was written; no push, PR, merge, or deployment occurred. Rollback is to redeploy the prior Hub revision, retaining existing local names, while reconciling any ambiguous upstream write by authenticated GET before another edit.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [06:55pm] [10-12-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/hub75-rename] /Users/smathdaddy-macbook/hub75-rename
+type: [gh actions]: validate Hub tracker rename candidate
+area: [testing], [review]
+
+Focused rename, name-population, and status-push regressions passed 33. The complete backend suite passed 945 with five opt-in PostgreSQL schema tests skipped because TEST_POSTGRES_DATABASE_URL is unset. The upstream builder confirmed the authenticated list and exact-id GET/PATCH return canonical name, nullable override, and resolved display_name, with matching 255-character/control-character validation. Existing Hub-only legacy overrides require a deliberate migration before both services can be treated as fully synchronized; this candidate changes new edits only. No production write, push, PR, merge, or deployment occurred.
+_________________________________________________________________________________
