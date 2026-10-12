@@ -550,3 +550,14 @@ def test_delta_stale_window_cannot_advance_after_another_worker(db):
     with db._SessionLocal() as session:
         assert session.get(CrmScanState, 2).cursor == "new-cursor"
         assert session.get(CrmPageQueue, "stale") is None
+
+
+def test_duplicate_source_page_keeps_latest_revision(db):
+    expected = crm_queue._state(state_id=crm_queue.DELTA_STATE_ID)
+    newer = expected[1] - timedelta(seconds=1)
+    older = expected[1] - timedelta(seconds=5)
+    assert crm_queue._save_scan_page(expected, [("dup", newer.isoformat()),
+                                                ("dup", older.isoformat())], None,
+                                     state_id=crm_queue.DELTA_STATE_ID)
+    with db._SessionLocal() as session:
+        assert crm_queue._aware(session.get(CrmPageQueue, "dup").edited_at) == newer

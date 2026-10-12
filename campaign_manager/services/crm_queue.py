@@ -134,12 +134,16 @@ def _save_scan_page(expected, candidates, next_cursor, *, state_id=1):
         if (_aware(row.watermark), _aware(row.window_end), row.cursor,
             bool(row.full_audit_active)) != expected:
             return False
-        unique_candidates = dict(candidates)
-        for page_id, edited_string in unique_candidates.items():
+        unique_candidates = {}
+        lower = None if full_audit or watermark is None else watermark - LOOKBACK
+        for page_id, edited_string in candidates:
             edited = _parse_edited(edited_string)
-            lower = None if full_audit or watermark is None else watermark - LOOKBACK
             if edited > upper or (lower is not None and edited < lower):
                 raise notion.CrmSourceUnavailable("out_of_window_page")
+            previous = unique_candidates.get(page_id)
+            if previous is None or edited > previous:
+                unique_candidates[page_id] = edited
+        for page_id, edited in unique_candidates.items():
             # A repeated inclusive-boundary page is harmless. A newer source
             # revision reopens the item, including one currently leased.
             existing = session.get(CrmPageQueue, page_id)
