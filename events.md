@@ -649,3 +649,13 @@ area: [backend], [frontend], [testing]
 
 Prepared an isolated follow-up to the fail-closed Sound Assignments proxy gate. A signed same-origin operator session and CSRF token let the browser use the gated roster and mutation routes without exposing Hub or Content Lab service keys. A PostgreSQL row-locked login counter bounds attempts across workers and fails closed if its table is unavailable; normal additive schema creation provisions the table. Focused synthetic backend and browser tests plus the frontend build passed. No production key was used, no Telegram send or playlist mutation was made, and this branch was not pushed or deployed. Release remains held until operator credentials, same-origin HTTPS delivery, complete worker revision parity, and safe live read evidence are verified. Rollback must retain a closed proxy gate or an edge restriction so it does not restore anonymous roster access.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [09:31am] [10-12-26] EDT
+agent: [codex] [gpt-6.1-sol] [builder]
+worktree: [codex/sound-operator-session-20261012] /Users/risingtidesdev/worktrees/hub-sound-operator-session-20261012
+type: [gh actions]: add PostgreSQL login concurrency regression
+area: [backend], [testing]
+
+Added an isolated-schema PostgreSQL regression that creates the operator limiter table on first use, races two distinct browser clients at the lockout threshold, checks the durable count and lock, then verifies recovery after expiry. The backend PR workflow now provisions disposable PostgreSQL and supplies TEST_POSTGRES_DATABASE_URL to run both this and existing database regressions. Local focused tests passed with this opt-in case skipped because no disposable PostgreSQL server is available on the Mac mini; hosted validation of this new head remains pending. No production database, push, merge or deployment was touched.
+_________________________________________________________________________________
