@@ -8,6 +8,8 @@ Trackers themselves live in TidesTracker (Supabase). This blueprint:
 from __future__ import annotations
 
 import logging
+import hmac
+import os
 import re
 
 from flask import Blueprint, jsonify, request
@@ -18,6 +20,7 @@ from campaign_manager import db as _db
 from campaign_manager.services.tidestracker import (
     create_tracker_campaign,
     list_tracker_campaigns,
+    set_tracker_display_name,
     tracker_url_for,
     TidesTrackerError,
 )
@@ -62,7 +65,7 @@ def _resolve_tracker_display_name(tracker_id: str, campaign_slug: str) -> str:
     try:
         for t in list_tracker_campaigns():
             if (t.get("id") or "") == tid:
-                name = (t.get("name") or "").strip()
+                name = (t.get("display_name") or t.get("name") or "").strip()
                 if name:
                     return name
                 break
@@ -109,13 +112,24 @@ def _hydrate(
     """
     tid = tracker.get("id") or ""
     original_name = tracker.get("name") or ""
-    override = names.get(tid) or ""
+    local_override = names.get(tid) or ""
+    remote_override = tracker.get("display_name_override")
+    remote_revision = tracker.get("display_name_override_revision")
+    # Once an authoritative edit has happened upstream, never let an older
+    # Hub-only row mask a rename or clear. Revision zero keeps legacy local
+    # names visible until a staged migration has reconciled them.
+    if type(remote_revision) is int and remote_revision > 0:
+        visible_name = tracker.get("display_name") or original_name
+    elif isinstance(remote_override, str) and remote_override:
+        visible_name = tracker.get("display_name") or remote_override
+    else:
+        visible_name = local_override or original_name
     linked_slug = campaign_links.get(tid)
     campaign_obj = campaigns_by_slug.get(linked_slug) if linked_slug else None
     archived_at = archives.get(tid)
     return {
         "id": tid,
-        "name": override or original_name,
+        "name": visible_name,
         "original_name": original_name,
         "slug": tracker.get("slug") or "",
         "cobrand_share_url": tracker.get("cobrand_share_link") or "",
@@ -276,45 +290,83 @@ def create_tracker():
 
 @trackers_bp.patch("/api/trackers/<tracker_id>")
 def update_tracker(tracker_id: str):
-    """Update local-only fields for a tracker (group_id, display name)."""
+    """Update the authoritative tracker name before changing local overlays."""
     err = _require_db()
     if err:
         return err
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "A JSON object is required"}), 400
+    if not any(field in data for field in ("group_id", "name", "campaign_slug")):
+        return jsonify({"error": "No updatable fields supplied"}), 400
+    if "name" in data and ("group_id" in data or "campaign_slug" in data):
+        return jsonify({"error": "Rename must be a separate request"}), 400
+    # Validate the entire request before the remote name write. In particular,
+    # an invalid group may never leave an accepted remote-only rename.
+    gid = None
+    if "group_id" in data and data["group_id"] not in (None, "", "null"):
+        raw = data["group_id"]
+        if isinstance(raw, bool):
+            return jsonify({"error": "group_id must be an integer or null"}), 400
+        try:
+            gid = int(raw)
+        except (TypeError, ValueError):
+            return jsonify({"error": "group_id must be an integer or null"}), 400
+        if gid < 1:
+            return jsonify({"error": "group_id must be a positive integer"}), 400
+    slug = None
+    if "campaign_slug" in data and data["campaign_slug"] not in (None, "", "null"):
+        if not isinstance(data["campaign_slug"], str) or not data["campaign_slug"].strip():
+            return jsonify({"error": "campaign_slug must be a string or null"}), 400
+        slug = data["campaign_slug"].strip()
+    name = None
+    if "name" in data:
+        raw = data["name"]
+        if raw is not None and not isinstance(raw, str):
+            return jsonify({"error": "name must be a string or null"}), 400
+        name = raw.strip() if raw is not None else None
+        if name == "":
+            name = None
+        if name is not None and len(name) > 255:
+            return jsonify({"error": "name must be 255 characters or fewer"}), 400
+        if name is not None and any(ord(char) < 32 or ord(char) == 127 for char in name):
+            return jsonify({"error": "name contains control characters"}), 400
     touched = False
     response: dict = {"ok": True, "id": tracker_id}
 
-    if "group_id" in data:
-        gid_raw = data["group_id"]
-        if gid_raw in (None, "", "null"):
-            _db.set_tracker_assignment(tracker_id, None)
-            response["group_id"] = None
-        else:
-            try:
-                gid = int(gid_raw)
-            except (TypeError, ValueError):
-                return jsonify({"error": "group_id must be an integer or null"}), 400
-            _db.set_tracker_assignment(tracker_id, gid)
-            response["group_id"] = gid
+    if "name" in data:
+        key = (os.environ.get("HUB_WRITE_KEY") or "").strip()
+        if not key:
+            return jsonify({"error": "Tracker rename is not configured"}), 503
+        supplied = request.headers.get("X-Hub-Write-Key", "")
+        if not supplied or not hmac.compare_digest(supplied, key):
+            return jsonify({"error": "Tracker rename requires authorization"}), 401
+        try:
+            authoritative = set_tracker_display_name(tracker_id, name)
+        except TidesTrackerError as e:
+            return jsonify({"error": str(e)}), e.status_code
+        try:
+            _db.set_tracker_name(tracker_id, authoritative["display_name_override"])
+        except Exception:
+            _log.exception("Tracker name confirmed upstream but local overlay write failed")
+            return jsonify({"error": "Tracker changed upstream; local name cache not confirmed"}), 503
+        response["name"] = (
+            authoritative.get("display_name")
+            or authoritative["display_name_override"]
+            or authoritative["name"]
+        )
         touched = True
 
-    if "name" in data:
-        name_raw = data["name"]
-        if name_raw is None or (isinstance(name_raw, str) and not name_raw.strip()):
-            _db.set_tracker_name(tracker_id, None)
-            response["name"] = None
-        else:
-            _db.set_tracker_name(tracker_id, str(name_raw))
-            response["name"] = str(name_raw).strip()
+    if "group_id" in data:
+        _db.set_tracker_assignment(tracker_id, gid)
+        response["group_id"] = gid
         touched = True
 
     if "campaign_slug" in data:
-        slug_raw = data["campaign_slug"]
-        if slug_raw in (None, "", "null"):
+        if slug is None:
             _db.set_tracker_campaign_link(tracker_id, None)
             response["campaign_slug"] = None
         else:
-            slug = str(slug_raw).strip()
             # Resolve a default display name so tracker_names is populated
             # atomically with the link (RTA-41). Prefer the live TidesTracker
             # name; fall back to the linked campaign's title. Either source
@@ -454,4 +506,3 @@ def sync_tracker_status():
         "failed": len(results) - pushed,
         "total": len(results),
     })
-

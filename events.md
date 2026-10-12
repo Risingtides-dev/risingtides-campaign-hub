@@ -639,3 +639,43 @@ area: [backend], [testing]
 
 On the current e941851 main baseline, 30 fallback campaigns with preloaded videos produced 30 latest-scrape-log SELECTs; one produced one. The list stats path now lazily fetches each campaign's maximum last_scrape in one grouped query only if fallback submissions need a timestamp. A 1-versus-30 SQL listener regression measures one SELECT in both cases, and tests cover latest-log parity, absent logs, no-submission lazy behavior, and DB read failure preserving fallback totals. Focused campaign stats, campaigns blueprint, and DB tests passed 151; full Python suite passed 1061 with eight opt-in PostgreSQL tests skipped because TEST_POSTGRES_DATABASE_URL is unset. This isolated candidate has not been pushed, reviewed independently, merged, deployed, or live-verified.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [06:53pm] [10-12-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/hub75-rename] /Users/smathdaddy-macbook/hub75-rename
+type: [bug report]: make Hub tracker renames authoritative in TidesTracker
+area: [backend], [testing]
+
+The Hub tracker PATCH previously stored name edits only in its local tracker_names overlay while TidesTracker retained its canonical display name. This isolated candidate validates all supplied fields before an authenticated remote write, patches only the nullable display_name_override for the exact tracker UUID, reads back the same UUID and value, and updates local state only after confirmation. Ambiguous write failures get one readback and no automatic replay; unconfirmed outcomes fail closed. Focused synthetic service and route tests cover success, timeout reconciliation, invalid inputs, mismatched readback, and unchanged local overlays on remote failure. The upstream TidesTracker service-key GET/PATCH contract is being built separately and must deploy before this Hub change. No production data was written; no push, PR, merge, or deployment occurred. Rollback is to redeploy the prior Hub revision, retaining existing local names, while reconciling any ambiguous upstream write by authenticated GET before another edit.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [06:55pm] [10-12-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/hub75-rename] /Users/smathdaddy-macbook/hub75-rename
+type: [gh actions]: validate Hub tracker rename candidate
+area: [testing], [review]
+
+Focused rename, name-population, and status-push regressions passed 33. The complete backend suite passed 945 with five opt-in PostgreSQL schema tests skipped because TEST_POSTGRES_DATABASE_URL is unset. The upstream builder confirmed the authenticated list and exact-id GET/PATCH return canonical name, nullable override, and resolved display_name, with matching 255-character/control-character validation. Existing Hub-only legacy overrides require a deliberate migration before both services can be treated as fully synchronized; this candidate changes new edits only. No production write, push, PR, merge, or deployment occurred.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [07:04pm] [10-12-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/hub75-rename] /Users/smathdaddy-macbook/hub75-rename
+type: [bug report]: hold anonymous tracker rename proxy and reconcile concurrent edits
+area: [backend], [testing], [review]
+
+Independent review found the prior candidate exposed an anonymous Hub PATCH that would proxy a privileged TidesTracker service-key rename. The name field now requires configured HUB_WRITE_KEY and X-Hub-Write-Key, failing 503 when unavailable and 401 on missing/wrong key; browser code does not receive this secret. This intentionally holds the browser rename until a separate authenticated operator-session path is integrated; draft Hub #273 currently covers Sound Assignments only. New service-key GET/PATCH requests refuse redirects. The TidesTracker builder specified an override revision CAS: Hub sends the observed expected_revision, treats 409 as a conflict without retry, and accepts a successful or ambiguous write only when exact UUID, override, and revision+1 are read back. Mixed remote rename and local overlay edits are refused before mutation; a failed local name-cache write returns 503. Tracker list prefers authoritative remote display names after a revision advances, while revision-zero rows retain legacy local names pending a read-only inventory and separately authorized guarded backfill. Focused rename/name/status tests passed 41. No production write, push, PR, merge, or deployment occurred.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [07:08pm] [10-12-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/hub75-rename] /Users/smathdaddy-macbook/hub75-rename
+type: [gh actions]: validate held tracker rename candidate
+area: [testing], [review]
+
+The exact local candidate's focused tracker rename/name/status tests passed 41, and the full backend suite passed 953 with five optional PostgreSQL schema tests skipped because TEST_POSTGRES_DATABASE_URL is unset. The upstream builder confirmed JSON integer override revisions and lowercase canonical UUIDs; its independently built service-key API and schema migration remain prerequisites. The Hub browser currently has no trusted operator session for tracker rename; server-only HUB_WRITE_KEY gating intentionally makes browser renaming unavailable, so this candidate is held from release. Existing tracker_names rows have no manual-versus-auto-seeded provenance; do not bulk migrate them without reviewed per-UUID intent. No production writes, push, PR, merge, or deployment occurred.
+_________________________________________________________________________________
