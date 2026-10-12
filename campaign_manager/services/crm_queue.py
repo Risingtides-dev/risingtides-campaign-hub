@@ -20,6 +20,9 @@ from campaign_manager.services import notion
 
 logger = logging.getLogger(__name__)
 MAX_SCAN_PAGES_PER_TICK = 12
+DELTA_SCAN_PAGES_PER_TICK = 4
+FULL_SCAN_PAGES_PER_TICK = 8
+DELTA_STATE_ID = 2
 MAX_WORK_PER_TICK = 100
 TICK_SECONDS = 50
 SCAN_BUDGET_SECONDS = 15
@@ -78,21 +81,30 @@ def _rate_slot(*, deadline):
     return not _source_paused()
 
 
-def _state():
+def _state(*, state_id=1):
     with db._SessionLocal.begin() as session:
-        # Insert once, even when multiple Gunicorn workers start together.
-        session.execute(db.dialect_insert(CrmScanState.__table__).values(id=1)
+        # Separate durable cursors; both lanes share source pacing on row 1.
+        if state_id != 1:
+            session.execute(db.dialect_insert(CrmScanState.__table__).values(id=1)
+                            .on_conflict_do_nothing(index_elements=[CrmScanState.id]))
+        session.execute(db.dialect_insert(CrmScanState.__table__).values(id=state_id)
                         .on_conflict_do_nothing(index_elements=[CrmScanState.id]))
-        row = session.execute(select(CrmScanState).where(CrmScanState.id == 1)
+        row = session.execute(select(CrmScanState).where(CrmScanState.id == state_id)
                               .with_for_update()).scalar_one()
-        if row.source_pause_until and _aware(row.source_pause_until) > _utcnow():
+        source = session.get(CrmScanState, 1) if state_id != 1 else row
+        if source and source.source_pause_until and _aware(source.source_pause_until) > _utcnow():
             return None
+        if state_id == DELTA_STATE_ID and row.watermark is None:
+            # Start near current time; the original full audit remains responsible
+            # for historical discovery, including edits before this lane exists.
+            row.watermark = _utcnow() - LOOKBACK
         if row.window_end is None:
             row.window_end = _utcnow()
             row.cursor = None
             row.cursor_reset_count = 0
-            row.full_audit_active = (row.watermark is None or row.last_full_audit_at is None
-                                     or _utcnow() - _aware(row.last_full_audit_at) >= AUDIT_INTERVAL)
+            row.full_audit_active = (state_id == 1 and
+                                     (row.watermark is None or row.last_full_audit_at is None or
+                                      _utcnow() - _aware(row.last_full_audit_at) >= AUDIT_INTERVAL))
         return (_aware(row.watermark), _aware(row.window_end), row.cursor,
                 bool(row.full_audit_active))
 
@@ -108,11 +120,16 @@ def _pause_source(seconds):
             row.source_pause_until = until
 
 
-def _save_scan_page(expected, candidates, next_cursor):
+def _save_scan_page(expected, candidates, next_cursor, *, state_id=1):
     watermark, upper, cursor, full_audit = expected
     now = _utcnow()
     with db._SessionLocal.begin() as session:
-        row = session.execute(select(CrmScanState).where(CrmScanState.id == 1)
+        # Both lanes may discover the same page concurrently. Serialize their
+        # queue upserts through the shared state row before lane-local CAS.
+        if state_id != 1:
+            session.execute(select(CrmScanState).where(CrmScanState.id == 1)
+                            .with_for_update()).scalar_one()
+        row = session.execute(select(CrmScanState).where(CrmScanState.id == state_id)
                               .with_for_update()).scalar_one()
         if (_aware(row.watermark), _aware(row.window_end), row.cursor,
             bool(row.full_audit_active)) != expected:
@@ -152,11 +169,11 @@ def _save_scan_page(expected, candidates, next_cursor):
     return True
 
 
-def _reset_expired_cursor(expected):
+def _reset_expired_cursor(expected, *, state_id=1):
     # One reset per pinned window; persistent malformed 400s remain held for
     # diagnosis instead of rescanning the same prefix indefinitely.
     with db._SessionLocal.begin() as session:
-        row = session.execute(select(CrmScanState).where(CrmScanState.id == 1)
+        row = session.execute(select(CrmScanState).where(CrmScanState.id == state_id)
                               .with_for_update()).scalar_one()
         current = (_aware(row.watermark), _aware(row.window_end), row.cursor,
                    bool(row.full_audit_active))
@@ -170,12 +187,12 @@ def _reset_expired_cursor(expected):
         return True
 
 
-def scan(*, deadline):
+def scan(*, deadline, state_id=1, max_pages=MAX_SCAN_PAGES_PER_TICK):
     count = 0
     pages = 0
     resets = 0
-    while pages < MAX_SCAN_PAGES_PER_TICK and time.monotonic() < deadline:
-        expected = _state()
+    while pages < max_pages and time.monotonic() < deadline:
+        expected = _state(state_id=state_id)
         if expected is None:
             break
         watermark, upper, cursor, full_audit = expected
@@ -185,13 +202,13 @@ def scan(*, deadline):
         try:
             candidates, next_cursor = notion.query_crm_edit_window(
                 lower=lower, upper=upper, cursor=cursor)
-            if not _save_scan_page(expected, candidates, next_cursor):
+            if not _save_scan_page(expected, candidates, next_cursor, state_id=state_id):
                 # Another worker advanced the same window; retry its current
                 # cursor rather than writing duplicate or stale state.
                 continue
         except notion.CrmSourceUnavailable as error:
             if error.reason == "expired_query_cursor" and resets < 1:
-                reset = _reset_expired_cursor(expected)
+                reset = _reset_expired_cursor(expected, state_id=state_id)
                 if reset is True:
                     resets += 1
                     continue
@@ -394,11 +411,15 @@ def metrics():
                 CrmPageQueue.last_reason.isnot(None))
          .group_by(CrmPageQueue.last_reason)).all()}
         state = session.get(CrmScanState, 1)
+        delta = session.get(CrmScanState, DELTA_STATE_ID)
     lag = int((now - _aware(oldest)).total_seconds()) if oldest else 0
     reference = (state.watermark or state.window_end) if state else None
     watermark_lag = int((now - _aware(reference)).total_seconds()) if reference else None
+    delta_reference = (delta.watermark or delta.window_end) if delta else None
+    delta_lag = int((now - _aware(delta_reference)).total_seconds()) if delta_reference else None
     return {"depth": depth, "oldest_queue_lag_seconds": lag,
-            "scan_watermark_lag_seconds": watermark_lag, "retry_reasons": reasons}
+            "scan_watermark_lag_seconds": watermark_lag,
+            "delta_watermark_lag_seconds": delta_lag, "retry_reasons": reasons}
 
 
 def run_tick():
@@ -407,7 +428,12 @@ def run_tick():
         return
     deadline = time.monotonic() + TICK_SECONDS
     scan_started = time.monotonic()
-    scan_result = scan(deadline=min(deadline, scan_started + SCAN_BUDGET_SECONDS))
+    scan_deadline = min(deadline, scan_started + SCAN_BUDGET_SECONDS)
+    delta_result = scan(deadline=scan_deadline, state_id=DELTA_STATE_ID,
+                        max_pages=DELTA_SCAN_PAGES_PER_TICK)
+    audit_result = scan(deadline=scan_deadline,
+                        max_pages=FULL_SCAN_PAGES_PER_TICK)
+    scan_result = {"delta": delta_result, "audit": audit_result}
     scan_seconds = round(time.monotonic() - scan_started, 3)
     work_started = time.monotonic()
     if _source_paused():
@@ -421,5 +447,8 @@ def run_tick():
     if state["oldest_queue_lag_seconds"] > WARNING_LAG_SECONDS or (
         state["scan_watermark_lag_seconds"] is not None and
         state["scan_watermark_lag_seconds"] > WARNING_LAG_SECONDS
+    ) or (
+        state["delta_watermark_lag_seconds"] is not None and
+        state["delta_watermark_lag_seconds"] > WARNING_LAG_SECONDS
     ):
         logger.warning("CRM queue behind target: %s", state)

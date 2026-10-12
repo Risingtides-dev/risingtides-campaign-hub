@@ -434,3 +434,119 @@ def test_only_confirmed_cursor_400_triggers_reset(monkeypatch):
             assert False
         except notion.CrmSourceUnavailable as error:
             assert error.reason == "http_status"
+
+
+def test_delta_discovers_two_large_edit_bursts_while_audit_is_stalled(db, monkeypatch):
+    """A held full-audit cursor must not freeze newly edited CRM pages."""
+    clock = [datetime.now(timezone.utc)]
+    monkeypatch.setattr(crm_queue, "_utcnow", lambda: clock[0])
+    monkeypatch.setattr(crm_queue, "_rate_slot", lambda **_kwargs: True)
+    audit = crm_queue._state()
+    assert crm_queue._save_scan_page(audit, [], "stalled-audit")
+    edits = [(f"burst-1-{i}", (clock[0] - timedelta(seconds=30)).isoformat())
+             for i in range(75)]
+    calls = []
+
+    def query(*, lower, upper, cursor=None):
+        calls.append((lower, upper, cursor))
+        if lower is None:
+            raise notion.CrmSourceUnavailable("query_result_limit")
+        selected = [(page_id, edited) for page_id, edited in edits
+                    if lower <= datetime.fromisoformat(edited) <= upper]
+        offset = int(cursor or 0)
+        batch = selected[offset:offset + 50]
+        next_cursor = str(offset + 50) if offset + 50 < len(selected) else None
+        return batch, next_cursor
+
+    with patch.object(notion, "query_crm_edit_window", side_effect=query):
+        # One page is committed with its cursor, then a new process/tick resumes it.
+        assert crm_queue.scan(deadline=time.monotonic() + 5,
+                              state_id=crm_queue.DELTA_STATE_ID, max_pages=1)["scan_pages"] == 1
+        with db._SessionLocal() as session:
+            assert session.get(CrmScanState, 2).cursor == "50"
+            assert session.query(CrmPageQueue).count() == 50
+        assert crm_queue.scan(deadline=time.monotonic() + 5,
+                              state_id=crm_queue.DELTA_STATE_ID, max_pages=1)["scan_pages"] == 1
+        assert crm_queue.scan(deadline=time.monotonic() + 5)["scan_pages"] == 0
+        clock[0] += timedelta(minutes=1)
+        edits.extend((f"burst-2-{i}", (clock[0] - timedelta(seconds=10)).isoformat())
+                     for i in range(75))
+        assert crm_queue.scan(deadline=time.monotonic() + 5,
+                              state_id=crm_queue.DELTA_STATE_ID, max_pages=3)["scan_pages"] == 3
+    with db._SessionLocal() as session:
+        assert session.query(CrmPageQueue).count() == 150
+        assert session.get(CrmScanState, 1).cursor == "stalled-audit"
+        assert session.get(CrmScanState, 1).watermark is None
+        assert crm_queue._aware(session.get(CrmScanState, 2).watermark) == clock[0]
+    assert any(cursor == "50" and lower is not None for lower, _, cursor in calls)
+
+
+def test_delta_and_audit_monotonic_queue_upsert(db, monkeypatch):
+    monkeypatch.setattr(crm_queue, "_rate_slot", lambda **_kwargs: True)
+    audit = crm_queue._state()
+    delta = crm_queue._state(state_id=crm_queue.DELTA_STATE_ID)
+    newer = delta[1] - timedelta(seconds=2)
+    older = delta[1] - timedelta(seconds=30)
+    assert crm_queue._save_scan_page(delta, [("shared", newer.isoformat())], None,
+                                     state_id=crm_queue.DELTA_STATE_ID)
+    with db._SessionLocal.begin() as session:
+        session.get(CrmPageQueue, "shared").completed_at = datetime.now(timezone.utc)
+    assert crm_queue._save_scan_page(audit, [("shared", older.isoformat())], None)
+    with db._SessionLocal() as session:
+        row = session.get(CrmPageQueue, "shared")
+        assert crm_queue._aware(row.edited_at) == newer
+        assert row.completed_at is not None
+        assert session.get(CrmScanState, 1).watermark is not None
+        assert session.get(CrmScanState, 2).watermark is not None
+
+
+def test_delta_reset_does_not_move_audit_or_retry_after(db, monkeypatch):
+    delta = crm_queue._state(state_id=crm_queue.DELTA_STATE_ID)
+    edited = (delta[1] - timedelta(seconds=1)).isoformat()
+    assert crm_queue._save_scan_page(delta, [("first", edited)], "expired",
+                                     state_id=crm_queue.DELTA_STATE_ID)
+    delta = crm_queue._state(state_id=crm_queue.DELTA_STATE_ID)
+    assert crm_queue._reset_expired_cursor(delta, state_id=crm_queue.DELTA_STATE_ID)
+    crm_queue._pause_source(120)
+    with db._SessionLocal() as session:
+        assert session.get(CrmScanState, 2).cursor is None
+        assert session.get(CrmScanState, 2).cursor_reset_count == 1
+        assert session.get(CrmScanState, 1).cursor is None
+        assert session.get(CrmScanState, 1).source_pause_until is not None
+        assert session.get(CrmPageQueue, "first").completed_at is None
+    with patch.object(notion, "query_crm_edit_window") as query:
+        assert crm_queue.scan(deadline=time.monotonic() + 1,
+                              state_id=crm_queue.DELTA_STATE_ID)["scan_pages"] == 0
+    query.assert_not_called()
+
+
+def test_delta_overlap_recovers_late_observed_edit(db, monkeypatch):
+    """A page omitted by one non-snapshot query is retried in the overlap."""
+    clock = [datetime.now(timezone.utc)]
+    monkeypatch.setattr(crm_queue, "_utcnow", lambda: clock[0])
+    monkeypatch.setattr(crm_queue, "_rate_slot", lambda **_kwargs: True)
+    first = crm_queue._state(state_id=crm_queue.DELTA_STATE_ID)
+    edited = first[1] - timedelta(seconds=1)
+    # The source omitted a page just below the first pinned upper timestamp.
+    assert crm_queue._save_scan_page(first, [], None,
+                                     state_id=crm_queue.DELTA_STATE_ID)
+    clock[0] += timedelta(minutes=1)
+    with patch.object(notion, "query_crm_edit_window",
+                      return_value=([("late-visible", edited.isoformat())], None)) as query:
+        assert crm_queue.scan(deadline=time.monotonic() + 3,
+                              state_id=crm_queue.DELTA_STATE_ID)["scan_pages"] == 1
+    assert query.call_args.kwargs["lower"] <= edited
+    assert query.call_args.kwargs["upper"] > edited
+    with db._SessionLocal() as session:
+        assert crm_queue._aware(session.get(CrmPageQueue, "late-visible").edited_at) == edited
+
+
+def test_delta_stale_window_cannot_advance_after_another_worker(db):
+    first = crm_queue._state(state_id=crm_queue.DELTA_STATE_ID)
+    assert crm_queue._save_scan_page(first, [("one", (first[1] - timedelta(seconds=1)).isoformat())],
+                                     "new-cursor", state_id=crm_queue.DELTA_STATE_ID)
+    assert not crm_queue._save_scan_page(first, [("stale", (first[1] - timedelta(seconds=1)).isoformat())],
+                                         None, state_id=crm_queue.DELTA_STATE_ID)
+    with db._SessionLocal() as session:
+        assert session.get(CrmScanState, 2).cursor == "new-cursor"
+        assert session.get(CrmPageQueue, "stale") is None
