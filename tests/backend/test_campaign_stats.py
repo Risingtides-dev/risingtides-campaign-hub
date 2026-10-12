@@ -728,3 +728,89 @@ class TestAggregateFastPath:
         r = get_campaign_stats("s", tracker_id="tk-legacy", allow_live_fetch=False)
         assert r.total_views == 42          # served via the blob path
         assert len(r.submissions) == 1
+
+
+def test_bulk_fallback_scrape_log_query_count(db):
+    from sqlalchemy import event
+    from campaign_manager.models import ScrapeLog
+
+    def measure(count):
+        slugs = [f"query-count-{count}-{i}" for i in range(count)]
+        with _db.get_session() as s:
+            for slug in slugs:
+                camp = Campaign(slug=slug, title=slug, artist="A", song="S")
+                s.add(camp)
+                s.flush()
+                s.add(MatchedVideo(campaign_id=camp.id, url=f"https://tt.com/{slug}", account="@a"))
+                s.add(ScrapeLog(campaign_id=camp.id, last_scrape=datetime(2026, 9, 1, tzinfo=timezone.utc)))
+                s.add(ScrapeLog(campaign_id=camp.id, last_scrape=datetime(2026, 10, 1, tzinfo=timezone.utc)))
+            s.commit()
+        statements = []
+        def capture(_conn, _cursor, statement, _params, _context, _executemany):
+            statements.append(statement)
+        event.listen(_db._engine, "before_cursor_execute", capture)
+        try:
+            results = get_campaign_stats_bulk(
+                slugs,
+                matched_videos_by_slug={slug: [{"url": f"https://tt.com/{slug}", "account": "@a"}] for slug in slugs},
+                tracker_id_by_slug={slug: "" for slug in slugs},
+            )
+        finally:
+            event.remove(_db._engine, "before_cursor_execute", capture)
+        assert all(results[slug].stale_since == "2026-10-01T00:00:00" for slug in slugs)
+        return len(statements), sum("scrape_logs" in stmt.lower() for stmt in statements)
+
+    one = measure(1)
+    many = measure(30)
+    assert one == (1, 1)
+    assert many == (1, 1)
+
+
+def test_bulk_fallback_stale_since_missing_log_and_no_submissions(db):
+    from campaign_manager.models import ScrapeLog
+
+    with _db.get_session() as s:
+        missing = Campaign(slug="fallback-missing-log", title="Missing", artist="A", song="S")
+        empty = Campaign(slug="fallback-empty", title="Empty", artist="A", song="S")
+        s.add_all([missing, empty])
+        s.flush()
+        s.add(MatchedVideo(campaign_id=missing.id, url="https://tt.com/missing", account="@a"))
+        s.add(ScrapeLog(campaign_id=empty.id, last_scrape=datetime(2026, 10, 1)))
+        s.commit()
+
+    results = get_campaign_stats_bulk(
+        ["fallback-missing-log", "fallback-empty"],
+        matched_videos_by_slug={"fallback-missing-log": [{"url": "https://tt.com/missing", "account": "@a"}], "fallback-empty": []},
+        tracker_id_by_slug={"fallback-missing-log": "", "fallback-empty": ""},
+    )
+    assert results["fallback-missing-log"].source == SOURCE_SCRAPER_FALLBACK
+    assert results["fallback-missing-log"].stale_since == ""
+    assert results["fallback-empty"].source == SOURCE_EMPTY
+    assert results["fallback-empty"].stale_since == ""
+
+
+def test_bulk_no_fallback_does_not_read_scrape_logs(db):
+    with patch.object(_db, "get_latest_scrape_times_for_campaigns", side_effect=AssertionError("unexpected lookup")):
+        result = get_campaign_stats_bulk(
+            ["no-submissions"],
+            matched_videos_by_slug={"no-submissions": []},
+            tracker_id_by_slug={"no-submissions": ""},
+        )
+    assert result["no-submissions"].source == SOURCE_EMPTY
+
+
+def test_bulk_fallback_scrape_log_lookup_failure_preserves_stats(db):
+    with patch.object(_db, "get_latest_scrape_times_for_campaigns", side_effect=RuntimeError("db unavailable")) as lookup:
+        results = get_campaign_stats_bulk(
+            ["fallback-failure-a", "fallback-failure-b"],
+            matched_videos_by_slug={
+                "fallback-failure-a": [{"url": "https://tt.com/fail-a", "account": "@a", "views": 5}],
+                "fallback-failure-b": [{"url": "https://tt.com/fail-b", "account": "@b", "views": 7}],
+            },
+            tracker_id_by_slug={"fallback-failure-a": "", "fallback-failure-b": ""},
+        )
+    assert lookup.call_count == 1
+    assert results["fallback-failure-a"].total_views == 5
+    assert results["fallback-failure-b"].total_views == 7
+    assert results["fallback-failure-a"].stale_since == ""
+    assert results["fallback-failure-b"].stale_since == ""

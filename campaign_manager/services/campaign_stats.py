@@ -42,7 +42,7 @@ import os
 import threading
 from dataclasses import dataclass, field, replace as _dc_replace
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from campaign_manager import db as _db
 from campaign_manager.utils.helpers import video_posted_before_start
@@ -479,6 +479,7 @@ def get_campaign_stats(
     start_date: str = "",
     force_refresh: bool = False,
     allow_live_fetch: bool = True,
+    _stale_since_loader: Optional[Callable[[str], str]] = None,
 ) -> CampaignStatsResult:
     """Resolve performance stats for one campaign.
 
@@ -521,7 +522,7 @@ def get_campaign_stats(
     if not tracker_id:
         return _fallback(
             s, matched_videos, tracker_id="", error_kind="no_tracker",
-            start_date=start_date,
+            start_date=start_date, stale_since_loader=_stale_since_loader,
         )
 
     ttl = _cache_ttl_seconds()
@@ -584,6 +585,7 @@ def get_campaign_stats(
         return _fallback(
             s, matched_videos, tracker_id=tracker_id,
             error_kind="refresh_deferred", start_date=start_date,
+            stale_since_loader=_stale_since_loader,
         )
 
     # Cache miss or expired — go live.
@@ -624,7 +626,7 @@ def get_campaign_stats(
     # No cache, no API. Last resort: scraper data.
     return _fallback(
         s, matched_videos, tracker_id=tracker_id, error_kind=fetch.error_kind,
-        start_date=start_date,
+        start_date=start_date, stale_since_loader=_stale_since_loader,
     )
 
 
@@ -663,6 +665,7 @@ def _fallback(
     tracker_id: str,
     error_kind: str,
     start_date: str = "",
+    stale_since_loader: Optional[Callable[[str], str]] = None,
 ) -> CampaignStatsResult:
     if matched_videos is None:
         try:
@@ -681,12 +684,18 @@ def _fallback(
         if not video_posted_before_start(v, start_date)
     ]
     subs = _submissions_from_matched_videos(in_window)
+    stale_since = ""
+    if subs:
+        stale_since = (
+            stale_since_loader(slug) if stale_since_loader
+            else _scrape_log_stale_since(slug)
+        )
     return CampaignStatsResult(
         slug=slug,
         tracker_id=tracker_id,
         source=SOURCE_SCRAPER_FALLBACK if subs else SOURCE_EMPTY,
         submissions=subs,
-        stale_since=_scrape_log_stale_since(slug) if subs else "",
+        stale_since=stale_since,
         error_kind=error_kind,
     )
 
@@ -852,6 +861,19 @@ def get_campaign_stats_bulk(
             _mark_attempt(tid)
         _refresh_trackers_sync(missing_ids, timeout=5)
 
+    # Load timestamps only if a fallback with submissions needs them. One
+    # grouped query replaces per-campaign latest-log lookups on list reads.
+    scrape_times: Optional[Dict[str, str]] = None
+
+    def stale_since_for_slug(slug: str) -> str:
+        nonlocal scrape_times
+        if scrape_times is None:
+            try:
+                scrape_times = _db.get_latest_scrape_times_for_campaigns(slugs)
+            except Exception:
+                scrape_times = {}
+        return scrape_times.get(slug, "")
+
     # Per-slug pass — now hitting a warm cache for every tracker we
     # successfully pre-warmed.
     for s in slugs:
@@ -861,5 +883,6 @@ def get_campaign_stats_bulk(
             tracker_id=tracker_map.get(s, ""),
             start_date=sd.get(s, ""),
             allow_live_fetch=False,
+            _stale_since_loader=stale_since_for_slug,
         )
     return out
