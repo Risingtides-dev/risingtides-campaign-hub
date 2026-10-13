@@ -7,6 +7,9 @@ that entry to Campaign Hub as a new campaign.
 CRM Database ID: 1961465b-b829-80c9-a1b5-c4cb3284149a
 Integration: "Rising Tides AI" bot (internal integration)
 """
+import hashlib
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 import logging
 import os
 import threading
@@ -194,7 +197,8 @@ def _parse_content_types(props: Dict) -> Optional[List[str]]:
     return [option["name"] for option in options]
 
 
-def _fetch_full_rich_text(notion_page_id: str, property_id: str) -> Optional[str]:
+def _fetch_full_rich_text(notion_page_id: str, property_id: str, *,
+                          deadline=None, strict=False, before_request=None) -> Optional[str]:
     """Read a whole rich-text property, page by page. None on any failure."""
     url = f"{NOTION_API_BASE}/pages/{notion_page_id}/properties/{property_id}"
     parts: List[str] = []
@@ -203,12 +207,31 @@ def _fetch_full_rich_text(notion_page_id: str, property_id: str) -> Optional[str
         params = {"page_size": 100}
         if cursor:
             params["start_cursor"] = cursor
+        remaining = deadline - time.monotonic() if deadline is not None else 15
+        if remaining <= 0:
+            if strict:
+                raise CrmSourceUnavailable("property_deadline")
+            return None
+        if before_request is not None and not before_request(deadline=deadline):
+            if strict:
+                raise CrmSourceUnavailable("property_deadline")
+            return None
+        remaining = deadline - time.monotonic() if deadline is not None else 15
+        if remaining <= 0:
+            if strict:
+                raise CrmSourceUnavailable("property_deadline")
+            return None
         try:
-            resp = requests.get(url, headers=_headers(), params=params, timeout=15)
-        except Exception as e:
-            logger.warning("CRM property fetch failed for %s: %s", notion_page_id, e)
+            resp = requests.get(url, headers=_headers(), params=params,
+                                timeout=min(15, remaining))
+        except Exception:
+            if strict:
+                raise CrmSourceUnavailable("property_transport")
+            logger.warning("CRM property fetch failed for %s", notion_page_id)
             return None
         if resp.status_code != 200:
+            if strict:
+                _crm_read_response(resp)
             logger.warning("CRM property fetch %s -> %s", notion_page_id, resp.status_code)
             return None
         try:
@@ -228,11 +251,14 @@ def _fetch_full_rich_text(notion_page_id: str, property_id: str) -> Optional[str
             return None
         if not cursor:
             return None
+    if strict:
+        raise CrmSourceUnavailable("caption_too_long", 300)
     logger.warning("CRM property for %s is longer than this sync reads", notion_page_id)
     return None
 
 
-def _parse_internal_captions(notion_page_id: str, props: Dict) -> Optional[str]:
+def _parse_internal_captions(notion_page_id: str, props: Dict, *,
+                             deadline=None, strict=False, before_request=None) -> Optional[str]:
     """Internal Captions text from a page's properties, or None if unreadable.
 
     An empty property is an explicit "no captions" and returns "". A missing
@@ -249,7 +275,9 @@ def _parse_internal_captions(notion_page_id: str, props: Dict) -> Optional[str]:
         property_id = target.get("id")
         if not isinstance(property_id, str) or not property_id:
             return None
-        return _fetch_full_rich_text(notion_page_id, property_id)
+        return _fetch_full_rich_text(notion_page_id, property_id,
+                                     deadline=deadline, strict=strict,
+                                     before_request=before_request)
     return "".join(part["plain_text"] for part in parts)
 
 
@@ -342,15 +370,128 @@ def fetch_page_content_types(notion_page_id: str) -> Optional[List[str]]:
     return fields["content_types"] if fields else None
 
 
-def query_new_clients(synced_page_ids: Set[str]) -> List[Dict]:
+_client_discovery_cursor = None
+_crm_row_warning_at = {}
+
+
+def log_crm_row_skip(page_id: str, reason: str) -> None:
+    """Rate-limit per-row diagnostics without logging CRM property values."""
+    key = (str(page_id), reason)
+    now = time.monotonic()
+    last = _crm_row_warning_at.get(key)
+    if last is not None and now - last < 3600:
+        return
+    if len(_crm_row_warning_at) >= 256:
+        oldest = min(_crm_row_warning_at, key=_crm_row_warning_at.get)
+        del _crm_row_warning_at[oldest]
+    _crm_row_warning_at[key] = now
+    page_ref = hashlib.sha256(str(page_id).encode()).hexdigest()[:12]
+    logger.warning("CRM discovery skipped page %s: %s", page_ref, reason)
+
+
+
+def parse_client_pages(pages: List[Dict], synced_page_ids: Set[str], *,
+                       strict_captions=False, deadline=None, before_request=None) -> List[Dict]:
+    """Parse CRM page objects into create-only campaign candidates."""
+    results = []
+    for page in pages:
+        page_id = page.get("id", "") if isinstance(page, dict) else ""
+        try:
+            if not page_id:
+                raise ValueError("missing page id")
+            if page_id in synced_page_ids:
+                continue
+
+            props = page.get("properties", {})
+
+            # Extract all mapped fields from the CRM schema
+            artist = _get_title(props.get("Artist Name", {}))
+            song = _get_rich_text(props.get("Song Name", {}))
+            if len(artist) > 255 or len(song) > 255:
+                log_crm_row_skip(page_id, "artist or song exceeds 255 chars")
+                continue
+            tiktok_sound = _get_url(props.get("TikTok Sound Link", {})).strip()
+            insta_sound = _get_url(props.get("Insta Sound Link", {})).strip()
+            cobrand = _get_url(props.get("Co Brand Link", {})).strip()
+            start_date = _get_date(props.get("Desired Start Date", {}))
+            budget = _get_number(props.get("Media Spend", {}))
+            campaign_stage = _get_status(props.get("Campaign Stage", {}))
+            round_val = _get_select(props.get("Round", {}))
+            label = _get_rich_text(props.get("Label/Distro Partner", {}))
+            lead = _get_multi_select(props.get("Project Lead", {}))
+            email = _get_email(props.get("Key Contact Email", {}))
+            content_types = _parse_content_types(props)
+            tiktok_pct = _get_multi_select(props.get("TikTok", {}))
+            insta_pct = _get_multi_select(props.get("Instagram", {}))
+            internal_captions = _parse_internal_captions(
+                page_id, props, deadline=deadline, strict=strict_captions,
+                before_request=before_request,
+            )
+            captions_prop = props.get(CAPTIONS_PROPERTY)
+            if (strict_captions and isinstance(captions_prop, dict) and
+                isinstance(captions_prop.get("rich_text"), list) and
+                len(captions_prop["rich_text"]) >= _INLINE_RICH_TEXT_LIMIT and
+                internal_captions is None):
+                raise CrmSourceUnavailable("caption_property_unreadable")
+
+            platform_split = _parse_platform_split(tiktok_pct, insta_pct)
+
+            # Extract sound ID from TikTok sound link if available
+            sound_id = ""
+            if tiktok_sound:
+                sound_id = extract_sound_id(tiktok_sound)
+
+            # Build campaign title
+            if artist and song:
+                title = f"{artist} - {song}"
+            elif artist:
+                title = artist
+            elif song:
+                title = song
+            else:
+                title = f"Untitled ({page_id[:8]})"
+
+            slug = slugify(title)
+
+            results.append({
+                "notion_page_id": page_id,
+                "title": title,
+                "slug": slug,
+                "artist": artist,
+                "song": song,
+                "official_sound": tiktok_sound,
+                "sound_id": sound_id,
+                "insta_sound": insta_sound,
+                "cobrand_share_url": cobrand,
+                "start_date": start_date,
+                "budget": float(budget) if budget else 0.0,
+                "campaign_stage": campaign_stage,
+                "round": round_val,
+                "label": label,
+                "project_lead": lead,
+                "client_email": email,
+                "content_types": content_types,
+                "internal_captions": internal_captions,
+                "platform_split": platform_split,
+                "source": "notion",
+            })
+        except (KeyError, TypeError, ValueError, AttributeError) as error:
+            log_crm_row_skip(page_id, type(error).__name__)
+
+    return results
+
+
+def query_new_clients(synced_page_ids: Set[str], *, resume: bool = False) -> List[Dict]:
     """Query Notion CRM for entries with Pipeline Status = 'Client' not yet synced.
 
     Args:
         synced_page_ids: Set of Notion page IDs already imported to Campaign Hub.
+        resume: Continue the bounded one-page discovery scan across scheduler ticks.
 
     Returns:
         List of campaign dicts ready to be saved via db.save_campaign().
     """
+    global _client_discovery_cursor
     api_key = _get_api_key()
     if not api_key:
         return []
@@ -370,9 +511,14 @@ def query_new_clients(synced_page_ids: Set[str]) -> List[Dict]:
         "page_size": 50,
     }
 
+    if resume and _client_discovery_cursor:
+        payload["start_cursor"] = _client_discovery_cursor
+
     try:
         resp = requests.post(url, headers=_headers(), json=payload, timeout=15)
         if resp.status_code != 200:
+            if resume and resp.status_code == 400:
+                _client_discovery_cursor = None
             logger.warning(
                 "CRM sync query returned HTTP %s: %s", resp.status_code, resp.text[:300]
             )
@@ -381,80 +527,11 @@ def query_new_clients(synced_page_ids: Set[str]) -> List[Dict]:
         logger.warning("CRM sync query failed: %s", e)
         return []
 
-    results = []
-    for page in resp.json().get("results", []):
-        page_id = page["id"]
-        if page_id in synced_page_ids:
-            continue
+    response = resp.json()
+    results = parse_client_pages(response.get("results", []), synced_page_ids)
 
-        props = page.get("properties", {})
-
-        # Extract all mapped fields from the CRM schema
-        artist = _get_title(props.get("Artist Name", {}))
-        song = _get_rich_text(props.get("Song Name", {}))
-        tiktok_sound = _get_url(props.get("TikTok Sound Link", {})).strip()
-        insta_sound = _get_url(props.get("Insta Sound Link", {})).strip()
-        cobrand = _get_url(props.get("Co Brand Link", {})).strip()
-        start_date = _get_date(props.get("Desired Start Date", {}))
-        budget = _get_number(props.get("Media Spend", {}))
-        campaign_stage = _get_status(props.get("Campaign Stage", {}))
-        round_val = _get_select(props.get("Round", {}))
-        label = _get_rich_text(props.get("Label/Distro Partner", {}))
-        lead = _get_multi_select(props.get("Project Lead", {}))
-        email = _get_email(props.get("Key Contact Email", {}))
-        # The CRM property is "Content Niche Targets" (multi_select). We were
-        # reading "Types of Content Creators", which does not exist on the
-        # database — so this came back empty for every campaign ever synced
-        # (0 of 326 populated) while 286 of 300 CRM rows actually carry tags.
-        # A missing property is silently empty here, so nothing ever surfaced.
-        # Legacy name kept as a fallback in case an older DB copy still uses it.
-        content_types = (_get_multi_select(props.get("Content Niche Targets", {}))
-                         or _get_multi_select(props.get("Types of Content Creators", {})))
-        tiktok_pct = _get_multi_select(props.get("TikTok", {}))
-        insta_pct = _get_multi_select(props.get("Instagram", {}))
-        internal_captions = _parse_internal_captions(page_id, props)
-
-        platform_split = _parse_platform_split(tiktok_pct, insta_pct)
-
-        # Extract sound ID from TikTok sound link if available
-        sound_id = ""
-        if tiktok_sound:
-            sound_id = extract_sound_id(tiktok_sound)
-
-        # Build campaign title
-        if artist and song:
-            title = f"{artist} - {song}"
-        elif artist:
-            title = artist
-        elif song:
-            title = song
-        else:
-            title = f"Untitled ({page_id[:8]})"
-
-        slug = slugify(title)
-
-        results.append({
-            "notion_page_id": page_id,
-            "title": title,
-            "slug": slug,
-            "artist": artist,
-            "song": song,
-            "official_sound": tiktok_sound,
-            "sound_id": sound_id,
-            "insta_sound": insta_sound,
-            "cobrand_share_url": cobrand,
-            "start_date": start_date,
-            "budget": float(budget) if budget else 0.0,
-            "campaign_stage": campaign_stage,
-            "round": round_val,
-            "label": label,
-            "project_lead": lead,
-            "client_email": email,
-            "content_types": content_types,
-            "internal_captions": internal_captions,
-            "platform_split": platform_split,
-            "source": "notion",
-        })
+    if resume:
+        _client_discovery_cursor = response.get("next_cursor") if response.get("has_more") else None
 
     return results
 
@@ -545,3 +622,110 @@ def request_campaign_niche_refresh():
         logger.exception("Could not start CRM niche refresh")
         return False
     return True
+
+class CrmSourceUnavailable(RuntimeError):
+    """A CRM read cannot be treated as an empty source result."""
+
+    def __init__(self, reason: str, retry_after: int = 2):
+        super().__init__(reason)
+        self.reason = reason
+        self.retry_after = max(1, int(retry_after))
+
+
+def _crm_read_response(response, *, query_cursor=None):
+    if response.status_code in (429, 529):
+        raw_retry = response.headers.get("Retry-After", "2")
+        try:
+            retry_after = int(raw_retry)
+        except (TypeError, ValueError):
+            try:
+                when = parsedate_to_datetime(raw_retry)
+                retry_after = int((when - datetime.now(timezone.utc)).total_seconds()) + 1
+            except (TypeError, ValueError, OverflowError):
+                retry_after = 2
+        raise CrmSourceUnavailable("rate_limited", retry_after)
+    if response.status_code == 400 and query_cursor:
+        try:
+            error = response.json()
+        except ValueError:
+            error = None
+        if (isinstance(error, dict) and error.get("code") == "validation_error" and
+            "cursor" in str(error.get("message", "")).lower()):
+            raise CrmSourceUnavailable("expired_query_cursor")
+    if response.status_code != 200:
+        raise CrmSourceUnavailable("http_status")
+    try:
+        body = response.json()
+    except ValueError as error:
+        raise CrmSourceUnavailable("invalid_json") from error
+    if not isinstance(body, dict):
+        raise CrmSourceUnavailable("invalid_body")
+    return body
+
+
+def query_crm_edit_window(*, lower, upper, cursor=None):
+    """One sorted page of CRM edits, inclusive of both timestamp boundaries.
+
+    Caller persists its cursor and enqueued page IDs in one DB transaction.
+    Failure raises; it must never advance a durable cursor or watermark.
+    """
+    if not _get_api_key():
+        raise CrmSourceUnavailable("missing_api_key", 60)
+    source_id = resolve_data_source_id(
+        _get_database_id(), env_override="NOTION_CRM_DATA_SOURCE_ID"
+    )
+    if not source_id:
+        raise CrmSourceUnavailable("missing_data_source", 60)
+    predicates = [{"timestamp": "last_edited_time", "last_edited_time":
+                   {"on_or_before": upper.isoformat()}}]
+    if lower is not None:
+        predicates.append({"timestamp": "last_edited_time", "last_edited_time":
+                           {"on_or_after": lower.isoformat()}})
+    payload = {"filter": {"and": predicates}, "sorts": [
+        {"timestamp": "last_edited_time", "direction": "ascending"}], "page_size": 100}
+    if cursor:
+        payload["start_cursor"] = cursor
+    try:
+        response = requests.post(
+            f"{NOTION_API_BASE}/data_sources/{source_id}/query",
+            headers=_headers(), json=payload, timeout=15,
+        )
+    except Exception as error:
+        raise CrmSourceUnavailable("transport") from error
+    body = _crm_read_response(response, query_cursor=cursor)
+    request_status = body.get("request_status")
+    if isinstance(request_status, dict) and request_status.get("type") == "incomplete":
+        raise CrmSourceUnavailable("query_result_limit", 60)
+    pages = body.get("results")
+    if not isinstance(pages, list):
+        raise CrmSourceUnavailable("missing_results")
+    has_more = body.get("has_more")
+    next_cursor = body.get("next_cursor")
+    if not isinstance(has_more, bool) or (has_more and not isinstance(next_cursor, str)):
+        raise CrmSourceUnavailable("invalid_cursor")
+    if has_more and (not next_cursor or next_cursor == cursor):
+        raise CrmSourceUnavailable("stalled_cursor")
+    candidates = []
+    for page in pages:
+        if not isinstance(page, dict) or not isinstance(page.get("id"), str) or not page["id"]:
+            raise CrmSourceUnavailable("invalid_page")
+        edited = page.get("last_edited_time")
+        if not isinstance(edited, str):
+            raise CrmSourceUnavailable("invalid_edit_time")
+        candidates.append((page["id"], edited))
+    return candidates, next_cursor if has_more else None
+
+
+def fetch_crm_page_for_queue(page_id):
+    """Read exact current source page; failed reads are retryable, not empty."""
+    if not _get_api_key():
+        raise CrmSourceUnavailable("missing_api_key", 60)
+    try:
+        response = requests.get(f"{NOTION_API_BASE}/pages/{page_id}",
+                                headers=_headers(), timeout=15)
+    except Exception as error:
+        raise CrmSourceUnavailable("transport") from error
+    body = _crm_read_response(response)
+    if body.get("id") != page_id or not isinstance(body.get("properties"), dict):
+        raise CrmSourceUnavailable("invalid_page")
+    return body
