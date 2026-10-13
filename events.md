@@ -398,14 +398,6 @@ entry-id: hub-queue-export-origin-20261007-root
 The original 2026-10-07 19:00 UTC Mac run completed Hub cron_log 982 (37 campaigns refreshed, 35 new matches) but queue export failed HTTP 404 against the obsolete Railway fallback URL. The isolated code candidate changes exporter, Pi ops helper and internal-groups CLI defaults to the verified canonical Hub origin. The exporter validates configured origin and limit and reports bounded HTTP/transport/JSON errors before output creation; it never retries the completed scrape. Read-only GET to the canonical queue endpoint returned HTTP 200. Code head 648fec10259d83cd925c98c704d55457c4d2e0eb passed 962 Python tests with five optional PostgreSQL DDL skips; ten focused origin/failure tests passed. Independent exact-code-head review found no blocker for the URL correction and noted the pre-existing unbounded response read as a follow-up. This entry and owning contract precede final-head review/checks. No live export, scrape, post, push, merge or deployment is claimed here. Rollback requires reconciling original export and setting CAMPAIGN_HUB_API_URL to a verified origin rather than restoring the dead default.
 _________________________________________________________________________________
 
-_________________________________________________________________________________
-time: [04:19pm] [07-10-26] EDT UTC-04:00
-agent: [Codex] [GPT-6] [root release owner]
-worktree: [codex/hub258-crm-repair -> PR258] [/private/tmp/hub258-crm-repair-20261007/repo]
-type: [bug report]
-area: [backend] [testing] [review]
-
-Repair draft258 minuteCRMdiscovery so Clients after the first50 are reached through one bounded query page per tick and cursor wrap/retry. Reuse current property parser to distinguish unknown from explicit empty categories; discovery creates new campaigns only and skips every existing slug, preserving stored exact-page identity/categories/captions rather than transferring same-title CRM ownership. Remove minuteall-linked refresh duplication; existing active exact-page15minute refresh owns updates. Integrated actual GitHubmain5874b621 preserving native local-agent acknowledgment contract; scheduler bytes remain identical originalPR e1b94c and db/models/localagent match currentmain. Full existing Python3.10 backend968passed,5existing disposablePostgreSQLDDLskips; meaningful16CRMcases and4RPAconsumercases verified in preparation. Private integrationc401a384/tree791f69f6 precedes this finalledger/freeze; independent final-head review and fresh requiredhostedchecks remain necessary after expected-originalhead lease push. Keep258draft; no deployment/jobenable/campaigncreate/Notionwrite or productionoutcome claim. Existing manualwebhook behavior outside scope is not claimed repaired. Devlog pass adds concise root discovery/refreshownership contract and preserves all unrelated contracts; emptychildindex unchanged. Canonicalledgerappend respects existing lockfile/inode and preserves primarydirtycheckout/head/index.
 
 _________________________________________________________________________________
 time: [4:32pm] [10-07-26] EDT; actual UTC: 2026-10-07T20:32:00Z
@@ -418,18 +410,6 @@ entry-id: hub-issue124-hosted-test-portability-20261007
 The first exact-head hosted backend run failed in test fixtures: five janitor tests constructed stale timestamps using the runner local timezone while the production ledger uses America/New_York naive values, and the Mac zsh wrapper test invoked /bin/zsh on Linux. The fixtures now construct stale timestamps in the ledger timezone. The wrapper executes on the Mac release host; environments without zsh explicitly skip that platform-specific subprocess check. Under TZ=UTC, 13 focused local tests passed. The owning AGENTS.md contract is unchanged because production behavior did not change. The prior code head passed 994 Python tests, 28 tests against a disposable PostgreSQL 16 cluster, and the frontend build. This test-fix head requires independent review and new exact-head hosted verification. No live scrape, node POST or posting was triggered.
 _________________________________________________________________________________
 
-_________________________________________________________________________________
-time: [04:40pm] [07-10-26] EDT; actual UTC: 2026-10-07T20:40:01.220018+00:00
-agent: [Codex] [GPT-6] [delegated Hub258 release owner]
-worktree: [codex/hub258-crm-repair -> PR258] /private/tmp/hub258-crm-repair-20261007/repo
-type: [bug report]
-area: [backend] [testing] [review]
-entry-id: hub258-atomic-creation-race-correction-20261007
-
-Correct the earlier draft258 preparation claim: skipping existing slugs before persistence did not prevent a manual creation between discovery's precheck and save. Independent actual SQLite reproduction overwrote the new campaign's identity, categories and stats, then cleared its creators. save_campaign now offers an optional create-only insert using existing unique constraints; discovery uses it and treats known unique races as conflict, while unrelated integrity failures still raise and ordinary manual upserts remain unchanged. Remove the unnecessary empty creator replacement so attachment immediately after creation survives. Both new race controls fail on original29ea9 source; repaired focused19/19 and full971/971 Python3.10 checks passed with five existing optional PostgreSQL fixture skips. Independent creation-race review passed actual SQLite and synthetic PostgreSQL23505 handling; integrated current-main reviewer passed89 CRM/DB/webhook checks.
-
-Integrated actual GitHub main fad83b11696862dad9041637139a70c0ffa8cfbf, preserving native job/capacity leases, dispatch receipts, export contract and append-only history. Source changes remain limited to CRM discovery, the existing save_campaign function, regression tests and root discovery contract; no lease/model/local-agent edits. Existing scheduler registration from the original draft is retained, not enabled or deployed. This corrective canonical and versioned ledger entry precedes final freeze, independent exact-head review and full backend verification. Push requires the unchanged original draft head e1b94c425507712a6f8ba7654317ddb25360b329 with an explicit lease. Keep draft; no merge, deployment, production CRM request, campaign creation, scraper launch or publication claim. Root contract and empty child index were checked; only the concise discovery contract changed.
-_________________________________________________________________________________
 _________________________________________________________________________________
 time: [4:43pm] [10-07-26] EDT; actual UTC: 2026-10-07T20:43:00Z
 agent: [Codex desktop delegating to AC Mac mini] [GPT-6] [root release owner]
@@ -563,15 +543,6 @@ area: [backend], [testing], [review]
 Added CAMPAIGN_REFRESH_SCHEDULER_ENABLED, default true, and passed it from app config to APScheduler initialization. False omits automatic campaign_refresh registration and starts the persistent SQLAlchemy scheduler paused, removes any retained campaign_refresh job, then resumes the other jobs. Removal failure stops the scheduler and clears its singleton for readiness retry. Manual and on-demand refresh entrypoints, their leases, and receipts were unchanged. Disposable SQLite tests prove an overdue old job cannot fire, other jobs remain, re-enabling registers campaign_refresh, the app forwards the setting, and removal failure never resumes. Backend verification: 945 passed, 8 PostgreSQL-only tests skipped without TEST_POSTGRES_DATABASE_URL. Transition is staged only: Railway remains unchanged until Mac Apify credential and delivery are approved/verified. Rollback is true plus restart and scheduled-job readback. Local disk held roughly 175 MiB available after removing only this agent's regenerable Content Lab test venv; no production environment, scrape, publication, push, PR, merge or deployment was touched.
 _________________________________________________________________________________
 _________________________________________________________________________________
-time: [01:20pm] [09-10-26] EDT
-agent: [claude code], [claude-opus-5-5]
-worktree: [claude/issue-257-crm-sync-scheduler] ~/dev/oceanwork/rch-257 on macmini-ip
-type: [feature-request]: issue #257 PR #258 brought current with main
-area: [backend], [testing]
-
-Merged origin/main cd16752 into the #257 CRM discovery branch without rewriting history. The only code conflict was the scheduler startup log, now reporting both the campaign_refresh toggle and the crm_sync interval; crm_sync registers unconditionally, so CAMPAIGN_REFRESH_SCHEDULER_ENABLED=false keeps the one-minute CRM discovery job, now pinned in the toggle regression. Full Python 3.11 suite: 1055 passed, 8 PostgreSQL-only skips. No deployment, production CRM request or campaign creation occurred; the job runs on Railway after merge and deploy with SCHEDULER_ENABLED=true and no new env vars.
-_________________________________________________________________________________
-_________________________________________________________________________________
 time: [12:18am] [10-10-26] EDT
 agent: [codex] [gpt-6.1-sol] [focused builder]
 worktree: [codex/hub-tiktok-source-outcomes] /Users/risingtidesdev/worktrees/hub-tiktok-source-outcomes
@@ -660,6 +631,43 @@ Independent review found docs/SECURITY_HANDOFF.md still described the public cro
 _________________________________________________________________________________
 
 _________________________________________________________________________________
+time: [12:10pm] [10-12-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/hub-fallback-scrape-log-20261012] /Users/risingtidesdev/worktrees/hub-fallback-scrape-log-20261012
+type: [refactor]: batch campaign-list fallback scrape timestamps
+area: [backend], [testing]
+
+On the current e941851 main baseline, 30 fallback campaigns with preloaded videos produced 30 latest-scrape-log SELECTs; one produced one. The list stats path now lazily fetches each campaign's maximum last_scrape in one grouped query only if fallback submissions need a timestamp. A 1-versus-30 SQL listener regression measures one SELECT in both cases, and tests cover latest-log parity, absent logs, no-submission lazy behavior, and DB read failure preserving fallback totals. Focused campaign stats, campaigns blueprint, and DB tests passed 151; full Python suite passed 1061 with eight opt-in PostgreSQL tests skipped because TEST_POSTGRES_DATABASE_URL is unset. This isolated candidate has not been pushed, reviewed independently, merged, deployed, or live-verified.
+_________________________________________________________________________________
+_________________________________________________________________________________
+time: [04:19pm] [07-10-26] EDT UTC-04:00
+agent: [Codex] [GPT-6] [root release owner]
+worktree: [codex/hub258-crm-repair -> PR258] [/private/tmp/hub258-crm-repair-20261007/repo]
+type: [bug report]
+area: [backend] [testing] [review]
+
+Repair draft258 minuteCRMdiscovery so Clients after the first50 are reached through one bounded query page per tick and cursor wrap/retry. Reuse current property parser to distinguish unknown from explicit empty categories; discovery creates new campaigns only and skips every existing slug, preserving stored exact-page identity/categories/captions rather than transferring same-title CRM ownership. Remove minuteall-linked refresh duplication; existing active exact-page15minute refresh owns updates. Integrated actual GitHubmain5874b621 preserving native local-agent acknowledgment contract; scheduler bytes remain identical originalPR e1b94c and db/models/localagent match currentmain. Full existing Python3.10 backend968passed,5existing disposablePostgreSQLDDLskips; meaningful16CRMcases and4RPAconsumercases verified in preparation. Private integrationc401a384/tree791f69f6 precedes this finalledger/freeze; independent final-head review and fresh requiredhostedchecks remain necessary after expected-originalhead lease push. Keep258draft; no deployment/jobenable/campaigncreate/Notionwrite or productionoutcome claim. Existing manualwebhook behavior outside scope is not claimed repaired. Devlog pass adds concise root discovery/refreshownership contract and preserves all unrelated contracts; emptychildindex unchanged. Canonicalledgerappend respects existing lockfile/inode and preserves primarydirtycheckout/head/index.
+_________________________________________________________________________________
+time: [04:40pm] [07-10-26] EDT; actual UTC: 2026-10-07T20:40:01.220018+00:00
+agent: [Codex] [GPT-6] [delegated Hub258 release owner]
+worktree: [codex/hub258-crm-repair -> PR258] /private/tmp/hub258-crm-repair-20261007/repo
+type: [bug report]
+area: [backend] [testing] [review]
+entry-id: hub258-atomic-creation-race-correction-20261007
+
+Correct the earlier draft258 preparation claim: skipping existing slugs before persistence did not prevent a manual creation between discovery's precheck and save. Independent actual SQLite reproduction overwrote the new campaign's identity, categories and stats, then cleared its creators. save_campaign now offers an optional create-only insert using existing unique constraints; discovery uses it and treats known unique races as conflict, while unrelated integrity failures still raise and ordinary manual upserts remain unchanged. Remove the unnecessary empty creator replacement so attachment immediately after creation survives. Both new race controls fail on original29ea9 source; repaired focused19/19 and full971/971 Python3.10 checks passed with five existing optional PostgreSQL fixture skips. Independent creation-race review passed actual SQLite and synthetic PostgreSQL23505 handling; integrated current-main reviewer passed89 CRM/DB/webhook checks.
+
+Integrated actual GitHub main fad83b11696862dad9041637139a70c0ffa8cfbf, preserving native job/capacity leases, dispatch receipts, export contract and append-only history. Source changes remain limited to CRM discovery, the existing save_campaign function, regression tests and root discovery contract; no lease/model/local-agent edits. Existing scheduler registration from the original draft is retained, not enabled or deployed. This corrective canonical and versioned ledger entry precedes final freeze, independent exact-head review and full backend verification. Push requires the unchanged original draft head e1b94c425507712a6f8ba7654317ddb25360b329 with an explicit lease. Keep draft; no merge, deployment, production CRM request, campaign creation, scraper launch or publication claim. Root contract and empty child index were checked; only the concise discovery contract changed.
+_________________________________________________________________________________
+time: [01:20pm] [09-10-26] EDT
+agent: [claude code], [claude-opus-5-5]
+worktree: [claude/issue-257-crm-sync-scheduler] ~/dev/oceanwork/rch-257 on macmini-ip
+type: [feature-request]: issue #257 PR #258 brought current with main
+area: [backend], [testing]
+
+Merged origin/main cd16752 into the #257 CRM discovery branch without rewriting history. The only code conflict was the scheduler startup log, now reporting both the campaign_refresh toggle and the crm_sync interval; crm_sync registers unconditionally, so CAMPAIGN_REFRESH_SCHEDULER_ENABLED=false keeps the one-minute CRM discovery job, now pinned in the toggle regression. Full Python 3.11 suite: 1055 passed, 8 PostgreSQL-only skips. No deployment, production CRM request or campaign creation occurred; the job runs on Railway after merge and deploy with SCHEDULER_ENABLED=true and no new env vars.
+_________________________________________________________________________________
+_________________________________________________________________________________
 time: [04:27am] [10-10-26] EDT; actual UTC: 2026-10-10T08:27:21Z
 agent: [Codex desktop with Mac mini builder] [GPT-6.1] [root release owner]
 worktree: [codex/hub-crm-poison-row-20261010] /Users/risingtidesdev/worktrees/hub-crm-poison-row-20261010
@@ -702,14 +710,6 @@ Two independent reviews of private head 0e16a1c found new Client creation could 
 _________________________________________________________________________________
 
 _________________________________________________________________________________
-time: [12:10pm] [10-12-26] EDT
-agent: [codex] [gpt-6.1-sol] [focused builder]
-worktree: [codex/hub-fallback-scrape-log-20261012] /Users/risingtidesdev/worktrees/hub-fallback-scrape-log-20261012
-type: [refactor]: batch campaign-list fallback scrape timestamps
-area: [backend], [testing]
-
-On the current e941851 main baseline, 30 fallback campaigns with preloaded videos produced 30 latest-scrape-log SELECTs; one produced one. The list stats path now lazily fetches each campaign's maximum last_scrape in one grouped query only if fallback submissions need a timestamp. A 1-versus-30 SQL listener regression measures one SELECT in both cases, and tests cover latest-log parity, absent logs, no-submission lazy behavior, and DB read failure preserving fallback totals. Focused campaign stats, campaigns blueprint, and DB tests passed 151; full Python suite passed 1061 with eight opt-in PostgreSQL tests skipped because TEST_POSTGRES_DATABASE_URL is unset. This isolated candidate has not been pushed, reviewed independently, merged, deployed, or live-verified.
-_________________________________________________________________________________
 
 _________________________________________________________________________________
 time: [01:12PM] [10-12-26] EDT; actual UTC: 2026-10-12T17:12:44.059246+00:00
@@ -719,4 +719,14 @@ type: [bug report]: PR #258 CRM full-audit starvation candidate
 area: [backend], [testing], [review]
 
 A six-hour CRM full audit could hold the only persisted scan cursor across many minute ticks and delay recent Client creation or caption/category edits. This isolated candidate adds a separate durable recent-edit lane ahead of the full audit, shares the Notion pacing/pause and serializes same-page queue revisions, and retains complete-audit reconciliation. Independent source review found no new P1/P2 on private head cbec1c2. Real disposable PostgreSQL focused checks passed 49/49 and the full Python suite passed 1114/1114 on Mac mini with no skipped cases. This event and the current root contract update precede final PR-head review and hosted checks. No Notion writes, production database change, PR push, merge or deployment occurred. The 1–2 minute target remains unproven under source lag, overload or outage; retain draft and measure natural delta watermark/queue lag after a verified release. Rollback is the prior app revision while retaining additive CRM state and queued page IDs for reconciliation.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [04:13am] [10-13-26] EDT; actual UTC: 2026-10-13T08:13:53Z
+agent: [Codex desktop] [GPT-6.1] [focused builder]
+worktree: [codex/pr258-bounded-recovery] /private/tmp/hub-pr258-bounded
+type: [bug report]: bounded CRM queue attempts per source revision
+area: [backend], [testing], [writing]
+
+The durable CRM queue could reschedule an unchanged malformed Client row or slug conflict forever, causing repeated source reads and obscuring required operator action. This repair caps claims at eight failed attempts for one source edit, keeps the row uncompleted with its last reason, and reports separate actionable and needs-action counts, age and reasons. A newer exact source edit resets the attempt budget and reopens the same page ID; unchanged audit repeats cannot reopen it. Focused SQLite and disposable PostgreSQL tests cover held rows, corrected revisions, peer progress and the existing queue contracts. No production Notion call, campaign creation, push, merge or deployment occurred. The draft PR still requires independent review, hosted checks, release authority and live backlog evidence.
 _________________________________________________________________________________

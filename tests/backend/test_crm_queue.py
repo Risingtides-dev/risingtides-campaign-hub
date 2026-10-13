@@ -3,6 +3,8 @@ from datetime import datetime, timedelta, timezone
 import time
 from unittest.mock import patch
 
+import pytest
+
 from sqlalchemy import select
 
 from campaign_manager.models import CrmPageQueue, CrmScanState
@@ -561,3 +563,66 @@ def test_duplicate_source_page_keeps_latest_revision(db):
                                      state_id=crm_queue.DELTA_STATE_ID)
     with db._SessionLocal() as session:
         assert crm_queue._aware(session.get(CrmPageQueue, "dup").edited_at) == newer
+
+
+@pytest.mark.parametrize("reason", ["malformed_client_row", "slug_conflict"])
+def test_unchanged_poison_revision_needs_action_and_corrected_edit_reopens(db, reason):
+    state = crm_queue._state()
+    edited = state[1] - timedelta(seconds=5)
+    assert crm_queue._save_scan_page(state, [("poison", edited.isoformat())], None)
+    for attempt in range(crm_queue.MAX_REVISION_ATTEMPTS):
+        claim = crm_queue._claim()
+        assert claim and claim[0] == "poison"
+        assert crm_queue._finish(claim, reason=reason, retry_after=300)
+        if attempt + 1 < crm_queue.MAX_REVISION_ATTEMPTS:
+            with db._SessionLocal.begin() as session:
+                session.get(CrmPageQueue, "poison").due_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    assert crm_queue._claim() is None
+    metrics = crm_queue.metrics()
+    assert metrics["depth"] == 1 and metrics["actionable_depth"] == 0
+    assert metrics["needs_action"] == 1
+    assert metrics["needs_action_reasons"] == {reason: 1}
+    assert metrics["needs_action_oldest_lag_seconds"] >= 0
+    with db._SessionLocal() as session:
+        row = session.get(CrmPageQueue, "poison")
+        assert row.completed_at is None
+        assert row.attempts == crm_queue.MAX_REVISION_ATTEMPTS
+        assert row.last_reason == reason
+
+    # Repeated audit of the same source revision cannot restart attempts.
+    same = crm_queue._state()
+    assert crm_queue._save_scan_page(same, [("poison", edited.isoformat())], None)
+    assert crm_queue._claim() is None
+    assert crm_queue.metrics()["needs_action"] == 1
+
+    # A corrected source revision reuses the durable ID and gets a fresh budget.
+    newer = crm_queue._state()
+    corrected = newer[1] - timedelta(seconds=1)
+    assert corrected > edited
+    assert crm_queue._save_scan_page(newer, [("poison", corrected.isoformat())], None)
+    claim = crm_queue._claim()
+    assert claim and claim[0] == "poison" and claim[1] == corrected
+    with db._SessionLocal() as session:
+        row = session.get(CrmPageQueue, "poison")
+        assert row.attempts == 0 and row.last_reason is None
+    assert crm_queue._finish(claim)
+    assert crm_queue.metrics()["depth"] == 0
+
+
+def test_needs_action_row_does_not_block_healthy_peer(db):
+    old = datetime.now(timezone.utc) - timedelta(minutes=10)
+    with db._SessionLocal.begin() as session:
+        session.add_all([
+            CrmPageQueue(page_id="poison", edited_at=old, queued_at=old, due_at=old,
+                         attempts=crm_queue.MAX_REVISION_ATTEMPTS,
+                         last_reason="slug_conflict"),
+            CrmPageQueue(page_id="healthy", edited_at=old, queued_at=old, due_at=old),
+        ])
+    with patch.object(crm_queue, "_rate_slot", return_value=True), patch.object(
+            notion, "fetch_crm_page_for_queue", return_value=_page("healthy")) as fetch:
+        assert crm_queue.work(deadline=time.monotonic() + 5) == {"handled": 1, "failed": 0}
+    fetch.assert_called_once_with("healthy")
+    assert db.get_campaign("healthy") is not None
+    metrics = crm_queue.metrics()
+    assert metrics["depth"] == 1 and metrics["needs_action"] == 1
+    assert metrics["actionable_depth"] == 0

@@ -24,6 +24,7 @@ DELTA_SCAN_PAGES_PER_TICK = 4
 FULL_SCAN_PAGES_PER_TICK = 8
 DELTA_STATE_ID = 2
 MAX_WORK_PER_TICK = 100
+MAX_REVISION_ATTEMPTS = 8
 TICK_SECONDS = 50
 SCAN_BUDGET_SECONDS = 15
 PROPERTY_BUDGET_SECONDS = 20
@@ -235,7 +236,9 @@ def _claim():
     now = _utcnow()
     with db._SessionLocal.begin() as session:
         row = session.execute(select(CrmPageQueue).where(
-            CrmPageQueue.completed_at.is_(None), CrmPageQueue.due_at <= now,
+            CrmPageQueue.completed_at.is_(None),
+            CrmPageQueue.attempts < MAX_REVISION_ATTEMPTS,
+            CrmPageQueue.due_at <= now,
             (CrmPageQueue.lease_until.is_(None) | (CrmPageQueue.lease_until <= now)),
         ).order_by(CrmPageQueue.due_at, CrmPageQueue.queued_at)
           .limit(1).with_for_update(skip_locked=True)).scalar_one_or_none()
@@ -276,9 +279,14 @@ def _finish(claim, *, reason=None, retry_after=1):
             row.last_reason = None
         else:
             row.attempts += 1
-            delay = max(retry_after, min(3600, 2 ** min(row.attempts, 8)))
-            row.due_at = now + timedelta(seconds=delay)
             row.last_reason = reason[:40]
+            if row.attempts >= MAX_REVISION_ATTEMPTS:
+                # Hold this exact source revision for operator action. A newer
+                # edit resets attempts and reopens the same durable queue row.
+                row.due_at = now
+            else:
+                delay = max(retry_after, min(3600, 2 ** min(row.attempts, 8)))
+                row.due_at = now + timedelta(seconds=delay)
         return True
 
 
@@ -409,19 +417,35 @@ def metrics():
         depth, oldest = session.execute(select(
             func.count(), func.min(CrmPageQueue.queued_at),
         ).where(CrmPageQueue.completed_at.is_(None))).one()
+        needs_action, needs_action_oldest = session.execute(select(
+            func.count(), func.min(CrmPageQueue.queued_at),
+        ).where(CrmPageQueue.completed_at.is_(None),
+                CrmPageQueue.attempts >= MAX_REVISION_ATTEMPTS)).one()
         reasons = {reason: count for reason, count in session.execute(select(
             CrmPageQueue.last_reason, func.count(),
         ).where(CrmPageQueue.completed_at.is_(None),
+                CrmPageQueue.attempts < MAX_REVISION_ATTEMPTS,
+                CrmPageQueue.last_reason.isnot(None))
+         .group_by(CrmPageQueue.last_reason)).all()}
+        needs_action_reasons = {reason: count for reason, count in session.execute(select(
+            CrmPageQueue.last_reason, func.count(),
+        ).where(CrmPageQueue.completed_at.is_(None),
+                CrmPageQueue.attempts >= MAX_REVISION_ATTEMPTS,
                 CrmPageQueue.last_reason.isnot(None))
          .group_by(CrmPageQueue.last_reason)).all()}
         state = session.get(CrmScanState, 1)
         delta = session.get(CrmScanState, DELTA_STATE_ID)
     lag = int((now - _aware(oldest)).total_seconds()) if oldest else 0
+    needs_action_lag = int((now - _aware(needs_action_oldest)).total_seconds()) if needs_action_oldest else 0
     reference = (state.watermark or state.window_end) if state else None
     watermark_lag = int((now - _aware(reference)).total_seconds()) if reference else None
     delta_reference = (delta.watermark or delta.window_end) if delta else None
     delta_lag = int((now - _aware(delta_reference)).total_seconds()) if delta_reference else None
-    return {"depth": depth, "oldest_queue_lag_seconds": lag,
+    return {"depth": depth, "actionable_depth": depth - needs_action,
+            "needs_action": needs_action,
+            "needs_action_oldest_lag_seconds": needs_action_lag,
+            "needs_action_reasons": needs_action_reasons,
+            "oldest_queue_lag_seconds": lag,
             "scan_watermark_lag_seconds": watermark_lag,
             "delta_watermark_lag_seconds": delta_lag, "retry_reasons": reasons}
 
