@@ -23,6 +23,7 @@ class SoundOperatorLoginState(Base):
     window_started_at = Column(BigInteger, nullable=False, default=0)
     failed_count = Column(Integer, nullable=False, default=0)
     locked_until = Column(BigInteger, nullable=False, default=0)
+    __table_args__ = (Index("ix_sound_operator_login_state_window", "window_started_at"),)
 
 
 class Campaign(Base):

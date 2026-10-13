@@ -705,3 +705,12 @@ area: [backend], [testing], [review]
 
 Independent review found that ten anonymous wrong passwords locked every new operator out for five minutes. The draft now keys the row-locked ten-failure/five-minute counter to a verified client source, hashing the address with the stable session secret instead of storing it raw. Production source resolution requires an explicitly trusted proxy peer and the edge-appended forwarded chain; missing or untrusted identity fails login closed rather than accepting spoofable headers. The full Python suite passed 1089 tests using disposable PostgreSQL; focused concurrency tests prove same-source attempts share the limit, while a different source can log in after the hostile source locks itself. Existing password, CSRF, signed session, and server-key gates remain. This is unpushed; Railway production still runs commit 3f09d0d, and operator password, Hub write key, Content Lab key, and edge source trust are not provisioned. Release requires independent review, edge/secret authority, table-shape rollout, and live safe-read proof.
 _________________________________________________________________________________
+_________________________________________________________________________________
+time: [04:45am] [10-13-26] EDT
+agent: [codex desktop] [gpt-6.1-sol]
+worktree: [codex/pr273-login-lockout; /private/tmp/hub-pr273-login-lockout]
+type: [bug report]: bound retained Sound Assignments login-source state in draft PR #273
+area: [backend], [testing], [review]
+
+Independent review found that source-scoped login throttling permanently retained one row per verified source. The existing single scheduler owner now removes rows inactive for 24 hours in indexed, 500-row PostgreSQL batches under a 10-second tick budget; active lockouts and concurrently locked login rows survive. The login request path does no cleanup work. Disposable PostgreSQL tests cover 501-row batching, expiry, an active lock and a concurrent worker refreshing a locked row. This is an unpushed draft repair; edge source trust, secrets, all-worker rollout and safe rollback still hold release. Cleanup needs the scheduler enabled, and edge controls remain necessary when unique-source traffic exceeds cleanup throughput.
+_________________________________________________________________________________

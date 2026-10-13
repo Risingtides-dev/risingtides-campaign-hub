@@ -19,6 +19,7 @@ from urllib.parse import urlencode
 
 import requests
 from flask import Blueprint, current_app, jsonify, request, session
+from sqlalchemy import text
 
 from campaign_manager import db
 from campaign_manager.models import SoundOperatorLoginState
@@ -144,6 +145,34 @@ def _check_operator_login(password: str) -> str:
     except Exception:
         # A broken or unavailable counter cannot turn into unlimited guesses.
         return "unavailable"
+
+
+def prune_sound_operator_login_state(*, now: int | None = None, max_seconds: float = 10.0) -> int:
+    """Scheduled, time-bounded cleanup of inactive source rows. Never runs on login."""
+    if db._SessionLocal is None or getattr(getattr(db._engine, "dialect", None), "name", "") != "postgresql":
+        return 0
+    current = int(time.time()) if now is None else now
+    cutoff = current - 86400
+    deadline = time.monotonic() + max_seconds
+    removed = 0
+    # Lock candidates before deleting so a concurrent login cannot refresh a
+    # selected row between its age check and deletion. Skip active row locks.
+    statement = text("""
+        DELETE FROM sound_operator_login_state
+        WHERE source_key IN (
+            SELECT source_key FROM sound_operator_login_state
+            WHERE window_started_at < :cutoff AND locked_until <= :now
+            ORDER BY window_started_at, source_key
+            LIMIT 500 FOR UPDATE SKIP LOCKED
+        )
+    """)
+    while time.monotonic() < deadline:
+        with db._SessionLocal.begin() as transaction:
+            count = transaction.execute(statement, {"cutoff": cutoff, "now": current}).rowcount
+        removed += count
+        if count < 500:
+            break
+    return removed
 
 
 @sound_assignments_bp.post("/login")

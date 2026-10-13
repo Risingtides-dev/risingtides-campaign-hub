@@ -16,6 +16,7 @@ from sqlalchemy.orm import sessionmaker
 
 from campaign_manager import db
 from campaign_manager.models import SoundOperatorLoginState
+from campaign_manager.blueprints.sound_assignments import prune_sound_operator_login_state
 
 
 @pytest.fixture
@@ -123,3 +124,50 @@ def test_concurrent_workers_share_limit_without_lost_attempts(app, postgres_logi
     assert attempt("synthetic-operator-password-0123456789") == 200
     with postgres_login_state.connect() as conn:
         assert conn.execute(text("SELECT max(failed_count) FROM sound_operator_login_state")).scalar_one() == 0
+
+
+def test_login_janitor_prunes_only_inactive_rows_in_bounded_batches(postgres_login_state):
+    now = 100_000
+    with db._SessionLocal.begin() as transaction:
+        transaction.add_all([
+            SoundOperatorLoginState(source_key=f"stale-{i:04}", window_started_at=now - 90_000,
+                                    failed_count=1, locked_until=0)
+            for i in range(501)
+        ])
+        transaction.add_all([
+            SoundOperatorLoginState(source_key="recent", window_started_at=now - 60,
+                                    failed_count=1, locked_until=0),
+            SoundOperatorLoginState(source_key="active-lock", window_started_at=now - 90_000,
+                                    failed_count=10, locked_until=now + 60),
+        ])
+    assert prune_sound_operator_login_state(now=now) == 501
+    with db._SessionLocal.begin() as transaction:
+        assert {row.source_key for row in transaction.query(SoundOperatorLoginState).all()} == {
+            "recent", "active-lock"
+        }
+    assert prune_sound_operator_login_state(now=now + 61) == 1
+    assert prune_sound_operator_login_state(now=now + 86_400) == 1
+
+
+def test_login_janitor_skips_row_locked_by_another_worker(postgres_login_state):
+    now = 100_000
+    with db._SessionLocal.begin() as transaction:
+        transaction.add(SoundOperatorLoginState(source_key="locked-by-login",
+                                                window_started_at=now - 90_000,
+                                                failed_count=1, locked_until=0))
+        transaction.add(SoundOperatorLoginState(source_key="free-stale",
+                                                window_started_at=now - 90_000,
+                                                failed_count=1, locked_until=0))
+    with db._SessionLocal.begin() as login_transaction:
+        state = login_transaction.get(SoundOperatorLoginState, "locked-by-login", with_for_update=True)
+        assert state is not None
+        with ThreadPoolExecutor(max_workers=1) as workers:
+            future = workers.submit(prune_sound_operator_login_state, now=now)
+            assert future.result(timeout=5) == 1
+        # A concurrent login refresh remains safe while cleanup skips its row.
+        state.window_started_at = now
+        state.failed_count += 1
+    with db._SessionLocal.begin() as transaction:
+        assert transaction.get(SoundOperatorLoginState, "locked-by-login").failed_count == 2
+        assert transaction.get(SoundOperatorLoginState, "free-stale") is None
+    assert prune_sound_operator_login_state(now=now) == 0
