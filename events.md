@@ -639,3 +639,13 @@ area: [backend], [testing]
 
 On the current e941851 main baseline, 30 fallback campaigns with preloaded videos produced 30 latest-scrape-log SELECTs; one produced one. The list stats path now lazily fetches each campaign's maximum last_scrape in one grouped query only if fallback submissions need a timestamp. A 1-versus-30 SQL listener regression measures one SELECT in both cases, and tests cover latest-log parity, absent logs, no-submission lazy behavior, and DB read failure preserving fallback totals. Focused campaign stats, campaigns blueprint, and DB tests passed 151; full Python suite passed 1061 with eight opt-in PostgreSQL tests skipped because TEST_POSTGRES_DATABASE_URL is unset. This isolated candidate has not been pushed, reviewed independently, merged, deployed, or live-verified.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [12:27am] [13-10-26] EDT
+agent: [codex] [gpt-6.1-sol] [system reliability release owner]
+worktree: [codex/hub-cron-write-gate-20261013] /Users/risingtidesdev/dev/worktrees/hub-cron-write-gate-20261013
+type: [bug report]: restrict manual cron trigger before expensive dispatch
+area: [backend], [testing], [review], [writing]
+
+Current main allowed anonymous POST /api/cron/trigger to create a queued receipt and dispatch campaign_refresh or internal_scrape. The isolated candidate requires the existing server-only HUB_WRITE_KEY in X-Hub-Write-Key before parsing or side effects; missing configuration fails 503 and missing or incorrect credentials fail 401. Focused scheduler tests passed 38 with three opt-in PostgreSQL cases skipped. The root contract and security handoff were updated; the browser trigger helper lacks a server-side credential path, production key and caller inventory remain unverified, and this candidate is held for independent final-head review and release validation. No live trigger, scrape, publication, merge, or deployment was performed.
+_________________________________________________________________________________

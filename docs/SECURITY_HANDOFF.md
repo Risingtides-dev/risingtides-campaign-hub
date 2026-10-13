@@ -32,11 +32,11 @@ These were the *standalone-dangerous* endpoints — each patched narrowly withou
 - When `APP_API_KEY` IS set: every `/api/*` request needs the key via `X-API-Key` header (or `?api_key=`), constant-time compared. Exempt: `/health`, the SPA + non-`/api/` static, and `/api/share/` (the intentional public surface — CAMP-97).
 - Verified both states (OFF: no change; ON: 401 without key, 200 with, exemptions correct).
 
-**This single gate neutralizes ALL the remaining exposures below at once** — which is why they were deliberately NOT patched one-by-one (per-endpoint patches wouldn't even cover the IDOR on the detail endpoint).
+**The umbrella gate remains the coordinated fix for the other exposed API routes below.** A separate, route-specific manual cron trigger gate is staged because an anonymous call can start costly work while the broader auth decision remains held. It uses the server-only `HUB_WRITE_KEY` and leaves other routes unchanged. Do not put that key in the browser; provision an authorized server-side caller and verify the production key before deploying the cron patch. If PR #185 is later enabled, the caller will need both credentials.
 
-### Remaining exposures the gate covers (do NOT need individual patches)
+### Remaining exposures for the umbrella gate
 - **IDOR — `GET /api/campaign/<slug>`**: returns budget, every creator's `total_rate`, `per_post_rate`, **`paypal_email`**, paid status. Slug is the only "credential" and slugs are guessable (artist-song). Anyone can harvest creator PayPal emails + negotiated rates across the whole campaign book. *(The dedicated client report `campaign_report.py` correctly strips all this — the problem is the full-detail endpoint being reachable.)*
-- **`POST /api/cron/trigger`**: remains unauthenticated and can launch scrapes (cost/DoS). The retired `/api/cron/toggle` returns 410 without scheduler mutation; verify the deployed revision before treating that exposure as closed in production.
+- **`POST /api/cron/trigger` rollout**: current production exposure remains open until the staged route-specific `HUB_WRITE_KEY` gate is deployed and verified. Without that key, manual trigger requests fail closed with 503; a missing or incorrect header receives 401. The existing browser helper has no secure credential path. The retired `/api/cron/toggle` returns 410 without scheduler mutation; verify deployed revisions before calling either exposure closed.
 - **`POST /api/webhooks/notion`**: unauthenticated campaign creation (insert-only, 409s on dup, but anyone can inject).
 - **`GET /api/campaign/<slug>/cobrand/raw`**: unauthenticated debug hatch dumping the full Cobrand promotion object.
 

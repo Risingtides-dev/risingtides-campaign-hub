@@ -279,6 +279,7 @@ def test_cron_api_returns_accepted_receipt_not_execution_claim(monkeypatch):
 
     app = Flask(__name__)
     app.register_blueprint(cron.cron_bp)
+    monkeypatch.setenv("HUB_WRITE_KEY", "test-cron-key")
     monkeypatch.setattr(local_agent, "is_configured", lambda: False)
     monkeypatch.setattr(db, "create_cron_log", lambda _job, status: 71 if status == "queued" else None)
     monkeypatch.setattr(
@@ -296,13 +297,50 @@ def test_cron_api_returns_accepted_receipt_not_execution_claim(monkeypatch):
 
     monkeypatch.setattr(cron.threading, "Thread", Thread)
     client = app.test_client()
-    response = client.post("/api/cron/trigger", json={"job_type": "internal_scrape"})
+    response = client.post("/api/cron/trigger", json={"job_type": "internal_scrape"}, headers={"X-Hub-Write-Key": "test-cron-key"})
     assert response.status_code == 202
     assert response.get_json() == {
         "status": "accepted", "job_type": "internal_scrape", "log_id": 71
     }
     assert launched == [(cron.trigger_job, ("internal_scrape", 71), True)]
     assert client.get("/api/cron/logs/71").get_json()["status"] == "queued"
+
+
+@pytest.mark.parametrize("configured_key,headers,expected_status,expected_code", [
+    (None, {"X-Hub-Write-Key": "test-cron-key"}, 503, "cron_auth_unconfigured"),
+    ("   ", {"X-Hub-Write-Key": "test-cron-key"}, 503, "cron_auth_unconfigured"),
+    ("test-cron-key", {}, 401, "unauthorized"),
+    ("test-cron-key", {"X-Hub-Write-Key": "wrong"}, 401, "unauthorized"),
+])
+@pytest.mark.parametrize("job_type", ["campaign_refresh", "internal_scrape"])
+def test_cron_api_denies_before_parsing_or_side_effects(
+    monkeypatch, configured_key, headers, expected_status, expected_code, job_type
+):
+    from flask import Flask, Request
+    from campaign_manager.blueprints import cron
+    from campaign_manager.services import local_agent
+
+    app = Flask(__name__)
+    app.register_blueprint(cron.cron_bp)
+    if configured_key is None:
+        monkeypatch.delenv("HUB_WRITE_KEY", raising=False)
+    else:
+        monkeypatch.setenv("HUB_WRITE_KEY", configured_key)
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("denied request must not parse JSON or perform a side effect")
+
+    monkeypatch.setattr(Request, "get_json", forbidden)
+    monkeypatch.setattr(db, "create_cron_log", forbidden)
+    monkeypatch.setattr(local_agent, "is_configured", forbidden)
+    monkeypatch.setattr(local_agent, "dispatch_scrape", forbidden)
+    monkeypatch.setattr(cron.threading, "Thread", forbidden)
+    response = app.test_client().post(
+        "/api/cron/trigger", data='{"job_type": "' + job_type + '"}',
+        content_type="application/json", headers=headers,
+    )
+    assert response.status_code == expected_status
+    assert response.json["code"] == expected_code
 
 
 def test_cron_api_thread_start_failure_closes_receipt(monkeypatch):
@@ -312,6 +350,7 @@ def test_cron_api_thread_start_failure_closes_receipt(monkeypatch):
 
     app = Flask(__name__)
     app.register_blueprint(cron.cron_bp)
+    monkeypatch.setenv("HUB_WRITE_KEY", "test-cron-key")
     monkeypatch.setattr(local_agent, "is_configured", lambda: False)
     monkeypatch.setattr(db, "create_cron_log", lambda _job, status: 72)
     transitions = []
@@ -329,7 +368,7 @@ def test_cron_api_thread_start_failure_closes_receipt(monkeypatch):
 
     monkeypatch.setattr(cron.threading, "Thread", Thread)
     response = app.test_client().post(
-        "/api/cron/trigger", json={"job_type": "internal_scrape"}
+        "/api/cron/trigger", json={"job_type": "internal_scrape"}, headers={"X-Hub-Write-Key": "test-cron-key"}
     )
     assert response.status_code == 503
     assert response.get_json()["log_id"] == 72
@@ -403,6 +442,7 @@ def test_local_delegation_has_durable_receipt(monkeypatch, dispatch, state, code
 
     app = Flask(__name__)
     app.register_blueprint(cron.cron_bp)
+    monkeypatch.setenv("HUB_WRITE_KEY", "test-cron-key")
     monkeypatch.setattr(local_agent, "is_configured", lambda: True)
     monkeypatch.setattr(local_agent, "dispatch_scrape", lambda _scope: dispatch)
     monkeypatch.setattr(db, "create_cron_log",
@@ -411,7 +451,7 @@ def test_local_delegation_has_durable_receipt(monkeypatch, dispatch, state, code
     monkeypatch.setattr(db, "transition_cron_log",
                         lambda *args: transitions.append(args) or True)
     response = app.test_client().post(
-        "/api/cron/trigger", json={"job_type": "campaign_refresh"}
+        "/api/cron/trigger", json={"job_type": "campaign_refresh"}, headers={"X-Hub-Write-Key": "test-cron-key"}
     )
     assert response.status_code == code
     assert response.get_json()["log_id"] == 91
@@ -426,13 +466,14 @@ def test_local_delegation_refuses_post_without_receipt(monkeypatch):
 
     app = Flask(__name__)
     app.register_blueprint(cron.cron_bp)
+    monkeypatch.setenv("HUB_WRITE_KEY", "test-cron-key")
     monkeypatch.setattr(local_agent, "is_configured", lambda: True)
     monkeypatch.setattr(db, "create_cron_log",
                         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("DB down")))
     monkeypatch.setattr(local_agent, "dispatch_scrape",
                         lambda *_args: pytest.fail("must not send POST"))
     response = app.test_client().post(
-        "/api/cron/trigger", json={"job_type": "campaign_refresh"}
+        "/api/cron/trigger", json={"job_type": "campaign_refresh"}, headers={"X-Hub-Write-Key": "test-cron-key"}
     )
     assert response.status_code == 503
 
@@ -571,6 +612,7 @@ def test_crash_after_node_post_leaves_dispatching_receipt(monkeypatch):
 
     app = Flask(__name__)
     app.register_blueprint(cron.cron_bp)
+    monkeypatch.setenv("HUB_WRITE_KEY", "test-cron-key")
     monkeypatch.setattr(local_agent, "is_configured", lambda: True)
     monkeypatch.setattr(db, "create_cron_log", lambda _job, status: 97)
     transitions = []
@@ -583,7 +625,7 @@ def test_crash_after_node_post_leaves_dispatching_receipt(monkeypatch):
 
     monkeypatch.setattr(local_agent, "dispatch_scrape", crash_after_post)
     with app.test_request_context("/api/cron/trigger", method="POST",
-                                  json={"job_type": "campaign_refresh"}):
+                                  json={"job_type": "campaign_refresh"}, headers={"X-Hub-Write-Key": "test-cron-key"}):
         with pytest.raises(SystemExit, match="worker recycled"):
             cron.cron_trigger()
     assert transitions == [(97, "queued", "dispatching")]
@@ -596,6 +638,7 @@ def test_local_dispatch_reservation_failure_never_posts(monkeypatch):
 
     app = Flask(__name__)
     app.register_blueprint(cron.cron_bp)
+    monkeypatch.setenv("HUB_WRITE_KEY", "test-cron-key")
     monkeypatch.setattr(local_agent, "is_configured", lambda: True)
     monkeypatch.setattr(db, "create_cron_log", lambda _job, status: 98)
     monkeypatch.setattr(db, "transition_cron_log",
@@ -603,7 +646,7 @@ def test_local_dispatch_reservation_failure_never_posts(monkeypatch):
     monkeypatch.setattr(local_agent, "dispatch_scrape",
                         lambda *_args: pytest.fail("must not POST without durable reservation"))
     response = app.test_client().post(
-        "/api/cron/trigger", json={"job_type": "campaign_refresh"}
+        "/api/cron/trigger", json={"job_type": "campaign_refresh"}, headers={"X-Hub-Write-Key": "test-cron-key"}
     )
     assert response.status_code == 503
     assert response.get_json()["log_id"] == 98
