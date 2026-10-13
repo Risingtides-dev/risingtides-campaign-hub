@@ -25,6 +25,7 @@ FULL_SCAN_PAGES_PER_TICK = 8
 DELTA_STATE_ID = 2
 MAX_WORK_PER_TICK = 100
 MAX_REVISION_ATTEMPTS = 8
+NEEDS_ACTION_REASONS = ("malformed_client_row", "slug_conflict")
 TICK_SECONDS = 50
 SCAN_BUDGET_SECONDS = 15
 PROPERTY_BUDGET_SECONDS = 20
@@ -232,13 +233,17 @@ def scan(*, deadline, state_id=1, max_pages=MAX_SCAN_PAGES_PER_TICK):
     return {"scan_pages": pages, "enqueued_candidates": count}
 
 
+def _needs_action_predicate():
+    return ((CrmPageQueue.attempts >= MAX_REVISION_ATTEMPTS) &
+            func.coalesce(CrmPageQueue.last_reason, "").in_(NEEDS_ACTION_REASONS))
+
+
 def _claim():
     now = _utcnow()
     with db._SessionLocal.begin() as session:
         row = session.execute(select(CrmPageQueue).where(
             CrmPageQueue.completed_at.is_(None),
-            CrmPageQueue.attempts < MAX_REVISION_ATTEMPTS,
-            CrmPageQueue.due_at <= now,
+            ~_needs_action_predicate(), CrmPageQueue.due_at <= now,
             (CrmPageQueue.lease_until.is_(None) | (CrmPageQueue.lease_until <= now)),
         ).order_by(CrmPageQueue.due_at, CrmPageQueue.queued_at)
           .limit(1).with_for_update(skip_locked=True)).scalar_one_or_none()
@@ -278,9 +283,12 @@ def _finish(claim, *, reason=None, retry_after=1):
             row.completed_at = now
             row.last_reason = None
         else:
+            reason_code = reason[:40]
+            if row.last_reason != reason_code:
+                row.attempts = 0
             row.attempts += 1
-            row.last_reason = reason[:40]
-            if row.attempts >= MAX_REVISION_ATTEMPTS:
+            row.last_reason = reason_code
+            if reason_code in NEEDS_ACTION_REASONS and row.attempts >= MAX_REVISION_ATTEMPTS:
                 # Hold this exact source revision for operator action. A newer
                 # edit resets attempts and reopens the same durable queue row.
                 row.due_at = now
@@ -420,17 +428,17 @@ def metrics():
         needs_action, needs_action_oldest = session.execute(select(
             func.count(), func.min(CrmPageQueue.queued_at),
         ).where(CrmPageQueue.completed_at.is_(None),
-                CrmPageQueue.attempts >= MAX_REVISION_ATTEMPTS)).one()
+                _needs_action_predicate())).one()
         reasons = {reason: count for reason, count in session.execute(select(
             CrmPageQueue.last_reason, func.count(),
         ).where(CrmPageQueue.completed_at.is_(None),
-                CrmPageQueue.attempts < MAX_REVISION_ATTEMPTS,
+                ~_needs_action_predicate(),
                 CrmPageQueue.last_reason.isnot(None))
          .group_by(CrmPageQueue.last_reason)).all()}
         needs_action_reasons = {reason: count for reason, count in session.execute(select(
             CrmPageQueue.last_reason, func.count(),
         ).where(CrmPageQueue.completed_at.is_(None),
-                CrmPageQueue.attempts >= MAX_REVISION_ATTEMPTS,
+                _needs_action_predicate(),
                 CrmPageQueue.last_reason.isnot(None))
          .group_by(CrmPageQueue.last_reason)).all()}
         state = session.get(CrmScanState, 1)

@@ -730,3 +730,12 @@ area: [backend], [testing], [writing]
 
 The durable CRM queue could reschedule an unchanged malformed Client row or slug conflict forever, causing repeated source reads and obscuring required operator action. This repair caps claims at eight failed attempts for one source edit, keeps the row uncompleted with its last reason, and reports separate actionable and needs-action counts, age and reasons. A newer exact source edit resets the attempt budget and reopens the same page ID; unchanged audit repeats cannot reopen it. Focused SQLite and disposable PostgreSQL tests cover held rows, corrected revisions, peer progress and the existing queue contracts. No production Notion call, campaign creation, push, merge or deployment occurred. The draft PR still requires independent review, hosted checks, release authority and live backlog evidence.
 _________________________________________________________________________________
+_________________________________________________________________________________
+time: [04:19am] [10-13-26] EDT; actual UTC: 2026-10-13T08:18:59Z
+agent: [Codex desktop] [GPT-6.1] [focused builder]
+worktree: [codex/pr258-bounded-recovery] /private/tmp/hub-pr258-bounded
+type: [bug report]: preserve recovery from transient CRM failures
+area: [backend], [testing], [writing]
+
+Independent review found the initial eight-attempt cap also held unchanged pages after repeated Notion 429/529 or processing errors, preventing delivery when the source recovered. The hold now applies only to eight consecutive failures of the same deterministic malformed Client or slug-conflict reason for one source edit. A change in failure reason starts a fresh deterministic count; transient failures keep the existing bounded delay and full Retry-After and remain claimable after recovery. Regression tests cover nine transient failures followed by successful exact-page processing, long Retry-After, mixed reasons, corrected edits and healthy peers. No production CRM access, push, merge or deployment occurred; independent exact-head review and live evidence remain required.
+_________________________________________________________________________________

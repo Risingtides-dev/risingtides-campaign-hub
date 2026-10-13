@@ -626,3 +626,52 @@ def test_needs_action_row_does_not_block_healthy_peer(db):
     metrics = crm_queue.metrics()
     assert metrics["depth"] == 1 and metrics["needs_action"] == 1
     assert metrics["actionable_depth"] == 0
+
+
+@pytest.mark.parametrize("reason", ["rate_limited", "processing_error"])
+def test_transient_failures_remain_claimable_after_eight_and_recover(db, reason):
+    edited = datetime.now(timezone.utc) - timedelta(minutes=1)
+    with db._SessionLocal.begin() as session:
+        session.add(CrmPageQueue(page_id="transient", edited_at=edited,
+                                 queued_at=edited, due_at=edited))
+    for _ in range(crm_queue.MAX_REVISION_ATTEMPTS + 1):
+        claim = crm_queue._claim()
+        assert claim and claim[0] == "transient"
+        assert crm_queue._finish(claim, reason=reason,
+                                 retry_after=7200 if reason == "rate_limited" else 1)
+        with db._SessionLocal.begin() as session:
+            row = session.get(CrmPageQueue, "transient")
+            assert row.completed_at is None
+            if reason == "rate_limited":
+                assert crm_queue._aware(row.due_at) > datetime.now(timezone.utc) + timedelta(seconds=7100)
+            row.due_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    state = crm_queue.metrics()
+    assert state["needs_action"] == 0 and state["actionable_depth"] == 1
+    assert state["retry_reasons"] == {reason: 1}
+    with patch.object(crm_queue, "_rate_slot", return_value=True), patch.object(
+            notion, "fetch_crm_page_for_queue", return_value=_page("transient")) as fetch:
+        assert crm_queue.work(deadline=time.monotonic() + 5) == {"handled": 1, "failed": 0}
+    fetch.assert_called_once_with("transient")
+    assert db.get_campaign("transient") is not None
+    assert crm_queue.metrics()["depth"] == 0
+
+
+def test_transient_error_does_not_spend_deterministic_reason_budget(db):
+    edited = datetime.now(timezone.utc) - timedelta(minutes=1)
+    with db._SessionLocal.begin() as session:
+        session.add(CrmPageQueue(page_id="mixed", edited_at=edited, queued_at=edited, due_at=edited))
+    for _ in range(crm_queue.MAX_REVISION_ATTEMPTS - 1):
+        claim = crm_queue._claim()
+        assert crm_queue._finish(claim, reason="malformed_client_row")
+        with db._SessionLocal.begin() as session:
+            session.get(CrmPageQueue, "mixed").due_at = edited
+    claim = crm_queue._claim()
+    assert crm_queue._finish(claim, reason="processing_error")
+    with db._SessionLocal.begin() as session:
+        session.get(CrmPageQueue, "mixed").due_at = edited
+    claim = crm_queue._claim()
+    assert crm_queue._finish(claim, reason="malformed_client_row")
+    with db._SessionLocal() as session:
+        row = session.get(CrmPageQueue, "mixed")
+        assert row.attempts == 1
+    assert crm_queue.metrics()["needs_action"] == 0
