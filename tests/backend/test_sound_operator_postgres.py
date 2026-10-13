@@ -57,10 +57,11 @@ def postgres_login_state(app, monkeypatch):
 def test_concurrent_workers_share_limit_without_lost_attempts(app, postgres_login_state, monkeypatch):
     monkeypatch.setattr("campaign_manager.blueprints.sound_assignments.time.time", lambda: 1000)
 
-    def attempt(password="wrong"):
+    def attempt(password="wrong", source="198.51.100.10"):
         with app.test_client() as client:
             return client.post("/api/sound-assignments/login", json={"password": password},
-                               headers={"Origin": "http://localhost"}).status_code
+                               headers={"Origin": "http://localhost"},
+                               environ_overrides={"REMOTE_ADDR": source}).status_code
 
     for _ in range(8):
         assert attempt() == 401
@@ -111,10 +112,14 @@ def test_concurrent_workers_share_limit_without_lost_attempts(app, postgres_logi
         event.remove(postgres_login_state, "after_cursor_execute", after_execute)
 
     with postgres_login_state.connect() as conn:
-        assert conn.execute(text("SELECT failed_count FROM sound_operator_login_state WHERE id = 1")).scalar_one() == 10
+        assert conn.execute(text("SELECT max(failed_count) FROM sound_operator_login_state")).scalar_one() == 10
     assert attempt("synthetic-operator-password-0123456789") == 429
+    # A hostile source's concurrent failures never block a different verified source.
+    assert attempt("synthetic-operator-password-0123456789", source="203.0.113.20") == 200
+    with postgres_login_state.connect() as conn:
+        assert conn.execute(text("SELECT count(*) FROM sound_operator_login_state")).scalar_one() == 2
 
     monkeypatch.setattr("campaign_manager.blueprints.sound_assignments.time.time", lambda: 1301)
     assert attempt("synthetic-operator-password-0123456789") == 200
     with postgres_login_state.connect() as conn:
-        assert conn.execute(text("SELECT failed_count FROM sound_operator_login_state WHERE id = 1")).scalar_one() == 0
+        assert conn.execute(text("SELECT max(failed_count) FROM sound_operator_login_state")).scalar_one() == 0

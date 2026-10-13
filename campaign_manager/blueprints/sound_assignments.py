@@ -8,7 +8,9 @@ Single-origin frontend → no CORS, no exposing the lab URL in the bundle.
 """
 from __future__ import annotations
 
+import hashlib
 import hmac
+import ipaddress
 import os
 import secrets
 import time
@@ -77,6 +79,37 @@ def require_operator_or_server_key():
             return jsonify({"error": "CSRF validation failed."}), 403
 
 
+def _operator_source_key() -> str | None:
+    """Use only the socket peer or a forwarded chain from a verified edge."""
+    try:
+        peer = ipaddress.ip_address(request.remote_addr or "")
+        if current_app.config.get("TESTING"):
+            client = peer
+        else:
+            configured = (os.environ.get("SOUND_OPERATOR_TRUSTED_PROXY_CIDRS") or "").strip()
+            if not configured:
+                return None
+            trusted = [ipaddress.ip_network(value.strip(), strict=False)
+                       for value in configured.split(",") if value.strip()]
+            if not trusted or not any(peer in network for network in trusted):
+                return None
+            chain = [ipaddress.ip_address(value.strip())
+                     for value in request.headers.get("X-Forwarded-For", "").split(",") if value.strip()]
+            if not chain or len(chain) > 16:
+                return None
+            client = next((address for address in reversed(chain)
+                           if not any(address in network for network in trusted)), None)
+            if client is None:
+                return None
+        # Stable across workers without storing raw client addresses in the DB.
+        secret = current_app.secret_key
+        if not isinstance(secret, str) or not secret.strip():
+            return None
+        return hmac.new(secret.encode(), client.packed, hashlib.sha256).hexdigest()
+    except ValueError:
+        return None
+
+
 def _check_operator_login(password: str) -> str:
     """Serialize attempts in PostgreSQL so all workers share one bounded lockout."""
     if db._SessionLocal is None or (
@@ -84,13 +117,16 @@ def _check_operator_login(password: str) -> str:
         and not current_app.config.get("TESTING")
     ):
         return "unavailable"
+    source_key = _operator_source_key()
+    if source_key is None:
+        return "unavailable"
     now = int(time.time())
     try:
         with db._SessionLocal.begin() as transaction:
             transaction.execute(db.dialect_insert(SoundOperatorLoginState.__table__).values(
-                id=1, window_started_at=now, failed_count=0, locked_until=0
-            ).on_conflict_do_nothing(index_elements=["id"]))
-            state = transaction.get(SoundOperatorLoginState, 1, with_for_update=True)
+                source_key=source_key, window_started_at=now, failed_count=0, locked_until=0
+            ).on_conflict_do_nothing(index_elements=["source_key"]))
+            state = transaction.get(SoundOperatorLoginState, source_key, with_for_update=True)
             if state.locked_until > now:
                 return "limited"
             if now - state.window_started_at >= 300:

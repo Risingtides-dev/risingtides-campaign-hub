@@ -631,6 +631,14 @@ Independent review found docs/SECURITY_HANDOFF.md still described the public cro
 _________________________________________________________________________________
 
 _________________________________________________________________________________
+time: [12:10pm] [10-12-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/hub-fallback-scrape-log-20261012] /Users/risingtidesdev/worktrees/hub-fallback-scrape-log-20261012
+type: [refactor]: batch campaign-list fallback scrape timestamps
+area: [backend], [testing]
+
+On the current e941851 main baseline, 30 fallback campaigns with preloaded videos produced 30 latest-scrape-log SELECTs; one produced one. The list stats path now lazily fetches each campaign's maximum last_scrape in one grouped query only if fallback submissions need a timestamp. A 1-versus-30 SQL listener regression measures one SELECT in both cases, and tests cover latest-log parity, absent logs, no-submission lazy behavior, and DB read failure preserving fallback totals. Focused campaign stats, campaigns blueprint, and DB tests passed 151; full Python suite passed 1061 with eight opt-in PostgreSQL tests skipped because TEST_POSTGRES_DATABASE_URL is unset. This isolated candidate has not been pushed, reviewed independently, merged, deployed, or live-verified.
+_________________________________________________________________________________
 time: [06:43pm] [10-11-26] EDT
 agent: [codex] [gpt-6.1-sol] [release owner]
 worktree: [codex/sound-proxy-auth-20261011] /Users/risingtidesdev/worktrees/hub-sound-proxy-auth-20261011
@@ -670,14 +678,6 @@ area: [testing], [review]
 Independent review found that simultaneous HTTP starts could pass without proving the database lock. The disposable regression now holds the first worker after PostgreSQL grants SELECT FOR UPDATE, waits for a second worker to reach that query, and proves the second cannot complete before the first commits. It then checks the durable threshold and expiry behavior. The runtime contract is unchanged; hosted PostgreSQL execution of this amended test remains required.
 _________________________________________________________________________________
 
-time: [12:10pm] [10-12-26] EDT
-agent: [codex] [gpt-6.1-sol] [focused builder]
-worktree: [codex/hub-fallback-scrape-log-20261012] /Users/risingtidesdev/worktrees/hub-fallback-scrape-log-20261012
-type: [refactor]: batch campaign-list fallback scrape timestamps
-area: [backend], [testing]
-
-On the current e941851 main baseline, 30 fallback campaigns with preloaded videos produced 30 latest-scrape-log SELECTs; one produced one. The list stats path now lazily fetches each campaign's maximum last_scrape in one grouped query only if fallback submissions need a timestamp. A 1-versus-30 SQL listener regression measures one SELECT in both cases, and tests cover latest-log parity, absent logs, no-submission lazy behavior, and DB read failure preserving fallback totals. Focused campaign stats, campaigns blueprint, and DB tests passed 151; full Python suite passed 1061 with eight opt-in PostgreSQL tests skipped because TEST_POSTGRES_DATABASE_URL is unset. This isolated candidate has not been pushed, reviewed independently, merged, deployed, or live-verified.
-_________________________________________________________________________________
 
 time: [03:15pm] [10-12-26] EDT
 agent: [codex] [gpt-6.1-sol] [release owner]
@@ -695,4 +695,13 @@ type: [bug report]: distinguish upstream Content Lab 401 from expired operator s
 area: [frontend], [review], [testing]
 
 Independent exact-head review found the browser cleared its operator session for every 401, including a Content Lab credential failure relayed by the proxy. The API client now expires only on the Hub gate's own Operator login required response, preserving the upstream error and CSRF for diagnosis. A regression checks both responses. Focused frontend tests passed 3, full frontend tests passed 173, and the production build passed. The backend tree was unchanged after its 1087-test PostgreSQL run. The draft remains subject to fresh final-head review and hosted checks, plus the existing production secret, ingress, database and rollback hold. No deployment or publication occurred.
+_________________________________________________________________________________
+_________________________________________________________________________________
+time: [04:35am] [10-13-26] EDT
+agent: [codex desktop] [gpt-6.1-sol]
+worktree: [codex/pr273-login-lockout; /private/tmp/hub-pr273-login-lockout]
+type: [bug report]: source-scoped Sound Assignments login limits
+area: [backend], [testing], [review]
+
+Independent review found that ten anonymous wrong passwords locked every new operator out for five minutes. The draft now keys the row-locked ten-failure/five-minute counter to a verified client source, hashing the address with the stable session secret instead of storing it raw. Production source resolution requires an explicitly trusted proxy peer and the edge-appended forwarded chain; missing or untrusted identity fails login closed rather than accepting spoofable headers. The full Python suite passed 1089 tests using disposable PostgreSQL; focused concurrency tests prove same-source attempts share the limit, while a different source can log in after the hostile source locks itself. Existing password, CSRF, signed session, and server-key gates remain. This is unpushed; Railway production still runs commit 3f09d0d, and operator password, Hub write key, Content Lab key, and edge source trust are not provisioned. Release requires independent review, edge/secret authority, table-shape rollout, and live safe-read proof.
 _________________________________________________________________________________

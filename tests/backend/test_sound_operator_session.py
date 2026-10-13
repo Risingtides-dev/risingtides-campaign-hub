@@ -83,6 +83,45 @@ def test_attempt_limit_is_shared_across_clients_and_recovers(app, monkeypatch):
         headers={"Origin": "http://localhost"}).status_code == 200
 
 
+def test_anonymous_failures_do_not_lock_out_another_verified_source(app, monkeypatch):
+    monkeypatch.setattr("campaign_manager.blueprints.sound_assignments.time.time", lambda: 1000)
+    attacker = app.test_client()
+    operator = app.test_client()
+    headers = {"Origin": "http://localhost"}
+    for _ in range(10):
+        attacker.post("/api/sound-assignments/login", json={"password": "wrong"},
+                      headers=headers, environ_overrides={"REMOTE_ADDR": "198.51.100.10"})
+    assert attacker.post("/api/sound-assignments/login",
+        json={"password": "synthetic-operator-password-0123456789"}, headers=headers,
+        environ_overrides={"REMOTE_ADDR": "198.51.100.10"}).status_code == 429
+    assert operator.post("/api/sound-assignments/login",
+        json={"password": "synthetic-operator-password-0123456789"}, headers=headers,
+        environ_overrides={"REMOTE_ADDR": "203.0.113.20"}).status_code == 200
+
+
+def test_forwarded_source_requires_verified_proxy_and_ignores_spoofed_prefix(app, monkeypatch):
+    from campaign_manager.blueprints.sound_assignments import _operator_source_key
+
+    app.config["TESTING"] = False
+    monkeypatch.setenv("SOUND_OPERATOR_TRUSTED_PROXY_CIDRS", "10.0.0.0/24")
+    with app.test_request_context("/", environ_base={"REMOTE_ADDR": "10.0.0.5"},
+        headers={"X-Forwarded-For": "198.51.100.9, 203.0.113.20"}):
+        source = _operator_source_key()
+    with app.test_request_context("/", environ_base={"REMOTE_ADDR": "10.0.0.5"},
+        headers={"X-Forwarded-For": "192.0.2.99, 203.0.113.20"}):
+        assert _operator_source_key() == source
+    with app.test_request_context("/", environ_base={"REMOTE_ADDR": "10.0.0.6"},
+        headers={"X-Forwarded-For": "203.0.113.21"}):
+        assert _operator_source_key() != source
+    with app.test_request_context("/", environ_base={"REMOTE_ADDR": "198.51.100.9"},
+        headers={"X-Forwarded-For": "203.0.113.20"}):
+        assert _operator_source_key() is None
+    monkeypatch.delenv("SOUND_OPERATOR_TRUSTED_PROXY_CIDRS")
+    with app.test_request_context("/", environ_base={"REMOTE_ADDR": "10.0.0.5"},
+        headers={"X-Forwarded-For": "203.0.113.20"}):
+        assert _operator_source_key() is None
+
+
 def test_authenticated_cookie_without_csrf_cannot_mutate(app, client, monkeypatch):
     with client.session_transaction() as state:
         state["sound_operator"] = True

@@ -16,10 +16,10 @@ class Base(DeclarativeBase):
 
 
 class SoundOperatorLoginState(Base):
-    """Cross-worker lockout for the one Sound Assignments operator realm."""
+    """Cross-worker failed-login limit scoped to a verified client source."""
 
     __tablename__ = "sound_operator_login_state"
-    id = Column(Integer, primary_key=True)
+    source_key = Column(String(64), primary_key=True)
     window_started_at = Column(BigInteger, nullable=False, default=0)
     failed_count = Column(Integer, nullable=False, default=0)
     locked_until = Column(BigInteger, nullable=False, default=0)
