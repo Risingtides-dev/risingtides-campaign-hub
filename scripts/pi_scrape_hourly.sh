@@ -197,7 +197,14 @@ if [[ ! -f "$EXPECTED_VENV/.complete" ]]; then
   [[ -L "$CURRENT_VENV" ]] || fail "runtime-not-provisioned" 1
   prior_venv="$($BASE_PY -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$CURRENT_VENV")" || fail "runtime-inspect" 1
   [[ "$prior_venv" == "$VENV_ROOT"/* && -f "$prior_venv/.complete" ]] || fail "runtime-not-provisioned" 1
-  [[ -f "$prior_venv/.source-at-provision" && "$(<"$prior_venv/.source-at-provision")" == "$source_sha" ]] || fail "runtime-source-changed" 1
+  prior_source=""
+  [[ -f "$prior_venv/.source-at-provision" ]] && prior_source=$(<"$prior_venv/.source-at-provision")
+  if [[ "$prior_source" != "$source_sha" ]]; then
+    attestation="$RUNTIME_ROOT/source-attestations/$source_sha.${prior_venv:t}"
+    [[ -f "$prior_venv/.scraper-runtime-freeze.txt" && -f "$attestation" ]] || fail "runtime-source-changed" 1
+    freeze_sha=$(shasum -a 256 "$prior_venv/.scraper-runtime-freeze.txt" | awk '{print $1}')
+    [[ "$(<"$attestation")" == "$freeze_sha" ]] || fail "runtime-source-changed" 1
+  fi
   free_kib=$(df -Pk "$RUNTIME_ROOT" | awk 'NR==2 {print $4}')
   [[ "$free_kib" == <-> && "$free_kib" -ge 8388608 ]] || fail "runtime-capacity" 1
   provision_timeout="${SCRAPER_REPROVISION_TIMEOUT_SECONDS:-600}"

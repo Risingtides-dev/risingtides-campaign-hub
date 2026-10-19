@@ -8,12 +8,17 @@ import shutil
 import subprocess
 import sys
 import time
+import hashlib
 from pathlib import Path
 
 import pytest
 
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
+pytestmark = pytest.mark.skipif(
+    sys.platform != "darwin" or shutil.which("zsh") is None,
+    reason="local scraper runner tests require macOS zsh and stat",
+)
 
 
 @pytest.mark.parametrize("script", ["pi_scrape_hourly.sh", "provision_scraper_runtime.sh"])
@@ -209,6 +214,121 @@ def test_held_lock_reuses_complete_runtime_at_exact_source(tmp_path: Path):
     assert refused_freeze.returncode != 0
     assert "prior scraper freeze is not a unique exact-version lock" in refused_freeze.stderr
     assert (runtime / "prod-venv").resolve() == venv
+
+
+def test_advanced_source_attests_reused_runtime_for_later_python_drift(tmp_path: Path):
+    python = os.environ.get("SCRAPER_TEST_PYTHON")
+    if not python or subprocess.run(
+        [python, "-m", "pip", "check"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    ).returncode != 0:
+        pytest.skip("needs a healthy Python with pip for the synthetic runtime")
+
+    source = tmp_path / "source"
+    (source / "scripts").mkdir(parents=True)
+    (source / "requirements.txt").write_text("", encoding="utf-8")
+    (source / "scripts" / "check_scraper_runtime.py").write_text(
+        "import os,sys\nprint(os.environ.get('SCRAPER_TEST_FINGERPRINT','old') if '--fingerprint' in sys.argv else '{}')\n",
+        encoding="utf-8",
+    )
+    for args in (
+        ["init", "-q", "--initial-branch=main"],
+        ["add", "."],
+        ["-c", "user.name=Test", "-c", "user.email=test@example.test", "commit", "-qm", "old source"],
+    ):
+        subprocess.run(["git", *args], cwd=source, check=True, capture_output=True)
+    old_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True).strip()
+    origin = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(origin)], cwd=source, check=True)
+    subprocess.run(["git", "push", "-q", "-u", "origin", "main"], cwd=source, check=True)
+
+    runtime = tmp_path / "output" / "local-scraper"
+    old = runtime / "prod-venvs" / "old"
+    (old / "bin").mkdir(parents=True)
+    (old / "bin" / "python").write_text(
+        f"#!/bin/sh\nexec {shlex.quote(python)} \"$@\"\n", encoding="utf-8"
+    )
+    (old / "bin" / "python").chmod(0o755)
+    (old / ".complete").touch()
+    (old / ".source-at-provision").write_text(old_sha + "\n", encoding="utf-8")
+    freeze = "\n".join(
+        sorted(subprocess.check_output([python, "-m", "pip", "freeze", "--all"], text=True).splitlines())
+    ) + "\n"
+    (old / ".scraper-runtime-freeze.txt").write_text(freeze, encoding="utf-8")
+    (runtime / "prod-venv").symlink_to(old)
+
+    (source / "README.md").write_text("new source, same requirements\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=source, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=Test", "-c", "user.email=test@example.test", "commit", "-qm", "new source"],
+        cwd=source,
+        check=True,
+    )
+    new_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True).strip()
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=source, check=True)
+    subprocess.run(["git", "reset", "-q", "--hard", old_sha], cwd=source, check=True)
+
+    env = os.environ | {
+        "SCRAPER_MAIN": str(tmp_path),
+        "SCRAPER_WORKTREE": str(source),
+        "SCRAPER_BASE_PYTHON": python,
+    }
+    attestation = runtime / "source-attestations" / f"{new_sha}.old"
+    (old / ".scraper-runtime-freeze.txt").write_text("requests>=2\n", encoding="utf-8")
+    invalid = subprocess.run(
+        ["zsh", str(SCRIPTS / "provision_scraper_runtime.sh")],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert invalid.returncode != 0
+    assert not attestation.exists()
+    assert (runtime / "prod-venv").resolve() == old
+    (old / ".scraper-runtime-freeze.txt").write_text(freeze, encoding="utf-8")
+    normal = subprocess.run(
+        ["zsh", str(SCRIPTS / "provision_scraper_runtime.sh")],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert normal.returncode == 0, normal.stderr
+    assert (runtime / "prod-venv").resolve() == old
+    assert (old / ".source-at-provision").read_text().strip() == old_sha
+    expected_hash = hashlib.sha256(freeze.encode()).hexdigest()
+    assert attestation.read_text().strip() == expected_hash
+
+    new = runtime / "prod-venvs" / "new"
+    shutil.copytree(old, new)
+    lock = runtime / "runner.lock"
+    lock.mkdir()
+    (lock / "pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
+    env.update(
+        SCRAPER_RUNNER_LOCK_OWNER_PID=str(os.getpid()),
+        SCRAPER_EXPECTED_SOURCE_SHA=new_sha,
+        SCRAPER_TEST_FINGERPRINT="new",
+    )
+    command = [
+        sys.executable,
+        "-c",
+        "import subprocess,sys; sys.exit(subprocess.call(sys.argv[1:]))",
+        str(SCRIPTS / "provision_scraper_runtime.sh"),
+        "--held-lock",
+    ]
+    attestation.write_text("0" * 64 + "\n", encoding="utf-8")
+    refused = subprocess.run(command, env=env, capture_output=True, text=True, timeout=30, check=False)
+    assert refused.returncode != 0
+    assert (runtime / "prod-venv").resolve() == old
+    attestation.write_text(expected_hash + "\n", encoding="utf-8")
+    recovered = subprocess.run(command, env=env, capture_output=True, text=True, timeout=30, check=False)
+    assert recovered.returncode == 0, recovered.stderr
+    assert (runtime / "prod-venv").resolve() == new
 
 
 @pytest.mark.parametrize(

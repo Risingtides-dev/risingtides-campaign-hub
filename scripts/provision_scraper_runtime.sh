@@ -84,8 +84,15 @@ if [[ $HELD_LOCK -eq 1 ]]; then
   [[ -L "$CURRENT_VENV" ]] || exit 1
   prior_venv="$($BASE_PY -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$CURRENT_VENV")"
   [[ "$prior_venv" == "$VENV_ROOT"/* && -f "$prior_venv/.complete" ]] || exit 1
-  [[ -f "$prior_venv/.source-at-provision" && "$(<"$prior_venv/.source-at-provision")" == "$expected" ]] || exit 1
   PRIOR_FREEZE="$prior_venv/.scraper-runtime-freeze.txt"
+  prior_source=""
+  [[ -f "$prior_venv/.source-at-provision" ]] && prior_source=$(<"$prior_venv/.source-at-provision")
+  if [[ "$prior_source" != "$expected" ]]; then
+    attestation="$RUNTIME_ROOT/source-attestations/$expected.${prior_venv:t}"
+    [[ -f "$PRIOR_FREEZE" && -f "$attestation" ]] || exit 1
+    freeze_sha=$(shasum -a 256 "$PRIOR_FREEZE" | awk '{print $1}')
+    [[ "$(<"$attestation")" == "$freeze_sha" ]] || exit 1
+  fi
   "$BASE_PY" - "$PRIOR_FREEZE" <<'PY_FREEZE'
 import pathlib, re, sys
 rows = pathlib.Path(sys.argv[1]).read_text().splitlines()
@@ -101,6 +108,7 @@ else
   git reset --hard origin/main --quiet
   git clean -fdq -e .venv -e output
 fi
+source_sha=$(git rev-parse HEAD)
 
 REQ="$WT/requirements.txt"
 GUARD="$WT/scripts/check_scraper_runtime.py"
@@ -161,10 +169,16 @@ else
   fi
 fi
 
-[[ $HELD_LOCK -eq 0 || ( "$(git rev-parse HEAD)" == "$expected" && -z "$(git status --porcelain --untracked-files=no)" ) ]] || {
-  print -u2 -- "production source moved before runtime activation"
+[[ "$(git rev-parse HEAD)" == "$source_sha" && -z "$(git status --porcelain --untracked-files=no)" ]] || {
+  print -u2 -- "production source moved before runtime activation or attestation"
   exit 1
 }
+attest_dir="$RUNTIME_ROOT/source-attestations"
+mkdir -p "$attest_dir"
+freeze_sha=$(shasum -a 256 "$VENV/.scraper-runtime-freeze.txt" | awk '{print $1}')
+attest_tmp="$attest_dir/.attest.$$"
+(umask 077; print -r -- "$freeze_sha" > "$attest_tmp")
+mv -f "$attest_tmp" "$attest_dir/$source_sha.$fingerprint"
 link_tmp="$RUNTIME_ROOT/.prod-venv-link.$$"
 rm -f "$link_tmp"
 ln -s "$VENV" "$link_tmp"
