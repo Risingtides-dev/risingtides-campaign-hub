@@ -7,6 +7,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -92,7 +93,10 @@ def test_held_lock_reuses_complete_runtime_at_exact_source(tmp_path: Path):
     (worktree / "scripts").mkdir(parents=True)
     (worktree / "requirements.txt").write_text("", encoding="utf-8")
     (worktree / "scripts" / "check_scraper_runtime.py").write_text(
-        "import sys\nprint('synthetic' if '--fingerprint' in sys.argv else '{}')\n",
+        "import os, pathlib, sys\n"
+        "if os.environ.get('SCRAPER_TEST_MUTATE_REQUIREMENTS') == '1':\n"
+        "    (pathlib.Path(__file__).parents[1]/'requirements.txt').write_text('changed\\n')\n"
+        "print('synthetic' if '--fingerprint' in sys.argv else '{}')\n",
         encoding="utf-8",
     )
     for args in (
@@ -166,6 +170,27 @@ def test_held_lock_reuses_complete_runtime_at_exact_source(tmp_path: Path):
     assert (runtime / "prod-venv").resolve() == venv
 
     env["SCRAPER_EXPECTED_SOURCE_SHA"] = source_sha
+    env["SCRAPER_TEST_MUTATE_REQUIREMENTS"] = "1"
+    refused_mutation = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import subprocess,sys; sys.exit(subprocess.call(sys.argv[1:]))",
+            str(SCRIPTS / "provision_scraper_runtime.sh"),
+            "--held-lock",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert refused_mutation.returncode != 0
+    assert "production source moved before runtime activation" in refused_mutation.stderr
+    assert (runtime / "prod-venv").resolve() == venv
+    env.pop("SCRAPER_TEST_MUTATE_REQUIREMENTS")
+    (worktree / "requirements.txt").write_text("", encoding="utf-8")
+
     (venv / ".scraper-runtime-freeze.txt").write_text("requests>=2\n", encoding="utf-8")
     refused_freeze = subprocess.run(
         [
@@ -192,6 +217,8 @@ def test_held_lock_reuses_complete_runtime_at_exact_source(tmp_path: Path):
         ("success", 0, "completed", 1),
         ("fail", 42, "runtime-reprovision", 0),
         ("timeout", 124, "runtime-reprovision-timeout", 0),
+        ("mutate", 1, "runtime-source-changed", 0),
+        ("orphan", 124, "runtime-reprovision-timeout", 0),
     ],
 )
 def test_wrapper_reconciles_missing_fingerprint_once_without_real_scrape(
@@ -214,13 +241,20 @@ def test_wrapper_reconciles_missing_fingerprint_once_without_real_scrape(
     )
     (scripts / "provision_scraper_runtime.sh").write_text(
         "#!/usr/bin/env python3\n"
-        "import os, pathlib, shutil, sys, time\n"
+        "import os, pathlib, shutil, subprocess, sys, time\n"
         "assert sys.argv[1:] == ['--held-lock']\n"
         "r=pathlib.Path(os.environ['SCRAPER_MAIN'])/'output/local-scraper'\n"
         "assert (r/'runner.lock/pid').read_text().strip() == os.environ['SCRAPER_RUNNER_LOCK_OWNER_PID']\n"
         "mode=os.environ['SCRAPER_TEST_PROVISION_MODE']\n"
         "if mode == 'fail': sys.exit(42)\n"
         "if mode == 'timeout': time.sleep(30); sys.exit(1)\n"
+        "if mode == 'mutate': (pathlib.Path(os.environ['SCRAPER_WORKTREE'])/'requirements.txt').write_text('changed\\n'); sys.exit(0)\n"
+        "if mode == 'orphan':\n"
+        "  child_code=\"import os, pathlib, signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); pathlib.Path(os.environ['SCRAPER_TEST_CHILD_PID']).write_text(str(os.getpid())); time.sleep(30)\"\n"
+        "  child=subprocess.Popen([sys.executable,'-c',child_code])\n"
+        "  pid=pathlib.Path(os.environ['SCRAPER_TEST_CHILD_PID'])\n"
+        "  while not pid.exists(): time.sleep(0.01)\n"
+        "  time.sleep(30)\n"
         "v=r/'prod-venvs/synthetic'\n"
         "(v/'bin').mkdir(parents=True)\n"
         "shutil.copy2(r/'prod-venvs/prior/bin/python', v/'bin/python')\n"
@@ -260,6 +294,7 @@ def test_wrapper_reconciles_missing_fingerprint_once_without_real_scrape(
     (prior / "bin" / "python").chmod(0o755)
     (runtime / "prod-venv").symlink_to(prior)
     marker = tmp_path / "synthetic-scrape-count"
+    child_pid_path = tmp_path / "orphan-child-pid"
     env = os.environ | {
         "SCRAPER_MAIN": str(tmp_path),
         "SCRAPER_WORKTREE": str(source),
@@ -267,6 +302,7 @@ def test_wrapper_reconciles_missing_fingerprint_once_without_real_scrape(
         "SCRAPER_REPROVISION_TIMEOUT_SECONDS": "1",
         "SCRAPER_TEST_PROVISION_MODE": mode,
         "SCRAPER_TEST_SCRAPE_MARKER": str(marker),
+        "SCRAPER_TEST_CHILD_PID": str(child_pid_path),
     }
     result = subprocess.run(
         ["zsh", str(scripts / "pi_scrape_hourly.sh")],
@@ -281,3 +317,16 @@ def test_wrapper_reconciles_missing_fingerprint_once_without_real_scrape(
     assert (int(marker.read_text()) if marker.exists() else 0) == scrapes
     assert (runtime / "prod-venv").resolve() == (runtime / "prod-venvs" / ("synthetic" if mode == "success" else "prior"))
     assert not (runtime / "runner.lock").exists()
+    if mode == "orphan":
+        child_pid = child_pid_path.read_text()
+        for _ in range(30):
+            state = subprocess.run(
+                ["ps", "-p", child_pid, "-o", "stat="],
+                capture_output=True,
+                text=True,
+                check=False,
+            ).stdout.strip()
+            if not state or state.startswith("Z"):
+                break
+            time.sleep(0.1)
+        assert not state or state.startswith("Z"), f"orphan child survived: {child_pid}"

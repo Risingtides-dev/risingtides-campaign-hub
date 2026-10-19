@@ -106,7 +106,7 @@ REQ="$WT/requirements.txt"
 GUARD="$WT/scripts/check_scraper_runtime.py"
 [[ -f "$REQ" && -f "$GUARD" ]] || { print -u2 -- "deployed runtime guard is missing"; exit 1; }
 
-[[ $HELD_LOCK -eq 0 || "$(git rev-parse HEAD)" == "$expected" ]] || {
+[[ $HELD_LOCK -eq 0 || ( "$(git rev-parse HEAD)" == "$expected" && -z "$(git status --porcelain --untracked-files=no)" ) ]] || {
   print -u2 -- "production source moved before runtime fingerprint"
   exit 1
 }
@@ -161,7 +161,7 @@ else
   fi
 fi
 
-[[ $HELD_LOCK -eq 0 || "$(git rev-parse HEAD)" == "$expected" ]] || {
+[[ $HELD_LOCK -eq 0 || ( "$(git rev-parse HEAD)" == "$expected" && -z "$(git status --porcelain --untracked-files=no)" ) ]] || {
   print -u2 -- "production source moved before runtime activation"
   exit 1
 }

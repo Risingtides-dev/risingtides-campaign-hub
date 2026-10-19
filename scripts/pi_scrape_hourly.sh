@@ -55,6 +55,29 @@ import os
 import signal
 import subprocess
 import sys
+import time
+
+
+def live_group_members(pgid):
+    try:
+        output = subprocess.run(
+            ['ps', '-axo', 'pid=,pgid=,stat='],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=True,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    members = []
+    for row in output.splitlines():
+        fields = row.split()
+        if len(fields) >= 3 and fields[1].isdigit() and int(fields[1]) == pgid:
+            if not fields[2].startswith('Z'):
+                if not fields[0].isdigit():
+                    return None
+                members.append(int(fields[0]))
+    return members
 
 proc = subprocess.Popen(sys.argv[2:], start_new_session=True)
 try:
@@ -67,11 +90,36 @@ except subprocess.TimeoutExpired:
     try:
         proc.wait(timeout=10)
     except subprocess.TimeoutExpired:
-        os.killpg(proc.pid, signal.SIGKILL)
-        proc.wait()
-    rc = 124
+        pass
+    # A shell can exit on TERM while its pip child ignores it. Kill and drain
+    # the whole session even when the direct child has already exited.
+    try:
+        members = live_group_members(proc.pid)
+        if members is None or members:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        if proc.poll() is None:
+            proc.wait(timeout=5)
+        deadline = time.monotonic() + 5
+        while True:
+            members = live_group_members(proc.pid)
+            if members == []:
+                rc = 124
+                break
+            if time.monotonic() >= deadline:
+                rc = 125  # Quiescence unproven: caller must retain runner lock.
+                break
+            time.sleep(0.1)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        rc = 125
 sys.exit(rc)
 PY_BOUNDED
+}
+
+source_is_clean() {
+  [[ "$(git rev-parse HEAD)" == "$source_sha" && -z "$(git status --porcelain --untracked-files=no)" ]]
 }
 
 acquire_runner_lock() {
@@ -114,7 +162,13 @@ write_status null "starting" 0
 cd "$WT" || fail "worktree-cd" 1
 
 # Production source remains a hard-reset deployment worktree.
-bounded_run 90 git fetch origin --quiet 2>/dev/null || print -u2 -- "[pi_scrape_hourly] warn: git fetch failed or timed out; using cached origin/main"
+bounded_run 90 git fetch origin --quiet 2>/dev/null
+fetch_rc=$?
+if [[ $fetch_rc -eq 125 ]]; then
+  LOCK_HELD=0  # Keep the lock tombstone until descendants are reconciled.
+  fail "fetch-children-unknown" 125
+fi
+[[ $fetch_rc -eq 0 ]] || print -u2 -- "[pi_scrape_hourly] warn: git fetch failed or timed out; using cached origin/main"
 git reset --hard origin/main --quiet 2>/dev/null || fail "git-reset" 1
 git clean -fdq -e .venv -e output 2>/dev/null || fail "git-clean" 1
 
@@ -151,9 +205,13 @@ if [[ ! -f "$EXPECTED_VENV/.complete" ]]; then
   SCRAPER_RUNNER_LOCK_OWNER_PID="$$" SCRAPER_EXPECTED_SOURCE_SHA="$source_sha" \
     bounded_run "$provision_timeout" "$PROVISIONER" --held-lock
   provision_rc=$?
+  if [[ $provision_rc -eq 125 ]]; then
+    LOCK_HELD=0  # Keep the lock tombstone until descendants are reconciled.
+    fail "runtime-reprovision-children-unknown" 125
+  fi
   [[ $provision_rc -ne 124 ]] || fail "runtime-reprovision-timeout" 124
   [[ $provision_rc -eq 0 ]] || fail "runtime-reprovision" "$provision_rc"
-  [[ "$(git rev-parse HEAD)" == "$source_sha" ]] || fail "runtime-source-changed" 1
+  source_is_clean || fail "runtime-source-changed" 1
   [[ -f "$EXPECTED_VENV/.complete" ]] || fail "runtime-not-provisioned" 1
 fi
 [[ -L "$CURRENT_VENV" ]] || fail "runtime-not-active" 1
@@ -170,6 +228,8 @@ FREEZE_TMP="$RUNTIME_ROOT/.runtime-freeze.$$"
 cmp -s "$FREEZE_TMP" "$EXPECTED_VENV/.scraper-runtime-freeze.txt" || fail "runtime-mutated" 1
 rm -f "$FREEZE_TMP"
 FREEZE_TMP=""
+
+source_is_clean || fail "runtime-source-changed" 1
 
 write_status null "scraping" 0
 "$PY" scripts/pi_active_campaigns_scrape.py --run --write-report --export --no-proxy
