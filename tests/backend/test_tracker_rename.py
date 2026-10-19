@@ -6,6 +6,7 @@ import requests
 from campaign_manager import db
 from campaign_manager.blueprints.trackers import _hydrate
 from campaign_manager.services.tidestracker import TidesTrackerError, set_tracker_display_name
+from campaign_manager.services.tides_tracker import _list_tracker_ids
 
 
 TRACKER = "123e4567-e89b-12d3-a456-426614174000"
@@ -80,6 +81,24 @@ def test_mismatched_readback_is_not_success(app):
             assert False, "wrong readback must fail"
         except TidesTrackerError as error:
             assert error.status_code == 503
+
+
+def test_inconsistent_effective_name_readback_fails_closed(app):
+    app.config["TIDESTRACKER_SERVICE_KEY"] = "test-key"
+    inconsistent = _campaign("New", 1)
+    inconsistent["campaign"]["display_name"] = "Original"
+    with app.app_context(), patch(
+        "campaign_manager.services.tidestracker._requests.get",
+        side_effect=[_response(_campaign(None)), _response(inconsistent)],
+    ), patch(
+        "campaign_manager.services.tidestracker._requests.patch",
+        return_value=_response(_campaign("New", 1)),
+    ):
+        try:
+            set_tracker_display_name(TRACKER, "New")
+            assert False, "stale effective display name cannot confirm rename"
+        except TidesTrackerError as error:
+            assert error.status_code == 502
 
 
 def test_same_value_with_wrong_revision_does_not_reconcile_timeout(app):
@@ -222,8 +241,38 @@ def test_uppercase_uuid_rename_and_clear_use_confirmed_local_identity(client, mo
     cleared = client.patch(f"/api/trackers/{route_id}", headers=headers, json={"name": None})
     assert cleared.status_code == 200
     assert cleared.json["id"] == TRACKER
-    assert db.get_tracker_names() == {}
-    assert seen == [(route_id, "New"), (route_id, None)]
+    assert db.get_tracker_names() == {TRACKER: "Original"}
+    assert _list_tracker_ids() == [TRACKER]
+    assert seen == [(TRACKER, "New"), (TRACKER, None)]
+
+
+def test_uppercase_group_and_link_use_one_canonical_roster_identity(client, monkeypatch):
+    route_id = TRACKER.upper()
+    monkeypatch.setattr(
+        "campaign_manager.blueprints.trackers.list_tracker_campaigns",
+        lambda: [_campaign(None)["campaign"]],
+    )
+    group = client.post("/api/tracker-groups", json={"title": "Test group"})
+    assert group.status_code == 201
+    group_id = group.json["id"]
+
+    assigned = client.patch(f"/api/trackers/{route_id}", json={"group_id": group_id})
+    assert assigned.status_code == 200
+    assert assigned.json["id"] == TRACKER
+    assert db.get_tracker_assignments() == {TRACKER: group_id}
+
+    linked = client.patch(f"/api/trackers/{route_id}", json={"campaign_slug": "test-campaign"})
+    assert linked.status_code == 200
+    assert linked.json["id"] == TRACKER
+    assert db.get_tracker_campaign_links() == {TRACKER: "test-campaign"}
+    assert db.get_tracker_names() == {TRACKER: "Original"}
+    assert _list_tracker_ids() == [TRACKER]
+
+    listed = client.get("/api/trackers")
+    assert listed.status_code == 200
+    assert listed.json[0]["id"] == TRACKER
+    assert listed.json[0]["group_id"] == group_id
+    assert listed.json[0]["campaign_slug"] == "test-campaign"
 
 
 def test_service_uppercase_uuid_targets_canonical_remote_identity(app):

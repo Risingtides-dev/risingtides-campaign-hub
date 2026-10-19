@@ -325,6 +325,12 @@ def _campaign_detail(tracker_id: str, api: str, key: str) -> Dict:
     override = campaign["display_name_override"]
     if override is not None and not isinstance(override, str):
         raise TidesTrackerError("Tracker name read returned an invalid override")
+    # A confirmed override revision must also be reflected in the effective
+    # name reported to clients; otherwise a stale projection would let Hub
+    # answer success while still showing the previous name.
+    expected_display_name = override or campaign["name"]
+    if campaign["display_name"] != expected_display_name:
+        raise TidesTrackerError("Tracker name read returned an inconsistent display name")
     return campaign
 
 

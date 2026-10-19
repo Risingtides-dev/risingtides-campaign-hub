@@ -11,6 +11,7 @@ import logging
 import hmac
 import os
 import re
+import uuid
 
 from flask import Blueprint, jsonify, request
 
@@ -331,8 +332,13 @@ def update_tracker(tracker_id: str):
             return jsonify({"error": "name must be 255 characters or fewer"}), 400
         if name is not None and any(ord(char) < 32 or ord(char) == 127 for char in name):
             return jsonify({"error": "name contains control characters"}), 400
+    try:
+        # All local overlays and the remote rename must share one UUID key.
+        canonical_id = str(uuid.UUID(tracker_id))
+    except (ValueError, TypeError, AttributeError):
+        return jsonify({"error": "Invalid tracker id"}), 400
     touched = False
-    response: dict = {"ok": True, "id": tracker_id}
+    response: dict = {"ok": True, "id": canonical_id}
 
     if "name" in data:
         key = (os.environ.get("HUB_WRITE_KEY") or "").strip()
@@ -342,15 +348,20 @@ def update_tracker(tracker_id: str):
         if not supplied or not hmac.compare_digest(supplied, key):
             return jsonify({"error": "Tracker rename requires authorization"}), 401
         try:
-            authoritative = set_tracker_display_name(tracker_id, name)
+            authoritative = set_tracker_display_name(canonical_id, name)
         except TidesTrackerError as e:
             return jsonify({"error": str(e)}), e.status_code
         # The service validates and canonicalizes UUIDs before readback.
         # Use that confirmed identity for the local cache as well: an uppercase
         # route UUID must not create a second row beside the lowercase list ID.
-        canonical_id = authoritative["id"]
+        if authoritative["id"] != canonical_id:
+            return jsonify({"error": "Tracker name read returned an invalid campaign"}), 503
+        # tracker_names is also the durable pull roster. On clear, retain the
+        # confirmed canonical name as its non-null roster label; revisioned
+        # remote display names remain authoritative for the UI.
+        cache_name = authoritative["display_name_override"] or authoritative["name"]
         try:
-            _db.set_tracker_name(canonical_id, authoritative["display_name_override"])
+            _db.set_tracker_name(canonical_id, cache_name)
         except Exception:
             _log.exception("Tracker name confirmed upstream but local overlay write failed")
             return jsonify({"error": "Tracker changed upstream; local name cache not confirmed"}), 503
@@ -363,13 +374,13 @@ def update_tracker(tracker_id: str):
         touched = True
 
     if "group_id" in data:
-        _db.set_tracker_assignment(tracker_id, gid)
+        _db.set_tracker_assignment(canonical_id, gid)
         response["group_id"] = gid
         touched = True
 
     if "campaign_slug" in data:
         if slug is None:
-            _db.set_tracker_campaign_link(tracker_id, None)
+            _db.set_tracker_campaign_link(canonical_id, None)
             response["campaign_slug"] = None
         else:
             # Resolve a default display name so tracker_names is populated
@@ -377,8 +388,8 @@ def update_tracker(tracker_id: str):
             # name; fall back to the linked campaign's title. Either source
             # is fine — the column just needs to be non-null so name-based
             # lookups (RTA-40) resolve without falling back to slug match.
-            display_name = _resolve_tracker_display_name(tracker_id, slug)
-            _db.set_tracker_campaign_link(tracker_id, slug, display_name=display_name)
+            display_name = _resolve_tracker_display_name(canonical_id, slug)
+            _db.set_tracker_campaign_link(canonical_id, slug, display_name=display_name)
             response["campaign_slug"] = slug
         touched = True
 
