@@ -12,13 +12,21 @@ RUNNER_LOCK="$RUNTIME_ROOT/runner.lock"
 TARGET="${SCRAPER_IMPERSONATE_TARGET:-chrome-136}"
 LOCK_HELD=0
 BUILDING=""
+LOCK_INODE=""
+HELD_LOCK=0
 
 cleanup() {
   if [[ -n "$BUILDING" && -d "$BUILDING" ]]; then
     rm -rf "$BUILDING"
   fi
   if [[ $LOCK_HELD -eq 1 && -d "$RUNNER_LOCK" ]]; then
-    rm -rf "$RUNNER_LOCK"
+    local owner="" inode=""
+    [[ -f "$RUNNER_LOCK/pid" ]] && owner=$(<"$RUNNER_LOCK/pid")
+    inode=$(stat -f %i "$RUNNER_LOCK" 2>/dev/null || true)
+    if [[ "$owner" == "$$" && "$inode" == "$LOCK_INODE" ]]; then
+      rm -f "$RUNNER_LOCK/pid"
+      rmdir "$RUNNER_LOCK" 2>/dev/null || true
+    fi
   fi
 }
 trap cleanup EXIT
@@ -26,37 +34,65 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 mkdir -p "$RUNTIME_ROOT"
-if ! mkdir "$RUNNER_LOCK" 2>/dev/null; then
-  owner=""
-  for attempt in {1..20}; do
-    [[ -f "$RUNNER_LOCK/pid" ]] && owner=$(<"$RUNNER_LOCK/pid")
-    [[ "$owner" == <-> ]] && break
-    sleep 0.1
-  done
-  if [[ "$owner" != <-> ]]; then
-    print -u2 -- "ambiguous scraper runner lock; refusing to provision"
+if [[ ${1:-} == "--held-lock" && $# -eq 1 ]]; then
+  HELD_LOCK=1
+  owner="${SCRAPER_RUNNER_LOCK_OWNER_PID:-}"
+  expected="${SCRAPER_EXPECTED_SOURCE_SHA:-}"
+  # Only the bounded watchdog child of the current lock owner can use this
+  # mode. The wrapper retains its lock until this process has exited.
+  grandparent=$(ps -p "$PPID" -o ppid= 2>/dev/null | tr -d ' ')
+  if [[ "$owner" != <-> || "$grandparent" != "$owner" ]] || ! [[ "$expected" =~ '^[0-9a-f]{40}$' ]]; then
+    print -u2 -- "held scraper lock proof missing"
     exit 75
   fi
-  if kill -0 "$owner" 2>/dev/null; then
-    print -u2 -- "scraper runner is active as pid=$owner; refusing to provision"
+  if [[ ! -f "$RUNNER_LOCK/pid" || "$(<"$RUNNER_LOCK/pid")" != "$owner" ]] || ! kill -0 "$owner" 2>/dev/null; then
+    print -u2 -- "scraper runner lock owner changed"
     exit 75
   fi
-  rm -rf "$RUNNER_LOCK"
-  mkdir "$RUNNER_LOCK"
+elif [[ $# -eq 0 ]]; then
+  if ! mkdir "$RUNNER_LOCK" 2>/dev/null; then
+    owner=""
+    for attempt in {1..20}; do
+      [[ -f "$RUNNER_LOCK/pid" ]] && owner=$(<"$RUNNER_LOCK/pid")
+      [[ "$owner" == <-> ]] && break
+      sleep 0.1
+    done
+    if [[ "$owner" == <-> ]] && kill -0 "$owner" 2>/dev/null; then
+      print -u2 -- "scraper runner is active as pid=$owner; refusing to provision"
+    else
+      print -u2 -- "stale or ambiguous scraper runner lock; manual reconciliation required"
+    fi
+    exit 75
+  fi
+  print -r -- "$$" > "$RUNNER_LOCK/pid"
+  LOCK_INODE=$(stat -f %i "$RUNNER_LOCK")
+  LOCK_HELD=1
+else
+  print -u2 -- "unsupported provisioner argument"
+  exit 2
 fi
-print -r -- "$$" > "$RUNNER_LOCK/pid"
-LOCK_HELD=1
 
 [[ -x "$BASE_PY" ]] || { print -u2 -- "missing base Python: $BASE_PY"; exit 1; }
 cd "$WT"
-git fetch origin --quiet
-git reset --hard origin/main --quiet
-git clean -fdq -e .venv -e output
+if [[ $HELD_LOCK -eq 1 ]]; then
+  [[ "$(git rev-parse HEAD)" == "$expected" && -z "$(git status --porcelain --untracked-files=no)" ]] || {
+    print -u2 -- "production source moved during locked provision"
+    exit 1
+  }
+else
+  git fetch origin --quiet
+  git reset --hard origin/main --quiet
+  git clean -fdq -e .venv -e output
+fi
 
 REQ="$WT/requirements.txt"
 GUARD="$WT/scripts/check_scraper_runtime.py"
 [[ -f "$REQ" && -f "$GUARD" ]] || { print -u2 -- "deployed runtime guard is missing"; exit 1; }
 
+[[ $HELD_LOCK -eq 0 || "$(git rev-parse HEAD)" == "$expected" ]] || {
+  print -u2 -- "production source moved before runtime fingerprint"
+  exit 1
+}
 fingerprint="$($BASE_PY "$GUARD" --requirements "$REQ" --fingerprint)"
 VENV="$VENV_ROOT/$fingerprint"
 mkdir -p "$VENV_ROOT"
@@ -92,6 +128,10 @@ else
   rm -f "$freeze_tmp"
 fi
 
+[[ $HELD_LOCK -eq 0 || "$(git rev-parse HEAD)" == "$expected" ]] || {
+  print -u2 -- "production source moved before runtime activation"
+  exit 1
+}
 link_tmp="$RUNTIME_ROOT/.prod-venv-link.$$"
 rm -f "$link_tmp"
 ln -s "$VENV" "$link_tmp"
