@@ -128,13 +128,30 @@ def _check_operator_login(password: str) -> str:
         with db._SessionLocal.begin() as transaction:
             state = transaction.get(SoundOperatorLoginState, source_key, with_for_update=True)
             if state is None:
-                # Serialize only new source allocations across workers. A source
-                # flood must not grow this table faster than the janitor can run.
+                # A per-source transaction lock closes the absent-row race: a
+                # concurrent failure cannot create a lockout just as a valid
+                # first login decides there is no state to inspect.
                 if db._engine.dialect.name == "postgresql":
-                    transaction.execute(text("SELECT pg_advisory_xact_lock(:key)"),
-                                        {"key": _OPERATOR_SOURCE_INSERT_LOCK})
+                    source_lock = int(source_key[:16], 16) & ((1 << 63) - 1)
+                    if source_lock == _OPERATOR_SOURCE_INSERT_LOCK:
+                        source_lock ^= 1
+                    locked = transaction.scalar(text(
+                        "SELECT pg_try_advisory_xact_lock(:source)"
+                    ), {"source": source_lock})
+                    if not locked:
+                        return "limited"
                 state = transaction.get(SoundOperatorLoginState, source_key, with_for_update=True)
                 if state is None:
+                    # A correctly authenticated new source needs no failure
+                    # row, even if hostile sources have filled the row budget.
+                    if hmac.compare_digest(password, _operator_password()):
+                        return "ok"
+                    if db._engine.dialect.name == "postgresql":
+                        locked = transaction.scalar(text(
+                            "SELECT pg_try_advisory_xact_lock(:key)"
+                        ), {"key": _OPERATOR_SOURCE_INSERT_LOCK})
+                        if not locked:
+                            return "limited"
                     count = transaction.scalar(select(func.count()).select_from(SoundOperatorLoginState))
                     if count >= _MAX_OPERATOR_LOGIN_SOURCES:
                         return "limited"

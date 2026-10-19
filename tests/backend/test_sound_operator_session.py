@@ -201,7 +201,7 @@ def test_distributed_sources_stop_at_storage_cap_without_blocking_known_source(a
         assert attempt(source, "wrong") == 401
     for source in ("198.51.100.13", "198.51.100.14"):
         assert attempt(source, "wrong") == 429
-        assert attempt(source, "synthetic-operator-password-0123456789") == 429
+        assert attempt(source, "synthetic-operator-password-0123456789") == 200
     with db._SessionLocal.begin() as transaction:
         assert transaction.scalar(select(func.count()).select_from(SoundOperatorLoginState)) == 3
     assert attempt("198.51.100.10", "synthetic-operator-password-0123456789") == 200

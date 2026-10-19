@@ -118,7 +118,7 @@ def test_concurrent_workers_share_limit_without_lost_attempts(app, postgres_logi
     # A hostile source's concurrent failures never block a different verified source.
     assert attempt("synthetic-operator-password-0123456789", source="203.0.113.20") == 200
     with postgres_login_state.connect() as conn:
-        assert conn.execute(text("SELECT count(*) FROM sound_operator_login_state")).scalar_one() == 2
+        assert conn.execute(text("SELECT count(*) FROM sound_operator_login_state")).scalar_one() == 1
 
     monkeypatch.setattr("campaign_manager.blueprints.sound_assignments.time.time", lambda: 1301)
     assert attempt("synthetic-operator-password-0123456789") == 200
@@ -181,7 +181,8 @@ def test_distinct_sources_cannot_race_past_storage_cap(app, postgres_login_state
     role = local()
 
     def after_execute(_conn, _cursor, statement, _params, _context, _many):
-        if getattr(role, "name", None) == "first" and "pg_advisory_xact_lock" in statement:
+        if (getattr(role, "name", None) == "first"
+                and "pg_try_advisory_xact_lock" in statement and "key" in statement):
             first_has_allocation_lock.set()
             if not release_first.wait(timeout=10):
                 raise AssertionError("allocation lock was not released")
@@ -200,8 +201,7 @@ def test_distinct_sources_cannot_race_past_storage_cap(app, postgres_login_state
             try:
                 assert first_has_allocation_lock.wait(timeout=10)
                 second = workers.submit(attempt, "second", "198.51.100.11")
-                with pytest.raises(FutureTimeout):
-                    second.result(timeout=0.3)
+                assert second.result(timeout=2) == 429
             finally:
                 release_first.set()
             assert first.result(timeout=10) == 401
