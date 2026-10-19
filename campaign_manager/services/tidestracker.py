@@ -316,7 +316,9 @@ def _campaign_detail(tracker_id: str, api: str, key: str) -> Dict:
         not isinstance(campaign, dict)
         or campaign.get("id") != tracker_id
         or not isinstance(campaign.get("name"), str)
+        or not campaign["name"].strip()
         or not isinstance(campaign.get("display_name"), str)
+        or not campaign["display_name"].strip()
         or "display_name_override" not in campaign
         or type(campaign.get("display_name_override_revision")) is not int
         or campaign["display_name_override_revision"] < 0

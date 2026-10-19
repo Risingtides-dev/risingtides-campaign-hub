@@ -83,6 +83,31 @@ def test_mismatched_readback_is_not_success(app):
             assert error.status_code == 503
 
 
+def test_blank_canonical_name_after_clear_preserves_pull_roster(client, app, db, monkeypatch):
+    app.config["TIDESTRACKER_SERVICE_KEY"] = "test-key"
+    monkeypatch.setenv("HUB_WRITE_KEY", "test-write-key")
+    db.set_tracker_name(TRACKER, "New")
+    malformed = _campaign(None, 2)
+    malformed["campaign"]["name"] = "   "
+    malformed["campaign"]["display_name"] = "   "
+    with patch(
+        "campaign_manager.services.tidestracker._requests.get",
+        side_effect=[_response(_campaign("New", 1)), _response(malformed)],
+    ), patch(
+        "campaign_manager.services.tidestracker._requests.patch",
+        return_value=_response(malformed),
+    ) as write:
+        response = client.patch(
+            f"/api/trackers/{TRACKER.upper()}",
+            headers={"X-Hub-Write-Key": "test-write-key"},
+            json={"name": None},
+        )
+    assert write.call_count == 1
+    assert response.status_code == 502
+    assert db.get_tracker_names() == {TRACKER: "New"}
+    assert _list_tracker_ids() == [TRACKER]
+
+
 def test_inconsistent_effective_name_readback_fails_closed(app):
     app.config["TIDESTRACKER_SERVICE_KEY"] = "test-key"
     inconsistent = _campaign("New", 1)
