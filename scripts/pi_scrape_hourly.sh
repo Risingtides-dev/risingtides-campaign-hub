@@ -47,6 +47,33 @@ fail() {  # $1=stage $2=rc
   exit "${2:-1}"
 }
 
+bounded_run() {  # $1=whole-process-group deadline in seconds; rest=command
+  local deadline="$1"
+  shift
+  "$BASE_PY" - "$deadline" "$@" <<'PY_BOUNDED'
+import os
+import signal
+import subprocess
+import sys
+
+proc = subprocess.Popen(sys.argv[2:], start_new_session=True)
+try:
+    rc = proc.wait(timeout=int(sys.argv[1]))
+except subprocess.TimeoutExpired:
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait()
+    rc = 124
+sys.exit(rc)
+PY_BOUNDED
+}
+
 acquire_runner_lock() {
   mkdir -p "$RUNTIME_ROOT"
   if mkdir "$RUNNER_LOCK" 2>/dev/null; then
@@ -87,7 +114,7 @@ write_status null "starting" 0
 cd "$WT" || fail "worktree-cd" 1
 
 # Production source remains a hard-reset deployment worktree.
-git fetch origin --quiet 2>/dev/null || print -u2 -- "[pi_scrape_hourly] warn: git fetch failed; using cached origin/main"
+bounded_run 90 git fetch origin --quiet 2>/dev/null || print -u2 -- "[pi_scrape_hourly] warn: git fetch failed or timed out; using cached origin/main"
 git reset --hard origin/main --quiet 2>/dev/null || fail "git-reset" 1
 git clean -fdq -e .venv -e output 2>/dev/null || fail "git-clean" 1
 
@@ -119,27 +146,13 @@ if [[ ! -f "$EXPECTED_VENV/.complete" ]]; then
   [[ -f "$prior_venv/.source-at-provision" && "$(<"$prior_venv/.source-at-provision")" == "$source_sha" ]] || fail "runtime-source-changed" 1
   free_kib=$(df -Pk "$RUNTIME_ROOT" | awk 'NR==2 {print $4}')
   [[ "$free_kib" == <-> && "$free_kib" -ge 8388608 ]] || fail "runtime-capacity" 1
+  provision_timeout="${SCRAPER_REPROVISION_TIMEOUT_SECONDS:-600}"
+  [[ "$provision_timeout" == <-> && "$provision_timeout" -ge 1 && "$provision_timeout" -le 600 ]] || fail "runtime-timeout-config" 1
   SCRAPER_RUNNER_LOCK_OWNER_PID="$$" SCRAPER_EXPECTED_SOURCE_SHA="$source_sha" \
-    "$BASE_PY" - "$PROVISIONER" <<'PY_REPROVISION'
-import os
-import signal
-import subprocess
-import sys
-
-proc = subprocess.Popen([sys.argv[1], '--held-lock'], start_new_session=True)
-try:
-    rc = proc.wait(timeout=600)
-except subprocess.TimeoutExpired:
-    os.killpg(proc.pid, signal.SIGTERM)
-    try:
-        proc.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        os.killpg(proc.pid, signal.SIGKILL)
-        proc.wait()
-    rc = 124
-sys.exit(rc)
-PY_REPROVISION
-  [[ $? -eq 0 ]] || fail "runtime-reprovision" 1
+    bounded_run "$provision_timeout" "$PROVISIONER" --held-lock
+  provision_rc=$?
+  [[ $provision_rc -ne 124 ]] || fail "runtime-reprovision-timeout" 124
+  [[ $provision_rc -eq 0 ]] || fail "runtime-reprovision" "$provision_rc"
   [[ "$(git rev-parse HEAD)" == "$source_sha" ]] || fail "runtime-source-changed" 1
   [[ -f "$EXPECTED_VENV/.complete" ]] || fail "runtime-not-provisioned" 1
 fi

@@ -79,6 +79,23 @@ if [[ $HELD_LOCK -eq 1 ]]; then
     print -u2 -- "production source moved during locked provision"
     exit 1
   }
+  # Preserve the complete previously approved distribution set. Loose ranges
+  # in requirements.txt must not be re-resolved by an unattended recovery.
+  [[ -L "$CURRENT_VENV" ]] || exit 1
+  prior_venv="$($BASE_PY -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$CURRENT_VENV")"
+  [[ "$prior_venv" == "$VENV_ROOT"/* && -f "$prior_venv/.complete" ]] || exit 1
+  [[ -f "$prior_venv/.source-at-provision" && "$(<"$prior_venv/.source-at-provision")" == "$expected" ]] || exit 1
+  PRIOR_FREEZE="$prior_venv/.scraper-runtime-freeze.txt"
+  "$BASE_PY" - "$PRIOR_FREEZE" <<'PY_FREEZE'
+import pathlib, re, sys
+rows = pathlib.Path(sys.argv[1]).read_text().splitlines()
+names = [row.split('==', 1)[0].lower().replace('_', '-') for row in rows]
+if not rows or len(names) != len(set(names)) or any(
+    re.fullmatch(r'[A-Za-z0-9_.-]+==[A-Za-z0-9_.!+~:-]+', row) is None
+    for row in rows
+):
+    raise SystemExit('prior scraper freeze is not a unique exact-version lock')
+PY_FREEZE
 else
   git fetch origin --quiet
   git reset --hard origin/main --quiet
@@ -101,7 +118,11 @@ if [[ ! -f "$VENV/.complete" ]]; then
   rm -rf "$VENV"
   BUILDING="$VENV"
   "$BASE_PY" -m venv "$VENV"
-  "$VENV/bin/python" -m pip install --disable-pip-version-check -r "$REQ"
+  if [[ $HELD_LOCK -eq 1 ]]; then
+    "$VENV/bin/python" -m pip install --disable-pip-version-check --no-deps -r "$PRIOR_FREEZE"
+  else
+    "$VENV/bin/python" -m pip install --disable-pip-version-check -r "$REQ"
+  fi
   "$VENV/bin/python" "$GUARD" --requirements "$REQ" > "$VENV/.scraper-runtime-manifest.json"
   "$VENV/bin/python" -m pip check
   "$VENV/bin/python" -m yt_dlp --list-impersonate-targets 2>&1 \
@@ -111,6 +132,12 @@ if [[ ! -f "$VENV/.complete" ]]; then
     }
   "$VENV/bin/python" -m pip freeze --all | LC_ALL=C sort \
     > "$VENV/.scraper-runtime-freeze.txt"
+  if [[ $HELD_LOCK -eq 1 ]]; then
+    cmp -s "$VENV/.scraper-runtime-freeze.txt" "$PRIOR_FREEZE" || {
+      print -u2 -- "recovered runtime differs from approved distribution freeze"
+      exit 1
+    }
+  fi
   print -r -- "$fingerprint" > "$VENV/.scraper-runtime-fingerprint"
   print -r -- "$(git rev-parse HEAD)" > "$VENV/.source-at-provision"
   touch "$VENV/.complete"
@@ -126,6 +153,12 @@ else
     exit 1
   }
   rm -f "$freeze_tmp"
+  if [[ $HELD_LOCK -eq 1 ]]; then
+    cmp -s "$VENV/.scraper-runtime-freeze.txt" "$PRIOR_FREEZE" || {
+      print -u2 -- "existing runtime differs from approved distribution freeze"
+      exit 1
+    }
+  fi
 fi
 
 [[ $HELD_LOCK -eq 0 || "$(git rev-parse HEAD)" == "$expected" ]] || {
