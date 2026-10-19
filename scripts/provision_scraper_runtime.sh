@@ -93,6 +93,20 @@ if [[ $HELD_LOCK -eq 1 ]]; then
     freeze_sha=$(shasum -a 256 "$PRIOR_FREEZE" | awk '{print $1}')
     [[ "$(<"$attestation")" == "$freeze_sha" ]] || exit 1
   fi
+  # The stored freeze is an input to unattended installation. Require it to
+  # match the installed prior runtime, even when its source SHA already matches.
+  prior_freeze_actual="$RUNTIME_ROOT/.prior-freeze.$$"
+  if ! "$prior_venv/bin/python" -m pip freeze --all | LC_ALL=C sort > "$prior_freeze_actual"; then
+    rm -f "$prior_freeze_actual"
+    print -u2 -- "prior scraper runtime cannot be inspected; manual reconciliation required"
+    exit 1
+  fi
+  if ! cmp -s "$PRIOR_FREEZE" "$prior_freeze_actual"; then
+    rm -f "$prior_freeze_actual"
+    print -u2 -- "prior scraper freeze differs from installed distributions"
+    exit 1
+  fi
+  rm -f "$prior_freeze_actual"
   "$BASE_PY" - "$PRIOR_FREEZE" <<'PY_FREEZE'
 import pathlib, re, sys
 rows = pathlib.Path(sys.argv[1]).read_text().splitlines()

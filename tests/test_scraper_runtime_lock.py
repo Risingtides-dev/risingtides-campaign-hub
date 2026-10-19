@@ -212,7 +212,28 @@ def test_held_lock_reuses_complete_runtime_at_exact_source(tmp_path: Path):
         check=False,
     )
     assert refused_freeze.returncode != 0
-    assert "prior scraper freeze is not a unique exact-version lock" in refused_freeze.stderr
+    assert "prior scraper freeze differs from installed distributions" in refused_freeze.stderr
+    assert (runtime / "prod-venv").resolve() == venv
+
+    (venv / ".scraper-runtime-freeze.txt").write_text(
+        freeze.replace("pip==", "pip==999999999999", 1), encoding="utf-8"
+    )
+    refused_changed_exact_freeze = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import subprocess,sys; sys.exit(subprocess.call(sys.argv[1:]))",
+            str(SCRIPTS / "provision_scraper_runtime.sh"),
+            "--held-lock",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert refused_changed_exact_freeze.returncode != 0
+    assert "prior scraper freeze differs from installed distributions" in refused_changed_exact_freeze.stderr
     assert (runtime / "prod-venv").resolve() == venv
 
 
