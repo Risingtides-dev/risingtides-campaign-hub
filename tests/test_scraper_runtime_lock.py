@@ -290,6 +290,18 @@ def test_advanced_source_attests_reused_runtime_for_later_python_drift(tmp_path:
     assert not attestation.exists()
     assert (runtime / "prod-venv").resolve() == old
     (old / ".scraper-runtime-freeze.txt").write_text(freeze, encoding="utf-8")
+    missing_target = subprocess.run(
+        ["zsh", str(SCRIPTS / "provision_scraper_runtime.sh")],
+        env=env | {"SCRAPER_IMPERSONATE_TARGET": "missing-synthetic-target"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert missing_target.returncode != 0
+    assert "impersonation target unavailable" in missing_target.stderr
+    assert not attestation.exists()
+    assert (runtime / "prod-venv").resolve() == old
     normal = subprocess.run(
         ["zsh", str(SCRIPTS / "provision_scraper_runtime.sh")],
         env=env,

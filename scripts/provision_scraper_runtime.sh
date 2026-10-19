@@ -153,6 +153,11 @@ if [[ ! -f "$VENV/.complete" ]]; then
 else
   "$VENV/bin/python" "$GUARD" --requirements "$REQ" >/dev/null
   "$VENV/bin/python" -m pip check >/dev/null
+  "$VENV/bin/python" -m yt_dlp --list-impersonate-targets 2>&1 \
+    | grep -qi -- "$TARGET" || {
+      print -u2 -- "impersonation target unavailable: $TARGET"
+      exit 1
+    }
   freeze_tmp="$RUNTIME_ROOT/.provision-freeze.$$"
   "$VENV/bin/python" -m pip freeze --all | LC_ALL=C sort > "$freeze_tmp"
   cmp -s "$freeze_tmp" "$VENV/.scraper-runtime-freeze.txt" || {
