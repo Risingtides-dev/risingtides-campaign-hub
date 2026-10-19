@@ -14,6 +14,7 @@ STATUS="$RUNTIME_ROOT/SCRAPER_STATUS.json"
 RUNNER_LOCK="$RUNTIME_ROOT/runner.lock"
 LOCK_HELD=0
 FREEZE_TMP=""
+LOCK_INODE=""
 
 stamp() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
@@ -27,7 +28,13 @@ write_status() {  # $1=ok(true|false|null) $2=stage $3=rc
 cleanup() {
   [[ -n "$FREEZE_TMP" ]] && rm -f "$FREEZE_TMP"
   if [[ $LOCK_HELD -eq 1 && -d "$RUNNER_LOCK" ]]; then
-    rm -rf "$RUNNER_LOCK"
+    local owner="" inode=""
+    [[ -f "$RUNNER_LOCK/pid" ]] && owner=$(<"$RUNNER_LOCK/pid")
+    inode=$(stat -f %i "$RUNNER_LOCK" 2>/dev/null || true)
+    if [[ "$owner" == "$$" && "$inode" == "$LOCK_INODE" ]]; then
+      rm -f "$RUNNER_LOCK/pid"
+      rmdir "$RUNNER_LOCK" 2>/dev/null || true
+    fi
   fi
 }
 trap cleanup EXIT
@@ -40,10 +47,86 @@ fail() {  # $1=stage $2=rc
   exit "${2:-1}"
 }
 
+bounded_run() {  # $1=whole-process-group deadline in seconds; rest=command
+  local deadline="$1"
+  shift
+  "$BASE_PY" - "$deadline" "$@" <<'PY_BOUNDED'
+import os
+import signal
+import subprocess
+import sys
+import time
+
+
+def live_group_members(pgid):
+    try:
+        output = subprocess.run(
+            ['ps', '-axo', 'pid=,pgid=,stat='],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=True,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    members = []
+    for row in output.splitlines():
+        fields = row.split()
+        if len(fields) >= 3 and fields[1].isdigit() and int(fields[1]) == pgid:
+            if not fields[2].startswith('Z'):
+                if not fields[0].isdigit():
+                    return None
+                members.append(int(fields[0]))
+    return members
+
+proc = subprocess.Popen(sys.argv[2:], start_new_session=True)
+try:
+    rc = proc.wait(timeout=int(sys.argv[1]))
+except subprocess.TimeoutExpired:
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        pass
+    # A shell can exit on TERM while its pip child ignores it. Kill and drain
+    # the whole session even when the direct child has already exited.
+    try:
+        members = live_group_members(proc.pid)
+        if members is None or members:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        if proc.poll() is None:
+            proc.wait(timeout=5)
+        deadline = time.monotonic() + 5
+        while True:
+            members = live_group_members(proc.pid)
+            if members == []:
+                rc = 124
+                break
+            if time.monotonic() >= deadline:
+                rc = 125  # Quiescence unproven: caller must retain runner lock.
+                break
+            time.sleep(0.1)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        rc = 125
+sys.exit(rc)
+PY_BOUNDED
+}
+
+source_is_clean() {
+  [[ "$(git rev-parse HEAD)" == "$source_sha" && -z "$(git status --porcelain --untracked-files=no)" ]]
+}
+
 acquire_runner_lock() {
   mkdir -p "$RUNTIME_ROOT"
   if mkdir "$RUNNER_LOCK" 2>/dev/null; then
     print -r -- "$$" > "$RUNNER_LOCK/pid"
+    LOCK_INODE=$(stat -f %i "$RUNNER_LOCK")
     LOCK_HELD=1
     return 0
   fi
@@ -67,10 +150,8 @@ acquire_runner_lock() {
     exit 75
   fi
 
-  rm -rf "$RUNNER_LOCK"
-  mkdir "$RUNNER_LOCK" 2>/dev/null || exit 75
-  print -r -- "$$" > "$RUNNER_LOCK/pid"
-  LOCK_HELD=1
+  print -u2 -- "[pi_scrape_hourly] stale runner lock pid=$owner; manual reconciliation required"
+  exit 75
 }
 
 acquire_runner_lock
@@ -81,7 +162,13 @@ write_status null "starting" 0
 cd "$WT" || fail "worktree-cd" 1
 
 # Production source remains a hard-reset deployment worktree.
-git fetch origin --quiet 2>/dev/null || print -u2 -- "[pi_scrape_hourly] warn: git fetch failed; using cached origin/main"
+bounded_run 90 git fetch origin --quiet 2>/dev/null
+fetch_rc=$?
+if [[ $fetch_rc -eq 125 ]]; then
+  LOCK_HELD=0  # Keep the lock tombstone until descendants are reconciled.
+  fail "fetch-children-unknown" 125
+fi
+[[ $fetch_rc -eq 0 ]] || print -u2 -- "[pi_scrape_hourly] warn: git fetch failed or timed out; using cached origin/main"
 git reset --hard origin/main --quiet 2>/dev/null || fail "git-reset" 1
 git clean -fdq -e .venv -e output 2>/dev/null || fail "git-clean" 1
 
@@ -91,6 +178,8 @@ CANONICAL="$WT/scripts/pi_scrape_hourly.sh"
 [[ -f "$REQ" ]] || fail "requirements-missing" 1
 [[ -f "$GUARD" ]] || fail "runtime-guard-missing" 1
 [[ -f "$CANONICAL" ]] || fail "canonical-runner-missing" 1
+PROVISIONER="$WT/scripts/provision_scraper_runtime.sh"
+[[ -f "$PROVISIONER" ]] || fail "runtime-provisioner-missing" 1
 
 # launchd executes an installed copy under output/. Refuse invisible launcher
 # edits by comparing it with the reset production source, not the dev checkout.
@@ -100,9 +189,38 @@ if [[ "${0:A}" != "${CANONICAL:A}" ]]; then
   [[ "$deployed_sha" == "$canonical_sha" ]] || fail "runner-drift" 1
 fi
 
+source_sha=$(git rev-parse HEAD) || fail "source-inspect" 1
 fingerprint="$($BASE_PY "$GUARD" --requirements "$REQ" --fingerprint)" || fail "runtime-fingerprint" 1
 EXPECTED_VENV="$VENV_ROOT/$fingerprint"
-[[ -f "$EXPECTED_VENV/.complete" ]] || fail "runtime-not-provisioned" 1
+if [[ ! -f "$EXPECTED_VENV/.complete" ]]; then
+  # Only a base-Python drift at the same deployed source may self-heal.
+  [[ -L "$CURRENT_VENV" ]] || fail "runtime-not-provisioned" 1
+  prior_venv="$($BASE_PY -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$CURRENT_VENV")" || fail "runtime-inspect" 1
+  [[ "$prior_venv" == "$VENV_ROOT"/* && -f "$prior_venv/.complete" ]] || fail "runtime-not-provisioned" 1
+  prior_source=""
+  [[ -f "$prior_venv/.source-at-provision" ]] && prior_source=$(<"$prior_venv/.source-at-provision")
+  if [[ "$prior_source" != "$source_sha" ]]; then
+    attestation="$RUNTIME_ROOT/source-attestations/$source_sha.${prior_venv:t}"
+    [[ -f "$prior_venv/.scraper-runtime-freeze.txt" && -f "$attestation" ]] || fail "runtime-source-changed" 1
+    freeze_sha=$(shasum -a 256 "$prior_venv/.scraper-runtime-freeze.txt" | awk '{print $1}')
+    [[ "$(<"$attestation")" == "$freeze_sha" ]] || fail "runtime-source-changed" 1
+  fi
+  free_kib=$(df -Pk "$RUNTIME_ROOT" | awk 'NR==2 {print $4}')
+  [[ "$free_kib" == <-> && "$free_kib" -ge 8388608 ]] || fail "runtime-capacity" 1
+  provision_timeout="${SCRAPER_REPROVISION_TIMEOUT_SECONDS:-600}"
+  [[ "$provision_timeout" == <-> && "$provision_timeout" -ge 1 && "$provision_timeout" -le 600 ]] || fail "runtime-timeout-config" 1
+  SCRAPER_RUNNER_LOCK_OWNER_PID="$$" SCRAPER_EXPECTED_SOURCE_SHA="$source_sha" \
+    bounded_run "$provision_timeout" "$PROVISIONER" --held-lock
+  provision_rc=$?
+  if [[ $provision_rc -eq 125 ]]; then
+    LOCK_HELD=0  # Keep the lock tombstone until descendants are reconciled.
+    fail "runtime-reprovision-children-unknown" 125
+  fi
+  [[ $provision_rc -ne 124 ]] || fail "runtime-reprovision-timeout" 124
+  [[ $provision_rc -eq 0 ]] || fail "runtime-reprovision" "$provision_rc"
+  source_is_clean || fail "runtime-source-changed" 1
+  [[ -f "$EXPECTED_VENV/.complete" ]] || fail "runtime-not-provisioned" 1
+fi
 [[ -L "$CURRENT_VENV" ]] || fail "runtime-not-active" 1
 active_venv="$($BASE_PY -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$CURRENT_VENV")" || fail "runtime-inspect" 1
 [[ "$active_venv" == "$EXPECTED_VENV" ]] || fail "runtime-release-mismatch" 1
@@ -117,6 +235,8 @@ FREEZE_TMP="$RUNTIME_ROOT/.runtime-freeze.$$"
 cmp -s "$FREEZE_TMP" "$EXPECTED_VENV/.scraper-runtime-freeze.txt" || fail "runtime-mutated" 1
 rm -f "$FREEZE_TMP"
 FREEZE_TMP=""
+
+source_is_clean || fail "runtime-source-changed" 1
 
 write_status null "scraping" 0
 "$PY" scripts/pi_active_campaigns_scrape.py --run --write-report --export --no-proxy
