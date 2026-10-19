@@ -345,11 +345,16 @@ def update_tracker(tracker_id: str):
             authoritative = set_tracker_display_name(tracker_id, name)
         except TidesTrackerError as e:
             return jsonify({"error": str(e)}), e.status_code
+        # The service validates and canonicalizes UUIDs before readback.
+        # Use that confirmed identity for the local cache as well: an uppercase
+        # route UUID must not create a second row beside the lowercase list ID.
+        canonical_id = authoritative["id"]
         try:
-            _db.set_tracker_name(tracker_id, authoritative["display_name_override"])
+            _db.set_tracker_name(canonical_id, authoritative["display_name_override"])
         except Exception:
             _log.exception("Tracker name confirmed upstream but local overlay write failed")
             return jsonify({"error": "Tracker changed upstream; local name cache not confirmed"}), 503
+        response["id"] = canonical_id
         response["name"] = (
             authoritative.get("display_name")
             or authoritative["display_name_override"]

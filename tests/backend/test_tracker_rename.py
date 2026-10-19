@@ -200,6 +200,47 @@ def test_confirmed_rename_updates_local_overlay(client, monkeypatch):
     assert db.get_tracker_names()[TRACKER] == "New"
 
 
+def test_uppercase_uuid_rename_and_clear_use_confirmed_local_identity(client, monkeypatch):
+    monkeypatch.setenv("HUB_WRITE_KEY", "test-write-key")
+    seen = []
+
+    def confirmed_rename(tracker_id, name):
+        seen.append((tracker_id, name))
+        return _campaign(name, len(seen))["campaign"]
+
+    monkeypatch.setattr(
+        "campaign_manager.blueprints.trackers.set_tracker_display_name",
+        confirmed_rename,
+    )
+    route_id = TRACKER.upper()
+    headers = {"X-Hub-Write-Key": "test-write-key"}
+    renamed = client.patch(f"/api/trackers/{route_id}", headers=headers, json={"name": "New"})
+    assert renamed.status_code == 200
+    assert renamed.json["id"] == TRACKER
+    assert db.get_tracker_names() == {TRACKER: "New"}
+
+    cleared = client.patch(f"/api/trackers/{route_id}", headers=headers, json={"name": None})
+    assert cleared.status_code == 200
+    assert cleared.json["id"] == TRACKER
+    assert db.get_tracker_names() == {}
+    assert seen == [(route_id, "New"), (route_id, None)]
+
+
+def test_service_uppercase_uuid_targets_canonical_remote_identity(app):
+    app.config["TIDESTRACKER_SERVICE_KEY"] = "test-key"
+    with app.app_context(), patch(
+        "campaign_manager.services.tidestracker._requests.get",
+        side_effect=[_response(_campaign(None)), _response(_campaign("New", 1))],
+    ) as read, patch(
+        "campaign_manager.services.tidestracker._requests.patch",
+        return_value=_response(_campaign("New", 1)),
+    ) as write:
+        result = set_tracker_display_name(TRACKER.upper(), "New")
+    assert result["id"] == TRACKER
+    assert all(call.args[0].endswith(f"/campaigns/{TRACKER}") for call in read.call_args_list)
+    assert write.call_args.args[0].endswith(f"/campaigns/{TRACKER}")
+
+
 def test_anonymous_wrong_and_unconfigured_rename_fail_before_remote(client, monkeypatch):
     called = []
     monkeypatch.setattr("campaign_manager.blueprints.trackers.set_tracker_display_name", lambda *args: called.append(args))
