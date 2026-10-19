@@ -207,7 +207,7 @@ def scan(*, deadline, state_id=1, max_pages=MAX_SCAN_PAGES_PER_TICK):
             break
         try:
             candidates, next_cursor = notion.query_crm_edit_window(
-                lower=lower, upper=upper, cursor=cursor)
+                lower=lower, upper=upper, cursor=cursor, deadline=deadline)
             if not _save_scan_page(expected, candidates, next_cursor, state_id=state_id):
                 # Another worker advanced the same window; retry its current
                 # cursor rather than writing duplicate or stale state.
@@ -399,7 +399,7 @@ def work(*, deadline):
             _release_claim(claim)
             break
         try:
-            page = notion.fetch_crm_page_for_queue(claim[0])
+            page = notion.fetch_crm_page_for_queue(claim[0], deadline=deadline)
             if _parse_edited(page.get("last_edited_time")) < claim[1]:
                 raise notion.CrmSourceUnavailable("stale_exact_page")
             _reconcile_page(page, deadline=min(deadline, time.monotonic() + PROPERTY_BUDGET_SECONDS),

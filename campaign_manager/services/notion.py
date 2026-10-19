@@ -7,6 +7,7 @@ that entry to Campaign Hub as a new campaign.
 CRM Database ID: 1961465b-b829-80c9-a1b5-c4cb3284149a
 Integration: "Rising Tides AI" bot (internal integration)
 """
+import asyncio
 import hashlib
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -16,6 +17,7 @@ import threading
 import time
 from typing import Dict, List, Optional, Set
 
+import httpx
 import requests
 
 from campaign_manager.utils.helpers import slugify, extract_sound_id
@@ -53,7 +55,7 @@ def _headers() -> Dict[str, str]:
     }
 
 
-def resolve_data_source_id(database_id: str, env_override: str = "") -> str:
+def resolve_data_source_id(database_id: str, env_override: str = "", *, deadline=None) -> str:
     """Resolve a database ID to the data source ID its queries should target.
 
     Since Notion-Version 2025-09-03, queries go to /data_sources/<id>/query
@@ -76,10 +78,13 @@ def resolve_data_source_id(database_id: str, env_override: str = "") -> str:
 
     url = f"{NOTION_API_BASE}/databases/{database_id}"
     try:
-        resp = requests.get(url, headers=_headers(), timeout=15)
+        resp = _crm_source_request("GET", url, headers=_headers(), deadline=deadline)
+    except CrmSourceUnavailable:
+        raise
     except Exception as e:
         logger.warning("Notion data-source lookup failed for %s: %s", database_id, e)
         return ""
+    _crm_source_timeout(deadline)
     if resp.status_code != 200:
         logger.warning(
             "Notion data-source lookup for %s returned HTTP %s: %s",
@@ -632,6 +637,48 @@ class CrmSourceUnavailable(RuntimeError):
         self.retry_after = max(1, int(retry_after))
 
 
+def _crm_remaining(deadline):
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise CrmSourceUnavailable("source_deadline")
+    return remaining
+
+
+def _crm_source_timeout(deadline):
+    """Preserve the 15-second socket timeout within the remaining tick budget."""
+    return min(15, _crm_remaining(deadline)) if deadline is not None else 15
+
+
+def _crm_source_request(method, url, *, deadline=None, **kwargs):
+    """Read a complete queue-owned response within the caller's tick deadline."""
+    if deadline is None:
+        return (requests.get if method == "GET" else requests.post)(
+            url, timeout=15, **kwargs)
+    _crm_source_timeout(deadline)
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        # Queue callers are synchronous scheduler functions. Fail closed if
+        # invoked from an event loop rather than nesting asyncio.run().
+        raise CrmSourceUnavailable("source_context")
+
+    async def send():
+        remaining = _crm_source_timeout(deadline)
+        async with httpx.AsyncClient(follow_redirects=False, trust_env=True) as client:
+            return await client.request(method, url, timeout=remaining, **kwargs)
+
+    async def bounded_send():
+        return await asyncio.wait_for(send(), timeout=_crm_remaining(deadline))
+
+    try:
+        response = asyncio.run(bounded_send())
+    except (TimeoutError, httpx.TimeoutException) as error:
+        raise CrmSourceUnavailable("source_deadline") from error
+    return response
+
+
 def _crm_read_response(response, *, query_cursor=None):
     if response.status_code in (429, 529):
         raw_retry = response.headers.get("Retry-After", "2")
@@ -663,7 +710,7 @@ def _crm_read_response(response, *, query_cursor=None):
     return body
 
 
-def query_crm_edit_window(*, lower, upper, cursor=None):
+def query_crm_edit_window(*, lower, upper, cursor=None, deadline=None):
     """One sorted page of CRM edits, inclusive of both timestamp boundaries.
 
     Caller persists its cursor and enqueued page IDs in one DB transaction.
@@ -672,7 +719,7 @@ def query_crm_edit_window(*, lower, upper, cursor=None):
     if not _get_api_key():
         raise CrmSourceUnavailable("missing_api_key", 60)
     source_id = resolve_data_source_id(
-        _get_database_id(), env_override="NOTION_CRM_DATA_SOURCE_ID"
+        _get_database_id(), env_override="NOTION_CRM_DATA_SOURCE_ID", deadline=deadline
     )
     if not source_id:
         raise CrmSourceUnavailable("missing_data_source", 60)
@@ -686,13 +733,16 @@ def query_crm_edit_window(*, lower, upper, cursor=None):
     if cursor:
         payload["start_cursor"] = cursor
     try:
-        response = requests.post(
-            f"{NOTION_API_BASE}/data_sources/{source_id}/query",
-            headers=_headers(), json=payload, timeout=15,
+        response = _crm_source_request(
+            "POST", f"{NOTION_API_BASE}/data_sources/{source_id}/query",
+            headers=_headers(), json=payload, deadline=deadline,
         )
+    except CrmSourceUnavailable:
+        raise
     except Exception as error:
         raise CrmSourceUnavailable("transport") from error
     body = _crm_read_response(response, query_cursor=cursor)
+    _crm_source_timeout(deadline)
     request_status = body.get("request_status")
     if isinstance(request_status, dict) and request_status.get("type") == "incomplete":
         raise CrmSourceUnavailable("query_result_limit", 60)
@@ -716,16 +766,20 @@ def query_crm_edit_window(*, lower, upper, cursor=None):
     return candidates, next_cursor if has_more else None
 
 
-def fetch_crm_page_for_queue(page_id):
+def fetch_crm_page_for_queue(page_id, *, deadline=None):
     """Read exact current source page; failed reads are retryable, not empty."""
     if not _get_api_key():
         raise CrmSourceUnavailable("missing_api_key", 60)
     try:
-        response = requests.get(f"{NOTION_API_BASE}/pages/{page_id}",
-                                headers=_headers(), timeout=15)
+        response = _crm_source_request(
+            "GET", f"{NOTION_API_BASE}/pages/{page_id}",
+            headers=_headers(), deadline=deadline)
+    except CrmSourceUnavailable:
+        raise
     except Exception as error:
         raise CrmSourceUnavailable("transport") from error
     body = _crm_read_response(response)
+    _crm_source_timeout(deadline)
     if body.get("id") != page_id or not isinstance(body.get("properties"), dict):
         raise CrmSourceUnavailable("invalid_page")
     return body

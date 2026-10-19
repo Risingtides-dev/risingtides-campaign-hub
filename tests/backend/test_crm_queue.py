@@ -1,5 +1,9 @@
 """Durable CRM scan and queue regressions using disposable test-owned storage."""
+import asyncio
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import threading
 import time
 from unittest.mock import patch
 
@@ -75,6 +79,153 @@ def test_worker_retries_rate_limit_and_reconciles_exact_page(db):
         assert crm_queue.work(deadline=time.monotonic() + 5)["handled"] == 1
     assert db.get_campaign("one")["content_types"] == ["Coffee"]
     assert db.get_campaign("one")["internal_captions"] == "Exact"
+
+
+def test_uncached_source_lookup_uses_tick_deadline(monkeypatch):
+    monkeypatch.setenv("NOTION_API_KEY", "test-only")
+    monkeypatch.delenv("NOTION_CRM_DATA_SOURCE_ID", raising=False)
+    monkeypatch.setattr(notion, "_data_source_cache", {})
+    deadline = time.monotonic() + 0.2
+    with patch.object(notion, "_crm_source_request") as lookup:
+        lookup.return_value.status_code = 200
+        lookup.return_value.json.return_value = {
+            "data_sources": [{"id": "crm-source"}],
+        }
+        assert notion.resolve_data_source_id("crm-db", deadline=deadline) == "crm-source"
+    assert lookup.call_args.args == ("GET", f"{notion.NOTION_API_BASE}/databases/crm-db")
+    assert lookup.call_args.kwargs["deadline"] == deadline
+
+
+def test_queue_source_reads_share_original_tick_deadline(monkeypatch):
+    monkeypatch.setenv("NOTION_API_KEY", "test-only")
+    with patch.object(notion, "resolve_data_source_id", return_value="crm"), patch.object(
+            notion, "_crm_source_request") as request:
+        request.return_value.status_code = 200
+        request.return_value.json.side_effect = [
+            {"results": [], "has_more": False, "next_cursor": None},
+            {"id": "one", "properties": {}},
+        ]
+        deadline = time.monotonic() + 0.3
+        notion.query_crm_edit_window(lower=None, upper=datetime.now(timezone.utc),
+                                     deadline=deadline)
+        notion.fetch_crm_page_for_queue("one", deadline=deadline)
+    assert len(request.call_args_list) == 2
+    assert all(call.kwargs["deadline"] == deadline for call in request.call_args_list)
+    assert [call.args[0] for call in request.call_args_list] == ["POST", "GET"]
+
+
+def test_expired_source_deadline_avoids_request(monkeypatch):
+    monkeypatch.setenv("NOTION_API_KEY", "test-only")
+    with patch.object(notion, "resolve_data_source_id", return_value="crm"), patch.object(
+            notion.httpx, "AsyncClient") as client:
+        with pytest.raises(notion.CrmSourceUnavailable, match="source_deadline"):
+            notion.query_crm_edit_window(lower=None, upper=datetime.now(timezone.utc),
+                                         deadline=time.monotonic() - 1)
+        with pytest.raises(notion.CrmSourceUnavailable, match="source_deadline"):
+            notion.fetch_crm_page_for_queue("one", deadline=time.monotonic() - 1)
+    client.assert_not_called()
+
+
+def test_queue_deadline_preserves_source_retry_after(monkeypatch):
+    monkeypatch.setenv("NOTION_API_KEY", "test-only")
+    with patch.object(notion, "resolve_data_source_id", return_value="crm"), patch.object(
+            notion, "_crm_source_request") as request:
+        response = request.return_value
+        response.status_code = 429
+        response.headers = {"Retry-After": "7200"}
+        with pytest.raises(notion.CrmSourceUnavailable) as error:
+            notion.query_crm_edit_window(lower=None, upper=datetime.now(timezone.utc),
+                                         deadline=time.monotonic() + 0.2)
+    assert error.value.reason == "rate_limited"
+    assert error.value.retry_after == 7200
+
+
+def test_queue_source_fails_closed_inside_existing_event_loop(monkeypatch):
+    monkeypatch.setenv("NOTION_API_KEY", "test-only")
+
+    async def running_loop():
+        with pytest.raises(notion.CrmSourceUnavailable, match="source_context"):
+            notion.fetch_crm_page_for_queue("one", deadline=time.monotonic() + 1)
+
+    asyncio.run(running_loop())
+
+
+@contextmanager
+def _trickling_source():
+    closed = threading.Event()
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *_args):
+            pass
+
+        def do_POST(self):
+            self._send_trickle()
+
+        def do_GET(self):
+            self._send_trickle()
+
+        def _send_trickle(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+            try:
+                for _ in range(100):
+                    self.wfile.write(b"1\r\nx\r\n")
+                    self.wfile.flush()
+                    time.sleep(0.02)
+                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                closed.set()
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.daemon_threads = True
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/v1", closed
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=1)
+
+
+def test_trickling_scan_source_returns_at_deadline_without_cursor_ack(db, monkeypatch):
+    monkeypatch.setenv("NOTION_API_KEY", "test-only")
+    monkeypatch.setenv("NOTION_CRM_DATA_SOURCE_ID", "crm")
+    monkeypatch.setattr(crm_queue, "_rate_slot", lambda **_kwargs: True)
+    with _trickling_source() as (origin, closed):
+        monkeypatch.setattr(notion, "NOTION_API_BASE", origin)
+        started = time.monotonic()
+        assert crm_queue.scan(deadline=started + 0.2)["scan_pages"] == 0
+        assert time.monotonic() - started < 0.7
+        assert closed.wait(1)
+    with db._SessionLocal() as session:
+        state = session.get(CrmScanState, 1)
+        assert state.cursor is None and state.watermark is None
+        assert session.query(CrmPageQueue).count() == 0
+
+
+def test_trickling_exact_page_returns_at_deadline_and_retains_claim(db, monkeypatch):
+    monkeypatch.setenv("NOTION_API_KEY", "test-only")
+    edited = datetime.now(timezone.utc) - timedelta(seconds=30)
+    with db._SessionLocal.begin() as session:
+        session.add(CrmPageQueue(page_id="slow", edited_at=edited,
+                                 queued_at=edited, due_at=edited))
+    monkeypatch.setattr(crm_queue, "_rate_slot", lambda **_kwargs: True)
+    with _trickling_source() as (origin, closed):
+        monkeypatch.setattr(notion, "NOTION_API_BASE", origin)
+        started = time.monotonic()
+        assert crm_queue.work(deadline=started + 0.2) == {"handled": 0, "failed": 1}
+        assert time.monotonic() - started < 0.7
+        assert closed.wait(1)
+    with db._SessionLocal() as session:
+        row = session.get(CrmPageQueue, "slow")
+        assert row.completed_at is None and row.last_reason == "source_deadline"
+        assert row.attempts == 1
 
 
 def test_exact_page_refresh_preserves_missing_and_clears_empty(db):
@@ -449,7 +600,7 @@ def test_delta_discovers_two_large_edit_bursts_while_audit_is_stalled(db, monkey
              for i in range(75)]
     calls = []
 
-    def query(*, lower, upper, cursor=None):
+    def query(*, lower, upper, cursor=None, deadline=None):
         calls.append((lower, upper, cursor))
         if lower is None:
             raise notion.CrmSourceUnavailable("query_result_limit")
@@ -621,7 +772,9 @@ def test_needs_action_row_does_not_block_healthy_peer(db):
     with patch.object(crm_queue, "_rate_slot", return_value=True), patch.object(
             notion, "fetch_crm_page_for_queue", return_value=_page("healthy")) as fetch:
         assert crm_queue.work(deadline=time.monotonic() + 5) == {"handled": 1, "failed": 0}
-    fetch.assert_called_once_with("healthy")
+    fetch.assert_called_once()
+    assert fetch.call_args.args == ("healthy",)
+    assert fetch.call_args.kwargs["deadline"] > 0
     assert db.get_campaign("healthy") is not None
     metrics = crm_queue.metrics()
     assert metrics["depth"] == 1 and metrics["needs_action"] == 1
@@ -651,7 +804,9 @@ def test_transient_failures_remain_claimable_after_eight_and_recover(db, reason)
     with patch.object(crm_queue, "_rate_slot", return_value=True), patch.object(
             notion, "fetch_crm_page_for_queue", return_value=_page("transient")) as fetch:
         assert crm_queue.work(deadline=time.monotonic() + 5) == {"handled": 1, "failed": 0}
-    fetch.assert_called_once_with("transient")
+    fetch.assert_called_once()
+    assert fetch.call_args.args == ("transient",)
+    assert fetch.call_args.kwargs["deadline"] > 0
     assert db.get_campaign("transient") is not None
     assert crm_queue.metrics()["depth"] == 0
 
