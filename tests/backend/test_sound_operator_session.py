@@ -182,3 +182,26 @@ def test_existing_service_key_contract_does_not_require_browser_password(app, cl
     assert len(calls) == 1
     assert calls[0][2] == {"json": None, "timeout": 30}
     assert client.get("/api/sound-assignments/pages").status_code == 503
+
+
+def test_distributed_sources_stop_at_storage_cap_without_blocking_known_source(app, db, monkeypatch):
+    from sqlalchemy import func, select
+    from campaign_manager.models import SoundOperatorLoginState
+
+    monkeypatch.setattr("campaign_manager.blueprints.sound_assignments._MAX_OPERATOR_LOGIN_SOURCES", 3)
+    monkeypatch.setattr("campaign_manager.blueprints.sound_assignments.time.time", lambda: 1000)
+    headers = {"Origin": "http://localhost"}
+
+    def attempt(source, password):
+        with app.test_client() as client:
+            return client.post("/api/sound-assignments/login", json={"password": password},
+                               headers=headers, environ_overrides={"REMOTE_ADDR": source}).status_code
+
+    for source in ("198.51.100.10", "198.51.100.11", "198.51.100.12"):
+        assert attempt(source, "wrong") == 401
+    for source in ("198.51.100.13", "198.51.100.14"):
+        assert attempt(source, "wrong") == 429
+        assert attempt(source, "synthetic-operator-password-0123456789") == 429
+    with db._SessionLocal.begin() as transaction:
+        assert transaction.scalar(select(func.count()).select_from(SoundOperatorLoginState)) == 3
+    assert attempt("198.51.100.10", "synthetic-operator-password-0123456789") == 200

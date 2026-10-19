@@ -19,7 +19,7 @@ from urllib.parse import urlencode
 
 import requests
 from flask import Blueprint, current_app, jsonify, request, session
-from sqlalchemy import text
+from sqlalchemy import func, select, text
 
 from campaign_manager import db
 from campaign_manager.models import SoundOperatorLoginState
@@ -28,6 +28,8 @@ sound_assignments_bp = Blueprint("sound_assignments", __name__, url_prefix="/api
 
 
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+_MAX_OPERATOR_LOGIN_SOURCES = 10_000
+_OPERATOR_SOURCE_INSERT_LOCK = 0x6F70657261746F72
 
 
 def _operator_password() -> str:
@@ -124,10 +126,22 @@ def _check_operator_login(password: str) -> str:
     now = int(time.time())
     try:
         with db._SessionLocal.begin() as transaction:
-            transaction.execute(db.dialect_insert(SoundOperatorLoginState.__table__).values(
-                source_key=source_key, window_started_at=now, failed_count=0, locked_until=0
-            ).on_conflict_do_nothing(index_elements=["source_key"]))
             state = transaction.get(SoundOperatorLoginState, source_key, with_for_update=True)
+            if state is None:
+                # Serialize only new source allocations across workers. A source
+                # flood must not grow this table faster than the janitor can run.
+                if db._engine.dialect.name == "postgresql":
+                    transaction.execute(text("SELECT pg_advisory_xact_lock(:key)"),
+                                        {"key": _OPERATOR_SOURCE_INSERT_LOCK})
+                state = transaction.get(SoundOperatorLoginState, source_key, with_for_update=True)
+                if state is None:
+                    count = transaction.scalar(select(func.count()).select_from(SoundOperatorLoginState))
+                    if count >= _MAX_OPERATOR_LOGIN_SOURCES:
+                        return "limited"
+                    state = SoundOperatorLoginState(source_key=source_key, window_started_at=now,
+                                                    failed_count=0, locked_until=0)
+                    transaction.add(state)
+                    transaction.flush()
             if state.locked_until > now:
                 return "limited"
             if now - state.window_started_at >= 300:

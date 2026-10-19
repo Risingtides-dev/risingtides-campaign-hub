@@ -171,3 +171,43 @@ def test_login_janitor_skips_row_locked_by_another_worker(postgres_login_state):
         assert transaction.get(SoundOperatorLoginState, "locked-by-login").failed_count == 2
         assert transaction.get(SoundOperatorLoginState, "free-stale") is None
     assert prune_sound_operator_login_state(now=now) == 0
+
+
+def test_distinct_sources_cannot_race_past_storage_cap(app, postgres_login_state, monkeypatch):
+    monkeypatch.setattr("campaign_manager.blueprints.sound_assignments._MAX_OPERATOR_LOGIN_SOURCES", 1)
+    monkeypatch.setattr("campaign_manager.blueprints.sound_assignments.time.time", lambda: 1000)
+    first_has_allocation_lock = Event()
+    release_first = Event()
+    role = local()
+
+    def after_execute(_conn, _cursor, statement, _params, _context, _many):
+        if getattr(role, "name", None) == "first" and "pg_advisory_xact_lock" in statement:
+            first_has_allocation_lock.set()
+            if not release_first.wait(timeout=10):
+                raise AssertionError("allocation lock was not released")
+
+    def attempt(name, source):
+        role.name = name
+        with app.test_client() as client:
+            return client.post("/api/sound-assignments/login", json={"password": "wrong"},
+                               headers={"Origin": "http://localhost"},
+                               environ_overrides={"REMOTE_ADDR": source}).status_code
+
+    event.listen(postgres_login_state, "after_cursor_execute", after_execute)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            first = workers.submit(attempt, "first", "198.51.100.10")
+            try:
+                assert first_has_allocation_lock.wait(timeout=10)
+                second = workers.submit(attempt, "second", "198.51.100.11")
+                with pytest.raises(FutureTimeout):
+                    second.result(timeout=0.3)
+            finally:
+                release_first.set()
+            assert first.result(timeout=10) == 401
+            assert second.result(timeout=10) == 429
+    finally:
+        event.remove(postgres_login_state, "after_cursor_execute", after_execute)
+
+    with postgres_login_state.connect() as conn:
+        assert conn.execute(text("SELECT count(*) FROM sound_operator_login_state")).scalar_one() == 1
