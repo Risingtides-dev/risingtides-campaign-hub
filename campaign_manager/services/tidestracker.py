@@ -8,6 +8,7 @@ maintains a local "folder" overlay (groups + assignments).
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Dict, List, Optional, Tuple
 
 import requests as _requests
@@ -296,6 +297,95 @@ def list_tracker_campaigns(client_id: Optional[str] = None) -> List[Dict]:
         raise TidesTrackerError(f"Failed to list trackers: {e}", status_code=502)
 
     return result.get("campaigns") or []
+
+
+def _campaign_detail(tracker_id: str, api: str, key: str) -> Dict:
+    """Read the authoritative override; malformed responses cannot prove a rename."""
+    try:
+        response = _requests.get(
+            f"{api}/campaigns/{tracker_id}", headers={"x-service-key": key},
+            timeout=10, allow_redirects=False,
+        )
+        if 300 <= response.status_code < 400:
+            raise TidesTrackerError("Tracker name read redirected")
+        response.raise_for_status()
+        campaign = response.json().get("campaign")
+    except (_requests.RequestException, ValueError, AttributeError) as exc:
+        raise TidesTrackerError("Tracker name read failed") from exc
+    if (
+        not isinstance(campaign, dict)
+        or campaign.get("id") != tracker_id
+        or not isinstance(campaign.get("name"), str)
+        or not campaign["name"].strip()
+        or not isinstance(campaign.get("display_name"), str)
+        or not campaign["display_name"].strip()
+        or "display_name_override" not in campaign
+        or type(campaign.get("display_name_override_revision")) is not int
+        or campaign["display_name_override_revision"] < 0
+    ):
+        raise TidesTrackerError("Tracker name read returned an invalid campaign")
+    override = campaign["display_name_override"]
+    if override is not None and not isinstance(override, str):
+        raise TidesTrackerError("Tracker name read returned an invalid override")
+    # A confirmed override revision must also be reflected in the effective
+    # name reported to clients; otherwise a stale projection would let Hub
+    # answer success while still showing the previous name.
+    expected_display_name = override or campaign["name"]
+    if campaign["display_name"] != expected_display_name:
+        raise TidesTrackerError("Tracker name read returned an inconsistent display name")
+    return campaign
+
+
+def set_tracker_display_name(tracker_id: str, override: Optional[str]) -> Dict:
+    """Write an idempotent override and confirm it against the original tracker.
+
+    A transport timeout can follow an applied PATCH. Re-read that exact UUID
+    and the expected next revision once; never blindly replay the write.
+    """
+    try:
+        tracker_id = str(uuid.UUID(tracker_id))
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise TidesTrackerError("Invalid tracker id", status_code=400) from exc
+    api, key, _base = _config()
+    before = _campaign_detail(tracker_id, api, key)
+    if before["display_name_override"] == override:
+        return before
+    revision = before["display_name_override_revision"]
+    try:
+        response = _requests.patch(
+            f"{api}/campaigns/{tracker_id}",
+            json={"display_name_override": override, "expected_revision": revision},
+            headers={"Content-Type": "application/json", "x-service-key": key},
+            timeout=10,
+            allow_redirects=False,
+        )
+        if response.status_code == 409:
+            raise TidesTrackerError("Tracker name changed concurrently", status_code=409)
+        if 300 <= response.status_code < 400:
+            raise TidesTrackerError("Tracker name write redirected", status_code=502)
+        response.raise_for_status()
+    except _requests.RequestException:
+        # A transport failure or server error can follow an applied PATCH.
+        # Read back rather than replaying an ambiguous write.
+        try:
+            after = _campaign_detail(tracker_id, api, key)
+        except TidesTrackerError as exc:
+            raise TidesTrackerError(
+                "Tracker name write outcome unknown", status_code=503
+            ) from exc
+        if (
+            after["display_name_override"] != override
+            or after["display_name_override_revision"] != revision + 1
+        ):
+            raise TidesTrackerError("Tracker name write outcome unknown", status_code=503)
+        return after
+    after = _campaign_detail(tracker_id, api, key)
+    if (
+        after["display_name_override"] != override
+        or after["display_name_override_revision"] != revision + 1
+    ):
+        raise TidesTrackerError("Tracker name write was not confirmed", status_code=503)
+    return after
 
 # Campaign Hub owns delivery status — it is where a campaign gets marked
 # complete — and pushes it to TidesTracker so the client-facing report can
