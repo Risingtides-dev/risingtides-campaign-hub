@@ -71,7 +71,9 @@ def test_export_http_failure_is_bounded_and_writes_nothing(monkeypatch, tmp_path
     monkeypatch.delenv("CAMPAIGN_HUB_API_URL", raising=False)
     monkeypatch.setattr(module, "OUTPUT_ROOT", tmp_path / "no-env")
 
-    def fail(req, timeout):
+    def fail(req, timeout, **options):
+        assert options["context"].check_hostname
+        assert options["context"].verify_mode == module.ssl.CERT_REQUIRED
         assert req.full_url == CANONICAL + "/api/scrape-tasks/queue?limit=500"
         assert timeout == 45
         raise HTTPError(req.full_url, 404, "missing", {}, io.BytesIO(b"private diagnostics"))
@@ -81,6 +83,49 @@ def test_export_http_failure_is_bounded_and_writes_nothing(monkeypatch, tmp_path
         module.export_queue(tmp_path / "exports", 500)
     assert "private diagnostics" not in str(err.value)
     assert not (tmp_path / "exports").exists()
+
+
+def test_export_https_uses_certifi_ca_with_verification(monkeypatch):
+    module = load_script("hub_queue_tls", "tools/yt-scraper/export_hub_queue_links.py")
+    monkeypatch.setenv("CAMPAIGN_HUB_API_URL", CANONICAL)
+    observed = {}
+
+    class Response:
+        headers = {"Content-Length": "16"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _size):
+            if observed.get("read"):
+                return b""
+            observed["read"] = True
+            return b'{"campaigns":[]}'
+
+    def open_verified(req, timeout, **options):
+        observed["url"] = req.full_url
+        assert timeout == module.QUEUE_REQUEST_TIMEOUT_SECONDS
+        context = options["context"]
+        assert context.check_hostname is True
+        assert context.verify_mode == module.ssl.CERT_REQUIRED
+        assert context.get_ca_certs()
+        return Response()
+
+    monkeypatch.setattr(module, "urlopen", open_verified)
+    assert module.fetch_queue(1)["campaigns"] == []
+    assert observed["url"] == CANONICAL + "/api/scrape-tasks/queue?limit=1"
+
+
+def test_export_https_ca_failure_stays_closed(monkeypatch):
+    module = load_script("hub_queue_bad_ca", "tools/yt-scraper/export_hub_queue_links.py")
+    monkeypatch.setenv("CAMPAIGN_HUB_API_URL", CANONICAL)
+    monkeypatch.setattr(module, "ca_bundle_path", lambda: "/nonexistent/cacert.pem")
+    monkeypatch.setattr(module, "urlopen", lambda *_args, **_kwargs: pytest.fail("network requested"))
+    with pytest.raises(OSError):
+        module.fetch_queue(1)
 
 
 def test_export_rejects_oversized_response_without_output(monkeypatch, tmp_path):
