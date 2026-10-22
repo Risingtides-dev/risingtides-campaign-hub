@@ -9,7 +9,7 @@ import {
 } from "@tanstack/react-table"
 import { useState, useMemo, useCallback } from "react"
 import { useQueryClient } from "@tanstack/react-query"
-import { ArrowUpDown, ArrowUp, ArrowDown, Check } from "lucide-react"
+import { ArrowUpDown, ArrowUp, ArrowDown, Check, Send } from "lucide-react"
 import type { CampaignSummary } from "@/lib/types"
 import { api } from "@/lib/api"
 import { keys } from "@/lib/queries"
@@ -86,8 +86,49 @@ function CompletionCell({
   )
 }
 
+// Narrow fixed-width checkbox columns at the start of each row.
+const CHECKBOX_COLUMNS = new Set(["completion", "dashboard_sent"])
+
+function formatSentDate(iso: string): string {
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime())
+    ? ""
+    : d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+}
+
+function DashboardSentCell({
+  sentAt,
+  onClick,
+}: {
+  sentAt: string
+  onClick: (e: React.MouseEvent) => void
+}) {
+  const sent = Boolean(sentAt)
+  const label = sent
+    ? `Dashboard sent to point of contact${formatSentDate(sentAt) ? ` on ${formatSentDate(sentAt)}` : ""} — click to undo`
+    : "Mark dashboard sent to point of contact"
+  return (
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={sent}
+      aria-label={label}
+      title={label}
+      onClick={onClick}
+      className={
+        sent
+          ? "size-5 rounded border border-sky-400/40 bg-sky-400/10 flex items-center justify-center hover:border-sky-400 transition-colors"
+          : "size-5 rounded border border-white/10 bg-rt-bg-card hover:border-white/20 transition-colors"
+      }
+    >
+      {sent && <Send className="size-3 text-sky-400" />}
+    </button>
+  )
+}
+
 function buildColumns(
-  onToggleCompletion: (slug: string, current: CampaignSummary["completion_status"]) => void
+  onToggleCompletion: (slug: string, current: CampaignSummary["completion_status"]) => void,
+  onToggleDashboardSent: (slug: string, currentlySent: boolean) => void
 ): ColumnDef<CampaignSummary>[] {
   return [
   {
@@ -101,6 +142,24 @@ function buildColumns(
           onClick={(e) => {
             e.stopPropagation()
             onToggleCompletion(row.original.slug, status)
+          }}
+        />
+      )
+    },
+    size: 40,
+    enableSorting: false,
+  },
+  {
+    id: "dashboard_sent",
+    header: () => <span className="sr-only">Dashboard sent</span>,
+    cell: ({ row }) => {
+      const sentAt = row.original.dashboard_sent_at || ""
+      return (
+        <DashboardSentCell
+          sentAt={sentAt}
+          onClick={(e) => {
+            e.stopPropagation()
+            onToggleDashboardSent(row.original.slug, Boolean(sentAt))
           }}
         />
       )
@@ -342,9 +401,33 @@ export function CampaignsTable({ data }: CampaignsTableProps) {
     [qc]
   )
 
+  const handleToggleDashboardSent = useCallback(
+    (slug: string, currentlySent: boolean) => {
+      // Optimistic, like the completion toggle: flip it in every cached list
+      // now, reconcile in the background, roll back if the save fails.
+      const sent = !currentlySent
+      const optimistic = sent ? new Date().toISOString() : ""
+      const listKeys = [keys.campaigns, keys.campaignsActive, keys.campaignsFinished]
+      const snapshot = listKeys.map((k) => [k, qc.getQueryData<CampaignSummary[]>(k)] as const)
+      const patch = (value: string) => (list: CampaignSummary[] | undefined) =>
+        list?.map((c) => (c.slug === slug ? { ...c, dashboard_sent_at: value } : c))
+      for (const k of listKeys) qc.setQueryData<CampaignSummary[]>(k, patch(optimistic))
+
+      api
+        .setDashboardSent(slug, sent)
+        .then((res) => {
+          for (const k of listKeys) qc.setQueryData<CampaignSummary[]>(k, patch(res.dashboard_sent_at))
+        })
+        .catch(() => {
+          for (const [k, data] of snapshot) qc.setQueryData(k, data)
+        })
+    },
+    [qc]
+  )
+
   const columns = useMemo(
-    () => buildColumns(handleToggleCompletion),
-    [handleToggleCompletion]
+    () => buildColumns(handleToggleCompletion, handleToggleDashboardSent),
+    [handleToggleCompletion, handleToggleDashboardSent]
   )
 
 
@@ -390,7 +473,7 @@ export function CampaignsTable({ data }: CampaignsTableProps) {
                 <TableHead
                   key={header.id}
                   className={`text-rt-fg-tertiary text-xs font-semibold uppercase tracking-[0.3px] px-4 py-3 border-b-2 border-white/8 ${header.column.id === "completion" ? "sticky left-0 z-20 bg-rt-bg-card" : ""}`}
-                  style={header.column.id === "completion" ? { width: 40, minWidth: 40, maxWidth: 40 } : undefined}
+                  style={CHECKBOX_COLUMNS.has(header.column.id) ? { width: 40, minWidth: 40, maxWidth: 40 } : undefined}
                 >
                   {header.isPlaceholder
                     ? null

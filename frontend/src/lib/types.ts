@@ -38,6 +38,8 @@ export interface CampaignSummary {
   end_date: string
   end_date_auto?: boolean
   completion_status: "none" | "booked" | "completed"
+  // ISO timestamp the client dashboard went to the point of contact; "" = not yet.
+  dashboard_sent_at?: string
   budget: CampaignBudget
   stats: CampaignStats
   creator_count: number

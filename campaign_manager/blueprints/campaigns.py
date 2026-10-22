@@ -423,6 +423,8 @@ def _campaign_summary(c: Dict) -> Dict:
         "budget": c["budget"],
         "stats": c["stats"],
         "completion_status": c["meta"].get("completion_status", "none"),
+        # Set when the client dashboard was handed to the point of contact.
+        "dashboard_sent_at": c["meta"].get("dashboard_sent_at", ""),
         # `active` is the single source of truth for "is this campaign live?"
         # A campaign is active until it's checked off completed. Agents/scrapers
         # should source from active campaigns only — filter via ?active=true.
@@ -668,6 +670,36 @@ def create_campaign():
     from campaign_manager.services.chartmetric_autolink import request_immediate_resolve
     request_immediate_resolve(slug)
     return jsonify({"ok": True, "slug": slug, "message": f"Created campaign: {title}"}), 201
+
+
+# -------------------------------------------------------------------
+# 2b. POST /api/campaign/<slug>/dashboard-sent  -- {"sent": true|false}
+#     Marks that the client dashboard was handed to the point of contact.
+#     Deliberately separate from /edit so the checkbox can't trigger edit's
+#     side effects (end dates, tracker badge sync).
+# -------------------------------------------------------------------
+@campaigns_bp.post("/api/campaign/<slug>/dashboard-sent")
+def set_dashboard_sent(slug: str):
+    if not _db.is_active():
+        return jsonify({"error": "Database not available."}), 503
+    data = request.get_json(silent=True) or {}
+    sent = data.get("sent")
+    if not isinstance(sent, bool):
+        return jsonify({"error": "`sent` must be true or false."}), 400
+
+    from campaign_manager.models import Campaign
+    with _db.get_session() as s:
+        c = s.query(Campaign).filter_by(slug=slug).first()
+        if c is None:
+            return jsonify({"error": "Campaign not found."}), 404
+        if sent and c.dashboard_sent_at is None:
+            c.dashboard_sent_at = datetime.now()
+        elif not sent:
+            c.dashboard_sent_at = None
+        s.commit()
+        sent_at = c.dashboard_sent_at.isoformat() if c.dashboard_sent_at else ""
+
+    return jsonify({"ok": True, "slug": slug, "dashboard_sent_at": sent_at})
 
 
 # -------------------------------------------------------------------

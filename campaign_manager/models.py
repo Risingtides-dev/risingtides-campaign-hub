@@ -31,6 +31,8 @@ class Campaign(Base):
     start_date = Column(String(20), default="")
     end_date = Column(String(20), default="")
     end_date_auto = Column(Boolean, default=False, nullable=False)
+    # When the client dashboard was handed to the point of contact (NULL = not yet).
+    dashboard_sent_at = Column(DateTime, nullable=True)
     budget = Column(Float, default=0.0)
     platform = Column(String(20), default="tiktok")
     total_views = Column(Integer, default=0)
@@ -137,6 +139,7 @@ class Campaign(Base):
             "tracker_url": self.tracker_url or "",
             "source": self.source or "manual",
             "completion_status": self.completion_status or "none",
+            "dashboard_sent_at": self.dashboard_sent_at.isoformat() if self.dashboard_sent_at else "",
             "notion_page_id": self.notion_page_id or "",
             "insta_sound": self.insta_sound or "",
             "tt_artist_label": self.tt_artist_label or "",

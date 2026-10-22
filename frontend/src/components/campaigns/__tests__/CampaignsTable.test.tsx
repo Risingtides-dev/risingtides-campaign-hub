@@ -29,3 +29,32 @@ describe('<CampaignsTable /> completion cache refresh', () => {
     })
   })
 })
+
+describe('<CampaignsTable /> dashboard sent checkbox', () => {
+  const renderTable = (data: CampaignSummary[]) => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><MemoryRouter><CampaignsTable data={data} /></MemoryRouter></QueryClientProvider>)
+  }
+  beforeEach(() => vi.clearAllMocks())
+
+  it('marks an unsent campaign as sent', async () => {
+    const setDashboardSent = vi.fn().mockResolvedValue({ ok: true, dashboard_sent_at: '2026-10-22T10:00:00' })
+    ;(api as unknown as Record<string, unknown>).setDashboardSent = setDashboardSent
+    renderTable([{ ...row, dashboard_sent_at: '' }])
+    const box = screen.getByRole('checkbox', { name: 'Mark dashboard sent to point of contact' })
+    expect(box).toHaveAttribute('aria-checked', 'false')
+    fireEvent.click(box)
+    await waitFor(() => expect(setDashboardSent).toHaveBeenCalledWith('song', true))
+    expect(api.editCampaign).not.toHaveBeenCalled()
+  })
+
+  it('shows the sent date and unchecks', async () => {
+    const setDashboardSent = vi.fn().mockResolvedValue({ ok: true, dashboard_sent_at: '' })
+    ;(api as unknown as Record<string, unknown>).setDashboardSent = setDashboardSent
+    renderTable([{ ...row, dashboard_sent_at: '2026-10-20T15:00:00' }])
+    const box = screen.getByRole('checkbox', { name: /Dashboard sent to point of contact on Oct 20, 2026/ })
+    expect(box).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(box)
+    await waitFor(() => expect(setDashboardSent).toHaveBeenCalledWith('song', false))
+  })
+})

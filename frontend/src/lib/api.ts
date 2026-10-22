@@ -114,6 +114,12 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
+  setDashboardSent: (slug: string, sent: boolean) =>
+    request<ApiOk & { dashboard_sent_at: string }>(`/api/campaign/${slug}/dashboard-sent`, {
+      method: "POST",
+      body: JSON.stringify({ sent }),
+    }),
+
   editCampaign: (slug: string, data: Record<string, unknown>) => {
     const requestBody = data as CampaignEditRequest
     return request<ApiOk>(`/api/campaign/${slug}/edit`, {
