@@ -180,15 +180,6 @@ function buildColumns(
     ),
   },
   {
-    accessorKey: "artist",
-    header: ({ column }) => (
-      <SortableHeader column={column} label="Artist" />
-    ),
-    cell: ({ row }) => (
-      <span className="text-[14px]">{row.original.artist || "-"}</span>
-    ),
-  },
-  {
     accessorKey: "start_date",
     header: ({ column }) => (
       <SortableHeader column={column} label="Start Date" />
