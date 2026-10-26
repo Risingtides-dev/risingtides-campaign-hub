@@ -11,6 +11,7 @@ import {
   useRemoveCreator,
   useCobrandStats,
   useCreateTracker,
+  useSetDashboardSent,
   useSetCobrandLinks,
 } from "@/lib/queries"
 import { CampaignHeader } from "@/components/campaigns/CampaignHeader"
@@ -41,6 +42,7 @@ export default function CampaignDetail() {
   const togglePaid = useTogglePaid(slug!)
   const removeCreator = useRemoveCreator(slug!)
   const createTracker = useCreateTracker(slug!)
+  const setDashboardSent = useSetDashboardSent(slug!)
   const setCobrandLinks = useSetCobrandLinks(slug!)
 
   // Loading state
@@ -94,6 +96,7 @@ export default function CampaignDetail() {
         }}
         onCreateTracker={() => createTracker.mutate()}
         isCreatingTracker={createTracker.isPending}
+        onToggleDashboardSent={(sent) => setDashboardSent.mutate(sent)}
       />
 
       {/* Refresh stats feedback */}

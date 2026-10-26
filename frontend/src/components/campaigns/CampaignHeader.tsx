@@ -4,6 +4,8 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Pencil, ExternalLink, BarChart3, RefreshCw, X, Plus, Loader2, Activity, FileText } from "lucide-react"
 import type { CampaignDetail } from "@/lib/types"
+import { DashboardSentBox } from "@/components/campaigns/DashboardSentCheckbox"
+import { dashboardSentLabel } from "@/components/campaigns/dashboardSent"
 
 interface CampaignHeaderProps {
   campaign: CampaignDetail
@@ -18,6 +20,7 @@ interface CampaignHeaderProps {
   isCreatingTracker?: boolean
   onDropLink?: (url: string, expectedUrl: string) => Promise<unknown>
   isDroppingLink?: boolean
+  onToggleDashboardSent?: (sent: boolean) => void
 }
 
 export function CampaignHeader({
@@ -33,6 +36,7 @@ export function CampaignHeader({
   isCreatingTracker,
   onDropLink,
   isDroppingLink = false,
+  onToggleDashboardSent,
 }: CampaignHeaderProps) {
   const [isEditing, setIsEditing] = useState(false)
   const [droppedLink, setDroppedLink] = useState("")
@@ -381,6 +385,21 @@ export function CampaignHeader({
               {isCreatingTracker ? "Creating..." : "Create Tracker"}
             </Button>
           ) : null}
+
+          {onToggleDashboardSent && (
+            <Button
+              type="button"
+              role="checkbox"
+              aria-checked={Boolean(campaign.dashboard_sent_at)}
+              aria-label={dashboardSentLabel(campaign.dashboard_sent_at || "")}
+              title={dashboardSentLabel(campaign.dashboard_sent_at || "")}
+              onClick={() => onToggleDashboardSent(!campaign.dashboard_sent_at)}
+              className="bg-white/15 hover:bg-white/25 text-white border border-white/30"
+            >
+              <DashboardSentBox sent={Boolean(campaign.dashboard_sent_at)} />
+              Dashboard sent
+            </Button>
+          )}
 
           <Button
             onClick={onRefresh}

@@ -1079,6 +1079,7 @@ def campaign_detail(slug: str):
         "cobrand_upload_url": meta.get("cobrand_upload_url", ""),
         "tracker_campaign_id": meta.get("tracker_campaign_id", ""),
         "tracker_url": _canon_tracker_url(meta.get("tracker_url", "")),
+        "dashboard_sent_at": meta.get("dashboard_sent_at", ""),
         "platform": meta.get("platform", "tiktok"),
         "source": meta.get("source", "manual"),
         "label": meta.get("label", ""),

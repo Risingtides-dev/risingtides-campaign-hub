@@ -94,6 +94,8 @@ export interface CampaignDetail {
   content_types: string[]
   tracker_campaign_id?: string
   tracker_url?: string
+  // ISO timestamp the client dashboard went to the point of contact; "" = not yet.
+  dashboard_sent_at?: string
 }
 
 export interface MatchedVideo {

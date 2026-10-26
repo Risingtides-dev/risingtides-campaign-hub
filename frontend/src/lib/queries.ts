@@ -362,6 +362,34 @@ export function useSetCobrandLinks(slug: string) {
   })
 }
 
+// --- Dashboard sent to point of contact ---
+
+export function useSetDashboardSent(slug: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (sent: boolean) => api.setDashboardSent(slug, sent),
+    // Optimistic: flip the campaign page immediately, roll back on failure.
+    onMutate: async (sent: boolean) => {
+      await qc.cancelQueries({ queryKey: keys.campaign(slug) })
+      const previous = qc.getQueryData<CampaignDetail>(keys.campaign(slug))
+      qc.setQueryData<CampaignDetail>(keys.campaign(slug), (c) =>
+        c ? { ...c, dashboard_sent_at: sent ? new Date().toISOString() : "" } : c
+      )
+      return { previous }
+    },
+    onError: (_err, _sent, ctx) => {
+      if (ctx?.previous) qc.setQueryData(keys.campaign(slug), ctx.previous)
+    },
+    onSuccess: (res) => {
+      qc.setQueryData<CampaignDetail>(keys.campaign(slug), (c) =>
+        c ? { ...c, dashboard_sent_at: res.dashboard_sent_at } : c
+      )
+      // Keep the campaigns list checkbox in sync.
+      qc.invalidateQueries({ queryKey: keys.campaigns })
+    },
+  })
+}
+
 // --- Chartmetric pop score ---
 
 export function usePopScore(slug: string) {

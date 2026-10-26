@@ -9,7 +9,8 @@ import {
 } from "@tanstack/react-table"
 import { useState, useMemo, useCallback } from "react"
 import { useQueryClient } from "@tanstack/react-query"
-import { ArrowUpDown, ArrowUp, ArrowDown, Check, Send } from "lucide-react"
+import { ArrowUpDown, ArrowUp, ArrowDown, Check } from "lucide-react"
+import { DashboardSentCheckbox } from "@/components/campaigns/DashboardSentCheckbox"
 import type { CampaignSummary } from "@/lib/types"
 import { api } from "@/lib/api"
 import { keys } from "@/lib/queries"
@@ -89,43 +90,6 @@ function CompletionCell({
 // Narrow fixed-width checkbox columns at the start of each row.
 const CHECKBOX_COLUMNS = new Set(["completion", "dashboard_sent"])
 
-function formatSentDate(iso: string): string {
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime())
-    ? ""
-    : d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
-}
-
-function DashboardSentCell({
-  sentAt,
-  onClick,
-}: {
-  sentAt: string
-  onClick: (e: React.MouseEvent) => void
-}) {
-  const sent = Boolean(sentAt)
-  const label = sent
-    ? `Dashboard sent to point of contact${formatSentDate(sentAt) ? ` on ${formatSentDate(sentAt)}` : ""} — click to undo`
-    : "Mark dashboard sent to point of contact"
-  return (
-    <button
-      type="button"
-      role="checkbox"
-      aria-checked={sent}
-      aria-label={label}
-      title={label}
-      onClick={onClick}
-      className={
-        sent
-          ? "size-5 rounded border border-sky-400/40 bg-sky-400/10 flex items-center justify-center hover:border-sky-400 transition-colors"
-          : "size-5 rounded border border-white/10 bg-rt-bg-card hover:border-white/20 transition-colors"
-      }
-    >
-      {sent && <Send className="size-3 text-sky-400" />}
-    </button>
-  )
-}
-
 function buildColumns(
   onToggleCompletion: (slug: string, current: CampaignSummary["completion_status"]) => void,
   onToggleDashboardSent: (slug: string, currentlySent: boolean) => void
@@ -155,7 +119,7 @@ function buildColumns(
     cell: ({ row }) => {
       const sentAt = row.original.dashboard_sent_at || ""
       return (
-        <DashboardSentCell
+        <DashboardSentCheckbox
           sentAt={sentAt}
           onClick={(e) => {
             e.stopPropagation()

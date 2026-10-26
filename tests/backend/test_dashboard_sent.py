@@ -52,3 +52,10 @@ class TestDashboardSent:
 
     def test_unknown_campaign(self, client):
         assert client.post("/api/campaign/nope/dashboard-sent", json={"sent": True}).status_code == 404
+
+
+def test_campaign_detail_includes_dashboard_sent(client):
+    slug = _create(client, "Detail Dash")
+    assert client.get(f"/api/campaign/{slug}").get_json()["dashboard_sent_at"] == ""
+    sent_at = client.post(f"/api/campaign/{slug}/dashboard-sent", json={"sent": True}).get_json()["dashboard_sent_at"]
+    assert client.get(f"/api/campaign/{slug}").get_json()["dashboard_sent_at"] == sent_at
