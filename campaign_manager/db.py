@@ -1041,9 +1041,14 @@ def _is_round_sibling(other, meta: Dict) -> bool:
         return False
     # Without two ordered start dates, a shared sound has no safe attribution
     # boundary. Never relax the duplicate-sound guard for an undated booking.
+    previous_raw = (other.start_date or "").strip()
+    next_raw = (meta.get("start_date") or "").strip()
+    if not (re.fullmatch(r"\d{4}-\d{2}-\d{2}", previous_raw) and
+            re.fullmatch(r"\d{4}-\d{2}-\d{2}", next_raw)):
+        return False
     try:
-        previous_start = date.fromisoformat((other.start_date or "").strip())
-        next_start = date.fromisoformat((meta.get("start_date") or "").strip())
+        previous_start = date.fromisoformat(previous_raw)
+        next_start = date.fromisoformat(next_raw)
     except (TypeError, ValueError):
         return False
     if next_start == previous_start:
@@ -1139,8 +1144,10 @@ def save_campaign(slug: str, meta: Dict, *, expected_official_sound: Optional[st
                 elif s.bind and s.bind.dialect.name == "sqlite":
                     s.execute(text("BEGIN IMMEDIATE"))
                 page_id = (meta.get("notion_page_id") or "").strip()
+                meta = {**meta, "notion_page_id": page_id}
                 if page_id:
-                    existing = s.query(Campaign.slug).filter_by(notion_page_id=page_id).first()
+                    existing = s.query(Campaign.slug).filter(
+                        func.trim(Campaign.notion_page_id) == page_id).first()
                     if existing:
                         return "existing", existing.slug
                 base = slug

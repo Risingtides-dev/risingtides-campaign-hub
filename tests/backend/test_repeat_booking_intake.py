@@ -204,6 +204,8 @@ def test_concurrent_distinct_pages_get_distinct_slugs_and_budgets(db, tmp_path):
     ("", ""),
     ("2026-10-27", "2026-10-27"),
     ("invalid", "2026-10-28"),
+    ("20261027", "2026-10-28"),
+    ("2026-10-27", "20261028"),
 ])
 def test_shared_sound_without_distinct_valid_desired_start_dates_is_refused(
         client, db, first_date, second_date):
@@ -212,6 +214,27 @@ def test_shared_sound_without_distinct_valid_desired_start_dates_is_refused(
     assert second.status_code == 409
     assert second.get_json()["code"] == "duplicate"
     assert db.get_campaign_by_notion_page_id("page-r2") is None
+
+
+def test_page_id_whitespace_is_normalized_before_identity_and_insert(client, db):
+    first = _post_webhook(client, "  page-spaced  ", budget=1000)
+    assert first.status_code == 201
+    second = _post_webhook(client, "page-spaced", budget=1250)
+    assert second.status_code == 200
+    assert db.get_campaign_by_notion_page_id("page-spaced")["budget"] == 1000
+    assert len(db.get_campaign_slugs()) == 1
+
+
+def test_legacy_whitespace_page_id_is_reconciled_without_overwrite(client, db):
+    db.save_campaign("big_moochie_grape_still_signed_to_dolph", {
+        "title": "Big Moochie grape - Still signed to Dolph",
+        "notion_page_id": "  page-legacy  ",
+        "budget": 1000,
+    })
+    second = _post_webhook(client, "page-legacy", budget=1250)
+    assert second.status_code == 200
+    assert db.get_campaign("big_moochie_grape_still_signed_to_dolph")["budget"] == 1000
+    assert len(db.get_campaign_slugs()) == 1
 
 
 @pytest.mark.parametrize("path", ["webhook", "sync"])
