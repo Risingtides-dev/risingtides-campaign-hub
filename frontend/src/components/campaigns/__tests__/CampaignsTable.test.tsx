@@ -58,3 +58,16 @@ describe('<CampaignsTable /> dashboard sent checkbox', () => {
     await waitFor(() => expect(setDashboardSent).toHaveBeenCalledWith('song', false))
   })
 })
+
+describe('<DashboardSentBox /> layout', () => {
+  it('renders as a block-level box in both states so it never collapses', async () => {
+    const { DashboardSentBox } = await import('@/components/campaigns/DashboardSentCheckbox')
+    for (const sent of [false, true]) {
+      const { container, unmount } = render(<DashboardSentBox sent={sent} />)
+      const box = container.firstElementChild as HTMLElement
+      expect(box).toHaveClass('size-5')
+      expect(box).toHaveClass('flex')
+      unmount()
+    }
+  })
+})
