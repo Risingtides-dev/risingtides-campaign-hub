@@ -125,6 +125,7 @@ def _intake_campaign(entry: dict) -> dict:
             return {"status": "existing", "slug": existing["slug"]}
 
     slug = base_slug
+    took_round_path = False
     if _db.campaign_exists(slug):
         # Without a CRM page id we cannot tell a repeat booking from a plain
         # duplicate, so keep the old slug-uniqueness refusal.
@@ -132,13 +133,19 @@ def _intake_campaign(entry: dict) -> dict:
             return {"status": "conflict", "slug": slug}
         # A different CRM page with the same title is a repeat booking.
         slug = _resolve_round_slug(slug, entry.get("round"))
+        took_round_path = True
 
     meta = _build_campaign_meta(slug, entry)
     sound_url = _db._canonical_sound_url(meta["official_sound"])
     result = _db.save_campaign(
         slug, meta,
         expected_official_sound="" if sound_url is not None else None,
-        allow_round_sibling_sound=True,
+        # A reused sound is allowed ONLY on the round-suffixed path: a repeat
+        # booking of an existing campaign of the same artist+song (same base
+        # slug resolved to its next _round_N). Any other sound reuse — a
+        # retyped title, or a new page that is not a round of an existing
+        # campaign — is refused as 'duplicate sound URL', exactly like main.
+        allow_round_sibling_sound=took_round_path,
     )
     if result not in (None, "updated"):
         if result == "duplicate":

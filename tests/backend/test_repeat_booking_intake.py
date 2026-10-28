@@ -311,3 +311,76 @@ def test_t7_operator_edited_fields_untouched(client, db):
     assert original["label"] == "Operator Edited Label"
     assert original["internal_captions"] == "round one line"
     assert original["notion_page_id"] == "page-r1"
+
+
+@pytest.mark.parametrize("path", ["webhook", "sync"])
+def test_t6_sound_reuse_other_title_no_page_refused(client, db, path):
+    """S1120-1: same artist+song+sound under a DIFFERENT title, no page id, is
+    still a 'duplicate sound URL' (refused exactly like main), not a new round.
+
+    A reused sound is allowed only for a repeat booking that takes the
+    round-suffixed path (same base slug). A retyped title never gets that
+    path, so the old one-sound-per-campaign guard must still bite.
+    """
+    first = _entry("page-r1", budget=1000.0)
+
+    if path == "webhook":
+        assert _post_webhook(client, "page-r1", budget=1000.0).status_code == 201
+        dup = client.post("/api/webhooks/notion", json={
+            "artist": "Big Moochie Grape",
+            "song": "Still Signed to Dolph",
+            "title": "Big Moochie grape - Still signed to Dolph (typo)",
+            "budget": "500",
+            "notion_page_id": "",
+            "tiktok_sound_link": SOUND,
+        })
+        assert dup.status_code == 409, dup.get_json()
+        assert dup.get_json()["code"] == "duplicate"
+    else:
+        other = _entry("", title="Big Moochie grape - Still signed to Dolph (typo)",
+                       budget=500.0)
+        other["slug"] = "big_moochie_grape_still_signed_to_dolph_typo"
+        resp = _post_sync(client, [first, other])
+        body = resp.get_json()
+        assert {c["slug"] for c in body["created"]} == {
+            "big_moochie_grape_still_signed_to_dolph"
+        }, body
+        assert any(s["reason"] == "duplicate sound URL" for s in body["skipped"]), body
+
+    # Only round 1 exists; the retyped-title row never becomes a campaign.
+    assert db.campaign_exists("big_moochie_grape_still_signed_to_dolph")
+    assert len(db.get_campaign_slugs()) == 1
+
+
+@pytest.mark.parametrize("path", ["webhook", "sync"])
+def test_t6b_sound_reuse_other_title_new_page_refused(client, db, path):
+    """S1120-1: same artist+song+sound under a DIFFERENT title with a NEW page
+    id (but not a round of the existing campaign) is refused like main."""
+    first = _entry("page-r1", budget=1000.0)
+
+    if path == "webhook":
+        assert _post_webhook(client, "page-r1", budget=1000.0).status_code == 201
+        dup = client.post("/api/webhooks/notion", json={
+            "artist": "Big Moochie Grape",
+            "song": "Still Signed to Dolph",
+            "title": "Big Moochie grape - Still signed to Dolph (typo)",
+            "budget": "500",
+            "notion_page_id": "page-other-title",
+            "tiktok_sound_link": SOUND,
+        })
+        assert dup.status_code == 409, dup.get_json()
+        assert dup.get_json()["code"] == "duplicate"
+    else:
+        other = _entry("page-other-title",
+                       title="Big Moochie grape - Still signed to Dolph (typo)",
+                       budget=500.0)
+        other["slug"] = "big_moochie_grape_still_signed_to_dolph_typo"
+        resp = _post_sync(client, [first, other])
+        body = resp.get_json()
+        assert {c["slug"] for c in body["created"]} == {
+            "big_moochie_grape_still_signed_to_dolph"
+        }, body
+        assert any(s["reason"] == "duplicate sound URL" for s in body["skipped"]), body
+
+    assert db.campaign_exists("big_moochie_grape_still_signed_to_dolph")
+    assert len(db.get_campaign_slugs()) == 1
