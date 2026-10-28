@@ -1022,17 +1022,45 @@ def _canonical_sound_url(value: str) -> Optional[str]:
     return urlunsplit((scheme, host, parsed.path or "/", parsed.query, ""))
 
 
-def _has_duplicate_campaign_sound_url(session, canonical_url: str, *, exclude_slug: Optional[str] = None) -> bool:
-    query = session.query(Campaign.slug, Campaign.official_sound)
+def _is_round_sibling(other, meta: Dict) -> bool:
+    """True when ``other`` is another round of the same artist+song as ``meta``.
+
+    The Notion intake path only relaxes the duplicate-sound guard for a repeat
+    booking: the same artist and song, arriving under a different round or a
+    different CRM page. Any other sound reuse (a different song) is refused.
+    """
+    other_artist = (other.artist or "").strip().lower()
+    other_song = (other.song or "").strip().lower()
+    meta_artist = (meta.get("artist") or "").strip().lower()
+    meta_song = (meta.get("song") or "").strip().lower()
+    if not (other_artist and other_song and meta_artist and meta_song):
+        return False
+    if other_artist != meta_artist or other_song != meta_song:
+        return False
+    round_differs = (other.round or "").strip().lower() != (meta.get("round") or "").strip().lower()
+    page_differs = (other.notion_page_id or "") != (meta.get("notion_page_id") or "")
+    return round_differs or page_differs
+
+
+def _has_duplicate_campaign_sound_url(session, canonical_url: str, *, exclude_slug: Optional[str] = None,
+                                      allow_round_sibling_for: Optional[Dict] = None) -> bool:
+    query = session.query(
+        Campaign.slug, Campaign.official_sound, Campaign.artist,
+        Campaign.song, Campaign.round, Campaign.notion_page_id,
+    )
     if exclude_slug is not None:
         query = query.filter(Campaign.slug != exclude_slug)
-    return any(
-        _canonical_sound_url(other.official_sound or "") == canonical_url
-        for other in query
-    )
+    for other in query:
+        if _canonical_sound_url(other.official_sound or "") != canonical_url:
+            continue
+        if allow_round_sibling_for is not None and _is_round_sibling(other, allow_round_sibling_for):
+            continue
+        return True
+    return False
 
 
-def _check_sound_url_write(session, campaign: Campaign, meta: Dict, expected_official_sound: Optional[str]) -> Optional[str]:
+def _check_sound_url_write(session, campaign: Campaign, meta: Dict, expected_official_sound: Optional[str],
+                           *, allow_round_sibling_sound: bool = False) -> Optional[str]:
     """Validate a legacy whole-campaign sound URL write inside its transaction."""
     current = campaign.official_sound or ""
     candidate = meta.get("official_sound") or ""
@@ -1046,7 +1074,10 @@ def _check_sound_url_write(session, campaign: Campaign, meta: Dict, expected_off
         return None
     if not isinstance(expected_official_sound, str):
         return "missing_revision"
-    if _has_duplicate_campaign_sound_url(session, canonical, exclude_slug=campaign.slug):
+    if _has_duplicate_campaign_sound_url(
+        session, canonical, exclude_slug=campaign.slug,
+        allow_round_sibling_for=meta if allow_round_sibling_sound else None,
+    ):
         return "duplicate"
     meta["official_sound"] = canonical
     return None
@@ -1066,8 +1097,25 @@ def get_campaign_obj(slug: str) -> Optional[Campaign]:
         return s.query(Campaign).filter_by(slug=slug).first()
 
 
-def save_campaign(slug: str, meta: Dict, *, expected_official_sound: Optional[str] = None):
-    """Create or update a campaign from a meta dict."""
+def get_campaign_by_notion_page_id(page_id: str) -> Optional[Dict]:
+    """Get campaign metadata by its Notion CRM page id, or None."""
+    if not page_id:
+        return None
+    with get_session() as s:
+        c = s.query(Campaign).filter_by(notion_page_id=page_id).first()
+        if not c:
+            return None
+        return c.to_meta_dict()
+
+
+def save_campaign(slug: str, meta: Dict, *, expected_official_sound: Optional[str] = None,
+                  allow_round_sibling_sound: bool = False):
+    """Create or update a campaign from a meta dict.
+
+    ``allow_round_sibling_sound`` lets the Notion intake path reuse a sound
+    for a repeat booking of the same artist+song (new round or new CRM page);
+    every other caller keeps the strict one-sound-per-campaign guard.
+    """
     with get_session() as s:
         candidate_url = _canonical_sound_url(meta.get("official_sound") or "")
         guarded_sound_write = candidate_url is not None and expected_official_sound is not None
@@ -1081,7 +1129,10 @@ def save_campaign(slug: str, meta: Dict, *, expected_official_sound: Optional[st
             if guarded_sound_write:
                 if expected_official_sound != "":
                     return "conflict"
-                if _has_duplicate_campaign_sound_url(s, candidate_url):
+                if _has_duplicate_campaign_sound_url(
+                    s, candidate_url,
+                    allow_round_sibling_for=meta if allow_round_sibling_sound else None,
+                ):
                     return "duplicate"
                 meta["official_sound"] = candidate_url
             c = Campaign(slug=slug)
@@ -1093,7 +1144,10 @@ def save_campaign(slug: str, meta: Dict, *, expected_official_sound: Optional[st
             # captions the CRM has since changed.
             c.internal_captions = meta.get("internal_captions")
         else:
-            result = _check_sound_url_write(s, c, meta, expected_official_sound)
+            result = _check_sound_url_write(
+                s, c, meta, expected_official_sound,
+                allow_round_sibling_sound=allow_round_sibling_sound,
+            )
             if result:
                 return result
 
@@ -1286,6 +1340,12 @@ def list_campaigns_with_creators(
 def campaign_exists(slug: str) -> bool:
     with get_session() as s:
         return s.query(Campaign).filter_by(slug=slug).count() > 0
+
+
+def get_campaign_slugs() -> List[str]:
+    """Every campaign slug, for round-number discovery."""
+    with get_session() as s:
+        return [slug for (slug,) in s.query(Campaign.slug).all()]
 
 
 def get_campaign_id(slug: str) -> Optional[int]:
