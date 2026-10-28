@@ -267,9 +267,12 @@ def notion_sync():
 
         # Refresh (not create) when this CRM page was already imported, or when
         # the title slug maps to a legacy campaign with no recorded page id
-        # (the content_types backfill). A repeat booking — a different page id
-        # where the existing campaign already has one — falls through to the
-        # shared intake below and becomes a round-suffixed campaign.
+        # (the content_types backfill). The legacy match is page-id aware on
+        # both sides: it only merges when the incoming entry ALSO has no page
+        # id (an indistinguishable plain duplicate). A repeat booking — an
+        # incoming page id, even where the existing campaign has none — falls
+        # through to the shared intake below and becomes a round-suffixed
+        # campaign instead of being silently merged.
         refresh_slug = None
         if page_id:
             existing_by_page = _db.get_campaign_by_notion_page_id(page_id)
@@ -277,7 +280,7 @@ def notion_sync():
                 refresh_slug = existing_by_page["slug"]
         if refresh_slug is None:
             existing = _db.get_campaign(base_slug)
-            if existing is not None and not (existing.get("notion_page_id") or ""):
+            if existing is not None and not page_id and not (existing.get("notion_page_id") or ""):
                 refresh_slug = base_slug
 
         if refresh_slug is not None:

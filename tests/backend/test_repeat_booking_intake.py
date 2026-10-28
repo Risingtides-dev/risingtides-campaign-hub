@@ -211,6 +211,45 @@ def test_t4_no_round_gets_next_free_round_number(client, db, path):
         }
 
 
+@pytest.mark.parametrize("path", ["webhook", "sync"])
+def test_t4b_legacy_campaign_new_page_becomes_round_sibling(client, db, path):
+    """MED: a legacy campaign (empty notion_page_id) + a new CRM page with the
+    same title becomes a round sibling, never a silent content_types merge."""
+    # Round 1 exists as a legacy campaign imported before page ids were
+    # recorded: no notion_page_id, same title slug, same sound.
+    db.save_campaign("big_moochie_grape_still_signed_to_dolph", {
+        "title": "Big Moochie grape - Still signed to Dolph",
+        "notion_page_id": "",
+        "artist": "Big Moochie Grape",
+        "song": "Still Signed to Dolph",
+        "official_sound": SOUND,
+        "budget": 1000.0,
+        "content_types": ["Trucktok"],
+    })
+
+    if path == "webhook":
+        resp = _post_webhook(client, "page-new", budget=1250.0, round_value="Round 2")
+        assert resp.status_code == 201, resp.get_json()
+        assert resp.get_json()["slug"] == "big_moochie_grape_still_signed_to_dolph_round_2"
+    else:
+        entry = _entry("page-new", budget=1250.0, round_value="Round 2",
+                       content_types=["POV"])
+        resp = _post_sync(client, [entry])
+        body = resp.get_json()
+        assert {c["slug"] for c in body["created"]} == {
+            "big_moochie_grape_still_signed_to_dolph_round_2"
+        }, body
+
+    legacy = db.get_campaign("big_moochie_grape_still_signed_to_dolph")
+    assert legacy is not None
+    assert legacy["content_types"] == ["Trucktok"]  # not clobbered by round 2's tags
+    assert not legacy["notion_page_id"]  # still the legacy (unkeyed) row
+    round2 = db.get_campaign("big_moochie_grape_still_signed_to_dolph_round_2")
+    assert round2 is not None
+    assert round2["budget"] == 1250.0
+    assert round2["notion_page_id"] == "page-new"
+
+
 def test_t5_existing_row_refresh_pass_unchanged(client, db):
     """T5: the existing-row refresh pass (content_types / internal_captions by
     notion_page_id) is unchanged for existing fixtures."""
