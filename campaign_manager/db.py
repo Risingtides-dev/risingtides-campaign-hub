@@ -6,12 +6,13 @@ Falls back to file-based storage if DATABASE_URL is not set.
 from __future__ import annotations
 
 import os
+import re
 import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
 import tempfile
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
@@ -19,6 +20,7 @@ from zoneinfo import ZoneInfo
 EST = ZoneInfo("America/New_York")
 
 from sqlalchemy import create_engine, desc, func, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
 from campaign_manager.utils.budget import rate_is_known
@@ -1037,6 +1039,20 @@ def _is_round_sibling(other, meta: Dict) -> bool:
         return False
     if other_artist != meta_artist or other_song != meta_song:
         return False
+    # Without two ordered start dates, a shared sound has no safe attribution
+    # boundary. Never relax the duplicate-sound guard for an undated booking.
+    previous_raw = (other.start_date or "").strip()
+    next_raw = (meta.get("start_date") or "").strip()
+    if not (re.fullmatch(r"\d{4}-\d{2}-\d{2}", previous_raw) and
+            re.fullmatch(r"\d{4}-\d{2}-\d{2}", next_raw)):
+        return False
+    try:
+        previous_start = date.fromisoformat(previous_raw)
+        next_start = date.fromisoformat(next_raw)
+    except (TypeError, ValueError):
+        return False
+    if next_start == previous_start:
+        return False
     round_differs = (other.round or "").strip().lower() != (meta.get("round") or "").strip().lower()
     page_differs = (other.notion_page_id or "") != (meta.get("notion_page_id") or "")
     return round_differs or page_differs
@@ -1047,6 +1063,7 @@ def _has_duplicate_campaign_sound_url(session, canonical_url: str, *, exclude_sl
     query = session.query(
         Campaign.slug, Campaign.official_sound, Campaign.artist,
         Campaign.song, Campaign.round, Campaign.notion_page_id,
+        Campaign.start_date,
     )
     if exclude_slug is not None:
         query = query.filter(Campaign.slug != exclude_slug)
@@ -1109,106 +1126,151 @@ def get_campaign_by_notion_page_id(page_id: str) -> Optional[Dict]:
 
 
 def save_campaign(slug: str, meta: Dict, *, expected_official_sound: Optional[str] = None,
-                  allow_round_sibling_sound: bool = False):
+                  allow_round_sibling_sound: bool = False,
+                  notion_intake: bool = False):
     """Create or update a campaign from a meta dict.
 
     ``allow_round_sibling_sound`` lets the Notion intake path reuse a sound
     for a repeat booking of the same artist+song (new round or new CRM page);
     every other caller keeps the strict one-sound-per-campaign guard.
     """
-    with get_session() as s:
-        candidate_url = _canonical_sound_url(meta.get("official_sound") or "")
-        guarded_sound_write = candidate_url is not None and expected_official_sound is not None
-        if guarded_sound_write and s.bind and s.bind.dialect.name == "postgresql":
-            s.execute(text("SELECT pg_advisory_xact_lock(hashtext('campaign-sound-url'))"))
-        campaign_query = s.query(Campaign).filter_by(slug=slug)
-        if guarded_sound_write:
-            campaign_query = campaign_query.with_for_update().populate_existing()
-        c = campaign_query.first()
-        if not c:
+    try:
+        with get_session() as s:
+            if notion_intake:
+                # Serialize identity, slug selection and sound validation with the
+                # insert. A preflight read in the webhook is never authoritative.
+                if s.bind and s.bind.dialect.name == "postgresql":
+                    s.execute(text("SELECT pg_advisory_xact_lock(hashtext('campaign-notion-intake'))"))
+                elif s.bind and s.bind.dialect.name == "sqlite":
+                    s.execute(text("BEGIN IMMEDIATE"))
+                page_id = (meta.get("notion_page_id") or "").strip()
+                meta = {**meta, "notion_page_id": page_id}
+                if page_id:
+                    existing = s.query(Campaign.slug).filter(
+                        func.trim(Campaign.notion_page_id) == page_id).first()
+                    if existing:
+                        return "existing", existing.slug
+                base = slug
+                if s.query(Campaign.slug).filter_by(slug=base).first():
+                    if not page_id:
+                        return "conflict", base
+                    prefix = f"{base}_round_"
+                    siblings = [row.slug for row in s.query(Campaign.slug).filter(
+                        (Campaign.slug == base) | Campaign.slug.like(f"{prefix}%"))]
+                    match = re.search(r"\d+", str(meta.get("round") or ""))
+                    number = int(match.group()) if match else 0
+                    if number < 2:
+                        number = 1 + sum(row == base or
+                            (row.startswith(prefix) and row[len(prefix):].isdigit()) for row in siblings)
+                    taken = set(siblings)
+                    while f"{prefix}{number}" in taken:
+                        number += 1
+                    slug = f"{prefix}{number}"
+                meta = {**meta, "slug": slug}
+            candidate_url = _canonical_sound_url(meta.get("official_sound") or "")
+            guarded_sound_write = candidate_url is not None and expected_official_sound is not None
+            if guarded_sound_write and s.bind and s.bind.dialect.name == "postgresql":
+                s.execute(text("SELECT pg_advisory_xact_lock(hashtext('campaign-sound-url'))"))
+            campaign_query = s.query(Campaign).filter_by(slug=slug)
             if guarded_sound_write:
-                if expected_official_sound != "":
-                    return "conflict"
-                if _has_duplicate_campaign_sound_url(
-                    s, candidate_url,
-                    allow_round_sibling_for=meta if allow_round_sibling_sound else None,
-                ):
-                    return "duplicate"
-                meta["official_sound"] = candidate_url
-            c = Campaign(slug=slug)
-            s.add(c)
-            # Captions are set when the campaign is created and after that
-            # change only through the CRM refresh (update_campaign_fields).
-            # A whole-campaign save carries whatever copy its caller loaded,
-            # sometimes minutes earlier, and must not put that copy back over
-            # captions the CRM has since changed.
-            c.internal_captions = meta.get("internal_captions")
-        else:
-            result = _check_sound_url_write(
-                s, c, meta, expected_official_sound,
-                allow_round_sibling_sound=allow_round_sibling_sound,
-            )
-            if result:
-                return result
+                campaign_query = campaign_query.with_for_update().populate_existing()
+            c = campaign_query.first()
+            if notion_intake and c is not None:
+                # This branch can only happen if another writer ignored the intake
+                # lease. Preserve its fields and fail closed.
+                return "conflict", slug
+            if not c:
+                if guarded_sound_write:
+                    if expected_official_sound != "":
+                        return ("conflict", slug) if notion_intake else "conflict"
+                    if _has_duplicate_campaign_sound_url(
+                        s, candidate_url,
+                        allow_round_sibling_for=meta if allow_round_sibling_sound else None,
+                    ):
+                        return ("duplicate", slug) if notion_intake else "duplicate"
+                    meta["official_sound"] = candidate_url
+                c = Campaign(slug=slug)
+                s.add(c)
+                # Captions are set when the campaign is created and after that
+                # change only through the CRM refresh (update_campaign_fields).
+                # A whole-campaign save carries whatever copy its caller loaded,
+                # sometimes minutes earlier, and must not put that copy back over
+                # captions the CRM has since changed.
+                c.internal_captions = meta.get("internal_captions")
+            else:
+                result = _check_sound_url_write(
+                    s, c, meta, expected_official_sound,
+                    allow_round_sibling_sound=allow_round_sibling_sound,
+                )
+                if result:
+                    return result
 
-        c.title = meta.get("title", "")
-        c.name = meta.get("name", meta.get("title", ""))
-        c.artist = meta.get("artist", "")
-        c.song = meta.get("song", "")
-        c.official_sound = meta.get("official_sound", "")
-        c.sound_id = meta.get("sound_id", "")
-        c.additional_sounds = meta.get("additional_sounds", [])
-        c.cobrand_link = meta.get("cobrand_link", "")
-        c.start_date = meta.get("start_date", "")
-        if "end_date" in meta:
-            c.end_date = meta["end_date"]
-        if "end_date_auto" in meta:
-            c.end_date_auto = bool(meta["end_date_auto"])
-        c.budget = float(meta.get("budget", 0))
-        c.platform = meta.get("platform", "tiktok")
+            c.title = meta.get("title", "")
+            c.name = meta.get("name", meta.get("title", ""))
+            c.artist = meta.get("artist", "")
+            c.song = meta.get("song", "")
+            c.official_sound = meta.get("official_sound", "")
+            c.sound_id = meta.get("sound_id", "")
+            c.additional_sounds = meta.get("additional_sounds", [])
+            c.cobrand_link = meta.get("cobrand_link", "")
+            c.start_date = meta.get("start_date", "")
+            if "end_date" in meta:
+                c.end_date = meta["end_date"]
+            if "end_date_auto" in meta:
+                c.end_date_auto = bool(meta["end_date_auto"])
+            c.budget = float(meta.get("budget", 0))
+            c.platform = meta.get("platform", "tiktok")
 
-        c.cobrand_share_url = meta.get("cobrand_share_url", c.cobrand_share_url or "")
-        c.cobrand_upload_url = meta.get("cobrand_upload_url", c.cobrand_upload_url or "")
-        c.cobrand_promotion_id = meta.get("cobrand_promotion_id", c.cobrand_promotion_id or "")
-        c.cobrand_status = meta.get("cobrand_status", c.cobrand_status or "")
-        c.tracker_campaign_id = meta.get("tracker_campaign_id", c.tracker_campaign_id)
-        c.tracker_url = meta.get("tracker_url", c.tracker_url or "")
-        c.source = meta.get("source", c.source or "manual")
-        c.completion_status = meta.get("completion_status", c.completion_status or "none")
-        # Use None instead of "" so the unique constraint allows multiple unset values
-        raw_notion_id = meta.get("notion_page_id", c.notion_page_id)
-        c.notion_page_id = raw_notion_id if raw_notion_id else None
-        c.insta_sound = meta.get("insta_sound", c.insta_sound or "")
-        c.tt_artist_label = meta.get("tt_artist_label", c.tt_artist_label or "")
-        c.tt_track_name = meta.get("tt_track_name", c.tt_track_name or "")
-        c.campaign_stage = meta.get("campaign_stage", c.campaign_stage or "")
-        c.round = meta.get("round", c.round or "")
-        c.label = meta.get("label", c.label or "")
-        c.project_lead = meta.get("project_lead", c.project_lead or [])
-        c.client_email = meta.get("client_email", c.client_email or "")
-        c.platform_split = meta.get("platform_split", c.platform_split or {})
-        c.content_types = meta.get("content_types", c.content_types or [])
+            c.cobrand_share_url = meta.get("cobrand_share_url", c.cobrand_share_url or "")
+            c.cobrand_upload_url = meta.get("cobrand_upload_url", c.cobrand_upload_url or "")
+            c.cobrand_promotion_id = meta.get("cobrand_promotion_id", c.cobrand_promotion_id or "")
+            c.cobrand_status = meta.get("cobrand_status", c.cobrand_status or "")
+            c.tracker_campaign_id = meta.get("tracker_campaign_id", c.tracker_campaign_id)
+            c.tracker_url = meta.get("tracker_url", c.tracker_url or "")
+            c.source = meta.get("source", c.source or "manual")
+            c.completion_status = meta.get("completion_status", c.completion_status or "none")
+            # Use None instead of "" so the unique constraint allows multiple unset values
+            raw_notion_id = meta.get("notion_page_id", c.notion_page_id)
+            c.notion_page_id = raw_notion_id if raw_notion_id else None
+            c.insta_sound = meta.get("insta_sound", c.insta_sound or "")
+            c.tt_artist_label = meta.get("tt_artist_label", c.tt_artist_label or "")
+            c.tt_track_name = meta.get("tt_track_name", c.tt_track_name or "")
+            c.campaign_stage = meta.get("campaign_stage", c.campaign_stage or "")
+            c.round = meta.get("round", c.round or "")
+            c.label = meta.get("label", c.label or "")
+            c.project_lead = meta.get("project_lead", c.project_lead or [])
+            c.client_email = meta.get("client_email", c.client_email or "")
+            c.platform_split = meta.get("platform_split", c.platform_split or {})
+            c.content_types = meta.get("content_types", c.content_types or [])
 
-        stats = meta.get("stats", {})
-        c.total_views = int(stats.get("total_views", 0))
-        c.total_likes = int(stats.get("total_likes", 0))
-        last_scrape = stats.get("last_scrape", "")
-        if last_scrape:
-            try:
-                c.last_scrape = datetime.fromisoformat(str(last_scrape))
-            except (ValueError, TypeError):
-                pass
+            stats = meta.get("stats", {})
+            c.total_views = int(stats.get("total_views", 0))
+            c.total_likes = int(stats.get("total_likes", 0))
+            last_scrape = stats.get("last_scrape", "")
+            if last_scrape:
+                try:
+                    c.last_scrape = datetime.fromisoformat(str(last_scrape))
+                except (ValueError, TypeError):
+                    pass
 
-        created_at = meta.get("created_at", "")
-        if created_at and not c.created_at:
-            try:
-                c.created_at = datetime.fromisoformat(str(created_at))
-            except (ValueError, TypeError):
-                pass
+            created_at = meta.get("created_at", "")
+            if created_at and not c.created_at:
+                try:
+                    c.created_at = datetime.fromisoformat(str(created_at))
+                except (ValueError, TypeError):
+                    pass
 
-        c.updated_at = datetime.now()
-        s.commit()
-        return "updated" if guarded_sound_write else None
+            c.updated_at = datetime.now()
+            s.commit()
+            if notion_intake:
+                return "created", slug
+            return "updated" if guarded_sound_write else None
+    except IntegrityError:
+        if not notion_intake:
+            raise
+        page_id = (meta.get("notion_page_id") or "").strip()
+        existing = get_campaign_by_notion_page_id(page_id) if page_id else None
+        return ("existing", existing["slug"]) if existing else ("conflict", slug)
 
 
 def set_unique_campaign_sound_url(slug: str, url: str, expected_url: str, sound_id: str) -> str:

@@ -8,6 +8,14 @@ share one implementation, so these tests run each scenario against both.
 from __future__ import annotations
 
 from unittest.mock import patch
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from campaign_manager.models import Base
+from campaign_manager.blueprints.webhooks import _intake_campaign
 
 import pytest
 
@@ -21,7 +29,7 @@ SOUND = "https://www.tiktok.com/music/shared-1234567890123456789"
 def _entry(page_id, title="Big Moochie grape - Still signed to Dolph", *,
            artist="Big Moochie Grape", song="Still Signed to Dolph",
            budget=1250.0, round_value="", captions=None,
-           content_types=None, sound=SOUND):
+           content_types=None, sound=SOUND, start_date=None):
     """A normalized CRM entry with the same shape as query_new_clients rows."""
     return {
         "notion_page_id": page_id,
@@ -33,7 +41,10 @@ def _entry(page_id, title="Big Moochie grape - Still signed to Dolph", *,
         "sound_id": "1234567890123456789",
         "insta_sound": "",
         "cobrand_share_url": "",
-        "start_date": "",
+        "start_date": start_date if start_date is not None else (
+            "2026-10-29" if page_id == "page-no-round-3" else
+            "2026-10-27" if page_id in {"page-r1", "page-same", "page-race"} else
+            "2026-10-28"),
         "budget": budget,
         "campaign_stage": "",
         "round": round_value,
@@ -46,13 +57,18 @@ def _entry(page_id, title="Big Moochie grape - Still signed to Dolph", *,
     }
 
 
-def _post_webhook(client, page_id, *, round_value="", budget=1250.0, artist=None, song=None, sound=SOUND):
+def _post_webhook(client, page_id, *, round_value="", budget=1250.0, artist=None, song=None, sound=SOUND,
+                  start_date=None):
     return client.post("/api/webhooks/notion", json={
         "artist": artist or "Big Moochie Grape",
         "song": song or "Still Signed to Dolph",
         "title": "Big Moochie grape - Still signed to Dolph",
         "budget": str(budget),
         "round": round_value,
+        "start_date": start_date if start_date is not None else (
+            "2026-10-29" if page_id == "page-no-round-3" else
+            "2026-10-27" if page_id in {"page-r1", "page-same", "page-race"} else
+            "2026-10-28"),
         "notion_page_id": page_id,
         "tiktok_sound_link": sound,
     })
@@ -131,6 +147,93 @@ def test_t2b_sync_recreates_no_duplicate_after_webhook(client, db):
     assert {s["slug"] for s in body["skipped"]} == {
         "big_moochie_grape_still_signed_to_dolph"
     }
+    assert len(db.get_campaign_slugs()) == 1
+
+
+def test_concurrent_same_page_keeps_first_booking_identity_and_budget(db, tmp_path):
+    """Two workers seeing the same CRM page cannot update each other's row."""
+    engine = create_engine(f"sqlite:///{tmp_path / 'intake.sqlite'}", connect_args={"timeout": 5})
+    Base.metadata.create_all(engine)
+    old_engine, old_session = db._engine, db._SessionLocal
+    db._engine, db._SessionLocal = engine, sessionmaker(bind=engine)
+    barrier = Barrier(2)
+    try:
+        def submit(budget):
+            barrier.wait(timeout=5)
+            return _intake_campaign(_entry("page-concurrent", budget=budget))
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(submit, [1000, 1250]))
+        assert sorted(row["status"] for row in results) == ["created", "existing"]
+        assert len(db.get_campaign_slugs()) == 1
+        campaign = db.get_campaign("big_moochie_grape_still_signed_to_dolph")
+        assert campaign["notion_page_id"] == "page-concurrent"
+        assert campaign["budget"] in (1000, 1250)
+    finally:
+        db._engine, db._SessionLocal = old_engine, old_session
+        engine.dispose()
+
+
+def test_concurrent_distinct_pages_get_distinct_slugs_and_budgets(db, tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'rounds.sqlite'}", connect_args={"timeout": 5})
+    Base.metadata.create_all(engine)
+    old_engine, old_session = db._engine, db._SessionLocal
+    db._engine, db._SessionLocal = engine, sessionmaker(bind=engine)
+    barrier = Barrier(2)
+    try:
+        def submit(page_id, budget, start_date):
+            barrier.wait(timeout=5)
+            return _intake_campaign(_entry(page_id, budget=budget, start_date=start_date))
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(lambda args: submit(*args), [
+                ("page-first", 1000, "2026-10-27"),
+                ("page-second", 1250, "2026-10-28"),
+            ]))
+        assert {row["status"] for row in results} == {"created"}
+        campaigns = {db.get_campaign_by_notion_page_id(page_id)["budget"] for page_id in
+                     ("page-first", "page-second")}
+        assert campaigns == {1000, 1250}
+        assert len(db.get_campaign_slugs()) == 2
+    finally:
+        db._engine, db._SessionLocal = old_engine, old_session
+        engine.dispose()
+
+
+@pytest.mark.parametrize("first_date,second_date", [
+    ("", ""),
+    ("2026-10-27", "2026-10-27"),
+    ("invalid", "2026-10-28"),
+    ("20261027", "2026-10-28"),
+    ("2026-10-27", "20261028"),
+])
+def test_shared_sound_without_distinct_valid_desired_start_dates_is_refused(
+        client, db, first_date, second_date):
+    assert _post_webhook(client, "page-r1", start_date=first_date).status_code == 201
+    second = _post_webhook(client, "page-r2", round_value="Round 2", start_date=second_date)
+    assert second.status_code == 409
+    assert second.get_json()["code"] == "duplicate"
+    assert db.get_campaign_by_notion_page_id("page-r2") is None
+
+
+def test_page_id_whitespace_is_normalized_before_identity_and_insert(client, db):
+    first = _post_webhook(client, "  page-spaced  ", budget=1000)
+    assert first.status_code == 201
+    second = _post_webhook(client, "page-spaced", budget=1250)
+    assert second.status_code == 200
+    assert db.get_campaign_by_notion_page_id("page-spaced")["budget"] == 1000
+    assert len(db.get_campaign_slugs()) == 1
+
+
+def test_legacy_whitespace_page_id_is_reconciled_without_overwrite(client, db):
+    db.save_campaign("big_moochie_grape_still_signed_to_dolph", {
+        "title": "Big Moochie grape - Still signed to Dolph",
+        "notion_page_id": "  page-legacy  ",
+        "budget": 1000,
+    })
+    second = _post_webhook(client, "page-legacy", budget=1250)
+    assert second.status_code == 200
+    assert db.get_campaign("big_moochie_grape_still_signed_to_dolph")["budget"] == 1000
     assert len(db.get_campaign_slugs()) == 1
 
 
@@ -223,6 +326,7 @@ def test_t4b_legacy_campaign_new_page_becomes_round_sibling(client, db, path):
         "artist": "Big Moochie Grape",
         "song": "Still Signed to Dolph",
         "official_sound": SOUND,
+        "start_date": "2026-10-27",
         "budget": 1000.0,
         "content_types": ["Trucktok"],
     })

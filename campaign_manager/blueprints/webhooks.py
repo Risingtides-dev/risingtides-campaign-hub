@@ -1,5 +1,4 @@
 """Webhook endpoints for external integrations."""
-import re
 from datetime import datetime
 
 from flask import Blueprint, jsonify, request
@@ -38,39 +37,6 @@ def slack_active_sounds():
 # every path. A repeat booking is keyed by notion_page_id, not by the title
 # slug: a second CRM page whose title slugs to an existing campaign becomes a
 # new round-suffixed campaign instead of being skipped or 409'd.
-
-def _round_number(round_value) -> int | None:
-    """Round N from a CRM round value like 'Round 2' (None when unset)."""
-    match = re.search(r"\d+", str(round_value or ""))
-    return int(match.group()) if match else None
-
-
-def _existing_round_siblings(base_slug: str) -> int:
-    """Campaigns that are this title's rounds: base or base_round_<digits>."""
-    prefix = f"{base_slug}_round_"
-    count = 0
-    for slug in _db.get_campaign_slugs():
-        if slug == base_slug:
-            count += 1
-        elif slug.startswith(prefix) and slug[len(prefix):].isdigit():
-            count += 1
-    return count
-
-
-def _resolve_round_slug(base_slug: str, round_value) -> str:
-    """Round-suffixed slug for a repeat booking, never colliding.
-
-    An explicit CRM round ('Round 2') picks its number; otherwise the next
-    free number after the existing rounds (existing count + 1). If that
-    suffix is already taken, keep incrementing so intake never 409s.
-    """
-    number = _round_number(round_value)
-    if not number or number < 2:
-        number = _existing_round_siblings(base_slug) + 1
-    while _db.campaign_exists(f"{base_slug}_round_{number}"):
-        number += 1
-    return f"{base_slug}_round_{number}"
-
 
 def _build_campaign_meta(slug: str, entry: dict) -> dict:
     """Campaign meta dict for save_campaign, from a normalized intake entry."""
@@ -113,40 +79,23 @@ def _intake_campaign(entry: dict) -> dict:
     rows: notion_page_id, title, slug, artist, song, official_sound,
     sound_id, start_date, budget, round, and the extended CRM fields.
     """
-    page_id = (entry.get("notion_page_id") or "").strip()
     base_slug = (entry.get("slug") or "").strip() or slugify(entry.get("title") or "")
-
-    # Idempotency: the same CRM page is one campaign no matter how often it
-    # arrives (re-sync, or a webhook racing the sync). Never overwrite the
-    # existing row — operator-edited Hub fields stay untouched.
-    if page_id:
-        existing = _db.get_campaign_by_notion_page_id(page_id)
-        if existing:
-            return {"status": "existing", "slug": existing["slug"]}
-
-    slug = base_slug
-    if _db.campaign_exists(slug):
-        # Without a CRM page id we cannot tell a repeat booking from a plain
-        # duplicate, so keep the old slug-uniqueness refusal.
-        if not page_id:
-            return {"status": "conflict", "slug": slug}
-        # A different CRM page with the same title is a repeat booking.
-        slug = _resolve_round_slug(slug, entry.get("round"))
-
-    meta = _build_campaign_meta(slug, entry)
+    meta = _build_campaign_meta(base_slug, entry)
     sound_url = _db._canonical_sound_url(meta["official_sound"])
-    result = _db.save_campaign(
-        slug, meta,
+    result, slug = _db.save_campaign(
+        base_slug, meta,
         expected_official_sound="" if sound_url is not None else None,
         allow_round_sibling_sound=True,
+        notion_intake=True,
     )
-    if result not in (None, "updated"):
+    if result == "existing":
+        return {"status": "existing", "slug": slug}
+    if result != "created":
         if result == "duplicate":
             return {"status": "skipped", "slug": slug, "reason": "duplicate sound URL"}
         if result in ("conflict", "missing_revision"):
             return {"status": "skipped", "slug": slug, "reason": "campaign changed during creation"}
         return {"status": "error", "slug": slug, "reason": "campaign save failed"}
-    _db.save_creators(slug, [])
     return {"status": "created", "slug": slug}
 
 

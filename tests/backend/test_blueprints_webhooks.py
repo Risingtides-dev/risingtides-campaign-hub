@@ -70,7 +70,7 @@ class TestNotionWebhook:
 
         creator_writes = []
         monkeypatch.setattr(db, "campaign_exists", lambda slug: False)
-        monkeypatch.setattr(db, "save_campaign", lambda *args, **kwargs: "conflict")
+        monkeypatch.setattr(db, "save_campaign", lambda slug, *args, **kwargs: ("conflict", slug))
         monkeypatch.setattr(db, "save_creators", lambda *args, **kwargs: creator_writes.append(args))
 
         response = client.post("/api/webhooks/notion", json={
@@ -110,7 +110,7 @@ class TestNotionSync:
             "start_date": "", "budget": 0,
         }]
         creator_writes = []
-        monkeypatch.setattr(db, "save_campaign", lambda *args, **kwargs: "conflict")
+        monkeypatch.setattr(db, "save_campaign", lambda slug, *args, **kwargs: ("conflict", slug))
         monkeypatch.setattr(db, "save_creators", lambda *args, **kwargs: creator_writes.append(args))
         with patch("campaign_manager.services.notion.query_new_clients", return_value=entries), patch(
             "campaign_manager.services.notion.fetch_page_campaign_fields", return_value=None,
@@ -132,7 +132,7 @@ class TestNotionSync:
             "start_date": "", "budget": 0,
         }]
         creator_writes = []
-        monkeypatch.setattr(db, "save_campaign", lambda *args, **kwargs: "unexpected")
+        monkeypatch.setattr(db, "save_campaign", lambda slug, *args, **kwargs: ("unexpected", slug))
         monkeypatch.setattr(db, "save_creators", lambda *args, **kwargs: creator_writes.append(args))
         with patch("campaign_manager.services.notion.query_new_clients", return_value=entries), patch(
             "campaign_manager.services.notion.fetch_page_campaign_fields", return_value=None,
