@@ -124,7 +124,10 @@ def build_dashboard(session, profile: CreatorProfile) -> dict:
         .where(BookingPaymentMark.ready_at.isnot(None))
     ).scalars())
     cards = [_card(e["campaign"], e["bookings"], cid in ready_campaigns) for cid, e in grouped.items()]
-    current = [c for c in cards if c["active"] or c["status"] != "paid"]
+    # Active campaigns only. Finished campaigns often carry stale `paid = no`
+    # rows (paid outside the Hub); showing them would tell creators money
+    # is still coming for work paid long ago.
+    current = [c for c in cards if c["active"]]
     payments = _payments(grouped)
     return {
         "creator": public_view(profile),

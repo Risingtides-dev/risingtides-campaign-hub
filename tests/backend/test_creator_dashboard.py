@@ -73,6 +73,18 @@ def test_dashboard_never_leaks_internal_or_other_creators(client, seeded):
         assert secret not in body, secret
 
 
+def test_finished_unpaid_campaign_is_not_shown_as_owed(client, db, seeded):
+    with db.get_session() as s:
+        stale = Campaign(slug="stale", title="Stale - Song", completion_status="completed")
+        s.add(stale)
+        s.flush()
+        s.add(Creator(campaign_id=stale.id, username="alice", posts_owed=1, posts_done=1, total_rate=40))
+        s.commit()
+    data = client.post("/api/creator/dashboard", json={"token": seeded}).json
+    assert "Stale - Song" not in [c["campaign"] for c in data["current"]]
+    assert "Stale - Song" not in [p["campaign"] for p in data["payments"]]
+
+
 def test_blank_brief_reads_open_creative(client, db, seeded):
     with db.get_session() as s:
         s.query(Campaign).filter_by(slug="live").one().creator_brief = ""
