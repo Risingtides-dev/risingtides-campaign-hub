@@ -142,7 +142,7 @@ export interface BatchItem {
   method: PayoutMethod
   destination: string
   lane: "api" | "manual"
-  status: "queued" | "pending" | "succeeded" | "failed" | "unclaimed" | "removed"
+  status: "queued" | "pending" | "succeeded" | "failed" | "unclaimed" | "review" | "sandbox_ok" | "removed"
   provider_status: string
   error: string
   paid_at: string

@@ -13,9 +13,9 @@ ADMIN = {"X-Payout-Admin-Key": ADMIN_KEY}
 
 
 class FakePayPal:
-    env = "sandbox"
-
-    def __init__(self):
+    def __init__(self, env="live"):
+        self.env = env
+        self.header = None
         self.created = []
         self.statuses = {}
         self.fail_create = None
@@ -24,7 +24,7 @@ class FakePayPal:
         if self.fail_create:
             raise self.fail_create
         self.created.append((sender_batch_id, [(i.username, i.method, i.amount) for i in items]))
-        return {"batch_header": {"payout_batch_id": "PB-1", "batch_status": "PENDING"}}
+        return {"batch_header": self.header or {"payout_batch_id": "PB-1", "batch_status": "PENDING"}}
 
     def get_batch(self, _paypal_batch_id):
         return {"items": [
@@ -97,7 +97,7 @@ def test_full_batch_flow(client, paypal, seeded):
     assert paypal.created == []
 
     sent = _post(client, f"/api/payouts/admin/batches/{bid}/approve", confirm_total="150.50").json
-    assert sent["status"] == "sent" and sent["paypal_env"] == "sandbox"
+    assert sent["status"] == "sent" and sent["paypal_env"] == "live"
     assert paypal.created == [(paypal.created[0][0], [("pp", "paypal", 100.0), ("vm", "venmo", 50.5)])]
     assert _paid("pp") == ("no", "")  # not paid until PayPal says so
 
@@ -119,7 +119,7 @@ def test_full_batch_flow(client, paypal, seeded):
     assert _paid("ca")[0] == "yes"
     final = client.get("/api/payouts/admin/batches", headers=ADMIN).json
     assert final["batches"][0]["status"] == "closed"
-    assert final["paypal"] == {"connected": True, "env": "sandbox"}
+    assert final["paypal"] == {"connected": True, "env": "live"}
 
 
 def test_destination_change_after_draft_blocks_send(client, paypal, seeded):
@@ -205,3 +205,98 @@ def test_paypal_errors_never_include_secret(monkeypatch):
     with pytest.raises(PayPalError) as exc:
         client.get_batch("PB-1")
     assert "topsecret" not in str(exc.value)
+
+
+def _approve(client, bid, total="150.50"):
+    return _post(client, f"/api/payouts/admin/batches/{bid}/approve", confirm_total=total)
+
+
+def _ready(client):
+    return sorted(r["username"] for r in client.get("/api/payouts/admin/queue", headers=ADMIN).json["ready"])
+
+
+def test_sandbox_success_never_marks_real_bookings_paid(app, client, seeded):
+    fake = FakePayPal(env="sandbox")
+    app.config.update(PAYOUT_ADMIN_KEY=ADMIN_KEY, PAYPAL_CLIENT_FACTORY=lambda: fake)
+    draft = _post(client, "/api/payouts/admin/batches").json
+    sent = _approve(client, draft["id"]).json
+    fake.statuses = {i["id"]: "SUCCESS" for i in sent["items"] if i["lane"] == "api"}
+    synced = _post(client, f"/api/payouts/admin/batches/{draft['id']}/sync").json
+    assert {i["status"] for i in synced["items"] if i["lane"] == "api"} == {"sandbox_ok"}
+    assert _paid("pp")[0] == "no"
+    assert "pp" in _ready(client)  # released back to the queue
+
+
+def test_sync_refuses_env_mismatch(app, client, paypal, seeded):
+    bid = _post(client, "/api/payouts/admin/batches").json["id"]
+    _approve(client, bid)
+    paypal.env = "sandbox"
+    resp = _post(client, f"/api/payouts/admin/batches/{bid}/sync")
+    assert resp.status_code == 400 and "live" in resp.json["error"]
+
+
+def test_rate_change_after_draft_blocks_send(client, paypal, seeded):
+    bid = _post(client, "/api/payouts/admin/batches").json["id"]
+    with _db.get_session() as s:
+        s.query(Creator).filter_by(username="pp").one().total_rate = 5000
+        s.commit()
+    resp = _approve(client, bid)
+    assert resp.status_code == 400 and "rate changed" in resp.json["error"]
+    assert paypal.created == []
+
+
+def test_marked_paid_after_draft_blocks_send(client, paypal, seeded):
+    bid = _post(client, "/api/payouts/admin/batches").json["id"]
+    with _db.get_session() as s:
+        s.query(Creator).filter_by(username="vm").one().paid = "yes"
+        s.commit()
+    resp = _approve(client, bid)
+    assert resp.status_code == 400 and "already marked paid" in resp.json["error"]
+    assert paypal.created == []
+
+
+def test_refunded_goes_to_review_not_requeue(client, paypal, seeded):
+    draft = _post(client, "/api/payouts/admin/batches").json
+    sent = _approve(client, draft["id"]).json
+    pp = next(i["id"] for i in sent["items"] if i["username"] == "pp")
+    paypal.statuses = {pp: "REFUNDED"}
+    synced = _post(client, f"/api/payouts/admin/batches/{draft['id']}/sync").json
+    assert next(i for i in synced["items"] if i["id"] == pp)["status"] == "review"
+    assert "pp" not in _ready(client)
+
+
+def test_open_item_unique_index_blocks_duplicates(db, seeded):
+    from sqlalchemy.exc import IntegrityError
+    from campaign_manager.models import PayoutBatch
+    with db.get_session() as s:
+        cid = s.query(Creator).filter_by(username="pp").one().campaign_id
+        for n in (1, 2):
+            b = PayoutBatch(status="draft", sender_batch_id=f"dup-{n}")
+            s.add(b)
+            s.flush()
+            s.add(PayoutItem(batch_id=b.id, campaign_id=cid, username="pp", platform="tiktok", amount=100,
+                             method="paypal", destination="pp@gmail.com", lane="api", status="queued"))
+        with pytest.raises(IntegrityError):
+            s.commit()
+
+
+def test_zero_rate_bookings_are_left_out(client, paypal, seeded):
+    with _db.get_session() as s:
+        s.query(Creator).filter_by(username="vm").one().total_rate = 0
+        s.commit()
+    draft = _post(client, "/api/payouts/admin/batches").json
+    assert "vm" not in [i["username"] for i in draft["items"]]
+
+
+def test_missing_paypal_batch_id_fails_loudly(client, paypal, seeded):
+    bid = _post(client, "/api/payouts/admin/batches").json["id"]
+    paypal.header = {"batch_status": "DENIED"}
+    resp = _approve(client, bid)
+    assert resp.status_code == 400 and "didn't accept" in resp.json["error"]
+
+
+def test_rename_blocked_while_in_batch(client, paypal, seeded):
+    _post(client, "/api/payouts/admin/batches")
+    resp = client.post("/api/campaign/live/creator/pp/edit",
+                       json={"new_username": "pp2", "posts_owed": 2, "total_rate": 100})
+    assert resp.status_code == 409 and "payout batch" in resp.json["error"]

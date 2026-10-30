@@ -13,6 +13,8 @@ const ITEM_STATUS: Record<BatchItem["status"], { label: string; cls: string }> =
   succeeded: { label: "Paid ✓", cls: "text-rt-green" },
   failed: { label: "Failed — back in queue", cls: "text-rt-red" },
   unclaimed: { label: "Unclaimed — creator must accept", cls: "text-rt-amber" },
+  review: { label: "Refunded/reversed — check PayPal", cls: "text-rt-red" },
+  sandbox_ok: { label: "Sandbox test OK (not marked paid)", cls: "text-rt-amber" },
   removed: { label: "Removed", cls: "text-rt-fg-tertiary" },
 }
 

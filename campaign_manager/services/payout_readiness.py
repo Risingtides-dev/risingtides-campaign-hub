@@ -151,21 +151,47 @@ def build_queue(session) -> dict:
     }
 
 
+def find_booking(session, campaign_id: int, username: str, platform: str):
+    """The active booking row for (campaign, creator, platform), or None."""
+    user, plat = normalize_username(username), (platform or "tiktok").lower()
+    handle = func.lower(func.trim(Creator.username))
+    return session.execute(
+        select(Creator)
+        .where(Creator.campaign_id == campaign_id)
+        .where(handle.in_([user, f"@{user}"]))
+        .where(func.lower(func.coalesce(Creator.platform, "tiktok")) == plat)
+        .where(func.coalesce(Creator.status, "active") != "removed")
+    ).scalars().first()
+
+
+def booking_state(session, campaign_id, username: str, platform: str):
+    """(booking, campaign, state) re-read fresh — used at batch approval."""
+    campaign = session.get(Campaign, campaign_id) if campaign_id else None
+    booking = find_booking(session, campaign_id, username, platform) if campaign else None
+    if booking is None:
+        return None, campaign, "missing"
+    user, plat = normalize_username(username), (platform or "tiktok").lower()
+    profile = session.get(CreatorProfile, user)
+    override = (profile.trust_override or "") if profile else ""
+    delivered = delivered_campaign_counts(session).get(user, 0)
+    mark = session.execute(
+        select(BookingPaymentMark).where(
+            BookingPaymentMark.campaign_id == campaign_id,
+            BookingPaymentMark.username == user,
+            BookingPaymentMark.platform == plat,
+        )
+    ).scalar_one_or_none()
+    state, _ = classify(booking, mark, is_trusted(delivered, override))
+    return booking, campaign, state
+
+
 def set_mark(session, slug: str, username: str, platform: str, action: str, note: str = "") -> bool:
     """action: confirm (trusted accepted booking) | ready (manual) | clear."""
     campaign = session.execute(select(Campaign).where(Campaign.slug == slug)).scalar_one_or_none()
     if campaign is None:
         return False
     user, plat = normalize_username(username), (platform or "tiktok").lower()
-    handle = func.lower(func.trim(Creator.username))
-    booking = session.execute(
-        select(Creator)
-        .where(Creator.campaign_id == campaign.id)
-        .where(handle.in_([user, f"@{user}"]))
-        .where(func.lower(func.coalesce(Creator.platform, "tiktok")) == plat)
-        .where(func.coalesce(Creator.status, "active") != "removed")
-    ).scalars().first()
-    if booking is None:
+    if find_booking(session, campaign.id, user, plat) is None:
         return False
 
     mark = session.execute(

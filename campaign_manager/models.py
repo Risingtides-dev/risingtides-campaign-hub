@@ -1077,6 +1077,12 @@ class BookingPaymentMark(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
+# A booking may be in at most one item with these statuses (enforced by a
+# partial unique index) — the hard "never pay twice" rail.
+OPEN_PAYOUT_ITEM_STATUSES = ("queued", "pending", "succeeded", "unclaimed", "review")
+_OPEN_ITEM_SQL = "status IN ('queued', 'pending', 'succeeded', 'unclaimed', 'review')"
+
+
 class PayoutBatch(Base):
     """One payment run (e.g. today's). Jake approves it; nothing is sent
     until he does. PayPal/Venmo items go through the PayPal Payouts API;
@@ -1101,6 +1107,14 @@ class PayoutItem(Base):
     """One booking's payment inside a batch, with the destination snapshot
     used. This is the record of what was paid, where, and when."""
     __tablename__ = "payout_items"
+    __table_args__ = (
+        Index(
+            "uq_payout_items_open_booking", "campaign_id", "username", "platform",
+            unique=True,
+            postgresql_where=text(_OPEN_ITEM_SQL),
+            sqlite_where=text(_OPEN_ITEM_SQL),
+        ),
+    )
 
     id = Column(Integer, primary_key=True)
     batch_id = Column(Integer, ForeignKey("payout_batches.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -1113,7 +1127,7 @@ class PayoutItem(Base):
     method = Column(String(20), nullable=False)
     destination = Column(String(255), nullable=False)
     lane = Column(String(10), nullable=False)  # api | manual
-    # queued | pending | succeeded | failed | unclaimed | removed
+    # queued | pending | succeeded | failed | unclaimed | review | sandbox_ok | removed
     status = Column(String(20), nullable=False, default="queued", index=True)
     provider_status = Column(String(32), default="")
     provider_item_id = Column(String(64), default="")

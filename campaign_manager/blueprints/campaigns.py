@@ -705,6 +705,17 @@ def set_dashboard_sent(slug: str):
 # -------------------------------------------------------------------
 # 3. POST /api/campaign/<slug>/edit  -- update campaign metadata
 # -------------------------------------------------------------------
+def _has_open_payout(slug: str, username: str, platform: str) -> bool:
+    """True while a payout item for this booking is queued/pending/paid —
+    renaming it then would let the booking re-enter the payment queue."""
+    from campaign_manager.models import Campaign
+    from campaign_manager.services.payout_batches import has_open_item
+
+    with _db.get_session() as session:
+        campaign = session.query(Campaign).filter_by(slug=slug).first()
+        return bool(campaign) and has_open_item(session, campaign.id, username, platform)
+
+
 MAX_CREATOR_BRIEF = 5000
 
 
@@ -1653,6 +1664,8 @@ def edit_creator(slug: str, username: str):
         )
         if clash:
             return jsonify({"error": f"@{new_username} is already a creator on this campaign."}), 409
+        if _db.is_active() and _has_open_payout(slug, username, target_platform):
+            return jsonify({"error": f"@{username} is in a payout batch. Finish or remove that payout before renaming."}), 409
 
     if new_username and new_username != username:
         target["username"] = new_username

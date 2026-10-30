@@ -97,7 +97,12 @@ class PayPalPayouts:
                                      headers=headers, timeout=TIMEOUT, **kwargs)
         except requests.RequestException as exc:
             raise PayPalError(f"Couldn't reach PayPal ({type(exc).__name__}).") from None
-        body = resp.json() if resp.content else {}
+        try:
+            body = resp.json() if resp.content else {}
+        except ValueError:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
         if resp.status_code >= 400:
             detail = body.get("message") or body.get("name") or f"HTTP {resp.status_code}"
             raise PayPalError(f"PayPal error: {detail}")
@@ -120,5 +125,14 @@ class PayPalPayouts:
             },
         )
 
-    def get_batch(self, paypal_batch_id: str) -> dict:
-        return self._call("GET", f"/v1/payments/payouts/{paypal_batch_id}", params={"page_size": 1000})
+    def get_batch(self, paypal_batch_id: str, page_size: int = 500) -> dict:
+        """All pages of the batch's items, merged into one response."""
+        first = self._call("GET", f"/v1/payments/payouts/{paypal_batch_id}",
+                           params={"page_size": page_size, "page": 1, "total_required": "true"})
+        items = list(first.get("items") or [])
+        pages = int(first.get("total_pages") or 1)
+        for page in range(2, min(pages, 50) + 1):
+            more = self._call("GET", f"/v1/payments/payouts/{paypal_batch_id}",
+                              params={"page_size": page_size, "page": page})
+            items.extend(more.get("items") or [])
+        return {**first, "items": items}
