@@ -8,6 +8,7 @@ import { PAYOUT_METHODS, PayoutApiError, payoutAdmin } from "@/lib/payouts"
 import type { PayoutAdminRow } from "@/lib/payouts"
 import { PayoutHistory } from "@/components/payouts/PayoutHistory"
 import { PayoutLinkGenerator } from "@/components/payouts/PayoutLinkGenerator"
+import { PaymentQueue } from "@/components/payouts/PaymentQueue"
 
 const KEY_STORAGE = "rt.payoutAdminKey"
 const METHOD_LABEL: Record<string, string> = Object.fromEntries(
@@ -171,6 +172,8 @@ export default function Payouts() {
           ))}
         </section>
       )}
+
+      {s && <PaymentQueue adminKey={adminKey} />}
 
       <PayoutLinkGenerator adminKey={adminKey} onIssued={refresh} />
 

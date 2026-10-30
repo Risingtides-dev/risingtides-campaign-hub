@@ -987,6 +987,9 @@ class CreatorProfile(Base):
     # Set when an EXISTING destination is replaced; cleared by Jake once
     # reviewed in the Hub. A changed destination is the dangerous event.
     payout_change_flagged = Column(Boolean, default=False)
+    # '' = automatic (6+ delivered campaigns = trusted), or a manual
+    # 'trusted' / 'standard' override set on the Payouts page.
+    trust_override = Column(String(16), default="")
 
     added_at = Column(DateTime, default=datetime.now)
 
@@ -1045,3 +1048,30 @@ class CreatorPayoutEvent(Base):
             "new_destination": self.new_destination or "",
             "created_at": self.created_at.isoformat() if self.created_at else "",
         }
+
+
+class BookingPaymentMark(Base):
+    """Payment-readiness marks for one booking (campaign + creator + platform).
+
+    Kept OUT of the `creators` table on purpose: db.save_creators deletes and
+    re-inserts every booking row on each edit, which would wipe these marks
+    and change row ids. Keyed by natural identity instead.
+
+    ready_reason: trusted_confirmed (trusted creator accepted the booking —
+    paid up front) | manual (Jake marked it ready, e.g. partial delivery).
+    """
+    __tablename__ = "booking_payment_marks"
+    __table_args__ = (
+        UniqueConstraint("campaign_id", "username", "platform", name="uq_booking_payment_mark"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    campaign_id = Column(
+        Integer, ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    username = Column(String(255), nullable=False, index=True)  # normalized
+    platform = Column(String(20), nullable=False, default="tiktok")
+    ready_at = Column(DateTime, nullable=True)
+    ready_reason = Column(String(32), default="")
+    note = Column(Text, default="")
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)

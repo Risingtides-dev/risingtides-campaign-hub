@@ -15,6 +15,9 @@ Admin — require header X-Payout-Admin-Key == PAYOUT_ADMIN_KEY:
   POST /api/payouts/admin/creators/<u>/rotate-link
   POST /api/payouts/admin/creators/<u>/clear-flag
   GET  /api/payouts/admin/creators/<u>/events
+  GET  /api/payouts/admin/queue                        ready / awaiting / not ready
+  POST /api/payouts/admin/bookings/mark                {slug, username, platform, action, note}
+  POST /api/payouts/admin/creators/<u>/trust           {override: ''|trusted|standard}
 
 No money moves here. Paying out (Stage 4) is a separate, human-approved step.
 """
@@ -27,6 +30,7 @@ from flask import Blueprint, current_app, jsonify, request
 
 from campaign_manager import db as _db
 from campaign_manager.services import payout_profiles as payouts
+from campaign_manager.services import payout_readiness as readiness
 from campaign_manager.services.creator_dashboard import build_dashboard
 from campaign_manager.services.payout_validation import PayoutValidationError
 from campaign_manager.utils.rate_limit import SlidingWindowLimiter, client_ip
@@ -232,3 +236,47 @@ def admin_events(username):
         return blocked
     with _db.get_session() as session:
         return _json({"events": payouts.events_for(session, username)})
+
+
+@payouts_bp.get("/api/payouts/admin/queue")
+def admin_queue():
+    blocked = _admin_guard()
+    if blocked:
+        return blocked
+    with _db.get_session() as session:
+        return _json(readiness.build_queue(session))
+
+
+@payouts_bp.post("/api/payouts/admin/bookings/mark")
+def admin_mark_booking():
+    """confirm = trusted creator accepted (paid up front); ready = manual
+    override (e.g. partial delivery); clear = undo either."""
+    blocked = _admin_guard()
+    if blocked:
+        return blocked
+    data = _body()
+    action = data.get("action")
+    if action not in ("confirm", "ready", "clear"):
+        return _json({"error": "action must be confirm, ready or clear"}, 400)
+    fields = [data.get(k) for k in ("slug", "username", "platform")]
+    if not all(isinstance(v, str) and v.strip() for v in fields):
+        return _json({"error": "slug, username and platform are required"}, 400)
+    note = data.get("note") if isinstance(data.get("note"), str) else ""
+    with _db.get_session() as session:
+        if not readiness.set_mark(session, *fields, action, note):
+            return _json({"error": "Booking not found."}, 404)
+        return _json({"ok": True})
+
+
+@payouts_bp.post("/api/payouts/admin/creators/<username>/trust")
+def admin_set_trust(username):
+    blocked = _admin_guard()
+    if blocked:
+        return blocked
+    override = _body().get("override")
+    if override not in readiness.TRUST_OVERRIDES:
+        return _json({"error": "override must be '', 'trusted' or 'standard'"}, 400)
+    with _db.get_session() as session:
+        if not readiness.set_trust_override(session, username, override):
+            return _json({"error": "Creator not found."}, 404)
+        return _json({"ok": True, "override": override})

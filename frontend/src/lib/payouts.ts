@@ -106,6 +106,34 @@ export interface PayoutLink {
   has_destination: boolean
 }
 
+export interface QueueRow {
+  slug: string
+  campaign: string
+  username: string
+  handle: string
+  platform: string
+  amount: number
+  posts_owed: number
+  posts_done: number
+  reason: "posts_complete" | "trusted_confirmed" | "manual" | "trusted_unconfirmed" | "posts_incomplete"
+  trusted: boolean
+  trust_override: "" | "trusted" | "standard"
+  delivered_campaigns: number
+  method: PayoutMethod | ""
+  destination: string
+  destination_issue: "" | "missing" | "unconfirmed" | "changed"
+}
+
+export interface PaymentQueue {
+  ready: QueueRow[]
+  awaiting_confirmation: QueueRow[]
+  not_ready: QueueRow[]
+  totals: { ready_count: number; ready_amount: number; payable_now: number; by_method: Record<string, number> }
+  trusted_min_campaigns: number
+}
+
+export type BookingMarkAction = "confirm" | "ready" | "clear"
+
 export class PayoutApiError extends Error {
   status: number
   constructor(message: string, status: number) {
@@ -163,6 +191,19 @@ export const payoutAdmin = {
     call<{ username: string; link: string }>(
       `/api/payouts/admin/creators/${enc(username)}/rotate-link`,
       { method: "POST" },
+      key,
+    ),
+  queue: (key: string) => call<PaymentQueue>("/api/payouts/admin/queue", {}, key),
+  markBooking: (key: string, row: Pick<QueueRow, "slug" | "username" | "platform">, action: BookingMarkAction, note = "") =>
+    call<{ ok: true }>(
+      "/api/payouts/admin/bookings/mark",
+      { method: "POST", body: JSON.stringify({ ...row, action, note }) },
+      key,
+    ),
+  setTrust: (key: string, username: string, override: QueueRow["trust_override"]) =>
+    call<{ ok: true }>(
+      `/api/payouts/admin/creators/${enc(username)}/trust`,
+      { method: "POST", body: JSON.stringify({ override }) },
       key,
     ),
   clearFlag: (key: string, username: string) =>

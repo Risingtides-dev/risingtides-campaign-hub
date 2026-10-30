@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from sqlalchemy import func, select
 
-from campaign_manager.models import Campaign, Creator, CreatorProfile
+from campaign_manager.models import BookingPaymentMark, Campaign, Creator, CreatorProfile
 from campaign_manager.services.payout_profiles import public_view
 from campaign_manager.utils.helpers import campaign_title
 
@@ -45,10 +45,10 @@ def _captions(campaign: Campaign) -> list[str]:
     return [line.strip() for line in text.splitlines() if line.strip()]
 
 
-def _booking_status(owed: int, done: int, paid: bool) -> str:
+def _booking_status(owed: int, done: int, paid: bool, marked_ready: bool) -> str:
     if paid:
         return "paid"
-    if owed and done >= owed:
+    if marked_ready or (owed and done >= owed):
         return "complete"
     return "in_progress"
 
@@ -75,7 +75,7 @@ def _group_by_campaign(rows) -> "OrderedDict[int, dict]":
     return grouped
 
 
-def _card(campaign: Campaign, bookings: list[Creator]) -> dict:
+def _card(campaign: Campaign, bookings: list[Creator], marked_ready: bool = False) -> dict:
     owed = sum(int(b.posts_owed or 0) for b in bookings)
     done = sum(int(b.posts_done or 0) for b in bookings)
     paid = all(_is_paid(b) for b in bookings)
@@ -94,7 +94,7 @@ def _card(campaign: Campaign, bookings: list[Creator]) -> dict:
         "posts_owed": owed,
         "posts_done": min(done, owed) if owed else done,
         "rate": _money(sum(_money(b.total_rate) for b in bookings)),
-        "status": _booking_status(owed, done, paid),
+        "status": _booking_status(owed, done, paid, marked_ready),
         "active": (campaign.completion_status or "none") != "completed",
     }
 
@@ -118,7 +118,12 @@ def _payments(grouped) -> list[dict]:
 
 def build_dashboard(session, profile: CreatorProfile) -> dict:
     grouped = _group_by_campaign(_bookings_for(session, profile.username))
-    cards = [_card(e["campaign"], e["bookings"]) for e in grouped.values()]
+    ready_campaigns = set(session.execute(
+        select(BookingPaymentMark.campaign_id)
+        .where(BookingPaymentMark.username == profile.username)
+        .where(BookingPaymentMark.ready_at.isnot(None))
+    ).scalars())
+    cards = [_card(e["campaign"], e["bookings"], cid in ready_campaigns) for cid, e in grouped.items()]
     current = [c for c in cards if c["active"] or c["status"] != "paid"]
     payments = _payments(grouped)
     return {

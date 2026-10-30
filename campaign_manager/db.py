@@ -152,6 +152,7 @@ def _self_heal_payout_columns():
     sa = __import__("sqlalchemy")
     statements = (
         "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS creator_brief TEXT DEFAULT ''",
+        "ALTER TABLE creator_profiles ADD COLUMN IF NOT EXISTS trust_override VARCHAR(16) DEFAULT ''",
         "ALTER TABLE creator_profiles ADD COLUMN IF NOT EXISTS payout_method VARCHAR(20) DEFAULT ''",
         "ALTER TABLE creator_profiles ADD COLUMN IF NOT EXISTS payout_destination VARCHAR(255) DEFAULT ''",
         "ALTER TABLE creator_profiles ADD COLUMN IF NOT EXISTS payout_token VARCHAR(64) NULL",
