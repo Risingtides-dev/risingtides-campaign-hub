@@ -14,6 +14,7 @@ vi.mock('@/lib/queries', () => {
     useCampaign: () => ({ data: { slug: 'song', title: 'Campaign', tracker_url: 'https://tracker.test', budget: {}, stats: {}, creators: [], matched_videos: [] }, isLoading: false, isError: false }),
     useCobrandStats: () => ({ data: null, isLoading: false, isError: false }),
     useEditCampaign: () => mocks.editMutation,
+    useSetCreatorBrief: () => ({ mutate: vi.fn(), isPending: false }),
     useRefreshStats: mutation, useAddCreator: mutation, useEditCreator: mutation, useTogglePaid: mutation,
     useRemoveCreator: mutation, useCreateTracker: mutation, useSetCobrandLinks: mutation, useSetCampaignSoundLink: mutation,
     useSetDashboardSent: mutation,

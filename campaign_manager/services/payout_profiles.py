@@ -37,7 +37,7 @@ def generate_token() -> str:
 def build_link(base_url: str, token: str) -> str:
     # Token rides in the fragment: browsers never send it to the server, so
     # it can't land in access logs, proxies or Referer headers.
-    return f"{base_url.rstrip('/')}/payout#{token}"
+    return f"{base_url.rstrip('/')}/creator#{token}"
 
 
 def find_by_token(session, token, *, for_update: bool = False) -> Optional[CreatorProfile]:

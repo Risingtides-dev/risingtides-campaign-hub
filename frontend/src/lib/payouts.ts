@@ -13,11 +13,50 @@ export const PAYOUT_METHODS: { value: PayoutMethod; label: string; placeholder: 
   { value: "other", label: "Other", placeholder: "Tell us how to pay you" },
 ]
 
+export const METHOD_LABEL: Record<string, string> = Object.fromEntries(
+  PAYOUT_METHODS.map((m) => [m.value, m.label]),
+)
+
+export function money(n: number): string {
+  return `$${n.toLocaleString("en-US", { minimumFractionDigits: n % 1 ? 2 : 0, maximumFractionDigits: 2 })}`
+}
+
 export interface PayoutPublicView {
   handle: string
   method: PayoutMethod | ""
   destination_masked: string
   confirmed: boolean
+}
+
+export interface CreatorBookingCard {
+  campaign: string
+  artist: string
+  song: string
+  start_date: string
+  platforms: string[]
+  sounds: { platform: string; url: string }[]
+  brief: string
+  open_creative: boolean
+  captions: string[]
+  posts_owed: number
+  posts_done: number
+  rate: number
+  status: "in_progress" | "complete" | "paid"
+  active: boolean
+}
+
+export interface CreatorPayment {
+  campaign: string
+  amount: number
+  date: string
+  platform: string
+}
+
+export interface CreatorDashboardData {
+  creator: PayoutPublicView
+  current: CreatorBookingCard[]
+  payments: CreatorPayment[]
+  totals: { paid: number; campaigns: number }
 }
 
 export interface PayoutSubmitResult extends PayoutPublicView {
@@ -95,6 +134,8 @@ async function call<T>(path: string, init: RequestInit = {}, adminKey?: string):
 // ── public (token in the body, never the URL) ──────────────────────────
 
 export const payoutPublic = {
+  dashboard: (token: string) =>
+    call<CreatorDashboardData>("/api/creator/dashboard", { method: "POST", body: JSON.stringify({ token }) }),
   lookup: (token: string) =>
     call<PayoutPublicView>("/api/payout/lookup", { method: "POST", body: JSON.stringify({ token }) }),
   submit: (token: string, method: PayoutMethod, destination: string) =>

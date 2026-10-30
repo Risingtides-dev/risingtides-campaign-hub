@@ -1,6 +1,7 @@
 """Creator payout endpoints (Round 1).
 
 Public — authenticated by the creator's link token, rate-limited per IP:
+  POST /api/creator/dashboard {token}                       -> own bookings + payments
   POST /api/payout/lookup    {token}                       -> handle + masked details
   POST /api/payout/submit    {token, method, destination}  -> saves, audits
 
@@ -26,6 +27,7 @@ from flask import Blueprint, current_app, jsonify, request
 
 from campaign_manager import db as _db
 from campaign_manager.services import payout_profiles as payouts
+from campaign_manager.services.creator_dashboard import build_dashboard
 from campaign_manager.services.payout_validation import PayoutValidationError
 from campaign_manager.utils.rate_limit import SlidingWindowLimiter, client_ip
 
@@ -93,6 +95,21 @@ def payout_lookup():
         if profile is None:
             return _json({"error": _INVALID_LINK}, 404)
         return _json(payouts.public_view(profile))
+
+
+@payouts_bp.post("/api/creator/dashboard")
+def creator_dashboard():
+    blocked = _public_guard()
+    if blocked:
+        return blocked
+    with _db.get_session() as session:
+        try:
+            profile = payouts.find_by_token(session, _body().get("token"))
+            if profile is None:
+                return _json({"error": _INVALID_LINK}, 404)
+            return _json(build_dashboard(session, profile))
+        except Exception as exc:
+            return _db_error("dashboard", exc)
 
 
 @payouts_bp.post("/api/payout/submit")

@@ -120,6 +120,12 @@ export const api = {
       body: JSON.stringify({ sent }),
     }),
 
+  setCreatorBrief: (slug: string, creator_brief: string) =>
+    request<ApiOk & { creator_brief: string }>(`/api/campaign/${slug}/creator-brief`, {
+      method: "POST",
+      body: JSON.stringify({ creator_brief }),
+    }),
+
   editCampaign: (slug: string, data: Record<string, unknown>) => {
     const requestBody = data as CampaignEditRequest
     return request<ApiOk>(`/api/campaign/${slug}/edit`, {

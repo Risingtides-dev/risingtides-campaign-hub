@@ -92,6 +92,14 @@ export function useCreateCampaign() {
   })
 }
 
+export function useSetCreatorBrief(slug: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (brief: string) => api.setCreatorBrief(slug, brief),
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.campaign(slug) }),
+  })
+}
+
 export function useEditCampaign(slug: string) {
   const qc = useQueryClient()
   return useMutation({

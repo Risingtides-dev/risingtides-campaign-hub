@@ -32,7 +32,7 @@ def _issue(client, *usernames):
 
 
 def _token(link: str) -> str:
-    assert "/payout#" in link
+    assert "/creator#" in link
     return link.split("#", 1)[1]
 
 
@@ -85,7 +85,7 @@ def test_admin_wrong_key_is_rate_limited(admin_app, client):
 def test_links_are_random_stable_and_in_fragment(admin_app, client, db):
     first = _issue(client, "@Alice", "bob")
     assert [l["username"] for l in first] == ["alice", "bob"]
-    assert all(l["link"].startswith("https://hub.example/payout#") for l in first)
+    assert all(l["link"].startswith("https://hub.example/creator#") for l in first)
     tokens = {_token(l["link"]) for l in first}
     assert len(tokens) == 2
     assert all(len(t) >= 40 and "alice" not in t.lower() for t in tokens)

@@ -72,6 +72,7 @@ export interface CampaignDetail {
   tt_artist_label: string
   tt_track_name: string
   additional_sounds: string[]
+  creator_brief?: string
   cobrand_link: string
   cobrand_share_url: string
   cobrand_upload_url: string

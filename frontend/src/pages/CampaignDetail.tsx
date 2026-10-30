@@ -21,6 +21,7 @@ import { ShareTokenSection } from "@/components/campaigns/ShareTokenSection"
 import { AddCreatorForm } from "@/components/campaigns/AddCreatorForm"
 import { CreatorsTable } from "@/components/campaigns/CreatorsTable"
 import { PopScoreCard } from "@/components/campaigns/PopScoreCard"
+import { CreatorBriefCard } from "@/components/campaigns/CreatorBriefCard"
 import { ChevronRight, Loader2 } from "lucide-react"
 import { campaignEditWiring } from "./campaignEditWiring"
 
@@ -153,6 +154,9 @@ export default function CampaignDetail() {
 
       {/* Pop Score (Spotify popularity via Chartmetric) */}
       <PopScoreCard key={slug} slug={slug!} tracker_url={campaign.tracker_url} />
+
+      {/* Creator-facing brief (shown on creator dashboards) */}
+      <CreatorBriefCard key={`brief-${slug}`} slug={slug!} brief={campaign.creator_brief ?? ""} />
 
       {/* Share with Client */}
       <ShareTokenSection slug={slug!} />

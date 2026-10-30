@@ -705,6 +705,28 @@ def set_dashboard_sent(slug: str):
 # -------------------------------------------------------------------
 # 3. POST /api/campaign/<slug>/edit  -- update campaign metadata
 # -------------------------------------------------------------------
+MAX_CREATOR_BRIEF = 5000
+
+
+@campaigns_bp.post("/api/campaign/<slug>/creator-brief")
+def set_creator_brief(slug: str):
+    """Save the creator-facing brief (shown on creator dashboards).
+
+    Blank clears it, and creators then see "Open creative".
+    """
+    if not _db.is_active():
+        return jsonify({"error": "Database not available."}), 503
+    data = request.get_json(silent=True) or {}
+    value = data.get("creator_brief")
+    if not isinstance(value, str) or len(value) > MAX_CREATOR_BRIEF:
+        return jsonify({"error": f"creator_brief must be text of at most {MAX_CREATOR_BRIEF} characters"}), 400
+    if not _db.get_campaign(slug):
+        return jsonify({"error": "Campaign not found."}), 404
+    brief = value.strip()
+    _db.update_campaign_fields(slug, {"creator_brief": brief})
+    return jsonify({"ok": True, "slug": slug, "creator_brief": brief})
+
+
 @campaigns_bp.post("/api/campaign/<slug>/edit")
 def edit_campaign(slug: str):
     if _db.is_active():
@@ -1038,6 +1060,7 @@ def campaign_detail(slug: str):
         "sound_id": meta.get("sound_id", ""),
         "official_sound": meta.get("official_sound", ""),
         "additional_sounds": meta.get("additional_sounds", []),
+        "creator_brief": meta.get("creator_brief", "") or "",
         "cobrand_link": meta.get("cobrand_link", ""),
         "cobrand_share_url": meta.get("cobrand_share_url", ""),
         "cobrand_upload_url": meta.get("cobrand_upload_url", ""),

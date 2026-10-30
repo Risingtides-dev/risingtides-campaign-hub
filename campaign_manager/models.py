@@ -91,6 +91,10 @@ class Campaign(Base):
     # NULL means the CRM property has never been read for this campaign; an
     # empty string means the CRM explicitly holds no captions.
     internal_captions = Column(Text, nullable=True)
+    # Creator-facing brief, written in the Hub (the CRM's notes field mixes
+    # creative direction with budget/billing, so it is never shown to
+    # creators). Blank = "Open creative" on the creator dashboard.
+    creator_brief = Column(Text, default="")
 
     # Chartmetric link for Spotify popularity ("pop score") tracking.
     chartmetric_track_id = Column(BigInteger, nullable=True)
@@ -153,6 +157,7 @@ class Campaign(Base):
             "platform_split": self.platform_split or {},
             "content_types": self.content_types or [],
             "internal_captions": self.internal_captions,
+            "creator_brief": self.creator_brief or "",
             "chartmetric_track_id": self.chartmetric_track_id,
             "chartmetric_link": self.chartmetric_link or "",
             "chartmetric_link_status": self.chartmetric_link_status or "",

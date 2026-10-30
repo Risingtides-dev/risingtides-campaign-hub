@@ -29,8 +29,8 @@ const SoundAssignments = lazy(() => import("./pages/SoundAssignments"))
 const ScrapeTasks = lazy(() => import("./pages/ScrapeTasks"))
 const BookingEfficiency = lazy(() => import("./pages/BookingEfficiency"))
 const Payouts = lazy(() => import("./pages/Payouts"))
-// Public creator page — rendered outside <Layout> so no Hub chrome shows.
-const PayoutForm = lazy(() => import("./pages/PayoutForm"))
+// Public creator dashboard — rendered outside <Layout> so no Hub chrome shows.
+const CreatorDashboard = lazy(() => import("./pages/CreatorDashboard"))
 
 function RouteFallback() {
   return (
@@ -44,14 +44,17 @@ function App() {
   return (
     <BrowserRouter>
       <Routes>
-        <Route
-          path="/payout"
-          element={
-            <Suspense fallback={null}>
-              <PayoutForm />
-            </Suspense>
-          }
-        />
+        {["/creator", "/payout"].map((path) => (
+          <Route
+            key={path}
+            path={path}
+            element={
+              <Suspense fallback={null}>
+                <CreatorDashboard />
+              </Suspense>
+            }
+          />
+        ))}
         <Route element={<Layout />}>
           <Route
             path="/*"
