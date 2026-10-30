@@ -56,3 +56,10 @@ class Config:
         "https://risingtides-content-lab-production.up.railway.app",
     ).rstrip("/")
     CONTENT_LAB_HUB_API_KEY = os.environ.get("CONTENT_LAB_HUB_API_KEY", "")
+
+    # Creator payouts (Round 1). PAYOUT_ADMIN_KEY gates the admin endpoints
+    # and the Hub's Payouts page; unset = admin endpoints return 503.
+    PAYOUT_ADMIN_KEY = os.environ.get("PAYOUT_ADMIN_KEY", "")
+    PUBLIC_BASE_URL = os.environ.get(
+        "PUBLIC_BASE_URL", "https://campaignhub.risingtidesviral.com"
+    ).rstrip("/")

@@ -968,6 +968,21 @@ class CreatorProfile(Base):
     # coloured initials for recognising someone at a glance.
     avatar_url = Column(Text, default="")
 
+    # Payout destination, confirmed by the creator through their private
+    # link (/payout#<token>). Supersedes `paypal_email` here and the
+    # per-booking `creators.paypal_email`, which drifted across rows.
+    # Deliberately NOT in to_dict(): the library API is unauthenticated and
+    # the token is a bearer credential. Admin access goes through
+    # blueprints/payouts.py, which requires PAYOUT_ADMIN_KEY.
+    payout_method = Column(String(20), default="")
+    payout_destination = Column(String(255), default="")
+    payout_token = Column(String(64), nullable=True, unique=True, index=True)
+    payout_updated_at = Column(DateTime, nullable=True)
+    payout_confirmed_by_creator = Column(Boolean, default=False)
+    # Set when an EXISTING destination is replaced; cleared by Jake once
+    # reviewed in the Hub. A changed destination is the dangerous event.
+    payout_change_flagged = Column(Boolean, default=False)
+
     added_at = Column(DateTime, default=datetime.now)
 
     def to_dict(self):
@@ -987,4 +1002,41 @@ class CreatorProfile(Base):
             "stats_updated_at": (
                 self.stats_updated_at.isoformat() if self.stats_updated_at else ""
             ),
+        }
+
+
+class CreatorPayoutEvent(Base):
+    """Append-only audit trail for payout destinations.
+
+    Every create / change / confirm / token issue writes one row, keeping the
+    old value rather than overwriting it silently, so "when did this change
+    and from what" always has an answer.
+    """
+    __tablename__ = "creator_payout_events"
+
+    id = Column(Integer, primary_key=True)
+    username = Column(String(255), nullable=False, index=True)
+    # created | changed | confirmed | backfilled | token_issued |
+    # token_rotated | flag_cleared
+    event = Column(String(32), nullable=False)
+    # creator_link | backfill | admin
+    source = Column(String(32), nullable=False)
+    old_method = Column(String(20), default="")
+    old_destination = Column(String(255), default="")
+    new_method = Column(String(20), default="")
+    new_destination = Column(String(255), default="")
+    client_ip = Column(String(64), default="")
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "username": self.username,
+            "event": self.event,
+            "source": self.source,
+            "old_method": self.old_method or "",
+            "old_destination": self.old_destination or "",
+            "new_method": self.new_method or "",
+            "new_destination": self.new_destination or "",
+            "created_at": self.created_at.isoformat() if self.created_at else "",
         }

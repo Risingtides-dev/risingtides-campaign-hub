@@ -142,6 +142,40 @@ def _self_heal_chartmetric_columns():
         pass
 
 
+def _self_heal_payout_columns():
+    """Additive payout schema: unique token index + non-NULL flags.
+
+    Mirrors scripts/migrations/creator_payout_round1.sql. Expand-only and
+    idempotent, safe for 4 gunicorn workers booting at once.
+    """
+    log = __import__("logging").getLogger(__name__)
+    sa = __import__("sqlalchemy")
+    statements = (
+        "ALTER TABLE creator_profiles ADD COLUMN IF NOT EXISTS payout_method VARCHAR(20) DEFAULT ''",
+        "ALTER TABLE creator_profiles ADD COLUMN IF NOT EXISTS payout_destination VARCHAR(255) DEFAULT ''",
+        "ALTER TABLE creator_profiles ADD COLUMN IF NOT EXISTS payout_token VARCHAR(64) NULL",
+        "ALTER TABLE creator_profiles ADD COLUMN IF NOT EXISTS payout_updated_at TIMESTAMP NULL",
+        "ALTER TABLE creator_profiles ADD COLUMN IF NOT EXISTS payout_confirmed_by_creator BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE creator_profiles ADD COLUMN IF NOT EXISTS payout_change_flagged BOOLEAN DEFAULT FALSE",
+        "CREATE UNIQUE INDEX IF NOT EXISTS ix_creator_profiles_payout_token "
+        "ON creator_profiles (payout_token)",
+        "UPDATE creator_profiles SET payout_method = '' WHERE payout_method IS NULL",
+        "UPDATE creator_profiles SET payout_destination = '' WHERE payout_destination IS NULL",
+        "UPDATE creator_profiles SET payout_confirmed_by_creator = FALSE "
+        "WHERE payout_confirmed_by_creator IS NULL",
+        "UPDATE creator_profiles SET payout_change_flagged = FALSE WHERE payout_change_flagged IS NULL",
+    )
+    try:
+        with _SessionLocal() as s:
+            for statement in statements:
+                s.execute(sa.text(statement))
+            s.commit()
+    except Exception as exc:
+        # A concurrent worker may win the CREATE INDEX race; anything else
+        # is worth seeing in the logs but must not block boot.
+        log.warning("payout column self-heal failed: %s", exc)
+
+
 def _self_heal_completion_status() -> bool:
     """Restore the active-campaign invariant with a bounded Postgres migration.
 
@@ -514,6 +548,10 @@ def init(database_url: Optional[str] = None):
 
     # Chartmetric track link for pop-score (Spotify popularity) tracking.
     _self_heal_chartmetric_columns()
+
+    # Creator payout columns (Round 1). _sync_columns adds the bare columns;
+    # this adds the token's unique index and normalizes NULL flags.
+    _self_heal_payout_columns()
 
     # Add tracking-workflow + match metadata to matched_videos.
     # - first_seen_at: when the cron first matched this video (used by
