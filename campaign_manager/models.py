@@ -1075,3 +1075,66 @@ class BookingPaymentMark(Base):
     ready_reason = Column(String(32), default="")
     note = Column(Text, default="")
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class PayoutBatch(Base):
+    """One payment run (e.g. today's). Jake approves it; nothing is sent
+    until he does. PayPal/Venmo items go through the PayPal Payouts API;
+    Cash App / other items are a manual checklist."""
+    __tablename__ = "payout_batches"
+
+    id = Column(Integer, primary_key=True)
+    # draft -> sent (API lane submitted) -> closed (every item settled), or cancelled
+    status = Column(String(20), nullable=False, default="draft", index=True)
+    sender_batch_id = Column(String(64), nullable=False, unique=True)  # PayPal idempotency key
+    paypal_batch_id = Column(String(64), default="")
+    paypal_env = Column(String(10), default="")
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    approved_at = Column(DateTime, nullable=True)
+    last_synced_at = Column(DateTime, nullable=True)
+    error = Column(Text, default="")
+
+    items = relationship("PayoutItem", back_populates="batch", order_by="PayoutItem.id")
+
+
+class PayoutItem(Base):
+    """One booking's payment inside a batch, with the destination snapshot
+    used. This is the record of what was paid, where, and when."""
+    __tablename__ = "payout_items"
+
+    id = Column(Integer, primary_key=True)
+    batch_id = Column(Integer, ForeignKey("payout_batches.id", ondelete="CASCADE"), nullable=False, index=True)
+    campaign_id = Column(Integer, ForeignKey("campaigns.id", ondelete="SET NULL"), nullable=True, index=True)
+    campaign_title = Column(String(500), default="")
+    username = Column(String(255), nullable=False, index=True)
+    platform = Column(String(20), nullable=False, default="tiktok")
+    amount = Column(Float, nullable=False)
+    currency = Column(String(3), default="USD")
+    method = Column(String(20), nullable=False)
+    destination = Column(String(255), nullable=False)
+    lane = Column(String(10), nullable=False)  # api | manual
+    # queued | pending | succeeded | failed | unclaimed | removed
+    status = Column(String(20), nullable=False, default="queued", index=True)
+    provider_status = Column(String(32), default="")
+    provider_item_id = Column(String(64), default="")
+    error = Column(Text, default="")
+    paid_at = Column(DateTime, nullable=True)
+
+    batch = relationship("PayoutBatch", back_populates="items")
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "campaign": self.campaign_title or "",
+            "campaign_id": self.campaign_id,
+            "username": self.username,
+            "platform": self.platform,
+            "amount": round(self.amount or 0, 2),
+            "method": self.method,
+            "destination": self.destination,
+            "lane": self.lane,
+            "status": self.status,
+            "provider_status": self.provider_status or "",
+            "error": self.error or "",
+            "paid_at": self.paid_at.isoformat() if self.paid_at else "",
+        }

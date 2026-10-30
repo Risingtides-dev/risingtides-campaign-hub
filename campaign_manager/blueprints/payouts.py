@@ -23,53 +23,28 @@ No money moves here. Paying out (Stage 4) is a separate, human-approved step.
 """
 from __future__ import annotations
 
-import hmac
-import logging
-
-from flask import Blueprint, current_app, jsonify, request
+from flask import Blueprint, current_app
 
 from campaign_manager import db as _db
 from campaign_manager.services import payout_profiles as payouts
 from campaign_manager.services import payout_readiness as readiness
 from campaign_manager.services.creator_dashboard import build_dashboard
 from campaign_manager.services.payout_validation import PayoutValidationError
-from campaign_manager.utils.rate_limit import SlidingWindowLimiter, client_ip
-
-log = logging.getLogger(__name__)
+from campaign_manager.blueprints.payout_common import (  # noqa: F401 (limiters re-exported for tests)
+    MAX_LINK_BATCH,
+    _INVALID_LINK,
+    admin_fail_limiter,
+    admin_guard as _admin_guard,
+    db_error as _db_error,
+    db_unavailable,
+    json_response as _json,
+    log,
+    public_limiter,
+    request_body as _body,
+)
+from campaign_manager.utils.rate_limit import client_ip
 
 payouts_bp = Blueprint("payouts", __name__)
-
-# Generous for a real creator (open page, fix a typo, resubmit), useless
-# for guessing 256-bit tokens.
-public_limiter = SlidingWindowLimiter(max_events=30, window_seconds=600)
-admin_fail_limiter = SlidingWindowLimiter(max_events=10, window_seconds=600)
-
-MAX_LINK_BATCH = 500
-MIN_ADMIN_KEY_LENGTH = 32
-_INVALID_LINK = "This link isn't valid anymore. Message us and we'll send you a fresh one."
-
-
-def _no_store(response, status=200):
-    response.status_code = status
-    response.headers["Cache-Control"] = "no-store"
-    response.headers["Referrer-Policy"] = "no-referrer"
-    return response
-
-
-def _json(payload, status=200):
-    return _no_store(jsonify(payload), status)
-
-
-def _db_unavailable():
-    return _json({"error": "Service unavailable. Try again in a minute."}, 503)
-
-
-def _db_error(where: str, exc: Exception):
-    # Type name only: SQLAlchemy error text can include bound values
-    # (tokens, destinations) — those must never reach the logs.
-    log.error("payout %s failed: %s", where, type(exc).__name__)
-    return _db_unavailable()
-
 
 # ── public (creator link) ──────────────────────────────────────────────
 
@@ -77,13 +52,8 @@ def _public_guard():
     if not public_limiter.allow(client_ip()):
         return _json({"error": "Too many tries. Wait a few minutes and try again."}, 429)
     if not _db.is_active():
-        return _db_unavailable()
+        return db_unavailable()
     return None
-
-
-def _body() -> dict:
-    data = request.get_json(silent=True)
-    return data if isinstance(data, dict) else {}
 
 
 @payouts_bp.post("/api/payout/lookup")
@@ -146,23 +116,6 @@ def payout_submit():
 
 
 # ── admin (Hub Payouts page) ───────────────────────────────────────────
-
-def _admin_guard():
-    key = (current_app.config.get("PAYOUT_ADMIN_KEY") or "").strip()
-    if len(key) < MIN_ADMIN_KEY_LENGTH:
-        return _json({"error": "Payout admin is disabled until a strong PAYOUT_ADMIN_KEY "
-                               f"({MIN_ADMIN_KEY_LENGTH}+ characters) is set.",
-                      "code": "payout_admin_unconfigured"}, 503)
-    ip = client_ip()
-    supplied = request.headers.get("X-Payout-Admin-Key", "")
-    if not hmac.compare_digest(supplied.encode(), key.encode()):
-        if not admin_fail_limiter.allow(ip):
-            return _json({"error": "Too many attempts.", "code": "rate_limited"}, 429)
-        return _json({"error": "Admin key required.", "code": "unauthorized"}, 401)
-    if not _db.is_active():
-        return _db_unavailable()
-    return None
-
 
 @payouts_bp.get("/api/payouts/admin/creators")
 def admin_creators():

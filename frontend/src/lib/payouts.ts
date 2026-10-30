@@ -132,6 +132,39 @@ export interface PaymentQueue {
   trusted_min_campaigns: number
 }
 
+export interface BatchItem {
+  id: number
+  campaign: string
+  campaign_id: number | null
+  username: string
+  platform: string
+  amount: number
+  method: PayoutMethod
+  destination: string
+  lane: "api" | "manual"
+  status: "queued" | "pending" | "succeeded" | "failed" | "unclaimed" | "removed"
+  provider_status: string
+  error: string
+  paid_at: string
+}
+
+export interface PayoutBatch {
+  id: number
+  status: "draft" | "sending" | "sent" | "closed" | "cancelled"
+  paypal_env: string
+  created_at: string
+  approved_at: string
+  last_synced_at: string
+  error: string
+  items: BatchItem[]
+  totals: { api: number; manual: number; all: number }
+}
+
+export interface BatchesResponse {
+  batches: PayoutBatch[]
+  paypal: { connected: boolean; env: string }
+}
+
 export type BookingMarkAction = "confirm" | "ready" | "clear"
 
 export class PayoutApiError extends Error {
@@ -193,6 +226,22 @@ export const payoutAdmin = {
       { method: "POST" },
       key,
     ),
+  batches: (key: string) => call<BatchesResponse>("/api/payouts/admin/batches", {}, key),
+  createBatch: (key: string) => call<PayoutBatch>("/api/payouts/admin/batches", { method: "POST" }, key),
+  approveBatch: (key: string, id: number, confirmTotal: string) =>
+    call<PayoutBatch>(
+      `/api/payouts/admin/batches/${id}/approve`,
+      { method: "POST", body: JSON.stringify({ confirm_total: confirmTotal }) },
+      key,
+    ),
+  cancelBatch: (key: string, id: number) =>
+    call<{ ok: true }>(`/api/payouts/admin/batches/${id}/cancel`, { method: "POST" }, key),
+  syncBatch: (key: string, id: number) =>
+    call<PayoutBatch>(`/api/payouts/admin/batches/${id}/sync`, { method: "POST" }, key),
+  removeItem: (key: string, id: number) =>
+    call<{ ok: true }>(`/api/payouts/admin/items/${id}/remove`, { method: "POST" }, key),
+  markItemPaid: (key: string, id: number) =>
+    call<{ ok: true }>(`/api/payouts/admin/items/${id}/mark-paid`, { method: "POST" }, key),
   queue: (key: string) => call<PaymentQueue>("/api/payouts/admin/queue", {}, key),
   markBooking: (key: string, row: Pick<QueueRow, "slug" | "username" | "platform">, action: BookingMarkAction, note = "") =>
     call<{ ok: true }>(

@@ -99,6 +99,9 @@ def _marks(session) -> dict[tuple, BookingPaymentMark]:
 
 
 def build_queue(session) -> dict:
+    from campaign_manager.services.payout_batches import open_item_keys  # avoid import cycle
+
+    in_batch = open_item_keys(session)
     delivered = delivered_campaign_counts(session)
     profiles = {p.username: p for p in session.execute(select(CreatorProfile)).scalars()}
     marks = _marks(session)
@@ -109,11 +112,13 @@ def build_queue(session) -> dict:
         profile = profiles.get(user)
         override = (profile.trust_override or "") if profile else ""
         trusted = is_trusted(delivered.get(user, 0), override)
-        state, reason = classify(booking, marks.get((campaign.id, user, _platform(booking))), trusted)
-        if state == "paid":
-            continue
+        key = (campaign.id, user, _platform(booking))
+        state, reason = classify(booking, marks.get(key), trusted)
+        if state == "paid" or key in in_batch:
+            continue  # paid, or already in a payout batch — never pay twice
         groups[state].append({
             "slug": campaign.slug,
+            "campaign_id": campaign.id,
             "campaign": campaign.title or campaign.slug,
             "username": user,
             "handle": (profile.display_username if profile else "") or user,
