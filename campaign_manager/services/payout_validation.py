@@ -12,7 +12,7 @@ from typing import NamedTuple, Optional
 
 METHODS = ("paypal", "cashapp", "venmo", "other")
 
-_EMAIL = re.compile(r"^[^\s@]{1,64}@[^\s@]+\.[^\s@]{2,}$")
+_EMAIL = re.compile(r"^[a-z0-9._%+-]{1,64}@[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$")
 _CASHTAG = re.compile(r"^(?=.*[a-z])[a-z0-9]{1,20}$")
 _VENMO = re.compile(r"^[a-z0-9_-]{5,30}$")
 _OTHER_MIN, _OTHER_MAX = 3, 200

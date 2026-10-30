@@ -39,6 +39,7 @@ public_limiter = SlidingWindowLimiter(max_events=30, window_seconds=600)
 admin_fail_limiter = SlidingWindowLimiter(max_events=10, window_seconds=600)
 
 MAX_LINK_BATCH = 500
+MIN_ADMIN_KEY_LENGTH = 32
 _INVALID_LINK = "This link isn't valid anymore. Message us and we'll send you a fresh one."
 
 
@@ -55,6 +56,13 @@ def _json(payload, status=200):
 
 def _db_unavailable():
     return _json({"error": "Service unavailable. Try again in a minute."}, 503)
+
+
+def _db_error(where: str, exc: Exception):
+    # Type name only: SQLAlchemy error text can include bound values
+    # (tokens, destinations) — those must never reach the logs.
+    log.error("payout %s failed: %s", where, type(exc).__name__)
+    return _db_unavailable()
 
 
 # ── public (creator link) ──────────────────────────────────────────────
@@ -78,7 +86,10 @@ def payout_lookup():
     if blocked:
         return blocked
     with _db.get_session() as session:
-        profile = payouts.find_by_token(session, _body().get("token"))
+        try:
+            profile = payouts.find_by_token(session, _body().get("token"))
+        except Exception as exc:
+            return _db_error("lookup", exc)
         if profile is None:
             return _json({"error": _INVALID_LINK}, 404)
         return _json(payouts.public_view(profile))
@@ -91,7 +102,10 @@ def payout_submit():
         return blocked
     data = _body()
     with _db.get_session() as session:
-        profile = payouts.find_by_token(session, data.get("token"))
+        try:
+            profile = payouts.find_by_token(session, data.get("token"), for_update=True)
+        except Exception as exc:
+            return _db_error("submit lookup", exc)
         if profile is None:
             return _json({"error": _INVALID_LINK}, 404)
         try:
@@ -101,10 +115,9 @@ def payout_submit():
             )
         except PayoutValidationError as exc:
             return _json({"error": str(exc)}, 400)
-        except Exception:
+        except Exception as exc:
             session.rollback()
-            log.exception("payout submit failed for %s", profile.username)
-            return _json({"error": "Something went wrong saving that. Try again."}, 500)
+            return _db_error(f"submit for {profile.username}", exc)
         if event == "changed":
             # Username only — destinations are PII and stay out of logs.
             log.warning("payout destination CHANGED by creator link: %s", profile.username)
@@ -115,8 +128,9 @@ def payout_submit():
 
 def _admin_guard():
     key = (current_app.config.get("PAYOUT_ADMIN_KEY") or "").strip()
-    if not key:
-        return _json({"error": "Payout admin is disabled until PAYOUT_ADMIN_KEY is set.",
+    if len(key) < MIN_ADMIN_KEY_LENGTH:
+        return _json({"error": "Payout admin is disabled until a strong PAYOUT_ADMIN_KEY "
+                               f"({MIN_ADMIN_KEY_LENGTH}+ characters) is set.",
                       "code": "payout_admin_unconfigured"}, 503)
     ip = client_ip()
     supplied = request.headers.get("X-Payout-Admin-Key", "")

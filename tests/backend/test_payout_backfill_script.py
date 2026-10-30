@@ -58,6 +58,8 @@ def test_dry_run_writes_nothing_and_apply_fills_only_clean(tmp_path, monkeypatch
     assert actions == {"solo": "FILL", "split": "SKIP_CONFLICTED",
                        "junk": "SKIP_UNPARSEABLE", "blank": "NEEDS_LINK"}
     assert oct(diff.stat().st_mode)[-3:] == "600"
+    junk_row = next(r for r in csv.DictReader(diff.open()) if r["creator"] == "junk")
+    assert junk_row["detail"] == "'-@cashapp"  # formula-escaped
 
     assert script.main(["--apply", "--out-dir", str(tmp_path)]) == 0
     s.expire_all()

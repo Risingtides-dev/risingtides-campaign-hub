@@ -375,7 +375,11 @@ def init(database_url: Optional[str] = None):
     if url.startswith("postgresql://"):
         url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
 
-    _engine = create_engine(url, pool_pre_ping=True, pool_size=5, max_overflow=10)
+    # hide_parameters: DB errors must not echo bound values (payout tokens,
+    # payment destinations) into tracebacks and Railway logs.
+    _engine = create_engine(
+        url, pool_pre_ping=True, pool_size=5, max_overflow=10, hide_parameters=True,
+    )
     _SessionLocal = sessionmaker(bind=_engine)
 
     # Create all tables.

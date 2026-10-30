@@ -49,6 +49,25 @@ def test_admin_disabled_without_key(client):
     assert resp.status_code == 503
 
 
+def test_admin_disabled_with_weak_key(app, client):
+    app.config.update(PAYOUT_ADMIN_KEY="short")
+    resp = client.get("/api/payouts/admin/creators", headers={"X-Payout-Admin-Key": "short"})
+    assert resp.status_code == 503
+
+
+def test_lookup_db_error_returns_503_without_leaking_token(admin_app, client, monkeypatch, caplog):
+    token = "B" * 43
+
+    def boom(*_a, **_k):
+        raise RuntimeError(f"connection lost [parameters: ('{token}',)]")
+
+    monkeypatch.setattr(payouts_bp_module.payouts, "find_by_token", boom)
+    resp = client.post("/api/payout/lookup", json={"token": token})
+    assert resp.status_code == 503
+    assert token not in resp.get_data(as_text=True)
+    assert token not in caplog.text
+
+
 def test_admin_rejects_wrong_key(admin_app, client):
     resp = client.get("/api/payouts/admin/creators", headers={"X-Payout-Admin-Key": "nope"})
     assert resp.status_code == 401

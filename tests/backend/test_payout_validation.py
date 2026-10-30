@@ -32,6 +32,9 @@ def test_normalize_accepts_valid(method, raw, expected):
     ("paypal", "not-an-email"),
     ("paypal", "a@b"),
     ("paypal", "a b@c.com"),
+    ("paypal", "a@b.com,c@d.com"),
+    ("paypal", "=cmd@evil.com"),
+    ("paypal", "jane@gmаil.com"),       # Cyrillic а homoglyph
     ("cashapp", "$"),
     ("cashapp", "$12345"),             # needs a letter
     ("cashapp", "$" + "a" * 21),

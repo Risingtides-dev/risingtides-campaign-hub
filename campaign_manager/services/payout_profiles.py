@@ -40,13 +40,16 @@ def build_link(base_url: str, token: str) -> str:
     return f"{base_url.rstrip('/')}/payout#{token}"
 
 
-def find_by_token(session, token) -> Optional[CreatorProfile]:
+def find_by_token(session, token, *, for_update: bool = False) -> Optional[CreatorProfile]:
+    """`for_update` row-locks the profile so two concurrent submissions
+    can't both see the same "old" value (and skip the change flag)."""
     value = str(token or "")
     if not _TOKEN_SHAPE.match(value):
         return None
-    return session.execute(
-        select(CreatorProfile).where(CreatorProfile.payout_token == value)
-    ).scalar_one_or_none()
+    stmt = select(CreatorProfile).where(CreatorProfile.payout_token == value)
+    if for_update:
+        stmt = stmt.with_for_update()
+    return session.execute(stmt).scalar_one_or_none()
 
 
 def _record(session, username, event, source, *, old=("", ""), new=("", ""), client_ip=""):

@@ -58,7 +58,7 @@ function Tile({ label, value, tone = "text-rt-fg" }: { label: string; value: num
 }
 
 export default function Payouts() {
-  const [adminKey, setAdminKey] = useState(() => localStorage.getItem(KEY_STORAGE) ?? "")
+  const [adminKey, setAdminKey] = useState(() => sessionStorage.getItem(KEY_STORAGE) ?? "")
   const [search, setSearch] = useState("")
   const [openHistory, setOpenHistory] = useState<string | null>(null)
   const qc = useQueryClient()
@@ -71,11 +71,11 @@ export default function Payouts() {
   })
 
   const forgetKey = () => {
-    localStorage.removeItem(KEY_STORAGE)
+    sessionStorage.removeItem(KEY_STORAGE)
     setAdminKey("")
   }
   const saveKey = (k: string) => {
-    localStorage.setItem(KEY_STORAGE, k)
+    sessionStorage.setItem(KEY_STORAGE, k)
     setAdminKey(k)
   }
 

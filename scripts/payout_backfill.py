@@ -44,7 +44,7 @@ def _engine():
         url = url.replace("postgres://", "postgresql://", 1)
     if url.startswith("postgresql://"):
         url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
-    return create_engine(url)
+    return create_engine(url, hide_parameters=True)
 
 
 def _has_payout_columns(conn) -> bool:
@@ -63,11 +63,25 @@ def _load(conn):
     return [(r[0], r[1]) for r in rows], {u: d for u, d in prof}
 
 
+def _cell(value) -> str:
+    """Neutralise spreadsheet formulas (=, +, -, @) in creator-supplied text."""
+    text_value = str(value or "")
+    return "'" + text_value if text_value[:1] in ("=", "+", "-", "@") else text_value
+
+
+class _SafeWriter:
+    def __init__(self, writer):
+        self._writer = writer
+
+    def writerow(self, row):
+        self._writer.writerow([_cell(c) for c in row])
+
+
 def _write_diff(plan, out_dir: Path) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"backfill_diff_{datetime.now():%Y-%m-%d_%H%M}.csv"
     with path.open("w", newline="") as fh:
-        w = csv.writer(fh)
+        w = _SafeWriter(csv.writer(fh))
         w.writerow(["creator", "action", "method", "destination", "detail"])
         for user, dest in sorted(plan.to_fill.items()):
             w.writerow([user, "FILL", dest.method, dest.destination, ""])

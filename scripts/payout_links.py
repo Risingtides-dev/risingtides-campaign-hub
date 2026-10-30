@@ -54,7 +54,7 @@ def _session():
         url = url.replace("postgres://", "postgresql://", 1)
     if url.startswith("postgresql://"):
         url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
-    return sessionmaker(bind=create_engine(url))()
+    return sessionmaker(bind=create_engine(url, hide_parameters=True))()
 
 
 def _usernames(args) -> list[str]:
