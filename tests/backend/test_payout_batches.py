@@ -137,7 +137,8 @@ def test_paypal_error_is_retryable_with_same_batch_id(client, paypal, seeded):
     paypal.fail_create = PayPalError("Couldn't reach PayPal (Timeout).")
     resp = _post(client, f"/api/payouts/admin/batches/{bid}/approve", confirm_total="150.50")
     assert resp.status_code == 400 and "retry safely" in resp.json["error"]
-    assert _post(client, "/api/payouts/admin/batches").json["id"] == bid  # still the open batch
+    blocked = _post(client, "/api/payouts/admin/batches")  # can't add while a send is in flight
+    assert blocked.status_code == 400 and "being sent" in blocked.json["error"]
 
     paypal.fail_create = None
     assert _post(client, f"/api/payouts/admin/batches/{bid}/approve", confirm_total="150.50").json["status"] == "sent"
@@ -300,3 +301,30 @@ def test_rename_blocked_while_in_batch(client, paypal, seeded):
     resp = client.post("/api/campaign/live/creator/pp/edit",
                        json={"new_username": "pp2", "posts_owed": 2, "total_rate": 100})
     assert resp.status_code == 409 and "payout batch" in resp.json["error"]
+
+
+def test_pay_button_adds_one_booking_and_queue_shows_it(client, paypal, seeded):
+    body = {"slug": "live", "username": "pp", "platform": "tiktok"}
+    batch = _post(client, "/api/payouts/admin/batches/add-booking", **body).json
+    assert [i["username"] for i in batch["items"]] == ["pp"]
+
+    queue = client.get("/api/payouts/admin/queue", headers=ADMIN).json
+    row = queue["in_batch"][0]
+    assert row["username"] == "pp" and row["payment"]["batch_id"] == batch["id"]
+    assert "pp" not in _ready(client)
+
+    again = _post(client, "/api/payouts/admin/batches/add-booking", **body)
+    assert again.status_code == 400 and "already in a payment" in again.json["error"]
+
+    vm = _post(client, "/api/payouts/admin/batches/add-booking", slug="live", username="vm", platform="tiktok").json
+    assert vm["id"] == batch["id"] and len(vm["items"]) == 2
+
+    nod = _post(client, "/api/payouts/admin/batches/add-booking", slug="live", username="nodetails", platform="tiktok")
+    assert nod.status_code == 400 and "payment info" in nod.json["error"]
+
+
+def test_pay_everyone_adds_to_existing_draft(client, paypal, seeded):
+    first = _post(client, "/api/payouts/admin/batches/add-booking", slug="live", username="pp", platform="tiktok").json
+    everyone = _post(client, "/api/payouts/admin/batches").json
+    assert everyone["id"] == first["id"]
+    assert sorted(i["username"] for i in everyone["items"]) == ["ca", "pp", "vm"]

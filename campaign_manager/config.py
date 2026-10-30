@@ -60,6 +60,11 @@ class Config:
     # Creator payouts (Round 1). PAYOUT_ADMIN_KEY gates the admin endpoints
     # and the Hub's Payouts page; unset = admin endpoints return 503.
     PAYOUT_ADMIN_KEY = os.environ.get("PAYOUT_ADMIN_KEY", "")
+    # Creator-only address (e.g. creators.risingtidesviral.com). When set,
+    # that host serves ONLY the creator dashboard (utils/creator_host.py) and
+    # new creator links use it instead of the Hub's address.
+    CREATOR_HOST = os.environ.get("CREATOR_HOST", "").strip().lower()
     PUBLIC_BASE_URL = os.environ.get(
-        "PUBLIC_BASE_URL", "https://campaignhub.risingtidesviral.com"
+        "PUBLIC_BASE_URL",
+        f"https://{CREATOR_HOST}" if CREATOR_HOST else "https://campaignhub.risingtidesviral.com",
     ).rstrip("/")

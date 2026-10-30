@@ -7,6 +7,7 @@ const EVENT_LABEL: Record<string, string> = {
   confirmed: "Creator confirmed",
   changed: "Creator CHANGED",
   backfilled: "Backfilled from campaign rows",
+  admin_set: "Set in the Hub",
   token_issued: "Link issued",
   token_rotated: "Link replaced",
   flag_cleared: "Change reviewed",

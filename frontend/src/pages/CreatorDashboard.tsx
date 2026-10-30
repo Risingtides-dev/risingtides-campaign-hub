@@ -27,6 +27,10 @@ export default function CreatorDashboard() {
   const [error, setError] = useState("")
 
   useEffect(() => {
+    document.title = "Rising Tides"
+  }, [])
+
+  useEffect(() => {
     if (!token) return
     let cancelled = false
     payoutPublic

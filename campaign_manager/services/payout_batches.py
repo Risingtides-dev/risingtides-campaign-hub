@@ -66,33 +66,88 @@ def open_item_keys(session) -> set[tuple]:
     return {tuple(r) for r in rows}
 
 
+def open_items_by_key(session) -> dict[tuple, dict]:
+    """(campaign_id, username, platform) -> the open payout item for it."""
+    rows = session.execute(
+        select(PayoutItem, PayoutBatch)
+        .join(PayoutBatch, PayoutItem.batch_id == PayoutBatch.id)
+        .where(PayoutItem.status.in_(OPEN_ITEM_STATUSES))
+    ).all()
+    return {
+        (i.campaign_id, i.username, i.platform): {
+            "item_id": i.id, "item_status": i.status, "batch_id": b.id, "batch_status": b.status,
+        }
+        for i, b in rows
+    }
+
+
 def _open_batch(session):
     return session.execute(
         select(PayoutBatch).where(PayoutBatch.status.in_(("draft", "sending")))
     ).scalars().first()
 
 
-def create_draft(session) -> PayoutBatch | None:
-    """Snapshot everyone ready AND payable (confirmed, unflagged details).
-    Returns the existing open batch instead of making a second one."""
-    _lock(session)
+def _draft(session, *, create: bool) -> PayoutBatch | None:
+    """The open draft ("today's payments"), optionally creating it."""
     existing = _open_batch(session)
     if existing is not None:
+        if existing.status == "sending":
+            raise BatchError("Today's payments are being sent — wait for that to finish.")
         return existing
-    rows = [r for r in build_queue(session)["ready"]
-            if not r["destination_issue"] and _payable_amount(r["amount"])][:MAX_BATCH_ITEMS]
-    if not rows:
+    if not create:
         return None
     batch = PayoutBatch(status="draft", sender_batch_id=f"rt-{date.today():%Y%m%d}-{uuid.uuid4().hex[:12]}")
     session.add(batch)
     session.flush()
+    return batch
+
+
+def _add_item(session, batch: PayoutBatch, row: dict) -> None:
+    if len(_live_items(batch)) >= MAX_BATCH_ITEMS:
+        raise BatchError(f"Today's payments are full ({MAX_BATCH_ITEMS}). Send these first.")
+    session.add(PayoutItem(
+        batch_id=batch.id, campaign_id=row["campaign_id"], campaign_title=row["campaign"],
+        username=row["username"], platform=row["platform"], amount=row["amount"],
+        method=row["method"], destination=row["destination"],
+        lane="api" if row["method"] in API_METHODS else "manual", status="queued",
+    ))
+    session.flush()
+    session.refresh(batch)
+
+
+def create_draft(session) -> PayoutBatch | None:
+    """Add everyone ready AND payable (confirmed, unflagged details, a real
+    amount) to today's payments. Reuses the open draft if there is one."""
+    _lock(session)
+    rows = [r for r in build_queue(session)["ready"]
+            if not r["destination_issue"] and _payable_amount(r["amount"])]
+    batch = _draft(session, create=bool(rows))
+    if batch is None:
+        return None
     for r in rows:
-        session.add(PayoutItem(
-            batch_id=batch.id, campaign_id=r["campaign_id"], campaign_title=r["campaign"],
-            username=r["username"], platform=r["platform"], amount=r["amount"],
-            method=r["method"], destination=r["destination"],
-            lane="api" if r["method"] in API_METHODS else "manual", status="queued",
-        ))
+        _add_item(session, batch, r)
+    session.commit()
+    return batch
+
+
+def add_booking(session, slug: str, username: str, platform: str) -> PayoutBatch:
+    """The per-creator "Pay" button: add one ready booking to today's payments."""
+    _lock(session)
+    user, plat = normalize_username(username), (platform or "tiktok").lower()
+    row = next((r for r in build_queue(session)["ready"]
+                if (r["slug"], r["username"], r["platform"]) == (slug, user, plat)), None)
+    if row is None:
+        raise BatchError(f"@{user} isn't ready to pay on this campaign (or is already in a payment).")
+    if row["destination_issue"] == "missing":
+        raise BatchError(f"@{user} hasn't given payment info yet — send them their link.")
+    if row["destination_issue"] == "changed":
+        raise BatchError(f"@{user}'s payment info changed — review it on the Payment info tab first.")
+    if row["destination_issue"] == "unconfirmed":
+        raise BatchError(f"@{user} hasn't confirmed their payment info yet — send them their link.")
+    if not _payable_amount(row["amount"]):
+        raise BatchError(f"@{user} has no rate on this booking — add one on the campaign page.")
+    batch = _draft(session, create=True)
+    _add_item(session, batch, row)
     session.commit()
     return batch
 

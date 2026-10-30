@@ -233,3 +233,20 @@ def admin_set_trust(username):
         if not readiness.set_trust_override(session, username, override):
             return _json({"error": "Creator not found."}, 404)
         return _json({"ok": True, "override": override})
+
+
+@payouts_bp.post("/api/payouts/admin/creators/<username>/destination")
+def admin_set_destination(username):
+    blocked = _admin_guard()
+    if blocked:
+        return blocked
+    data = _body()
+    with _db.get_session() as session:
+        try:
+            user = payouts.admin_set_destination(session, username, data.get("method"), data.get("destination"))
+        except PayoutValidationError as exc:
+            return _json({"error": str(exc)}, 400)
+        except ValueError:
+            return _json({"error": "Username is required."}, 400)
+        log.warning("payout destination set by admin: %s", user)
+        return _json({"ok": True, "username": user})

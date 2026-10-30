@@ -143,3 +143,28 @@ def test_dashboard_shows_payment_coming_after_trusted_confirm(admin_app, client,
     client.post("/api/payouts/admin/bookings/mark", headers=ADMIN,
                 json={"slug": "live", "username": "vet", "platform": "tiktok", "action": "confirm"})
     assert card()["status"] == "complete"
+
+
+def test_admin_can_set_details_and_queue_offers_booking_email(admin_app, client, seeded, db):
+    with db.get_session() as s:
+        s.query(Creator).filter_by(username="partial").one().paypal_email = "Partial@Gmail.com"
+        s.commit()
+    row = next(r for r in _queue(client)["not_ready"] if r["username"] == "partial")
+    assert row["destination_issue"] == "missing" and row["booking_destination"] == "Partial@Gmail.com"
+
+    bad = client.post("/api/payouts/admin/creators/partial/destination", headers=ADMIN,
+                      json={"method": "paypal", "destination": "nope"})
+    assert bad.status_code == 400
+    ok = client.post("/api/payouts/admin/creators/partial/destination", headers=ADMIN,
+                     json={"method": "paypal", "destination": "Partial@Gmail.com"})
+    assert ok.status_code == 200
+    row = next(r for r in _queue(client)["not_ready"] if r["username"] == "partial")
+    assert (row["method"], row["destination"], row["destination_issue"]) == ("paypal", "partial@gmail.com", "")
+    assert row["booking_destination"] == ""
+
+    # Fixing a flagged change by hand clears the flag; history keeps the old value.
+    client.post("/api/payouts/admin/creators/vet/destination", headers=ADMIN,
+                json={"method": "venmo", "destination": "@vet-real"})
+    events = client.get("/api/payouts/admin/creators/vet/events", headers=ADMIN).json["events"]
+    assert events[0]["event"] == "admin_set" and events[0]["old_destination"] == "$vet"
+    assert client.post("/api/payouts/admin/creators/x/destination", json={}).status_code == 401

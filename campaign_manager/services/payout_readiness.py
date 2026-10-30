@@ -99,13 +99,13 @@ def _marks(session) -> dict[tuple, BookingPaymentMark]:
 
 
 def build_queue(session) -> dict:
-    from campaign_manager.services.payout_batches import open_item_keys  # avoid import cycle
+    from campaign_manager.services.payout_batches import open_items_by_key  # avoid import cycle
 
-    in_batch = open_item_keys(session)
+    in_batch = open_items_by_key(session)
     delivered = delivered_campaign_counts(session)
     profiles = {p.username: p for p in session.execute(select(CreatorProfile)).scalars()}
     marks = _marks(session)
-    groups: dict[str, list] = {"ready": [], "awaiting_confirmation": [], "not_ready": []}
+    groups: dict[str, list] = {"ready": [], "awaiting_confirmation": [], "not_ready": [], "in_batch": []}
 
     for booking, campaign in _active_bookings(session):
         user = normalize_username(booking.username)
@@ -114,12 +114,19 @@ def build_queue(session) -> dict:
         trusted = is_trusted(delivered.get(user, 0), override)
         key = (campaign.id, user, _platform(booking))
         state, reason = classify(booking, marks.get(key), trusted)
-        if state == "paid" or key in in_batch:
-            continue  # paid, or already in a payout batch — never pay twice
+        if state == "paid":
+            continue
+        payment = in_batch.get(key)
+        if payment is not None:
+            # Already in a payment (never offered again — no paying twice).
+            if payment["item_status"] == "succeeded":
+                continue
+            state = "in_batch"
         groups[state].append({
             "slug": campaign.slug,
             "campaign_id": campaign.id,
             "campaign": campaign.title or campaign.slug,
+            "start_date": campaign.start_date or "",
             "username": user,
             "handle": (profile.display_username if profile else "") or user,
             "platform": _platform(booking),
@@ -133,6 +140,11 @@ def build_queue(session) -> dict:
             "method": (profile.payout_method or "") if profile else "",
             "destination": (profile.payout_destination or "") if profile else "",
             "destination_issue": _destination_issue(profile),
+            # Old per-booking PayPal field, offered as a one-click "Use this"
+            # when the creator has nothing on file yet.
+            "booking_destination": (booking.paypal_email or "").strip()
+            if _destination_issue(profile) == "missing" else "",
+            "payment": payment,
         })
 
     ready = groups["ready"]

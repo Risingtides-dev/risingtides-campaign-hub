@@ -2,6 +2,7 @@
 
   GET  /api/payouts/admin/batches                  recent batches + PayPal connection
   POST /api/payouts/admin/batches                  build today's draft from the Ready list
+  POST /api/payouts/admin/batches/add-booking      {slug, username, platform} -> "Pay" one creator
   POST /api/payouts/admin/batches/<id>/approve     {confirm_total} -> sends PayPal/Venmo
   POST /api/payouts/admin/batches/<id>/cancel      draft only
   POST /api/payouts/admin/batches/<id>/sync        pull PayPal status, mark paid
@@ -77,6 +78,17 @@ def create_batch():
             return json_response({"error": "Nobody is ready and payable right now."}, 400)
         return json_response(batches.batch_dict(batch))
     return _run("create batch", go)
+
+
+@payout_batches_bp.post("/api/payouts/admin/batches/add-booking")
+def add_booking():
+    def go(session):
+        data = request_body()
+        fields = [data.get(k) for k in ("slug", "username", "platform")]
+        if not all(isinstance(v, str) and v.strip() for v in fields):
+            return json_response({"error": "slug, username and platform are required"}, 400)
+        return json_response(batches.batch_dict(batches.add_booking(session, *fields)))
+    return _run("add booking", go)
 
 
 @payout_batches_bp.post("/api/payouts/admin/batches/<int:batch_id>/approve")

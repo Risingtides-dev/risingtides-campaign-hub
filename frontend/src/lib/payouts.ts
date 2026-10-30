@@ -106,9 +106,17 @@ export interface PayoutLink {
   has_destination: boolean
 }
 
+export interface QueuePayment {
+  item_id: number
+  item_status: "queued" | "pending" | "unclaimed" | "review"
+  batch_id: number
+  batch_status: string
+}
+
 export interface QueueRow {
   slug: string
   campaign: string
+  start_date: string
   username: string
   handle: string
   platform: string
@@ -122,12 +130,15 @@ export interface QueueRow {
   method: PayoutMethod | ""
   destination: string
   destination_issue: "" | "missing" | "unconfirmed" | "changed"
+  booking_destination: string
+  payment: QueuePayment | null
 }
 
 export interface PaymentQueue {
   ready: QueueRow[]
   awaiting_confirmation: QueueRow[]
   not_ready: QueueRow[]
+  in_batch: QueueRow[]
   totals: { ready_count: number; ready_amount: number; payable_now: number; by_method: Record<string, number> }
   trusted_min_campaigns: number
 }
@@ -238,6 +249,18 @@ export const payoutAdmin = {
     call<{ ok: true }>(`/api/payouts/admin/batches/${id}/cancel`, { method: "POST" }, key),
   syncBatch: (key: string, id: number) =>
     call<PayoutBatch>(`/api/payouts/admin/batches/${id}/sync`, { method: "POST" }, key),
+  addBooking: (key: string, row: Pick<QueueRow, "slug" | "username" | "platform">) =>
+    call<PayoutBatch>(
+      "/api/payouts/admin/batches/add-booking",
+      { method: "POST", body: JSON.stringify({ slug: row.slug, username: row.username, platform: row.platform }) },
+      key,
+    ),
+  setDestination: (key: string, username: string, method: PayoutMethod, destination: string) =>
+    call<{ ok: true }>(
+      `/api/payouts/admin/creators/${enc(username)}/destination`,
+      { method: "POST", body: JSON.stringify({ method, destination }) },
+      key,
+    ),
   removeItem: (key: string, id: number) =>
     call<{ ok: true }>(`/api/payouts/admin/items/${id}/remove`, { method: "POST" }, key),
   markItemPaid: (key: string, id: number) =>
@@ -272,6 +295,15 @@ const DM_TEMPLATE =
 
 export function dmFor(link: string): string {
   return DM_TEMPLATE.replace("{link}", link)
+}
+
+// Best guess at the method for an old booking value: email -> PayPal, $tag -> Cash App.
+export function guessMethod(value: string): PayoutMethod {
+  const v = value.trim()
+  if (v.startsWith("$")) return "cashapp"
+  if (/^@/.test(v)) return "venmo"
+  if (v.includes("@")) return "paypal"
+  return "other"
 }
 
 export function parseHandles(text: string): string[] {

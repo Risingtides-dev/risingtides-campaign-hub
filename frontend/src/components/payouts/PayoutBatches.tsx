@@ -94,7 +94,10 @@ function BatchCard({ batch, adminKey, paypalConnected }: { batch: PayoutBatch; a
   const onError = (e: unknown) => toast.error(e instanceof Error ? e.message : "Request failed")
   const opts = { onSuccess: refresh, onError }
 
-  const approve = useMutation({ mutationFn: () => payoutAdmin.approveBatch(adminKey, batch.id, typed), ...opts })
+  const approve = useMutation({
+    mutationFn: () => payoutAdmin.approveBatch(adminKey, batch.id, batch.totals.api === 0 ? "0" : typed),
+    ...opts,
+  })
   const cancel = useMutation({ mutationFn: () => payoutAdmin.cancelBatch(adminKey, batch.id), ...opts })
   const sync = useMutation({ mutationFn: () => payoutAdmin.syncBatch(adminKey, batch.id), ...opts })
   const remove = useMutation({ mutationFn: (id: number) => payoutAdmin.removeItem(adminKey, id), ...opts })
@@ -108,35 +111,57 @@ function BatchCard({ batch, adminKey, paypalConnected }: { batch: PayoutBatch; a
   return (
     <div className="rounded-xl bg-rt-bg-card border border-white/8 p-4 space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="text-sm text-rt-fg">
-          Batch #{batch.id} · {new Date(batch.created_at).toLocaleDateString()} ·{" "}
-          <span className="uppercase text-xs tracking-wider text-rt-fg-tertiary">{batch.status}</span>
+        <div className="text-sm font-semibold text-rt-fg">
+          {draft
+            ? "Today's payments"
+            : batch.status === "sent"
+              ? `Sent ${new Date(batch.approved_at || batch.created_at).toLocaleDateString()} — waiting on PayPal`
+              : `Paid ${new Date(batch.approved_at || batch.created_at).toLocaleDateString()}`}
           {batch.paypal_env === "sandbox" && <span className="ml-2 text-xs text-rt-amber">SANDBOX — test money</span>}
         </div>
         <div className="text-sm text-rt-fg">{money(batch.totals.all)}</div>
       </div>
       {batch.error && <p className="text-sm text-rt-red">{batch.error}</p>}
 
-      <div className="space-y-2">
+      {api.length > 0 && <div className="space-y-2">
         <h4 className="text-xs font-semibold uppercase tracking-wider text-rt-fg-tertiary">
-          PayPal + Venmo (sent automatically) · {money(batch.totals.api)}
+          PayPal + Venmo — sent for you when you click Send · {money(batch.totals.api)}
         </h4>
         <ItemTable items={api} {...tableProps} />
-      </div>
-      <div className="space-y-2">
+      </div>}
+      {manual.length > 0 && <div className="space-y-2">
         <h4 className="text-xs font-semibold uppercase tracking-wider text-rt-fg-tertiary">
-          Cash App / other (pay by hand, then mark paid) · {money(batch.totals.manual)}
+          Cash App / other — pay these yourself, then tick them off · {money(batch.totals.manual)}
         </h4>
         <ItemTable items={manual} {...tableProps} />
-      </div>
+      </div>}
 
-      {draft && (
+      {draft && api.length === 0 && manual.length > 0 && (
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-rt-magenta/30 p-3">
+          <button
+            type="button"
+            disabled={approve.isPending}
+            onClick={() => approve.mutate()}
+            className="rounded-md bg-rt-magenta px-4 py-1.5 text-sm font-semibold text-white disabled:opacity-40"
+          >
+            Start paying these by hand
+          </button>
+          <span className="text-xs text-rt-fg-tertiary">Then pay each one in Cash App and click "I sent it".</span>
+          {batch.status === "draft" && (
+            <button type="button" onClick={() => cancel.mutate()} className="text-sm text-rt-fg-tertiary hover:underline">
+              Clear today's payments
+            </button>
+          )}
+        </div>
+      )}
+
+      {draft && api.length > 0 && (
         <div className="rounded-lg border border-rt-magenta/30 p-3 space-y-2">
           {api.length > 0 && !paypalConnected ? (
             <p className="text-sm text-rt-amber">PayPal isn't connected yet — remove PayPal/Venmo items or connect PayPal to send.</p>
           ) : (
             <p className="text-sm text-rt-fg-secondary">
-              To approve, type the PayPal/Venmo total: <b className="text-rt-fg">{batch.totals.api.toFixed(2)}</b>
+              To send, type the PayPal/Venmo total to confirm: <b className="text-rt-fg">{batch.totals.api.toFixed(2)}</b>
             </p>
           )}
           <div className="flex flex-wrap gap-2">
@@ -153,11 +178,11 @@ function BatchCard({ batch, adminKey, paypalConnected }: { batch: PayoutBatch; a
               onClick={() => approve.mutate()}
               className="rounded-md bg-rt-magenta px-4 py-1.5 text-sm font-semibold text-white disabled:opacity-40"
             >
-              {approve.isPending ? "Sending…" : "Approve & send"}
+              {approve.isPending ? "Sending…" : `Send ${money(batch.totals.api)}`}
             </button>
             {batch.status === "draft" && (
               <button type="button" onClick={() => cancel.mutate()} className="text-sm text-rt-fg-tertiary hover:underline">
-                Cancel batch
+                Clear today's payments
               </button>
             )}
           </div>
@@ -200,7 +225,7 @@ export function PayoutBatches({ adminKey }: { adminKey: string }) {
     <section className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h2 className="text-lg font-semibold text-rt-fg">Payout batches</h2>
+          <h2 className="text-lg font-semibold text-rt-fg">Payments</h2>
           <p className="text-xs text-rt-fg-tertiary">
             PayPal:{" "}
             {d.paypal.connected ? (
@@ -212,17 +237,21 @@ export function PayoutBatches({ adminKey }: { adminKey: string }) {
             )}
           </p>
         </div>
-        {!open.some((b) => b.status !== "sent") && (
-          <button
-            type="button"
-            onClick={() => create.mutate()}
-            disabled={create.isPending}
-            className="rounded-md bg-rt-magenta px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
-          >
-            {create.isPending ? "Building…" : "Build today's batch"}
-          </button>
-        )}
+        <button
+          type="button"
+          onClick={() => create.mutate()}
+          disabled={create.isPending}
+          className="rounded-md border border-white/15 px-3 py-1.5 text-xs text-rt-fg disabled:opacity-50"
+        >
+          {create.isPending ? "Adding…" : "Add everyone who's owed"}
+        </button>
       </div>
+
+      {!open.some((b) => b.status === "draft" || b.status === "sending") && (
+        <p className="rounded-xl border border-dashed border-white/10 px-4 py-3 text-sm text-rt-fg-tertiary">
+          Nobody in today's payments yet. Click <b className="text-rt-fg">Pay</b> next to a creator below.
+        </p>
+      )}
 
       {open.map((b) => (
         <BatchCard key={b.id} batch={b} adminKey={adminKey} paypalConnected={d.paypal.connected} />
@@ -231,7 +260,7 @@ export function PayoutBatches({ adminKey }: { adminKey: string }) {
       {past.length > 0 && (
         <div className="space-y-2">
           <button type="button" onClick={() => setShowHistory((v) => !v)} className="text-sm text-rt-fg-secondary">
-            {showHistory ? "▾" : "▸"} Past batches ({past.length})
+            {showHistory ? "▾" : "▸"} Past payments ({past.length})
           </button>
           {showHistory &&
             past.map((b) => <BatchCard key={b.id} batch={b} adminKey={adminKey} paypalConnected={d.paypal.connected} />)}

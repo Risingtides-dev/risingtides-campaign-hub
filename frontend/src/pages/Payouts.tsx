@@ -8,7 +8,7 @@ import { PAYOUT_METHODS, PayoutApiError, payoutAdmin } from "@/lib/payouts"
 import type { PayoutAdminRow } from "@/lib/payouts"
 import { PayoutHistory } from "@/components/payouts/PayoutHistory"
 import { PayoutLinkGenerator } from "@/components/payouts/PayoutLinkGenerator"
-import { PaymentQueue } from "@/components/payouts/PaymentQueue"
+import { CampaignPayouts } from "@/components/payouts/CampaignPayouts"
 import { PayoutBatches } from "@/components/payouts/PayoutBatches"
 
 const KEY_STORAGE = "rt.payoutAdminKey"
@@ -63,6 +63,7 @@ export default function Payouts() {
   const [adminKey, setAdminKey] = useState(() => sessionStorage.getItem(KEY_STORAGE) ?? "")
   const [search, setSearch] = useState("")
   const [openHistory, setOpenHistory] = useState<string | null>(null)
+  const [tab, setTab] = useState<"pay" | "info">("pay")
   const qc = useQueryClient()
 
   const overview = useQuery({
@@ -138,7 +139,33 @@ export default function Payouts() {
       {overview.isLoading && <p className="text-sm text-rt-fg-tertiary">Loading…</p>}
       {err && <p className="text-sm text-rt-red">{err.message}</p>}
 
-      {s && (
+      <div className="flex gap-1 border-b border-white/8">
+        {([["pay", "Pay creators"], ["info", "Payment info"]] as const).map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => setTab(key)}
+            className={`px-4 py-2 text-sm -mb-px border-b-2 ${tab === key ? "border-rt-magenta text-rt-fg font-semibold" : "border-transparent text-rt-fg-tertiary hover:text-rt-fg"}`}
+          >
+            {label}
+            {key === "info" && s && s.flagged > 0 && (
+              <span className="ml-2 rounded-full bg-rt-red px-1.5 text-[11px] text-white">{s.flagged}</span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {tab === "pay" && s && s.flagged > 0 && (
+        <button type="button" onClick={() => setTab("info")}
+          className="w-full rounded-lg border border-rt-red/40 bg-rt-red/5 px-4 py-2 text-left text-sm text-rt-red">
+          {s.flagged} creator{s.flagged === 1 ? "" : "s"} changed their payment info — review on the Payment info tab before paying them →
+        </button>
+      )}
+
+      {tab === "pay" && s && <PayoutBatches adminKey={adminKey} />}
+      {tab === "pay" && s && <CampaignPayouts adminKey={adminKey} />}
+
+      {tab === "info" && s && (
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
           <Tile label="Confirmed by creator" value={s.confirmed} tone="text-rt-green" />
           <Tile label="On file, unconfirmed" value={s.unconfirmed_on_file} tone="text-rt-amber" />
@@ -148,7 +175,7 @@ export default function Payouts() {
         </div>
       )}
 
-      {flagged.length > 0 && (
+      {tab === "info" && flagged.length > 0 && (
         <section className="rounded-xl border border-rt-red/40 bg-rt-red/5 p-4 space-y-3">
           <h2 className="text-sm font-semibold text-rt-red">
             {flagged.length} changed destination{flagged.length === 1 ? "" : "s"} — check with the creator before paying
@@ -174,13 +201,9 @@ export default function Payouts() {
         </section>
       )}
 
-      {s && <PayoutBatches adminKey={adminKey} />}
+      {tab === "info" && <PayoutLinkGenerator adminKey={adminKey} onIssued={refresh} />}
 
-      {s && <PaymentQueue adminKey={adminKey} />}
-
-      <PayoutLinkGenerator adminKey={adminKey} onIssued={refresh} />
-
-      <section className="space-y-3">
+      {tab === "info" && <section className="space-y-3">
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
@@ -228,7 +251,7 @@ export default function Payouts() {
             </tbody>
           </table>
         </div>
-      </section>
+      </section>}
     </div>
   )
 }

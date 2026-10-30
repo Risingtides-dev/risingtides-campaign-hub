@@ -103,6 +103,23 @@ def submit_destination(session, profile, method, destination, client_ip="") -> s
     return event
 
 
+def admin_set_destination(session, username: str, method, destination) -> str:
+    """Jake enters/fixes details in the Hub. He has verified them, so they
+    count as confirmed and clear any change flag. Old value kept in the log.
+    Raises PayoutValidationError on bad input."""
+    new = normalize_destination(method, destination)
+    profile = get_or_create_profile(session, username, commit=False)
+    old = (profile.payout_method or "", profile.payout_destination or "")
+    profile.payout_method = new.method
+    profile.payout_destination = new.destination
+    profile.payout_confirmed_by_creator = True
+    profile.payout_change_flagged = False
+    profile.payout_updated_at = datetime.now()
+    _record(session, profile.username, "admin_set", "admin", old=old, new=tuple(new))
+    session.commit()
+    return profile.username
+
+
 def issue_token(session, username: str, *, rotate: bool = False) -> tuple[CreatorProfile, bool]:
     """Ensure this creator has a link token. Returns (profile, newly_issued).
 

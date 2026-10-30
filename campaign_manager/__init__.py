@@ -126,6 +126,10 @@ def create_app(config=None):
     # negligible CPU cost.
     Compress(app)
 
+    # Creator-only hostname: serves just the creator dashboard (no Hub).
+    from campaign_manager.utils import creator_host
+    creator_host.install(app)
+
     # Initialize database
     db.init(app.config.get("DATABASE_URL"))
 
