@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
+import { api, operatorLogin, operatorSession } from "@/lib/soundOperatorApi"
 import { Search, RefreshCw, Send, Eye, AlertTriangle, X, Music, CheckCircle2, Loader2, CheckCheck, CircleSlash } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -152,26 +153,6 @@ function TelegramPreview({ html }: { html: string }) {
   )
 }
 
-// ---- API client ----
-
-// Honor VITE_API_URL when defined (including empty string for relative URLs
-// via Vite dev proxy). Only fall back to localhost when the var is absent.
-const API_BASE = import.meta.env.VITE_API_URL !== undefined
-  ? import.meta.env.VITE_API_URL
-  : (import.meta.env.DEV ? "http://localhost:5055" : "")
-
-async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}/api/sound-assignments${path}`, {
-    headers: { "Content-Type": "application/json" },
-    ...init,
-  })
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}))
-    throw new Error(body.detail || body.error || `Request failed (${res.status})`)
-  }
-  return res.json()
-}
-
 // ---- Page ----
 
 export default function SoundAssignments() {
@@ -194,6 +175,9 @@ export default function SoundAssignments() {
   // Top-bar "Select all / Clear all" in-flight indicator.
   const [bulkPostering, setBulkPostering] = useState(false)
 
+  const [authenticated, setAuthenticated] = useState<boolean | null>(null)
+  const [password, setPassword] = useState("")
+  const [loggingIn, setLoggingIn] = useState(false)
   const [loading, setLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -230,8 +214,39 @@ export default function SoundAssignments() {
   }, [])
 
   useEffect(() => {
-    loadAll()
+    const expired = () => setAuthenticated(false)
+    window.addEventListener("sound-operator-expired", expired)
+    return () => window.removeEventListener("sound-operator-expired", expired)
+  }, [])
+
+  useEffect(() => {
+    operatorSession()
+      .then((ready) => {
+        setAuthenticated(ready)
+        if (ready) return loadAll()
+        setLoading(false)
+      })
+      .catch((e) => {
+        setError(e instanceof Error ? e.message : "Operator session unavailable")
+        setLoading(false)
+      })
   }, [loadAll])
+
+  async function signIn(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setLoggingIn(true)
+    setError(null)
+    try {
+      await operatorLogin(password)
+      setPassword("")
+      setAuthenticated(true)
+      await loadAll()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Login failed")
+    } finally {
+      setLoggingIn(false)
+    }
+  }
 
   // ---- Lookups ----
 
@@ -482,6 +497,22 @@ export default function SoundAssignments() {
   }, [posters, pageById, pageFilter, assignedPageIds])
 
   // ---- Render ----
+
+  if (authenticated === null && !loading) {
+    return <p role="alert" className="p-8 text-sm text-rt-red">{error || "Operator access unavailable"}</p>
+  }
+
+  if (authenticated === false) {
+    return (
+      <form onSubmit={signIn} className="mx-auto mt-16 max-w-sm space-y-4">
+        <h1 className="text-xl font-semibold text-rt-fg">Sound Assignments</h1>
+        <Input type="password" autoComplete="current-password" aria-label="Operator password"
+          value={password} onChange={(event) => setPassword(event.target.value)} required />
+        {error && <p role="alert" className="text-sm text-rt-red">{error}</p>}
+        <Button type="submit" disabled={loggingIn}>Sign in</Button>
+      </form>
+    )
+  }
 
   if (loading) {
     return (
