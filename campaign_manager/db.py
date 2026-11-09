@@ -2932,6 +2932,34 @@ def get_tracker_id_for_campaign(slug: str) -> str:
     return ""
 
 
+def get_tracker_ids_for_campaign(slug: str) -> List[str]:
+    """Return every TidesTracker UUID tied to this campaign, without repeats.
+
+    Same two sources as `get_tracker_id_for_campaign`, but all of them: the
+    campaigns row first, then each tracker_campaign_links row naming the
+    slug. A campaign can own more than one client page, and anything that
+    writes to "the campaign's trackers" has to reach every one.
+    """
+    if not slug:
+        return []
+    found: List[str] = []
+    with get_session() as s:
+        c = s.query(Campaign.tracker_campaign_id).filter_by(slug=slug).first()
+        if c and (c[0] or "").strip():
+            found.append(c[0].strip())
+        rows = (
+            s.query(TrackerCampaignLink.tracker_id)
+            .filter_by(campaign_slug=slug)
+            .order_by(TrackerCampaignLink.tracker_id)
+            .all()
+        )
+        for (tracker_id,) in rows:
+            tid = (tracker_id or "").strip()
+            if tid and tid not in found:
+                found.append(tid)
+    return found
+
+
 def get_campaign_to_tracker_map() -> Dict[str, str]:
     """Return {campaign_slug: tracker_id} for every campaign that has a
     tracker (from either source). Used by the cron to look up trackers in

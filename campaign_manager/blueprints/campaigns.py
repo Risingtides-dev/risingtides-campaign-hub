@@ -944,14 +944,24 @@ def edit_campaign(slug: str):
     # sound id) don't fire a network call. Best-effort: a failed push is
     # logged inside set_tracker_status and self-heals on the next save or
     # backfill — a tracker outage must not fail saving the campaign.
-    if completion_status is not None and meta.get("tracker_campaign_id"):
-        from campaign_manager.services.tidestracker import (
-            set_tracker_status,
-            tracker_status_for,
-        )
-        set_tracker_status(
-            meta["tracker_campaign_id"], tracker_status_for(completion_status)
-        )
+    #
+    # Every tracker tied to the campaign gets it — the campaigns row and any
+    # manual link from the Trackers page — because a client page linked the
+    # second way is still the page the client is reading.
+    if completion_status is not None:
+        if _db.is_active():
+            tracker_ids = _db.get_tracker_ids_for_campaign(slug)
+        else:
+            tracker_ids = [(meta.get("tracker_campaign_id") or "").strip()]
+        tracker_ids = [tid for tid in tracker_ids if tid]
+        if tracker_ids:
+            from campaign_manager.services.tidestracker import (
+                set_tracker_status,
+                tracker_status_for,
+            )
+            tracker_status = tracker_status_for(completion_status)
+            for tracker_id in tracker_ids:
+                set_tracker_status(tracker_id, tracker_status)
 
     new_song_fields = {key: meta.get(key, "") for key in old_song_fields}
     if old_song_fields != new_song_fields:

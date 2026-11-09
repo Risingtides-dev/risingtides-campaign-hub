@@ -408,6 +408,10 @@ def delete_tracker_group(group_id: int):
 def sync_tracker_status():
     """Push every linked campaign's delivery status to its tracker.
 
+    "Linked" means either source: campaigns.tracker_campaign_id, or a
+    tracker_campaign_links row made on the Trackers page. Reading only the
+    column left 93 finished campaigns' pages saying "in progress".
+
     The per-save hook in `edit_campaign` keeps status current going forward,
     but the ~278 trackers that already exist have never been told. This
     walks them once. Safe to re-run: it writes the same value every time.
@@ -433,13 +437,23 @@ def sync_tracker_status():
     if err:
         return err
 
+    status_by_slug: dict = {}
     statuses_by_tracker: dict = {}
     for meta in _db.list_campaigns():
+        status = tracker_status_for(meta.get("completion_status", "none"))
+        slug = meta.get("slug") or ""
+        if slug:
+            status_by_slug[slug] = status
         tracker_id = (meta.get("tracker_campaign_id") or "").strip()
         if tracker_id:
-            statuses_by_tracker.setdefault(tracker_id, set()).add(
-                tracker_status_for(meta.get("completion_status", "none"))
-            )
+            statuses_by_tracker.setdefault(tracker_id, set()).add(status)
+    # A manual link to a campaign that no longer exists has no status to
+    # report, so it is left alone rather than guessed at.
+    for tracker_id, slug in _db.get_tracker_campaign_links().items():
+        tracker_id = (tracker_id or "").strip()
+        status = status_by_slug.get(slug)
+        if tracker_id and status:
+            statuses_by_tracker.setdefault(tracker_id, set()).add(status)
 
     conflicts = sum(1 for seen in statuses_by_tracker.values() if len(seen) > 1)
     targets = [
