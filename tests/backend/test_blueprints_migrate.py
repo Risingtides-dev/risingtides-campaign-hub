@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 
-_MIGRATION_KEY = "migration-test-secret"
+_MIGRATION_KEY = "migration-test-key-not-real-000000000"
 _MIGRATION_HEADERS = {"X-Hub-Write-Key": _MIGRATION_KEY}
 
 
@@ -47,7 +47,8 @@ class TestCampaignFullMigration:
             "slug": "protected_campaign", "campaign": {"title": "Disabled", "budget": 0},
         }, headers=_MIGRATION_HEADERS)
         assert response.status_code == 503
-        assert response.get_json()["code"] == "migration_auth_unconfigured"
+        # security-fix-1112: the app-wide gate refuses first, with its own code.
+        assert response.get_json()["code"] in ("migration_auth_unconfigured", "hub_write_unconfigured")
         saved = db.get_campaign("protected_campaign")
         assert saved["title"] == "Protected"
         assert saved["budget"] == 100

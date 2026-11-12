@@ -19,7 +19,7 @@ from urllib.parse import urlsplit
 from flask import Blueprint, current_app, jsonify, request
 
 from campaign_manager import db as _db
-from campaign_manager.utils.hub_auth import require_hub_write_key
+from campaign_manager.utils.hub_auth import hub_write_guard, require_hub_write_key
 
 logger = logging.getLogger(__name__)
 from campaign_manager.utils.helpers import (
@@ -552,17 +552,17 @@ def write_internal_captions(slug: str):
     CRM page first and is stored here only once that write went through.
     The caller sends `expected`, the value it last saw (null when it saw
     none); a stored value that differs answers 409 with the current value,
-    so a stale edit never overwrites a newer one. When HUB_WRITE_KEY is set,
-    the X-Hub-Write-Key header must match it.
+    so a stale edit never overwrites a newer one. The X-Hub-Write-Key header
+    must match HUB_WRITE_KEY; an unset or short key refuses (503).
     """
     from campaign_manager.services.notion import (
         MAX_INTERNAL_CAPTIONS,
         write_page_internal_captions,
     )
 
-    write_key = (os.environ.get("HUB_WRITE_KEY") or "").strip()
-    if write_key and request.headers.get("X-Hub-Write-Key", "") != write_key:
-        return jsonify({"error": "X-Hub-Write-Key does not match"}), 401
+    denied = hub_write_guard()
+    if denied is not None:
+        return denied
 
     data = request.get_json(silent=True)
     if not isinstance(data, dict) or "expected" not in data:

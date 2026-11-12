@@ -70,3 +70,65 @@ def require_hub_write_key(view):
         return view(*args, **kwargs)
 
     return wrapped
+
+
+# ── App-wide gate (security-fix-1112 CH-F3) ─────────────────────────────────
+#
+# Every POST/PUT/PATCH/DELETE needs the Hub write key, EXCEPT endpoints that
+# authenticate themselves with their own fail-closed mechanism:
+#   - creator payout link routes: 256-bit body token + per-IP rate limit
+#   - payout admin routes: PAYOUT_ADMIN_KEY (blueprints/payout_common.admin_guard)
+#   - Slack events: Slack request signature (blueprints/slack_events.slack_events)
+#   - Notion intake webhook: NOTION_WEBHOOK_SECRET (blueprints/webhooks.py)
+# Reads (GET/HEAD) are unchanged by default so the control-plane Worker's two
+# credential-less reads keep working; a few reads that only leak PII/debug
+# data always need the key, and HUB_READ_KEY_REQUIRED=true gates the rest of
+# /api/* reads (the Worker's two routes stay open even then).
+
+SELF_AUTHENTICATED_ENDPOINTS = frozenset({
+    "payouts.payout_lookup",
+    "payouts.creator_dashboard",
+    "payouts.payout_submit",
+    "slack_events.slack_events",
+    "webhooks.notion_webhook",
+})
+SELF_AUTHENTICATED_PREFIXES = ("payouts.admin_", "payout_batches.")
+
+WORKER_READ_PATHS = frozenset({"/api/campaigns", "/api/campaigns/captions"})
+
+ALWAYS_KEYED_READ_ENDPOINTS = frozenset({
+    "campaigns.api_paypal",          # PayPal lookup by username
+    "campaigns.get_cobrand_raw",     # debug dump; fetches a stored URL server-side
+    "slack_events.slack_debug",      # booking-channel text, raw LLM output, tracebacks
+})
+
+
+def self_authenticated(endpoint: str | None) -> bool:
+    endpoint = endpoint or ""
+    return endpoint in SELF_AUTHENTICATED_ENDPOINTS or endpoint.startswith(SELF_AUTHENTICATED_PREFIXES)
+
+
+def read_gate_enabled() -> bool:
+    return (os.environ.get("HUB_READ_KEY_REQUIRED") or "").strip().lower() in ("1", "true", "yes")
+
+
+def _gate_decision():
+    method = request.method
+    if method == "OPTIONS":
+        return None  # CORS preflight carries no credentials
+    endpoint = request.endpoint
+    if method in MUTATING_METHODS:
+        if self_authenticated(endpoint):
+            return None
+        return hub_write_guard()
+    if endpoint in ALWAYS_KEYED_READ_ENDPOINTS:
+        return hub_write_guard()
+    if (read_gate_enabled() and request.path.startswith("/api/")
+            and request.path not in WORKER_READ_PATHS and not self_authenticated(endpoint)):
+        return hub_write_guard()
+    return None
+
+
+def install_write_gate(app) -> None:
+    """Register the app-wide gate. Always on; fails closed without HUB_WRITE_KEY."""
+    app.before_request(_gate_decision)
