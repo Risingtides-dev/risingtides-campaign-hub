@@ -67,6 +67,29 @@ def app(db):
     return app
 
 
+# Obviously fake Hub write key (security-fix-1112). Operator write routes now
+# require it; the default ``client`` sends it so existing tests keep exercising
+# the authenticated operator path. ``anon_client`` sends nothing.
+TEST_HUB_WRITE_KEY = "test-key-not-real-0000000000000000"
+
+
+@pytest.fixture(autouse=True)
+def _hub_write_key(monkeypatch):
+    from campaign_manager.utils import hub_auth
+
+    monkeypatch.setenv("HUB_WRITE_KEY", TEST_HUB_WRITE_KEY)
+    hub_auth.write_fail_limiter.reset()
+    yield
+    hub_auth.write_fail_limiter.reset()
+
+
 @pytest.fixture
 def client(app):
+    test_client = app.test_client()
+    test_client.environ_base["HTTP_X_HUB_WRITE_KEY"] = TEST_HUB_WRITE_KEY
+    return test_client
+
+
+@pytest.fixture
+def anon_client(app):
     return app.test_client()

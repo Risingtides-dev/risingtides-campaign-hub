@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 from flask import Blueprint, current_app, jsonify, request
 
 from campaign_manager import db as _db
+from campaign_manager.utils.hub_auth import require_hub_write_key
 
 logger = logging.getLogger(__name__)
 from campaign_manager.utils.helpers import (
@@ -1540,6 +1541,7 @@ def _find_active_creator(creators: list, username: str, platform: Optional[str])
 
 
 @campaigns_bp.post("/api/campaign/<slug>/creator/add")
+@require_hub_write_key
 def add_creator(slug: str):
     if _db.is_active():
         if not _db.campaign_exists(slug):
@@ -1628,6 +1630,7 @@ def add_creator(slug: str):
 # 8. POST /api/campaign/<slug>/creator/<username>/edit
 # -------------------------------------------------------------------
 @campaigns_bp.post("/api/campaign/<slug>/creator/<username>/edit")
+@require_hub_write_key
 def edit_creator(slug: str, username: str):
     if _db.is_active():
         creators = _db.get_creators(slug)
@@ -1703,6 +1706,7 @@ def edit_creator(slug: str, username: str):
 # 9. POST /api/campaign/<slug>/creator/<username>/toggle-paid
 # -------------------------------------------------------------------
 @campaigns_bp.post("/api/campaign/<slug>/creator/<username>/toggle-paid")
+@require_hub_write_key
 def toggle_paid(slug: str, username: str):
     if _db.is_active():
         creators = _db.get_creators(slug)
@@ -1734,6 +1738,7 @@ def toggle_paid(slug: str, username: str):
 # 10. POST /api/campaign/<slug>/creator/<username>/remove
 # -------------------------------------------------------------------
 @campaigns_bp.post("/api/campaign/<slug>/creator/<username>/remove")
+@require_hub_write_key
 def remove_creator(slug: str, username: str):
     if _db.is_active():
         creators = _db.get_creators(slug)
@@ -1762,6 +1767,7 @@ def remove_creator(slug: str, username: str):
 #      (handles usernames with slashes or other URL-unsafe chars)
 # -------------------------------------------------------------------
 @campaigns_bp.post("/api/campaign/<slug>/creator/remove")
+@require_hub_write_key
 def remove_creator_by_body(slug: str):
     data = request.get_json(silent=True) or {}
     username = data.get("username", "")
