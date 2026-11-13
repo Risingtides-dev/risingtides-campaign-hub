@@ -28,6 +28,9 @@ const InternalScrapeView = lazy(() => import("./pages/InternalScrapeView"))
 const SoundAssignments = lazy(() => import("./pages/SoundAssignments"))
 const ScrapeTasks = lazy(() => import("./pages/ScrapeTasks"))
 const BookingEfficiency = lazy(() => import("./pages/BookingEfficiency"))
+const Payouts = lazy(() => import("./pages/Payouts"))
+// Public creator dashboard — rendered outside <Layout> so no Hub chrome shows.
+const CreatorDashboard = lazy(() => import("./pages/CreatorDashboard"))
 
 function RouteFallback() {
   return (
@@ -41,6 +44,17 @@ function App() {
   return (
     <BrowserRouter>
       <Routes>
+        {["/creator", "/payout"].map((path) => (
+          <Route
+            key={path}
+            path={path}
+            element={
+              <Suspense fallback={null}>
+                <CreatorDashboard />
+              </Suspense>
+            }
+          />
+        ))}
         <Route element={<Layout />}>
           <Route
             path="/*"
@@ -70,6 +84,7 @@ function App() {
                   <Route path="/sound-assignments" element={<SoundAssignments />} />
                   <Route path="/scrape-tasks" element={<ScrapeTasks />} />
                   <Route path="/efficiency" element={<BookingEfficiency />} />
+                  <Route path="/payouts" element={<Payouts />} />
                 </Routes>
               </Suspense>
             }
