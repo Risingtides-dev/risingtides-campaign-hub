@@ -1,0 +1,9 @@
+_________________________________________________________________________________
+time: [16:30] [11-13-26] EST UTC-05:00
+agent: [claude] [opus 5.5]
+worktree: [codex/sound-proxy-auth-20261011]
+type: [merge]: current main into the Sound Assignments operator session
+area: [backend], [frontend], [testing]
+
+Merged main ecab1f3 into this draft as a37e215. The only conflict was AGENTS.md: main added the tracker delivery-status contract next to the old Sound Assignments line that this branch replaces; both are kept and the old line stays replaced. __init__.py and models.py auto-merged next to main's creator-host gate and payout tables without overlap. Full Python suite on that tree with a disposable local PostgreSQL 17 database for TEST_POSTGRES_DATABASE_URL: 1,227 passed, 1 skipped (the held-lock runtime case that needs a healthy pip), 0 failed, including the four Sound Operator PostgreSQL tests. Frontend: tsc and vite build pass. Vitest under heavy host load had 13 five-second timeouts in eight chart and table files this branch does not touch; rerun alone with a 30-second timeout 96 of 98 passed, and the two remaining chart files passed 65 of 65 with a 90-second timeout; soundOperatorApi tests passed. Release limitation found while mapping draft PR #282: the two merge cleanly as text but not in behavior. With a valid 32-plus-character key configured, #282's app-wide gate answers 401 to this branch's same-origin browser login (a POST without the server key), and its blueprint guard would refuse operator writes, so 19 of this branch's tests fail on the combined tree. The recommended path is to rework this branch onto the shared operator session draft (claude/hub-operator-session), which generalizes this design to the whole Hub. Keep draft; no merge, deployment, login or production request was made.
+_________________________________________________________________________________
