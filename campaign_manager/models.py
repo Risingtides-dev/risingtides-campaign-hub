@@ -31,6 +31,8 @@ class Campaign(Base):
     start_date = Column(String(20), default="")
     end_date = Column(String(20), default="")
     end_date_auto = Column(Boolean, default=False, nullable=False)
+    # When the client dashboard was handed to the point of contact (NULL = not yet).
+    dashboard_sent_at = Column(DateTime, nullable=True)
     budget = Column(Float, default=0.0)
     platform = Column(String(20), default="tiktok")
     total_views = Column(Integer, default=0)
@@ -89,6 +91,10 @@ class Campaign(Base):
     # NULL means the CRM property has never been read for this campaign; an
     # empty string means the CRM explicitly holds no captions.
     internal_captions = Column(Text, nullable=True)
+    # Creator-facing brief, written in the Hub (the CRM's notes field mixes
+    # creative direction with budget/billing, so it is never shown to
+    # creators). Blank = "Open creative" on the creator dashboard.
+    creator_brief = Column(Text, default="")
 
     # Chartmetric link for Spotify popularity ("pop score") tracking.
     chartmetric_track_id = Column(BigInteger, nullable=True)
@@ -137,6 +143,7 @@ class Campaign(Base):
             "tracker_url": self.tracker_url or "",
             "source": self.source or "manual",
             "completion_status": self.completion_status or "none",
+            "dashboard_sent_at": self.dashboard_sent_at.isoformat() if self.dashboard_sent_at else "",
             "notion_page_id": self.notion_page_id or "",
             "insta_sound": self.insta_sound or "",
             "tt_artist_label": self.tt_artist_label or "",
@@ -150,6 +157,7 @@ class Campaign(Base):
             "platform_split": self.platform_split or {},
             "content_types": self.content_types or [],
             "internal_captions": self.internal_captions,
+            "creator_brief": self.creator_brief or "",
             "chartmetric_track_id": self.chartmetric_track_id,
             "chartmetric_link": self.chartmetric_link or "",
             "chartmetric_link_status": self.chartmetric_link_status or "",
@@ -965,6 +973,24 @@ class CreatorProfile(Base):
     # coloured initials for recognising someone at a glance.
     avatar_url = Column(Text, default="")
 
+    # Payout destination, confirmed by the creator through their private
+    # link (/payout#<token>). Supersedes `paypal_email` here and the
+    # per-booking `creators.paypal_email`, which drifted across rows.
+    # Deliberately NOT in to_dict(): the library API is unauthenticated and
+    # the token is a bearer credential. Admin access goes through
+    # blueprints/payouts.py, which requires PAYOUT_ADMIN_KEY.
+    payout_method = Column(String(20), default="")
+    payout_destination = Column(String(255), default="")
+    payout_token = Column(String(64), nullable=True, unique=True, index=True)
+    payout_updated_at = Column(DateTime, nullable=True)
+    payout_confirmed_by_creator = Column(Boolean, default=False)
+    # Set when an EXISTING destination is replaced; cleared by Jake once
+    # reviewed in the Hub. A changed destination is the dangerous event.
+    payout_change_flagged = Column(Boolean, default=False)
+    # '' = automatic (6+ delivered campaigns = trusted), or a manual
+    # 'trusted' / 'standard' override set on the Payouts page.
+    trust_override = Column(String(16), default="")
+
     added_at = Column(DateTime, default=datetime.now)
 
     def to_dict(self):
@@ -984,4 +1010,145 @@ class CreatorProfile(Base):
             "stats_updated_at": (
                 self.stats_updated_at.isoformat() if self.stats_updated_at else ""
             ),
+        }
+
+
+class CreatorPayoutEvent(Base):
+    """Append-only audit trail for payout destinations.
+
+    Every create / change / confirm / token issue writes one row, keeping the
+    old value rather than overwriting it silently, so "when did this change
+    and from what" always has an answer.
+    """
+    __tablename__ = "creator_payout_events"
+
+    id = Column(Integer, primary_key=True)
+    username = Column(String(255), nullable=False, index=True)
+    # created | changed | confirmed | backfilled | token_issued |
+    # token_rotated | flag_cleared
+    event = Column(String(32), nullable=False)
+    # creator_link | backfill | admin
+    source = Column(String(32), nullable=False)
+    old_method = Column(String(20), default="")
+    old_destination = Column(String(255), default="")
+    new_method = Column(String(20), default="")
+    new_destination = Column(String(255), default="")
+    client_ip = Column(String(64), default="")
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "username": self.username,
+            "event": self.event,
+            "source": self.source,
+            "old_method": self.old_method or "",
+            "old_destination": self.old_destination or "",
+            "new_method": self.new_method or "",
+            "new_destination": self.new_destination or "",
+            "created_at": self.created_at.isoformat() if self.created_at else "",
+        }
+
+
+class BookingPaymentMark(Base):
+    """Payment-readiness marks for one booking (campaign + creator + platform).
+
+    Kept OUT of the `creators` table on purpose: db.save_creators deletes and
+    re-inserts every booking row on each edit, which would wipe these marks
+    and change row ids. Keyed by natural identity instead.
+
+    ready_reason: trusted_confirmed (trusted creator accepted the booking —
+    paid up front) | manual (Jake marked it ready, e.g. partial delivery).
+    """
+    __tablename__ = "booking_payment_marks"
+    __table_args__ = (
+        UniqueConstraint("campaign_id", "username", "platform", name="uq_booking_payment_mark"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    campaign_id = Column(
+        Integer, ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    username = Column(String(255), nullable=False, index=True)  # normalized
+    platform = Column(String(20), nullable=False, default="tiktok")
+    ready_at = Column(DateTime, nullable=True)
+    ready_reason = Column(String(32), default="")
+    note = Column(Text, default="")
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+# A booking may be in at most one item with these statuses (enforced by a
+# partial unique index) — the hard "never pay twice" rail.
+OPEN_PAYOUT_ITEM_STATUSES = ("queued", "pending", "succeeded", "unclaimed", "review")
+_OPEN_ITEM_SQL = "status IN ('queued', 'pending', 'succeeded', 'unclaimed', 'review')"
+
+
+class PayoutBatch(Base):
+    """One payment run (e.g. today's). Jake approves it; nothing is sent
+    until he does. PayPal/Venmo items go through the PayPal Payouts API;
+    Cash App / other items are a manual checklist."""
+    __tablename__ = "payout_batches"
+
+    id = Column(Integer, primary_key=True)
+    # draft -> sent (API lane submitted) -> closed (every item settled), or cancelled
+    status = Column(String(20), nullable=False, default="draft", index=True)
+    sender_batch_id = Column(String(64), nullable=False, unique=True)  # PayPal idempotency key
+    paypal_batch_id = Column(String(64), default="")
+    paypal_env = Column(String(10), default="")
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    approved_at = Column(DateTime, nullable=True)
+    last_synced_at = Column(DateTime, nullable=True)
+    error = Column(Text, default="")
+
+    items = relationship("PayoutItem", back_populates="batch", order_by="PayoutItem.id")
+
+
+class PayoutItem(Base):
+    """One booking's payment inside a batch, with the destination snapshot
+    used. This is the record of what was paid, where, and when."""
+    __tablename__ = "payout_items"
+    __table_args__ = (
+        Index(
+            "uq_payout_items_open_booking", "campaign_id", "username", "platform",
+            unique=True,
+            postgresql_where=text(_OPEN_ITEM_SQL),
+            sqlite_where=text(_OPEN_ITEM_SQL),
+        ),
+    )
+
+    id = Column(Integer, primary_key=True)
+    batch_id = Column(Integer, ForeignKey("payout_batches.id", ondelete="CASCADE"), nullable=False, index=True)
+    campaign_id = Column(Integer, ForeignKey("campaigns.id", ondelete="SET NULL"), nullable=True, index=True)
+    campaign_title = Column(String(500), default="")
+    username = Column(String(255), nullable=False, index=True)
+    platform = Column(String(20), nullable=False, default="tiktok")
+    amount = Column(Float, nullable=False)
+    currency = Column(String(3), default="USD")
+    method = Column(String(20), nullable=False)
+    destination = Column(String(255), nullable=False)
+    lane = Column(String(10), nullable=False)  # api | manual
+    # queued | pending | succeeded | failed | unclaimed | review | sandbox_ok | removed
+    status = Column(String(20), nullable=False, default="queued", index=True)
+    provider_status = Column(String(32), default="")
+    provider_item_id = Column(String(64), default="")
+    error = Column(Text, default="")
+    paid_at = Column(DateTime, nullable=True)
+
+    batch = relationship("PayoutBatch", back_populates="items")
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "campaign": self.campaign_title or "",
+            "campaign_id": self.campaign_id,
+            "username": self.username,
+            "platform": self.platform,
+            "amount": round(self.amount or 0, 2),
+            "method": self.method,
+            "destination": self.destination,
+            "lane": self.lane,
+            "status": self.status,
+            "provider_status": self.provider_status or "",
+            "error": self.error or "",
+            "paid_at": self.paid_at.isoformat() if self.paid_at else "",
         }

@@ -10,6 +10,7 @@ import {
 import { useState, useMemo, useCallback } from "react"
 import { useQueryClient } from "@tanstack/react-query"
 import { ArrowUpDown, ArrowUp, ArrowDown, Check } from "lucide-react"
+import { DashboardSentCheckbox } from "@/components/campaigns/DashboardSentCheckbox"
 import type { CampaignSummary } from "@/lib/types"
 import { api } from "@/lib/api"
 import { keys } from "@/lib/queries"
@@ -86,8 +87,12 @@ function CompletionCell({
   )
 }
 
+// Narrow fixed-width checkbox columns at the start of each row.
+const CHECKBOX_COLUMNS = new Set(["completion", "dashboard_sent"])
+
 function buildColumns(
-  onToggleCompletion: (slug: string, current: CampaignSummary["completion_status"]) => void
+  onToggleCompletion: (slug: string, current: CampaignSummary["completion_status"]) => void,
+  onToggleDashboardSent: (slug: string, currentlySent: boolean) => void
 ): ColumnDef<CampaignSummary>[] {
   return [
   {
@@ -109,6 +114,24 @@ function buildColumns(
     enableSorting: false,
   },
   {
+    id: "dashboard_sent",
+    header: () => <span className="sr-only">Dashboard sent</span>,
+    cell: ({ row }) => {
+      const sentAt = row.original.dashboard_sent_at || ""
+      return (
+        <DashboardSentCheckbox
+          sentAt={sentAt}
+          onClick={(e) => {
+            e.stopPropagation()
+            onToggleDashboardSent(row.original.slug, Boolean(sentAt))
+          }}
+        />
+      )
+    },
+    size: 40,
+    enableSorting: false,
+  },
+  {
     accessorKey: "title",
     header: ({ column }) => (
       <SortableHeader column={column} label="Promotions" />
@@ -118,15 +141,6 @@ function buildColumns(
         <div className="min-w-0 truncate font-semibold text-[14px]">{row.original.title}</div>
         <div className="min-w-0 truncate text-rt-fg-tertiary text-[13px]">{row.original.song || ""}</div>
       </div>
-    ),
-  },
-  {
-    accessorKey: "artist",
-    header: ({ column }) => (
-      <SortableHeader column={column} label="Artist" />
-    ),
-    cell: ({ row }) => (
-      <span className="text-[14px]">{row.original.artist || "-"}</span>
     ),
   },
   {
@@ -342,9 +356,33 @@ export function CampaignsTable({ data }: CampaignsTableProps) {
     [qc]
   )
 
+  const handleToggleDashboardSent = useCallback(
+    (slug: string, currentlySent: boolean) => {
+      // Optimistic, like the completion toggle: flip it in every cached list
+      // now, reconcile in the background, roll back if the save fails.
+      const sent = !currentlySent
+      const optimistic = sent ? new Date().toISOString() : ""
+      const listKeys = [keys.campaigns, keys.campaignsActive, keys.campaignsFinished]
+      const snapshot = listKeys.map((k) => [k, qc.getQueryData<CampaignSummary[]>(k)] as const)
+      const patch = (value: string) => (list: CampaignSummary[] | undefined) =>
+        list?.map((c) => (c.slug === slug ? { ...c, dashboard_sent_at: value } : c))
+      for (const k of listKeys) qc.setQueryData<CampaignSummary[]>(k, patch(optimistic))
+
+      api
+        .setDashboardSent(slug, sent)
+        .then((res) => {
+          for (const k of listKeys) qc.setQueryData<CampaignSummary[]>(k, patch(res.dashboard_sent_at))
+        })
+        .catch(() => {
+          for (const [k, data] of snapshot) qc.setQueryData(k, data)
+        })
+    },
+    [qc]
+  )
+
   const columns = useMemo(
-    () => buildColumns(handleToggleCompletion),
-    [handleToggleCompletion]
+    () => buildColumns(handleToggleCompletion, handleToggleDashboardSent),
+    [handleToggleCompletion, handleToggleDashboardSent]
   )
 
 
@@ -390,7 +428,7 @@ export function CampaignsTable({ data }: CampaignsTableProps) {
                 <TableHead
                   key={header.id}
                   className={`text-rt-fg-tertiary text-xs font-semibold uppercase tracking-[0.3px] px-4 py-3 border-b-2 border-white/8 ${header.column.id === "completion" ? "sticky left-0 z-20 bg-rt-bg-card" : ""}`}
-                  style={header.column.id === "completion" ? { width: 40, minWidth: 40, maxWidth: 40 } : undefined}
+                  style={CHECKBOX_COLUMNS.has(header.column.id) ? { width: 40, minWidth: 40, maxWidth: 40 } : undefined}
                 >
                   {header.isPlaceholder
                     ? null

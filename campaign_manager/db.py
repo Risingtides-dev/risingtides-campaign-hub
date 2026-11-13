@@ -142,6 +142,42 @@ def _self_heal_chartmetric_columns():
         pass
 
 
+def _self_heal_payout_columns():
+    """Additive payout schema: unique token index + non-NULL flags.
+
+    Mirrors scripts/migrations/creator_payout_round1.sql. Expand-only and
+    idempotent, safe for 4 gunicorn workers booting at once.
+    """
+    log = __import__("logging").getLogger(__name__)
+    sa = __import__("sqlalchemy")
+    statements = (
+        "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS creator_brief TEXT DEFAULT ''",
+        "ALTER TABLE creator_profiles ADD COLUMN IF NOT EXISTS trust_override VARCHAR(16) DEFAULT ''",
+        "ALTER TABLE creator_profiles ADD COLUMN IF NOT EXISTS payout_method VARCHAR(20) DEFAULT ''",
+        "ALTER TABLE creator_profiles ADD COLUMN IF NOT EXISTS payout_destination VARCHAR(255) DEFAULT ''",
+        "ALTER TABLE creator_profiles ADD COLUMN IF NOT EXISTS payout_token VARCHAR(64) NULL",
+        "ALTER TABLE creator_profiles ADD COLUMN IF NOT EXISTS payout_updated_at TIMESTAMP NULL",
+        "ALTER TABLE creator_profiles ADD COLUMN IF NOT EXISTS payout_confirmed_by_creator BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE creator_profiles ADD COLUMN IF NOT EXISTS payout_change_flagged BOOLEAN DEFAULT FALSE",
+        "CREATE UNIQUE INDEX IF NOT EXISTS ix_creator_profiles_payout_token "
+        "ON creator_profiles (payout_token)",
+        "UPDATE creator_profiles SET payout_method = '' WHERE payout_method IS NULL",
+        "UPDATE creator_profiles SET payout_destination = '' WHERE payout_destination IS NULL",
+        "UPDATE creator_profiles SET payout_confirmed_by_creator = FALSE "
+        "WHERE payout_confirmed_by_creator IS NULL",
+        "UPDATE creator_profiles SET payout_change_flagged = FALSE WHERE payout_change_flagged IS NULL",
+    )
+    try:
+        with _SessionLocal() as s:
+            for statement in statements:
+                s.execute(sa.text(statement))
+            s.commit()
+    except Exception as exc:
+        # A concurrent worker may win the CREATE INDEX race; anything else
+        # is worth seeing in the logs but must not block boot.
+        log.warning("payout column self-heal failed: %s", exc)
+
+
 def _self_heal_completion_status() -> bool:
     """Restore the active-campaign invariant with a bounded Postgres migration.
 
@@ -341,7 +377,11 @@ def init(database_url: Optional[str] = None):
     if url.startswith("postgresql://"):
         url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
 
-    _engine = create_engine(url, pool_pre_ping=True, pool_size=5, max_overflow=10)
+    # hide_parameters: DB errors must not echo bound values (payout tokens,
+    # payment destinations) into tracebacks and Railway logs.
+    _engine = create_engine(
+        url, pool_pre_ping=True, pool_size=5, max_overflow=10, hide_parameters=True,
+    )
     _SessionLocal = sessionmaker(bind=_engine)
 
     # Create all tables.
@@ -514,6 +554,10 @@ def init(database_url: Optional[str] = None):
 
     # Chartmetric track link for pop-score (Spotify popularity) tracking.
     _self_heal_chartmetric_columns()
+
+    # Creator payout columns (Round 1). _sync_columns adds the bare columns;
+    # this adds the token's unique index and normalizes NULL flags.
+    _self_heal_payout_columns()
 
     # Add tracking-workflow + match metadata to matched_videos.
     # - first_seen_at: when the cron first matched this video (used by
@@ -2886,6 +2930,34 @@ def get_tracker_id_for_campaign(slug: str) -> str:
         if row:
             return row.tracker_id or ""
     return ""
+
+
+def get_tracker_ids_for_campaign(slug: str) -> List[str]:
+    """Return every TidesTracker UUID tied to this campaign, without repeats.
+
+    Same two sources as `get_tracker_id_for_campaign`, but all of them: the
+    campaigns row first, then each tracker_campaign_links row naming the
+    slug. A campaign can own more than one client page, and anything that
+    writes to "the campaign's trackers" has to reach every one.
+    """
+    if not slug:
+        return []
+    found: List[str] = []
+    with get_session() as s:
+        c = s.query(Campaign.tracker_campaign_id).filter_by(slug=slug).first()
+        if c and (c[0] or "").strip():
+            found.append(c[0].strip())
+        rows = (
+            s.query(TrackerCampaignLink.tracker_id)
+            .filter_by(campaign_slug=slug)
+            .order_by(TrackerCampaignLink.tracker_id)
+            .all()
+        )
+        for (tracker_id,) in rows:
+            tid = (tracker_id or "").strip()
+            if tid and tid not in found:
+                found.append(tid)
+    return found
 
 
 def get_campaign_to_tracker_map() -> Dict[str, str]:

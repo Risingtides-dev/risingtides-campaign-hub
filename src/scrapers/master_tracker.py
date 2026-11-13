@@ -737,37 +737,15 @@ def match_video_to_sounds(video: Dict, sound_ids: set, sound_keys: set) -> bool:
                 if song_part and song_part == ext:
                     return True
 
-    # Strategy 5: For Instagram, match by caption text (approximate matching)
-    if video.get('platform') == 'instagram' and video.get('caption'):
-        caption_lower = video['caption'].lower()
-        for sound_key in sound_keys:
-            # Extract song and artist from sound_key (format: "song - artist")
-            parts = sound_key.split(' - ')
-            if len(parts) == 2:
-                song_part = parts[0].strip().lower()
-                artist_part = parts[1].strip().lower()
-                
-                # Check if both song and artist appear in caption (approximate match)
-                song_words = song_part.split()
-                artist_words = artist_part.split()
-                
-                # Match if key words from song title appear
-                song_match = any(word in caption_lower for word in song_words if len(word) > 2)
-                artist_match = any(word in caption_lower for word in artist_words if len(word) > 2)
-                
-                # Also check for partial matches (e.g., "rarest hour" matches "the rarest hour")
-                if song_part.replace(' ', '') in caption_lower.replace(' ', ''):
-                    song_match = True
-                if artist_part.replace(' ', '') in caption_lower.replace(' ', ''):
-                    artist_match = True
-                
-                # If both song and artist match (or just song for very specific titles)
-                if song_match and (artist_match or len(song_words) >= 3):
-                    return True
-                
-                # Special handling for very specific song titles
-                if len(song_words) >= 3 and song_match:
-                    return True
+    # There is deliberately NO caption-text strategy. The old Instagram
+    # caption fallback ("Strategy 5") matched any reel whose caption shared a
+    # single word with a 3+ word song title and skipped the artist check, so
+    # it claimed creators' entire feeds (2026-11-05: 53 false rows on
+    # kygo_x_ava_max_before_you_know_it). Gating it on the audio id would only
+    # duplicate Strategy 1/2, so it was removed: an Instagram row has to be
+    # justified by a registered audio id or real audio metadata, the same bar
+    # as TikTok. Register a campaign's IG audio id in additional_sounds.
+    # See docs/incidents/2026-11-05-ig-caption-matcher-false-matches.md.
 
     return False
 

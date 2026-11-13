@@ -126,6 +126,10 @@ def create_app(config=None):
     # negligible CPU cost.
     Compress(app)
 
+    # Creator-only hostname: serves just the creator dashboard (no Hub).
+    from campaign_manager.utils import creator_host
+    creator_host.install(app)
+
     # Initialize database
     db.init(app.config.get("DATABASE_URL"))
 
@@ -145,6 +149,8 @@ def create_app(config=None):
     from campaign_manager.blueprints.creator_intelligence import creator_intelligence_bp
     from campaign_manager.blueprints.creator_library import creator_library_bp
     from campaign_manager.blueprints.chartmetric import chartmetric_bp
+    from campaign_manager.blueprints.payouts import payouts_bp
+    from campaign_manager.blueprints.payout_batches import payout_batches_bp
 
     app.register_blueprint(health_bp)
     app.register_blueprint(campaigns_bp)
@@ -162,6 +168,8 @@ def create_app(config=None):
     app.register_blueprint(creator_intelligence_bp)
     app.register_blueprint(creator_library_bp)
     app.register_blueprint(chartmetric_bp)
+    app.register_blueprint(payouts_bp)
+    app.register_blueprint(payout_batches_bp)
 
     # Initialize Slack bot (no-op if credentials aren't set)
     if app.config.get("SLACK_BOT_TOKEN"):

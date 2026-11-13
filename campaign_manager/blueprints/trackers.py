@@ -13,7 +13,7 @@ import os
 import re
 import uuid
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 
 _log = logging.getLogger(__name__)
 
@@ -476,9 +476,18 @@ def delete_tracker_group(group_id: int):
 def sync_tracker_status():
     """Push every linked campaign's delivery status to its tracker.
 
+    "Linked" means either source: campaigns.tracker_campaign_id, or a
+    tracker_campaign_links row made on the Trackers page. Reading only the
+    column left 93 finished campaigns' pages saying "in progress".
+
     The per-save hook in `edit_campaign` keeps status current going forward,
     but the ~278 trackers that already exist have never been told. This
     walks them once. Safe to re-run: it writes the same value every time.
+
+    A tracker named by more than one campaign is pushed once, and is only
+    complete when every campaign naming it is finished. Pushing each
+    campaign's own value from different threads would leave the client's
+    badge on whichever request happened to land last.
 
     Concurrent, because it is one PATCH per tracker and a serial walk would
     approach the request timeout the way the library refresh did.
@@ -486,6 +495,8 @@ def sync_tracker_status():
     from concurrent.futures import ThreadPoolExecutor
 
     from campaign_manager.services.tidestracker import (
+        TRACKER_STATUS_COMPLETE,
+        TRACKER_STATUS_IN_PROGRESS,
         set_tracker_status,
         tracker_status_for,
     )
@@ -494,31 +505,68 @@ def sync_tracker_status():
     if err:
         return err
 
-    targets = []
+    status_by_slug: dict = {}
+    statuses_by_tracker: dict = {}
     for meta in _db.list_campaigns():
+        status = tracker_status_for(meta.get("completion_status", "none"))
+        slug = meta.get("slug") or ""
+        if slug:
+            status_by_slug[slug] = status
         tracker_id = (meta.get("tracker_campaign_id") or "").strip()
         if tracker_id:
-            targets.append(
-                (tracker_id, tracker_status_for(meta.get("completion_status", "none")))
-            )
+            statuses_by_tracker.setdefault(tracker_id, set()).add(status)
+    # A manual link to a campaign that no longer exists has no status to
+    # report, so it is left alone rather than guessed at.
+    for tracker_id, slug in _db.get_tracker_campaign_links().items():
+        tracker_id = (tracker_id or "").strip()
+        status = status_by_slug.get(slug)
+        if tracker_id and status:
+            statuses_by_tracker.setdefault(tracker_id, set()).add(status)
+
+    conflicts = sum(1 for seen in statuses_by_tracker.values() if len(seen) > 1)
+    targets = [
+        (
+            tracker_id,
+            TRACKER_STATUS_COMPLETE
+            if seen == {TRACKER_STATUS_COMPLETE}
+            else TRACKER_STATUS_IN_PROGRESS,
+        )
+        for tracker_id, seen in statuses_by_tracker.items()
+    ]
 
     if not targets:
-        return jsonify({"ok": True, "pushed": 0, "failed": 0, "total": 0})
+        return jsonify(
+            {"ok": True, "pushed": 0, "failed": 0, "total": 0, "conflicts": 0}
+        )
+
+    # Pool threads start without a Flask application context, and
+    # set_tracker_status reads its config from current_app. Without the real
+    # app handed in, every push raised before sending and this route reported
+    # the whole fleet as failed.
+    app = current_app._get_current_object()
 
     def push(item):
         tracker_id, status = item
         try:
-            return set_tracker_status(tracker_id, status)
+            with app.app_context():
+                return set_tracker_status(tracker_id, status)
         except Exception:
+            _log.exception("tracker status backfill push crashed for %s", tracker_id)
             return False
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         results = list(pool.map(push, targets))
 
     pushed = sum(1 for ok in results if ok)
+    failed = len(results) - pushed
+    _log.info(
+        "tracker status backfill: pushed=%d failed=%d total=%d conflicts=%d",
+        pushed, failed, len(results), conflicts,
+    )
     return jsonify({
         "ok": True,
         "pushed": pushed,
-        "failed": len(results) - pushed,
+        "failed": failed,
         "total": len(results),
+        "conflicts": conflicts,
     })

@@ -423,6 +423,8 @@ def _campaign_summary(c: Dict) -> Dict:
         "budget": c["budget"],
         "stats": c["stats"],
         "completion_status": c["meta"].get("completion_status", "none"),
+        # Set when the client dashboard was handed to the point of contact.
+        "dashboard_sent_at": c["meta"].get("dashboard_sent_at", ""),
         # `active` is the single source of truth for "is this campaign live?"
         # A campaign is active until it's checked off completed. Agents/scrapers
         # should source from active campaigns only — filter via ?active=true.
@@ -671,8 +673,71 @@ def create_campaign():
 
 
 # -------------------------------------------------------------------
+# 2b. POST /api/campaign/<slug>/dashboard-sent  -- {"sent": true|false}
+#     Marks that the client dashboard was handed to the point of contact.
+#     Deliberately separate from /edit so the checkbox can't trigger edit's
+#     side effects (end dates, tracker badge sync).
+# -------------------------------------------------------------------
+@campaigns_bp.post("/api/campaign/<slug>/dashboard-sent")
+def set_dashboard_sent(slug: str):
+    if not _db.is_active():
+        return jsonify({"error": "Database not available."}), 503
+    data = request.get_json(silent=True) or {}
+    sent = data.get("sent")
+    if not isinstance(sent, bool):
+        return jsonify({"error": "`sent` must be true or false."}), 400
+
+    from campaign_manager.models import Campaign
+    with _db.get_session() as s:
+        c = s.query(Campaign).filter_by(slug=slug).first()
+        if c is None:
+            return jsonify({"error": "Campaign not found."}), 404
+        if sent and c.dashboard_sent_at is None:
+            c.dashboard_sent_at = datetime.now()
+        elif not sent:
+            c.dashboard_sent_at = None
+        s.commit()
+        sent_at = c.dashboard_sent_at.isoformat() if c.dashboard_sent_at else ""
+
+    return jsonify({"ok": True, "slug": slug, "dashboard_sent_at": sent_at})
+
+
+# -------------------------------------------------------------------
 # 3. POST /api/campaign/<slug>/edit  -- update campaign metadata
 # -------------------------------------------------------------------
+def _has_open_payout(slug: str, username: str, platform: str) -> bool:
+    """True while a payout item for this booking is queued/pending/paid —
+    renaming it then would let the booking re-enter the payment queue."""
+    from campaign_manager.models import Campaign
+    from campaign_manager.services.payout_batches import has_open_item
+
+    with _db.get_session() as session:
+        campaign = session.query(Campaign).filter_by(slug=slug).first()
+        return bool(campaign) and has_open_item(session, campaign.id, username, platform)
+
+
+MAX_CREATOR_BRIEF = 5000
+
+
+@campaigns_bp.post("/api/campaign/<slug>/creator-brief")
+def set_creator_brief(slug: str):
+    """Save the creator-facing brief (shown on creator dashboards).
+
+    Blank clears it, and creators then see "Open creative".
+    """
+    if not _db.is_active():
+        return jsonify({"error": "Database not available."}), 503
+    data = request.get_json(silent=True) or {}
+    value = data.get("creator_brief")
+    if not isinstance(value, str) or len(value) > MAX_CREATOR_BRIEF:
+        return jsonify({"error": f"creator_brief must be text of at most {MAX_CREATOR_BRIEF} characters"}), 400
+    if not _db.get_campaign(slug):
+        return jsonify({"error": "Campaign not found."}), 404
+    brief = value.strip()
+    _db.update_campaign_fields(slug, {"creator_brief": brief})
+    return jsonify({"ok": True, "slug": slug, "creator_brief": brief})
+
+
 @campaigns_bp.post("/api/campaign/<slug>/edit")
 def edit_campaign(slug: str):
     if _db.is_active():
@@ -879,14 +944,24 @@ def edit_campaign(slug: str):
     # sound id) don't fire a network call. Best-effort: a failed push is
     # logged inside set_tracker_status and self-heals on the next save or
     # backfill — a tracker outage must not fail saving the campaign.
-    if completion_status is not None and meta.get("tracker_campaign_id"):
-        from campaign_manager.services.tidestracker import (
-            set_tracker_status,
-            tracker_status_for,
-        )
-        set_tracker_status(
-            meta["tracker_campaign_id"], tracker_status_for(completion_status)
-        )
+    #
+    # Every tracker tied to the campaign gets it — the campaigns row and any
+    # manual link from the Trackers page — because a client page linked the
+    # second way is still the page the client is reading.
+    if completion_status is not None:
+        if _db.is_active():
+            tracker_ids = _db.get_tracker_ids_for_campaign(slug)
+        else:
+            tracker_ids = [(meta.get("tracker_campaign_id") or "").strip()]
+        tracker_ids = [tid for tid in tracker_ids if tid]
+        if tracker_ids:
+            from campaign_manager.services.tidestracker import (
+                set_tracker_status,
+                tracker_status_for,
+            )
+            tracker_status = tracker_status_for(completion_status)
+            for tracker_id in tracker_ids:
+                set_tracker_status(tracker_id, tracker_status)
 
     new_song_fields = {key: meta.get(key, "") for key in old_song_fields}
     if old_song_fields != new_song_fields:
@@ -1006,6 +1081,7 @@ def campaign_detail(slug: str):
         "sound_id": meta.get("sound_id", ""),
         "official_sound": meta.get("official_sound", ""),
         "additional_sounds": meta.get("additional_sounds", []),
+        "creator_brief": meta.get("creator_brief", "") or "",
         "cobrand_link": meta.get("cobrand_link", ""),
         "cobrand_share_url": meta.get("cobrand_share_url", ""),
         "cobrand_upload_url": meta.get("cobrand_upload_url", ""),
@@ -1047,6 +1123,7 @@ def campaign_detail(slug: str):
         "cobrand_upload_url": meta.get("cobrand_upload_url", ""),
         "tracker_campaign_id": meta.get("tracker_campaign_id", ""),
         "tracker_url": _canon_tracker_url(meta.get("tracker_url", "")),
+        "dashboard_sent_at": meta.get("dashboard_sent_at", ""),
         "platform": meta.get("platform", "tiktok"),
         "source": meta.get("source", "manual"),
         "label": meta.get("label", ""),
@@ -1597,6 +1674,8 @@ def edit_creator(slug: str, username: str):
         )
         if clash:
             return jsonify({"error": f"@{new_username} is already a creator on this campaign."}), 409
+        if _db.is_active() and _has_open_payout(slug, username, target_platform):
+            return jsonify({"error": f"@{username} is in a payout batch. Finish or remove that payout before renaming."}), 409
 
     if new_username and new_username != username:
         target["username"] = new_username

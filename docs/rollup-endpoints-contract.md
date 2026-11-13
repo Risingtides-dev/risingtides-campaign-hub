@@ -3,7 +3,7 @@
 > **Ticket:** [RTA-22](https://linear.app/risingtides-dev/issue/RTA-22)
 > **Parent:** [RTA-3](https://linear.app/risingtides-dev/issue/RTA-3) — [P2] Per-Creator Rollups + Unified Rising Tides Tracker
 > **Status:** Draft → review (Eric, Sage)
-> **Last updated:** 2026-05-17
+> **Last updated:** 2026-11-10
 
 ## Purpose
 
@@ -105,8 +105,9 @@ Every endpoint returns:
 
 **Top-level `stale_since` derivation:**
 
-- `null` if and only if top-level `source == "api"`.
-- Otherwise, the **earliest** `stale_since` across all contributing campaigns whose source is not `api`.
+- `null` if and only if top-level `source` is `"api"` or `"empty"`.
+- For `"empty"`, there are no contributing campaigns and therefore no freshness timestamp to aggregate. Do not fabricate a timestamp or use the request time.
+- For `"api_cached"` or `"scraper_fallback"`, the **earliest** `stale_since` across contributing campaigns with either of those fallback sources. Campaigns with `source: "empty"` have no timestamp and do not participate in this minimum.
 
 **Why earliest, not latest:** a rollup is "as stale as its stalest input." If 5 of 7 campaigns are fresh but 2 are 6-hour cached fallbacks, the rollup is 6 hours stale, not 30 seconds fresh. Frontend badges should communicate worst-case staleness, not best-case.
 
@@ -163,8 +164,8 @@ Semantics:
 ### `stale_since` semantics
 
 - ISO 8601 UTC string (e.g. `"2026-05-17T14:23:01+00:00"`) or `null`.
-- `null` only when `source == "api"` (no fallback was needed at any layer).
-- Otherwise: the earliest timestamp at which a contributing campaign's data was last considered fresh.
+- `null` if and only if `source` is `"api"` (fresh data) or `"empty"` (no contributing data and no freshness timestamp).
+- For `"api_cached"` or `"scraper_fallback"`: the earliest timestamp at which a contributing fallback campaign's data was last considered fresh. Exclude `"empty"` campaigns from this minimum; never invent a timestamp for them.
   - For `api_cached`, that's the cache entry's `fetched_at`.
   - For `scraper_fallback`, that's the most recent `scrape_logs.last_scrape` for that campaign.
 
@@ -356,7 +357,7 @@ interface CreatorRollupResponse {
 
 ### Edge cases
 
-- **Creator with zero activity in window** → 200 OK, `source: "empty"`, `totals.post_count: 0`, both arrays empty.
+- **Creator with zero activity in window** → 200 OK, `source: "empty"`, `stale_since: null`, `totals.post_count: 0`, both arrays empty.
 - **Creator only on internal pages, never on external campaigns** → `external_campaigns: []`, `totals.campaign_count: 0`.
 - **Creator only on external campaigns, never on internal pages** → `internal_pages: []`, `totals.internal_page_count: 0`.
 - **Unknown creator** (no rows in any table for that username) → 404. Returning a known-but-empty shape would be misleading — the frontend should be able to distinguish "no posts this week" from "you typoed the username."
@@ -447,8 +448,8 @@ interface TeamRollupResponse {
 
 ### Edge cases
 
-- **Booker with empty roster** → 200 OK, `creators: []`, `source: "empty"`, all totals zero.
-- **Booker who exists in `internal_creator_groups` but whose roster has zero activity in window** → 200 OK, `creators: [...]` (zero-activity rows still included with all-zero stats), `source: "empty"`, totals zero.
+- **Booker with empty roster** → 200 OK, `creators: []`, `source: "empty"`, `stale_since: null`, all totals zero.
+- **Booker who exists in `internal_creator_groups` but whose roster has zero activity in window** → 200 OK, `creators: [...]` (zero-activity rows still included with all-zero stats, `source: "empty"`, and `stale_since: null`), top-level `source: "empty"` and `stale_since: null`, totals zero.
 - **Unknown booker** → 404.
 - **Creator membership:** derived from `internal_creator_group_members` where the group has `kind = 'booked_by'`. Per RTA-5 and RTA-9, label groups (`kind = 'label'`) are not part of the booker roster — they're an orthogonal axis. A creator can simultaneously belong to one booker group and one label group.
 
@@ -541,7 +542,7 @@ interface RtTrackerResponse {
 
 ### Edge cases
 
-- **Zero campaigns active in window** → 200 OK, every list empty, all totals zero, `source: "empty"`.
+- **Zero campaigns active in window** → 200 OK, every list empty, all totals zero, `source: "empty"`, `stale_since: null`.
 - **All bookers with zero roster activity** → 200 OK, `per_booker: []`, `top_creators: []`, all totals zero.
 - **`limit` larger than available rows** → returns all available; no padding.
 - **`limit` out of range** → 400 with `{"error": "limit must be an integer between 1 and 100"}`.
@@ -562,7 +563,9 @@ When RTA-23 / RTA-24 / RTA-25 PRs land, each should:
 - Reuse `campaign_stats.get_campaign_stats_bulk()` for per-campaign reads (Decision 1).
 - Pass an integration smoke test that hits each endpoint with `days=7` and asserts:
   - `source` is one of the four enum values
-  - `stale_since` is `null` iff `source == "api"`
+  - `stale_since` is `null` iff `source` is `"api"` or `"empty"`
+  - empty cases (creator with zero activity, booker with an empty or inactive roster, and RT tracker with no active campaigns) return `source: "empty"` and `stale_since: null`, including any zero-activity creator rows
+  - mixed fresh and fallback campaigns use the earliest contributing fallback `stale_since`; empty campaigns do not supply a timestamp
   - `sources_summary` sums to `external_campaign_count` (Endpoints 1 and 2) or to the number of active campaigns (Endpoint 3)
 
 ---
