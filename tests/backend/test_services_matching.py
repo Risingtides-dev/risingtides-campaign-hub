@@ -276,3 +276,51 @@ class TestMultiArtistCredits:
         from campaign_manager.services.matching import match_videos
         v = {"url": "u", "song": "hold my purse", "artist": "Someone Else, Another"}
         assert not match_videos([v], set(), set(), {"hold", "purse"}, "Wynne")
+
+
+class TestInstagramCaptionDoesNotMatch:
+    """Regression: 2026-11-05 incident (docs/incidents/2026-11-05-ig-caption-matcher-false-matches.md).
+
+    The old Instagram caption fallback (master_tracker Strategy 5) matched any
+    reel whose caption shared one word with a 3+ word song title, so every reel
+    an IG-booked creator posted landed on the Kygo campaign. An Instagram row
+    must be justified by a registered audio id or real audio metadata, never by
+    caption text.
+    """
+
+    KYGO_META = {"song": "Before You Know It", "artist": "Kygo & Ava Max",
+                 "sound_id": "7694776132743399425",
+                 "additional_sounds": ["4570677819866675"],
+                 "match_strategy": "fuzzy"}
+
+    def _reel(self, **overrides):
+        reel = {"url": "https://www.instagram.com/reel/FAKE123/",
+                "account": "@theelliebarker", "platform": "instagram",
+                "caption": "you know i had to do it",
+                "music_id": "99999", "extracted_sound_id": "99999",
+                "song": "Original audio", "artist": "theelliebarker"}
+        return {**reel, **overrides}
+
+    def test_caption_overlap_on_unregistered_audio_does_not_match(self):
+        from src.scrapers.master_tracker import match_video_to_sounds
+        ids, keys, words = build_sound_sets(self.KYGO_META)
+        assert ids == {"7694776132743399425", "4570677819866675"}
+        reel = self._reel()
+        assert not match_video_to_sounds(reel, ids, keys)
+        assert not match_videos([reel], ids, keys, words, "Kygo & Ava Max",
+                                match_fn=match_video_to_sounds)
+
+    def test_caption_naming_song_and_artist_still_needs_audio(self):
+        from src.scrapers.master_tracker import match_video_to_sounds
+        ids, keys, words = build_sound_sets(self.KYGO_META)
+        reel = self._reel(caption="before you know it - kygo & ava max")
+        assert not match_video_to_sounds(reel, ids, keys)
+
+    def test_reel_on_registered_ig_audio_matches_by_sound_id(self):
+        from src.scrapers.master_tracker import match_video_to_sounds
+        ids, keys, words = build_sound_sets(self.KYGO_META)
+        reel = self._reel(music_id="4570677819866675",
+                          extracted_sound_id="4570677819866675")
+        matched = match_videos([reel], ids, keys, words, "Kygo & Ava Max",
+                               match_fn=match_video_to_sounds)
+        assert [v["match_strategy"] for v in matched] == ["sound_id"]

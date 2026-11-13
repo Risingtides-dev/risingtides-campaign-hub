@@ -38,6 +38,8 @@ export interface CampaignSummary {
   end_date: string
   end_date_auto?: boolean
   completion_status: "none" | "booked" | "completed"
+  // ISO timestamp the client dashboard went to the point of contact; "" = not yet.
+  dashboard_sent_at?: string
   budget: CampaignBudget
   stats: CampaignStats
   creator_count: number
@@ -70,6 +72,7 @@ export interface CampaignDetail {
   tt_artist_label: string
   tt_track_name: string
   additional_sounds: string[]
+  creator_brief?: string
   cobrand_link: string
   cobrand_share_url: string
   cobrand_upload_url: string
@@ -92,6 +95,8 @@ export interface CampaignDetail {
   content_types: string[]
   tracker_campaign_id?: string
   tracker_url?: string
+  // ISO timestamp the client dashboard went to the point of contact; "" = not yet.
+  dashboard_sent_at?: string
 }
 
 export interface MatchedVideo {

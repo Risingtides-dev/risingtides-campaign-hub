@@ -278,3 +278,33 @@ describe('<CampaignHeader /> link drop-in', () => {
     expect(screen.getByRole('button', { name: 'Saving...' })).toBeDisabled()
   })
 })
+
+describe('<CampaignHeader /> dashboard sent toggle', () => {
+  const base = { slug: 'song', title: 'Song', start_date: '2026-08-01', budget: { total: 0, booked: 0, paid: 0, left: 0 }, creators: [], matched_videos: [] }
+  const renderHeader = (extra: Record<string, unknown>, onToggle?: (sent: boolean) => void) =>
+    render(<MemoryRouter><CampaignHeader campaign={{ ...base, ...extra } as unknown as CampaignDetail} onEdit={vi.fn()} onRefresh={vi.fn()} isEditing={false} isRefreshing={false} onToggleDashboardSent={onToggle} /></MemoryRouter>)
+
+  it('checks an unsent campaign', () => {
+    const onToggle = vi.fn()
+    renderHeader({ dashboard_sent_at: '' }, onToggle)
+    const box = screen.getByRole('checkbox', { name: 'Mark dashboard sent to point of contact' })
+    expect(box).toHaveAttribute('aria-checked', 'false')
+    expect(box).toHaveTextContent('Dashboard sent')
+    fireEvent.click(box)
+    expect(onToggle).toHaveBeenCalledWith(true)
+  })
+
+  it('shows the sent date and unchecks', () => {
+    const onToggle = vi.fn()
+    renderHeader({ dashboard_sent_at: '2026-10-20T15:00:00' }, onToggle)
+    const box = screen.getByRole('checkbox', { name: /on Oct 20, 2026/ })
+    expect(box).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(box)
+    expect(onToggle).toHaveBeenCalledWith(false)
+  })
+
+  it('is hidden when no handler is wired', () => {
+    renderHeader({ dashboard_sent_at: '' })
+    expect(screen.queryByRole('checkbox', { name: /dashboard sent/i })).toBeNull()
+  })
+})

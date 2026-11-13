@@ -8,6 +8,7 @@ const navItems = [
     links: [
       { label: "Promotions", path: "/" },
       { label: "Scrape Tasks", path: "/scrape-tasks" },
+      { label: "Payouts", path: "/payouts" },
     ],
   },
   {

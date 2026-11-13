@@ -7,6 +7,7 @@ import csv
 import json
 import os
 import signal
+import ssl
 import threading
 import time
 from contextlib import contextmanager
@@ -18,6 +19,8 @@ from typing import Any, Dict, Iterable, List
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
+
+from requests.certs import where as ca_bundle_path
 
 ROOT = Path(__file__).resolve().parents[2]
 OUTPUT_ROOT = ROOT / "output" / "local-scraper"
@@ -162,10 +165,17 @@ def _read_bounded_queue(resp, deadline: float) -> bytes:
 def fetch_queue(limit: int) -> Dict[str, Any]:
     url = queue_url(limit)
     req = Request(url, headers={"Accept": "application/json"})
+    # Homebrew Python may lack the issuer for Hub; use the verified CA bundle
+    # shipped with this runtime while keeping TLS hostname validation enabled.
+    tls_context = (
+        ssl.create_default_context(cafile=ca_bundle_path())
+        if url.startswith("https://") else None
+    )
     deadline = time.monotonic() + QUEUE_REQUEST_TIMEOUT_SECONDS
     try:
         with _request_deadline(QUEUE_REQUEST_TIMEOUT_SECONDS):
-            with urlopen(req, timeout=QUEUE_REQUEST_TIMEOUT_SECONDS) as resp:
+            options = {"context": tls_context} if tls_context is not None else {}
+            with urlopen(req, timeout=QUEUE_REQUEST_TIMEOUT_SECONDS, **options) as resp:
                 payload = json.loads(_read_bounded_queue(resp, deadline).decode("utf-8"))
     except HTTPError as exc:
         raise RuntimeError(f"Campaign Hub queue request failed with HTTP {exc.code}") from None
