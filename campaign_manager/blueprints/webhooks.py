@@ -30,6 +30,80 @@ def slack_active_sounds():
     return jsonify(result)
 
 
+# ── Shared campaign intake ─────────────────────────────────────────────
+#
+# Both the webhook (/notion) and the sync (/notion/sync) endpoints funnel
+# through the one function below so repeat bookings behave identically on
+# every path. A repeat booking is keyed by notion_page_id, not by the title
+# slug: a second CRM page whose title slugs to an existing campaign becomes a
+# new round-suffixed campaign instead of being skipped or 409'd.
+
+def _build_campaign_meta(slug: str, entry: dict) -> dict:
+    """Campaign meta dict for save_campaign, from a normalized intake entry."""
+    return {
+        "title": entry["title"],
+        "name": entry["title"],
+        "slug": slug,
+        "artist": entry.get("artist", ""),
+        "song": entry.get("song", ""),
+        "official_sound": entry.get("official_sound", ""),
+        "sound_id": entry.get("sound_id", ""),
+        "start_date": entry.get("start_date", ""),
+        "budget": float(entry.get("budget", 0) or 0),
+        "status": "queued",
+        "platform": "tiktok",
+        "created_at": datetime.now().isoformat(),
+        "stats": {"total_views": 0, "total_likes": 0},
+        "source": "notion",
+        "notion_page_id": entry.get("notion_page_id", ""),
+        "insta_sound": entry.get("insta_sound", ""),
+        "cobrand_share_url": entry.get("cobrand_share_url", ""),
+        "campaign_stage": entry.get("campaign_stage", ""),
+        "round": entry.get("round", ""),
+        "label": entry.get("label", ""),
+        "project_lead": entry.get("project_lead", []),
+        "client_email": entry.get("client_email", ""),
+        "content_types": entry.get("content_types", []),
+        "internal_captions": entry.get("internal_captions"),
+        "platform_split": entry.get("platform_split", {}),
+    }
+
+
+def _intake_campaign(entry: dict) -> dict:
+    """Create (or idempotently skip) one campaign from a normalized entry.
+
+    Returns a result dict with ``status`` in:
+      created | existing | conflict | skipped | error
+
+    ``entry`` uses the same keys as ``services.notion.query_new_clients``
+    rows: notion_page_id, title, slug, artist, song, official_sound,
+    sound_id, start_date, budget, round, and the extended CRM fields.
+    """
+    base_slug = (entry.get("slug") or "").strip() or slugify(entry.get("title") or "")
+    meta = _build_campaign_meta(base_slug, entry)
+    sound_url = _db._canonical_sound_url(meta["official_sound"])
+    result, slug = _db.save_campaign(
+        base_slug, meta,
+        expected_official_sound="" if sound_url is not None else None,
+        # A reused sound is allowed ONLY when the transaction resolves this new
+        # CRM page to the next _round_N of an existing campaign with the same
+        # base slug (a repeat booking of the same artist+song). Any other sound
+        # reuse — a retyped title, or a new page that is not a round of an
+        # existing campaign — is refused as 'duplicate sound URL', like main.
+        allow_round_sibling_sound=True,
+        notion_intake=True,
+    )
+    if result == "existing":
+        return {"status": "existing", "slug": slug}
+    if result != "created":
+        if result == "duplicate":
+            return {"status": "skipped", "slug": slug, "reason": "duplicate sound URL"}
+        if result in ("conflict", "missing_revision"):
+            return {"status": "skipped", "slug": slug, "reason": "campaign changed during creation"}
+        return {"status": "error", "slug": slug, "reason": "campaign save failed"}
+    return {"status": "created", "slug": slug}
+
+
 @webhooks_bp.post("/notion")
 def notion_webhook():
     """Accept a campaign payload from Notion (via n8n, Make.com, or manual trigger).
@@ -44,7 +118,7 @@ def notion_webhook():
     artist = (data.get("artist") or "").strip()
     song = (data.get("song") or "").strip()
 
-    # Build title and slug
+    # Build title
     title = data.get("title", "")
     if not title:
         if artist and song:
@@ -56,12 +130,7 @@ def notion_webhook():
         else:
             return jsonify({"error": "At least artist or song is required"}), 400
 
-    slug = data.get("slug") or slugify(title)
-
-    if _db.is_active():
-        if _db.campaign_exists(slug):
-            return jsonify({"error": f"Campaign '{slug}' already exists", "slug": slug}), 409
-    else:
+    if not _db.is_active():
         return jsonify({"error": "Database not configured"}), 500
 
     # Extract sound ID from TikTok sound link if provided
@@ -70,23 +139,16 @@ def notion_webhook():
     if tiktok_sound and not sound_id:
         sound_id = extract_sound_id(tiktok_sound)
 
-    meta = {
+    entry = {
+        "notion_page_id": data.get("notion_page_id", ""),
         "title": title,
-        "name": title,
-        "slug": slug,
+        "slug": data.get("slug") or slugify(title),
         "artist": artist,
         "song": song,
         "official_sound": tiktok_sound,
         "sound_id": sound_id,
         "start_date": data.get("start_date", ""),
         "budget": float(data.get("budget", 0) or 0),
-        "status": "queued",
-        "platform": "tiktok",
-        "created_at": datetime.now().isoformat(),
-        "stats": {"total_views": 0, "total_likes": 0},
-        # Extended fields from Notion CRM
-        "source": "notion",
-        "notion_page_id": data.get("notion_page_id", ""),
         "insta_sound": (data.get("insta_sound_link") or "").strip(),
         "cobrand_share_url": (data.get("cobrand_link") or "").strip(),
         "campaign_stage": data.get("campaign_stage", ""),
@@ -100,27 +162,33 @@ def notion_webhook():
         "platform_split": data.get("platform_split", {}),
     }
 
-    sound_url = _db._canonical_sound_url(tiktok_sound)
-    result = _db.save_campaign(
-        slug, meta, expected_official_sound="" if sound_url is not None else None,
-    )
-    if result not in (None, "updated"):
-        if result == "duplicate":
+    result = _intake_campaign(entry)
+    slug = result["slug"]
+
+    if result["status"] == "created":
+        return jsonify({
+            "ok": True,
+            "slug": slug,
+            "title": title,
+            "message": f"Campaign '{title}' created from Notion",
+        }), 201
+    if result["status"] == "existing":
+        return jsonify({
+            "ok": True,
+            "slug": slug,
+            "title": title,
+            "message": f"Campaign '{title}' already synced from Notion",
+        }), 200
+    if result["status"] == "conflict":
+        return jsonify({"error": f"Campaign '{slug}' already exists", "slug": slug}), 409
+    if result["status"] == "skipped":
+        if result.get("reason") == "duplicate sound URL":
             return jsonify({"error": "That link already belongs to another campaign", "slug": slug,
                             "code": "duplicate"}), 409
-        if result in ("conflict", "missing_revision"):
-            return jsonify({"error": "Campaign changed while it was being created; retry the sync", "slug": slug,
-                            "code": "conflict"}), 409
-        return jsonify({"error": "Campaign could not be saved", "slug": slug,
-                        "code": "save_failed"}), 500
-    _db.save_creators(slug, [])
-
-    return jsonify({
-        "ok": True,
-        "slug": slug,
-        "title": title,
-        "message": f"Campaign '{title}' created from Notion",
-    }), 201
+        return jsonify({"error": "Campaign changed while it was being created; retry the sync", "slug": slug,
+                        "code": "conflict"}), 409
+    return jsonify({"error": "Campaign could not be saved", "slug": slug,
+                    "code": "save_failed"}), 500
 
 
 @webhooks_bp.post("/notion/sync")
@@ -148,11 +216,30 @@ def notion_sync():
     refreshed = []
 
     for entry in new_entries:
-        slug = entry["slug"]
+        page_id = entry.get("notion_page_id") or ""
+        base_slug = entry["slug"]
 
-        if _db.campaign_exists(slug):
+        # Refresh (not create) when this CRM page was already imported, or when
+        # the title slug maps to a legacy campaign with no recorded page id
+        # (the content_types backfill). The legacy match is page-id aware on
+        # both sides: it only merges when the incoming entry ALSO has no page
+        # id (an indistinguishable plain duplicate). A repeat booking — an
+        # incoming page id, even where the existing campaign has none — falls
+        # through to the shared intake below and becomes a round-suffixed
+        # campaign instead of being silently merged.
+        refresh_slug = None
+        if page_id:
+            existing_by_page = _db.get_campaign_by_notion_page_id(page_id)
+            if existing_by_page:
+                refresh_slug = existing_by_page["slug"]
+        if refresh_slug is None:
+            existing = _db.get_campaign(base_slug)
+            if existing is not None and not page_id and not (existing.get("notion_page_id") or ""):
+                refresh_slug = base_slug
+
+        if refresh_slug is not None:
             entry_types = sorted(entry.get("content_types") or [])
-            existing = _db.get_campaign(slug) or {}
+            existing = _db.get_campaign(refresh_slug) or {}
             existing_types = sorted(existing.get("content_types") or [])
             changes = {}
             if entry_types != existing_types:
@@ -165,55 +252,25 @@ def notion_sync():
                     and entry_captions != existing.get("internal_captions")):
                 changes["internal_captions"] = entry_captions
             if changes:
-                _db.update_campaign_fields(slug, changes)
-                refreshed.append({"slug": slug, **changes})
+                _db.update_campaign_fields(refresh_slug, changes)
+                refreshed.append({"slug": refresh_slug, **changes})
             else:
-                skipped.append({"slug": slug, "reason": "already exists"})
+                skipped.append({"slug": refresh_slug, "reason": "already exists"})
             continue
 
-        meta = {
-            "title": entry["title"],
-            "name": entry["title"],
-            "slug": slug,
-            "artist": entry["artist"],
-            "song": entry["song"],
-            "official_sound": entry["official_sound"],
-            "sound_id": entry["sound_id"],
-            "start_date": entry["start_date"],
-            "budget": entry["budget"],
-            "status": "queued",
-            "platform": "tiktok",
-            "created_at": datetime.now().isoformat(),
-            "stats": {"total_views": 0, "total_likes": 0},
-            # Extended fields
-            "source": "notion",
-            "notion_page_id": entry["notion_page_id"],
-            "insta_sound": entry.get("insta_sound", ""),
-            "cobrand_share_url": entry.get("cobrand_share_url", ""),
-            "campaign_stage": entry.get("campaign_stage", ""),
-            "round": entry.get("round", ""),
-            "label": entry.get("label", ""),
-            "project_lead": entry.get("project_lead", []),
-            "client_email": entry.get("client_email", ""),
-            "content_types": entry.get("content_types", []),
-            "internal_captions": entry.get("internal_captions"),
-            "platform_split": entry.get("platform_split", {}),
-        }
-
-        sound_url = _db._canonical_sound_url(meta["official_sound"])
-        result = _db.save_campaign(
-            slug, meta, expected_official_sound="" if sound_url is not None else None,
-        )
-        if result not in (None, "updated"):
-            if result == "duplicate":
-                skipped.append({"slug": slug, "reason": "duplicate sound URL"})
-            elif result in ("conflict", "missing_revision"):
-                skipped.append({"slug": slug, "reason": "campaign changed during creation"})
+        result = _intake_campaign(entry)
+        if result["status"] == "created":
+            created.append({"slug": result["slug"], "title": entry["title"]})
+        elif result["status"] == "existing":
+            skipped.append({"slug": result["slug"], "reason": "already exists"})
+        elif result["status"] == "skipped":
+            reason = result.get("reason")
+            if reason == "duplicate sound URL":
+                skipped.append({"slug": result["slug"], "reason": "duplicate sound URL"})
             else:
-                errors.append({"slug": slug, "reason": "campaign save failed"})
-            continue
-        _db.save_creators(slug, [])
-        created.append({"slug": slug, "title": entry["title"]})
+                skipped.append({"slug": result["slug"], "reason": "campaign changed during creation"})
+        else:
+            errors.append({"slug": result["slug"], "reason": "campaign save failed"})
 
     # Refresh pass for the EXISTING fleet, keyed by stored notion_page_id —
     # independent of Pipeline Status. The client-import funnel above only
