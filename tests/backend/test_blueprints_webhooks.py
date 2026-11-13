@@ -181,8 +181,8 @@ class TestNotionSync:
                 "budget": 0,
             },
         ]
-        # Seed an existing campaign so we exercise the skip path too.
-        db.save_campaign("b_two", {"title": "B - Two", "artist": "B"})
+        # Seed an existing campaign (keyed by page id) so we exercise the skip path too.
+        db.save_campaign("b_two", {"title": "B - Two", "artist": "B", "notion_page_id": "page-2"})
 
         with patch(
             "campaign_manager.services.notion.query_new_clients",
@@ -199,7 +199,7 @@ class TestNotionSync:
         # fix have empty content_types while the CRM row carries tags.
         db.save_campaign("b_two", {
             "title": "B - Two", "artist": "B", "content_types": [],
-            "label": "Operator Edited Label",
+            "label": "Operator Edited Label", "notion_page_id": "page-2",
         })
         entries = [
             {
@@ -278,7 +278,7 @@ class TestNotionSync:
         assert db.get_campaign("unreadable")["content_types"] == ["Trucktok"]
 
     def test_unchanged_content_types_skip_quietly(self, client, db):
-        db.save_campaign("b_two", {"title": "B - Two", "content_types": ["Trucktok"]})
+        db.save_campaign("b_two", {"title": "B - Two", "content_types": ["Trucktok"], "notion_page_id": "page-2"})
         entries = [
             {
                 "notion_page_id": "page-2", "title": "B - Two", "slug": "b_two",
