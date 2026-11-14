@@ -151,6 +151,121 @@ def test_display_casing_survives_the_roundtrip(session):
     assert row["username"] == "TheEllieBarker"
 
 
+# ── platform-aware rate isolation (issue #289) ─────────────────────────
+
+def test_booking_summary_isolates_rates_by_platform(session):
+    """TikTok booking must never surface an Instagram price and vice versa."""
+    c1 = _campaign(session, "c1")
+    session.add(Creator(
+        campaign_id=c1.id, username="alice",
+        per_post_rate=50.0, total_rate=100.0, posts_owed=2,
+        added_date="2026-01-15", status="active", platform="tiktok",
+    ))
+    c2 = _campaign(session, "c2")
+    session.add(Creator(
+        campaign_id=c2.id, username="alice",
+        per_post_rate=300.0, total_rate=900.0, posts_owed=3,
+        added_date="2026-08-20", status="active", platform="instagram",
+    ))
+    session.commit()
+
+    summary = booking_summary(session)["alice"]
+    # Main fields track the most recently booked platform.
+    assert summary["platform"] == "instagram"
+    assert summary["last_rate"] == 300.0
+    # Per-platform dict has both rates correctly isolated.
+    assert summary["per_platform_rates"]["tiktok"] == (50.0, date(2026, 1, 15))
+    assert summary["per_platform_rates"]["instagram"] == (300.0, date(2026, 8, 20))
+
+
+def test_booking_summary_rate_isolation_is_order_independent(session):
+    """The result must not change depending on which booking row DB returns first."""
+    c1 = _campaign(session, "c1")
+    session.add(Creator(
+        campaign_id=c1.id, username="alice",
+        per_post_rate=300.0, total_rate=900.0, posts_owed=3,
+        added_date="2026-08-20", status="active", platform="instagram",
+    ))
+    c2 = _campaign(session, "c2")
+    session.add(Creator(
+        campaign_id=c2.id, username="alice",
+        per_post_rate=50.0, total_rate=100.0, posts_owed=2,
+        added_date="2026-01-15", status="active", platform="tiktok",
+    ))
+    session.commit()
+
+    summary = booking_summary(session)["alice"]
+    assert summary["platform"] == "instagram"
+    assert summary["last_rate"] == 300.0
+    assert summary["per_platform_rates"]["tiktok"] == (50.0, date(2026, 1, 15))
+    assert summary["per_platform_rates"]["instagram"] == (300.0, date(2026, 8, 20))
+
+
+def test_rate_for_booking_uses_platform_specific_rate(session):
+    """rate_for_booking with platform=tiktok returns TikTok rate, not Instagram."""
+    c1 = _campaign(session, "c1")
+    session.add(Creator(
+        campaign_id=c1.id, username="alice",
+        per_post_rate=50.0, total_rate=100.0, posts_owed=2,
+        added_date="2026-01-15", status="active", platform="tiktok",
+    ))
+    c2 = _campaign(session, "c2")
+    session.add(Creator(
+        campaign_id=c2.id, username="alice",
+        per_post_rate=300.0, total_rate=900.0, posts_owed=3,
+        added_date="2026-08-20", status="active", platform="instagram",
+    ))
+    session.commit()
+
+    tiktok = rate_for_booking(session, "alice", platform="tiktok")
+    assert tiktok["rate"] == 50.0
+    assert tiktok["source"] == "booking"
+    assert tiktok["platform"] == "tiktok"
+    assert tiktok["last_rate"] == 50.0
+
+    instagram = rate_for_booking(session, "alice", platform="instagram")
+    assert instagram["rate"] == 300.0
+    assert instagram["platform"] == "instagram"
+    assert instagram["last_rate"] == 300.0
+
+
+def test_rate_for_booking_missing_platform_returns_no_booking_rate(session):
+    """Booking exists only on tiktok; asking for instagram yields no booking rate."""
+    c1 = _campaign(session, "c1")
+    session.add(Creator(
+        campaign_id=c1.id, username="alice",
+        per_post_rate=50.0, total_rate=100.0, posts_owed=2,
+        added_date="2026-01-15", status="active", platform="tiktok",
+    ))
+    session.commit()
+
+    result = rate_for_booking(session, "alice", platform="instagram")
+    assert result["last_rate"] is None
+    assert result["source"] == "none"
+    assert result["platform"] == "instagram"
+
+
+def test_rate_for_booking_without_platform_is_backward_compatible(session):
+    """Omitting platform still returns the most-recent booking rate (old contract)."""
+    c1 = _campaign(session, "c1")
+    session.add(Creator(
+        campaign_id=c1.id, username="alice",
+        per_post_rate=50.0, total_rate=100.0, posts_owed=2,
+        added_date="2026-01-15", status="active", platform="tiktok",
+    ))
+    c2 = _campaign(session, "c2")
+    session.add(Creator(
+        campaign_id=c2.id, username="alice",
+        per_post_rate=300.0, total_rate=900.0, posts_owed=3,
+        added_date="2026-08-20", status="active", platform="instagram",
+    ))
+    session.commit()
+
+    result = rate_for_booking(session, "alice")
+    assert result["rate"] == 300.0
+    assert result["source"] == "booking"
+
+
 # ── booking auto-fill ──────────────────────────────────────────────────
 
 def test_rate_for_booking_prefers_a_newer_manual_rate(session):

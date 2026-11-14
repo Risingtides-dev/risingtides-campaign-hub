@@ -649,10 +649,12 @@ export const api = {
       `/api/library/creators/${encodeURIComponent(username)}/niches`,
       { method: "PUT", body: JSON.stringify({ niches }) }
     ),
-  getLibraryRate: (username: string) =>
-    request<LibraryRate>(
-      `/api/library/creators/${encodeURIComponent(username)}/rate`
-    ),
+  getLibraryRate: (username: string, platform?: string) => {
+    const qs = platform ? `?platform=${encodeURIComponent(platform)}` : ""
+    return request<LibraryRate>(
+      `/api/library/creators/${encodeURIComponent(username)}/rate${qs}`
+    )
+  },
 
   getNiches: () =>
     request<{ count: number; niches: LibraryNiche[] }>("/api/library/niches"),

@@ -49,6 +49,11 @@ def booking_summary(session) -> Dict[str, Dict]:
     that is what the rate memory resolves against. Averaging was the first
     version's bug: 39 of 55 creators had a last rate different from their
     mean, so the average was consistently the wrong number to quote.
+
+    `per_platform_rates` maps each platform the creator has been booked on to
+    their most recent (rate, date) on that platform. The main `platform` and
+    `last_rate` fields always describe the same booking (the most recently
+    dated one), so they are always mutually consistent.
     """
     out: Dict[str, Dict] = {}
 
@@ -71,6 +76,8 @@ def booking_summary(session) -> Dict[str, Dict]:
         if not username:
             continue
 
+        platform = row.platform or "tiktok"
+
         entry = out.setdefault(username, {
             "display": (row.username or "").strip().lstrip("@"),
             "campaigns": 0,
@@ -80,7 +87,8 @@ def booking_summary(session) -> Dict[str, Dict]:
             "last_rate": None,
             "last_booked_at": None,
             "paypal_email": "",
-            "platform": row.platform or "tiktok",
+            "platform": platform,
+            "per_platform_rates": {},
         })
 
         entry["campaigns"] += 1
@@ -99,13 +107,27 @@ def booking_summary(session) -> Dict[str, Dict]:
 
         booked_on = _parse_added(row.added_date)
         if rate:
-            current = entry["last_booked_at"]
+            # Track the most recent rate per platform — isolates TikTok from
+            # Instagram so a booking wizard asking for a platform-specific rate
+            # never gets a price from a different one.
+            per_plat = entry["per_platform_rates"]
+            cur_rate, cur_date = per_plat.get(platform, (None, None))
             # An undated booking only wins if we have nothing dated at all.
+            if cur_rate is None or (
+                booked_on and (cur_date is None or booked_on >= cur_date)
+            ):
+                per_plat[platform] = (rate, booked_on)
+
+            # The main last_rate and platform always move together so they
+            # describe the same booking. An undated booking only wins if we
+            # have nothing dated at all.
+            current = entry["last_booked_at"]
             if entry["last_rate"] is None or (
                 booked_on and (current is None or booked_on >= current)
             ):
                 entry["last_rate"] = rate
                 entry["last_booked_at"] = booked_on
+                entry["platform"] = platform
 
     for entry in out.values():
         entry["spend"] = round(entry["spend"], 2)
@@ -190,31 +212,51 @@ def build_library(session, window: str = DEFAULT_WINDOW) -> List[Dict]:
     return out
 
 
-def rate_for_booking(session, username: str) -> Dict:
+def rate_for_booking(
+    session, username: str, platform: Optional[str] = None
+) -> Dict:
     """What this creator should cost on the next booking.
 
     Powers the auto-fill when a creator is added to a campaign, and carries
     enough context for the UI to say where the number came from.
+
+    When `platform` is given, `last_rate` is sourced only from that platform's
+    booking history. A TikTok booking will never quote an Instagram price.
+    When no bookings exist for the requested platform, `last_rate` is None and
+    the profile override (if any) still applies.
     """
     user = normalize_username(username)
     booking = booking_summary(session).get(user, {})
     profile = session.get(CreatorProfile, user)
 
+    last_rate = booking.get("last_rate")
+    last_booked_at = booking.get("last_booked_at")
+
+    if platform:
+        plat_key = platform.strip().lower()
+        per_platform = booking.get("per_platform_rates", {})
+        if plat_key in per_platform:
+            last_rate, last_booked_at = per_platform[plat_key]
+        elif booking:
+            # Creator has bookings but none on this platform.
+            last_rate = None
+            last_booked_at = None
+
     rate, source = effective_rate(
         override=profile.rate_override if profile else None,
         override_at=profile.rate_override_at if profile else None,
-        last_rate=booking.get("last_rate"),
-        last_booked_at=booking.get("last_booked_at"),
+        last_rate=last_rate,
+        last_booked_at=last_booked_at,
     )
 
     return {
         "username": user,
         "rate": rate,
         "source": source,
-        "last_rate": booking.get("last_rate"),
+        "last_rate": last_rate,
         "last_booked_at": (
-            booking["last_booked_at"].isoformat()
-            if booking.get("last_booked_at") else ""
+            last_booked_at.isoformat() if last_booked_at else ""
         ),
+        "platform": platform or booking.get("platform"),
         "campaigns": booking.get("campaigns", 0),
     }

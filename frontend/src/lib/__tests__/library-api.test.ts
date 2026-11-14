@@ -83,13 +83,33 @@ describe('creator library api', () => {
   it('reads the booking rate for a creator', async () => {
     const fetchMock = mockFetchOk({
       username: 'alice', rate: 40, source: 'booking',
-      last_rate: 40, last_booked_at: '2026-08-01', campaigns: 2,
+      last_rate: 40, last_booked_at: '2026-08-01', platform: null, campaigns: 2,
     })
     const result = await api.getLibraryRate('alice')
 
     expect(lastCall(fetchMock).url).toContain('/api/library/creators/alice/rate')
     expect(result.rate).toBe(40)
     expect(result.source).toBe('booking')
+  })
+
+  it('appends platform as a query param when given', async () => {
+    const fetchMock = mockFetchOk({
+      username: 'alice', rate: 50, source: 'booking',
+      last_rate: 50, last_booked_at: '2026-01-15', platform: 'tiktok', campaigns: 1,
+    })
+    await api.getLibraryRate('alice', 'tiktok')
+
+    expect(lastCall(fetchMock).url).toContain('/api/library/creators/alice/rate?platform=tiktok')
+  })
+
+  it('omits platform from the url when not provided', async () => {
+    const fetchMock = mockFetchOk({
+      username: 'alice', rate: 300, source: 'booking',
+      last_rate: 300, last_booked_at: '2026-08-20', platform: 'instagram', campaigns: 2,
+    })
+    await api.getLibraryRate('alice')
+
+    expect(lastCall(fetchMock).url).not.toContain('platform')
   })
 
   it('triggers a stats refresh with POST', async () => {

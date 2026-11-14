@@ -1012,7 +1012,8 @@ export const libraryKeys = {
   all: ["library"] as const,
   creators: (window: LibraryWindow) => ["library", "creators", window] as const,
   niches: ["library", "niches"] as const,
-  rate: (username: string) => ["library", "rate", username] as const,
+  rate: (username: string, platform?: string) =>
+    ["library", "rate", username, platform ?? null] as const,
 }
 
 export function useLibrary(window: LibraryWindow = "w60") {
@@ -1032,10 +1033,14 @@ export function useNiches() {
   })
 }
 
-export function useLibraryRate(username: string, enabled = true) {
+export function useLibraryRate(
+  username: string,
+  platform?: string,
+  enabled = true
+) {
   return useQuery({
-    queryKey: libraryKeys.rate(username),
-    queryFn: () => api.getLibraryRate(username),
+    queryKey: libraryKeys.rate(username, platform),
+    queryFn: () => api.getLibraryRate(username, platform),
     enabled: enabled && Boolean(username),
   })
 }

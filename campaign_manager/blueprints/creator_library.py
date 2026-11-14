@@ -186,12 +186,17 @@ def set_creator_niches(username: str):
 
 @creator_library_bp.get("/api/library/creators/<path:username>/rate")
 def creator_rate(username: str):
-    """What this creator should cost on the next booking, and why."""
+    """What this creator should cost on the next booking, and why.
+
+    Pass ?platform=tiktok (or instagram) to get the rate from that platform's
+    booking history only — prevents cross-platform price contamination.
+    """
+    platform = request.args.get("platform") or None
     session = _session()
     if session is None:
         return _requires_db()
     try:
-        return jsonify(rate_for_booking(session, username))
+        return jsonify(rate_for_booking(session, username, platform=platform))
     finally:
         session.close()
 

@@ -899,6 +899,7 @@ export interface LibraryRate {
   source: "override" | "booking" | "none"
   last_rate: number | null
   last_booked_at: string
+  platform: string | null
   campaigns: number
 }
 
