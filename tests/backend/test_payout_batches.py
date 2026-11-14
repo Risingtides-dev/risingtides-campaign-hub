@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pytest
+from copy import deepcopy
 
 from campaign_manager import db as _db
 from campaign_manager.blueprints import payouts as payouts_bp_module
@@ -19,20 +20,28 @@ class FakePayPal:
         self.created = []
         self.statuses = {}
         self.fail_create = None
+        self.receipt = None
 
     def create_payout(self, sender_batch_id, items):
         if self.fail_create:
             raise self.fail_create
         self.created.append((sender_batch_id, [(i.username, i.method, i.amount) for i in items]))
-        return {"batch_header": self.header or {"payout_batch_id": "PB-1", "batch_status": "PENDING"}}
+        header = self.header if self.header is not None else {
+            "payout_batch_id": "PB-1", "batch_status": "PENDING",
+            "sender_batch_header": {"sender_batch_id": sender_batch_id},
+        }
+        self.receipt = {"batch_header": deepcopy(header), "items": [
+            {"transaction_status": "PENDING", "payout_item_id": f"PI-{item.id}",
+             "payout_item": _item_payload(item)} for item in items
+        ]}
+        return {"batch_header": deepcopy(header)}
 
     def get_batch(self, _paypal_batch_id):
-        return {"items": [
-            {"transaction_status": st, "payout_item_id": f"PI-{iid}",
-             "payout_item": {"sender_item_id": f"item-{iid}"},
-             **({"errors": {"message": "Receiver is ineligible"}} if st == "FAILED" else {})}
-            for iid, st in self.statuses.items()
-        ]}
+        receipt = deepcopy(self.receipt)
+        for row in receipt["items"]:
+            iid = int(row["payout_item"]["sender_item_id"].removeprefix("item-"))
+            row["transaction_status"] = self.statuses.get(iid, "PENDING")
+        return receipt
 
 
 @pytest.fixture(autouse=True)
@@ -106,7 +115,7 @@ def test_full_batch_flow(client, paypal, seeded):
     synced = _post(client, f"/api/payouts/admin/batches/{bid}/sync").json
     by_user = {i["username"]: i for i in synced["items"]}
     assert by_user["pp"]["status"] == "succeeded"
-    assert by_user["vm"]["status"] == "failed" and "ineligible" in by_user["vm"]["error"]
+    assert by_user["vm"]["status"] == "failed" and "FAILED" in by_user["vm"]["error"]
     assert _paid("pp")[0] == "yes"
     assert _paid("vm")[0] == "no"
 
@@ -132,16 +141,17 @@ def test_destination_change_after_draft_blocks_send(client, paypal, seeded):
     assert paypal.created == []
 
 
-def test_paypal_error_is_retryable_with_same_batch_id(client, paypal, seeded):
+def test_paypal_error_holds_original_attempt_without_another_post(client, paypal, seeded):
     bid = _post(client, "/api/payouts/admin/batches").json["id"]
     paypal.fail_create = PayPalError("Couldn't reach PayPal (Timeout).")
     resp = _post(client, f"/api/payouts/admin/batches/{bid}/approve", confirm_total="150.50")
-    assert resp.status_code == 400 and "retry safely" in resp.json["error"]
+    assert resp.status_code == 400 and "Reconcile" in resp.json["error"]
     blocked = _post(client, "/api/payouts/admin/batches")  # can't add while a send is in flight
-    assert blocked.status_code == 400 and "being sent" in blocked.json["error"]
+    assert blocked.status_code == 400 and "Reconcile" in blocked.json["error"]
 
     paypal.fail_create = None
-    assert _post(client, f"/api/payouts/admin/batches/{bid}/approve", confirm_total="150.50").json["status"] == "sent"
+    assert _post(client, f"/api/payouts/admin/batches/{bid}/approve", confirm_total="150.50").status_code == 400
+    assert paypal.created == []
 
 
 def test_remove_item_and_cancel(client, paypal, seeded):
@@ -181,7 +191,7 @@ def test_paypal_payload_shapes():
         "sender_item_id": "item-7", "note": "Rising Tides — Song", "recipient_type": "EMAIL",
     }
     v = _item_payload(venmo_item)
-    assert (v["recipient_type"], v["recipient_wallet"], v["receiver"]) == ("USER_HANDLE", "Venmo", "@vm-user")
+    assert (v["recipient_type"], v["recipient_wallet"], v["receiver"]) == ("USER_HANDLE", "VENMO", "@vm-user")
 
 
 def test_paypal_config_defaults_to_sandbox(monkeypatch):
@@ -293,7 +303,7 @@ def test_missing_paypal_batch_id_fails_loudly(client, paypal, seeded):
     bid = _post(client, "/api/payouts/admin/batches").json["id"]
     paypal.header = {"batch_status": "DENIED"}
     resp = _approve(client, bid)
-    assert resp.status_code == 400 and "didn't accept" in resp.json["error"]
+    assert resp.status_code == 400 and "Reconcile" in resp.json["error"]
 
 
 def test_rename_blocked_while_in_batch(client, paypal, seeded):

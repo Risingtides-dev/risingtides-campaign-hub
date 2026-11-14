@@ -123,7 +123,9 @@ export interface QueueRow {
   amount: number
   posts_owed: number
   posts_done: number
-  reason: "posts_complete" | "trusted_confirmed" | "manual" | "trusted_unconfirmed" | "posts_incomplete"
+  booking_id?: number
+  booking_issue?: "ambiguous" | ""
+  reason: "posts_complete" | "trusted_confirmed" | "manual" | "trusted_unconfirmed" | "posts_incomplete" | "ambiguous_booking"
   trusted: boolean
   trust_override: "" | "trusted" | "standard"
   delivered_campaigns: number
@@ -163,6 +165,8 @@ export interface PayoutBatch {
   id: number
   status: "draft" | "sending" | "sent" | "closed" | "cancelled"
   paypal_env: string
+  sender_batch_id?: string
+  paypal_batch_id?: string
   created_at: string
   approved_at: string
   last_synced_at: string
@@ -237,7 +241,7 @@ export const payoutAdmin = {
       { method: "POST" },
       key,
     ),
-  batches: (key: string) => call<BatchesResponse>("/api/payouts/admin/batches", {}, key),
+  batches: (key: string, signal?: AbortSignal) => call<BatchesResponse>("/api/payouts/admin/batches", { signal }, key),
   createBatch: (key: string) => call<PayoutBatch>("/api/payouts/admin/batches", { method: "POST" }, key),
   approveBatch: (key: string, id: number, confirmTotal: string) =>
     call<PayoutBatch>(
@@ -247,6 +251,12 @@ export const payoutAdmin = {
     ),
   cancelBatch: (key: string, id: number) =>
     call<{ ok: true }>(`/api/payouts/admin/batches/${id}/cancel`, { method: "POST" }, key),
+  reconcileBatch: (key: string, id: number, paypalBatchId: string) =>
+    call<PayoutBatch>(
+      `/api/payouts/admin/batches/${id}/reconcile`,
+      { method: "POST", body: JSON.stringify({ paypal_batch_id: paypalBatchId }) },
+      key,
+    ),
   syncBatch: (key: string, id: number) =>
     call<PayoutBatch>(`/api/payouts/admin/batches/${id}/sync`, { method: "POST" }, key),
   addBooking: (key: string, row: Pick<QueueRow, "slug" | "username" | "platform">) =>
@@ -265,7 +275,7 @@ export const payoutAdmin = {
     call<{ ok: true }>(`/api/payouts/admin/items/${id}/remove`, { method: "POST" }, key),
   markItemPaid: (key: string, id: number) =>
     call<{ ok: true }>(`/api/payouts/admin/items/${id}/mark-paid`, { method: "POST" }, key),
-  queue: (key: string) => call<PaymentQueue>("/api/payouts/admin/queue", {}, key),
+  queue: (key: string, signal?: AbortSignal) => call<PaymentQueue>("/api/payouts/admin/queue", { signal }, key),
   markBooking: (key: string, row: Pick<QueueRow, "slug" | "username" | "platform">, action: BookingMarkAction, note = "") =>
     call<{ ok: true }>(
       "/api/payouts/admin/bookings/mark",
@@ -291,7 +301,7 @@ export function readTokenFromHash(): string {
 
 // Same wording as the scrape skill's dm_templates.json `payout.link`.
 const DM_TEMPLATE =
-  "hey twin drop your payment info here so i can get you paid as soon as your posts are up 🙂\n{link}"
+  "hey twin drop your payment info here so i can get you paid as soon as your posts are up\n{link}"
 
 export function dmFor(link: string): string {
   return DM_TEMPLATE.replace("{link}", link)

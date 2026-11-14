@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query"
 import { payoutAdmin } from "@/lib/payouts"
 import type { PayoutEvent } from "@/lib/payouts"
+import { usePayoutSessionIsActive, usePayoutSessionPrefix } from "@/lib/payoutSession"
 
 const EVENT_LABEL: Record<string, string> = {
   created: "Creator added",
@@ -21,9 +22,16 @@ function describe(e: PayoutEvent) {
 }
 
 export function PayoutHistory({ adminKey, username }: { adminKey: string; username: string }) {
+  const prefix = usePayoutSessionPrefix()
+  const isActive = usePayoutSessionIsActive()
   const q = useQuery({
-    queryKey: ["payouts", "events", adminKey, username],
-    queryFn: () => payoutAdmin.events(adminKey, username),
+    queryKey: [...prefix, "events", username],
+    queryFn: async ({ signal }) => {
+      if (!isActive() || signal.aborted) throw new Error("Payout session closed")
+      const result = await payoutAdmin.events(adminKey, username)
+      if (!isActive() || signal.aborted) throw new Error("Payout session closed")
+      return result
+    },
   })
   if (q.isLoading) return <p className="text-xs text-rt-fg-tertiary mt-2">Loading history…</p>
   if (q.error) return <p className="text-xs text-rt-red mt-2">{q.error.message}</p>

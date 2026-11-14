@@ -1,15 +1,16 @@
 // Hub admin page for creator payout details. Gated by PAYOUT_ADMIN_KEY
 // because the Hub itself has no login. Changed destinations are flagged at
 // the top until reviewed — the dashboard flag is the change alert.
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
-import { PAYOUT_METHODS, PayoutApiError, payoutAdmin } from "@/lib/payouts"
+import { PAYOUT_METHODS, payoutAdmin } from "@/lib/payouts"
 import type { PayoutAdminRow } from "@/lib/payouts"
 import { PayoutHistory } from "@/components/payouts/PayoutHistory"
 import { PayoutLinkGenerator } from "@/components/payouts/PayoutLinkGenerator"
 import { CampaignPayouts } from "@/components/payouts/CampaignPayouts"
 import { PayoutBatches } from "@/components/payouts/PayoutBatches"
+import { PayoutSessionProvider } from "@/lib/payoutSession"
 
 const KEY_STORAGE = "rt.payoutAdminKey"
 const METHOD_LABEL: Record<string, string> = Object.fromEntries(
@@ -30,6 +31,7 @@ function KeyGate({ onKey }: { onKey: (k: string) => void }) {
         Payment details are locked. Enter the payout admin key.
       </p>
       <input
+        aria-label="Payout admin key"
         type="password"
         autoComplete="off"
         value={value}
@@ -60,45 +62,120 @@ function Tile({ label, value, tone = "text-rt-fg" }: { label: string; value: num
 }
 
 export default function Payouts() {
-  const [adminKey, setAdminKey] = useState(() => sessionStorage.getItem(KEY_STORAGE) ?? "")
+  const [session, setSession] = useState<{ key: string; id: string } | null>(() => {
+    const key = sessionStorage.getItem(KEY_STORAGE)
+    return key ? { key, id: crypto.randomUUID() } : null
+  })
+  const sessionRef = useRef(session)
+  const mounted = useRef(true)
+  const adminKey = session?.key ?? ""
+  const prefix = ["payouts", session?.id ?? "locked"] as const
   const [search, setSearch] = useState("")
   const [openHistory, setOpenHistory] = useState<string | null>(null)
   const [tab, setTab] = useState<"pay" | "info">("pay")
+  const [rotatedLink, setRotatedLink] = useState<{ username: string; link: string } | null>(null)
   const qc = useQueryClient()
 
+  function isSessionActive(id: string) {
+    return mounted.current && sessionRef.current?.id === id
+  }
+
+  function clearPayoutCache() {
+    void qc.cancelQueries({ queryKey: ["payouts"] })
+    qc.removeQueries({ queryKey: ["payouts"] })
+    for (const mutation of qc.getMutationCache().findAll({ mutationKey: ["payouts"] })) {
+      qc.getMutationCache().remove(mutation)
+    }
+  }
+
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+      const id = sessionRef.current?.id
+      if (!id) return
+      void qc.cancelQueries({ queryKey: ["payouts", id] })
+      qc.removeQueries({ queryKey: ["payouts", id] })
+      for (const mutation of qc.getMutationCache().findAll({ mutationKey: ["payouts", id] })) {
+        qc.getMutationCache().remove(mutation)
+      }
+    }
+  }, [qc])
+
   const overview = useQuery({
-    queryKey: ["payouts", "overview", adminKey],
-    queryFn: () => payoutAdmin.overview(adminKey),
-    enabled: Boolean(adminKey),
+    queryKey: [...prefix, "overview"],
+    queryFn: async ({ signal }) => {
+      if (!session || signal.aborted || !isSessionActive(session.id)) throw new Error("Payouts are locked")
+      const data = await payoutAdmin.overview(session.key)
+      if (signal.aborted || !isSessionActive(session.id)) throw new Error("Payout session closed")
+      return data
+    },
+    enabled: Boolean(session),
     retry: false,
+    staleTime: 0,
+    gcTime: 0,
+    refetchOnMount: "always",
   })
 
   const forgetKey = () => {
+    sessionRef.current = null
     sessionStorage.removeItem(KEY_STORAGE)
-    setAdminKey("")
+    setSession(null)
+    setSearch("")
+    setOpenHistory(null)
+    setTab("pay")
+    setRotatedLink(null)
+    clearPayoutCache()
+    clearFlag.reset()
+    rotate.reset()
   }
-  const saveKey = (k: string) => {
-    sessionStorage.setItem(KEY_STORAGE, k)
-    setAdminKey(k)
+  const saveKey = (key: string) => {
+    clearPayoutCache()
+    const next = { key, id: crypto.randomUUID() }
+    sessionRef.current = next
+    sessionStorage.setItem(KEY_STORAGE, key)
+    setSession(next)
   }
 
-  const refresh = () => qc.invalidateQueries({ queryKey: ["payouts"] })
-  const onError = (e: unknown) => toast.error(e instanceof Error ? e.message : "Request failed")
+  const refresh = () => {
+    if (session && isSessionActive(session.id)) void qc.invalidateQueries({ queryKey: prefix })
+  }
+  type CreatorAction = { username: string; sessionId: string }
+  const onError = (error: unknown, variables: CreatorAction) => {
+    if (isSessionActive(variables.sessionId)) toast.error(error instanceof Error ? error.message : "Request failed")
+  }
+  const actionKey = (variables: CreatorAction) => {
+    const active = sessionRef.current
+    if (!active || !isSessionActive(variables.sessionId)) throw new Error("Payout session closed")
+    return active.key
+  }
 
   const clearFlag = useMutation({
-    mutationFn: (u: string) => payoutAdmin.clearFlag(adminKey, u),
-    onSuccess: () => {
+    mutationKey: [...prefix, "clear-flag"],
+    retry: false,
+    mutationFn: (variables: CreatorAction) => payoutAdmin.clearFlag(actionKey(variables), variables.username),
+    onSuccess: (_res, variables) => {
+      if (!isSessionActive(variables.sessionId)) return
       toast.success("Marked reviewed")
       refresh()
     },
     onError,
   })
   const rotate = useMutation({
-    mutationFn: (u: string) => payoutAdmin.rotate(adminKey, u),
-    onSuccess: async (res) => {
-      await navigator.clipboard.writeText(res.link).catch(() => undefined)
-      toast.success(`New link for @${res.username} copied — the old one no longer works`)
-      refresh()
+    mutationKey: [...prefix, "rotate-link"],
+    retry: false,
+    mutationFn: (variables: CreatorAction) => payoutAdmin.rotate(actionKey(variables), variables.username),
+    onMutate: () => setRotatedLink(null),
+    onSuccess: async (res, variables) => {
+      if (!isSessionActive(variables.sessionId)) return
+      setRotatedLink({ username: res.username, link: res.link })
+      try {
+        await navigator.clipboard.writeText(res.link)
+        if (isSessionActive(variables.sessionId)) toast.success(`New link for @${res.username} copied`)
+      } catch {
+        if (isSessionActive(variables.sessionId)) toast.error("New link created. Clipboard unavailable — copy the link below.")
+      }
+      if (isSessionActive(variables.sessionId)) refresh()
     },
     onError,
   })
@@ -109,17 +186,19 @@ export default function Payouts() {
     return q ? all.filter((r) => r.username.includes(q)) : all
   }, [overview.data, search])
 
-  if (!adminKey) return <div className="p-6"><KeyGate onKey={saveKey} /></div>
+  if (!session) return <div className="p-6"><KeyGate onKey={saveKey} /></div>
 
-  const err = overview.error
-  const authFailed = err instanceof PayoutApiError && [401, 503].includes(err.status)
-  if (authFailed) {
+  if (!overview.isSuccess || !overview.data) {
     return (
       <div className="p-6 space-y-3">
-        <p className="text-sm text-rt-red">{err.message}</p>
-        <button type="button" onClick={forgetKey} className="text-sm text-rt-magenta hover:underline">
-          Enter a different key
-        </button>
+        <div className="flex items-center justify-between">
+          <h1 className="text-2xl font-bold font-display text-rt-fg">Payouts</h1>
+          <button type="button" onClick={forgetKey} className="text-xs text-rt-fg-tertiary hover:text-rt-fg">Lock</button>
+        </div>
+        {overview.error ? <>
+          <p role="alert" className="text-sm text-rt-red">{overview.error.message}</p>
+          <button type="button" onClick={() => void overview.refetch()} className="text-sm text-rt-magenta hover:underline">Retry</button>
+        </> : <p className="text-sm text-rt-fg-tertiary">Checking access…</p>}
       </div>
     )
   }
@@ -128,6 +207,7 @@ export default function Payouts() {
   const flagged = rows.filter((r) => r.flagged)
 
   return (
+    <PayoutSessionProvider sessionId={session.id} isActive={() => isSessionActive(session.id)}>
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold font-display text-rt-fg">Payouts</h1>
@@ -136,8 +216,6 @@ export default function Payouts() {
         </button>
       </div>
 
-      {overview.isLoading && <p className="text-sm text-rt-fg-tertiary">Loading…</p>}
-      {err && <p className="text-sm text-rt-red">{err.message}</p>}
 
       <div className="flex gap-1 border-b border-white/8">
         {([["pay", "Pay creators"], ["info", "Payment info"]] as const).map(([key, label]) => (
@@ -186,11 +264,12 @@ export default function Payouts() {
                 <span className="text-sm text-rt-fg">@{r.handle}</span>
                 <div className="flex gap-3">
                   <button type="button" className="text-xs text-rt-fg-secondary hover:text-rt-fg"
-                    onClick={() => rotate.mutate(r.username)}>
+                    disabled={rotate.isPending}
+                    onClick={() => rotate.mutate({ username: r.username, sessionId: session.id })}>
                     New link (kill old)
                   </button>
                   <button type="button" className="text-xs text-rt-green hover:underline"
-                    onClick={() => clearFlag.mutate(r.username)}>
+                    onClick={() => clearFlag.mutate({ username: r.username, sessionId: session.id })}>
                     Mark reviewed
                   </button>
                 </div>
@@ -199,6 +278,15 @@ export default function Payouts() {
             </div>
           ))}
         </section>
+      )}
+
+      {tab === "info" && rotatedLink && (
+        <div className="space-y-2">
+          <p className="text-sm text-rt-fg">New link for @{rotatedLink.username}</p>
+          <input aria-label={`New payment-info link for @${rotatedLink.username}`} readOnly value={rotatedLink.link}
+            onFocus={(event) => event.currentTarget.select()}
+            className="w-full rounded-md border border-white/10 bg-rt-bg-black px-3 py-2 text-xs text-rt-fg" />
+        </div>
       )}
 
       {tab === "info" && <PayoutLinkGenerator adminKey={adminKey} onIssued={refresh} />}
@@ -253,5 +341,6 @@ export default function Payouts() {
         </div>
       </section>}
     </div>
+    </PayoutSessionProvider>
   )
 }

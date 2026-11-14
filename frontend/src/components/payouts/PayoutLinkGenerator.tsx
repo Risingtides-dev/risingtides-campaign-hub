@@ -3,26 +3,42 @@ import { useMutation } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { dmFor, parseHandles, payoutAdmin } from "@/lib/payouts"
 import type { PayoutLink } from "@/lib/payouts"
+import { usePayoutSessionIsActive, usePayoutSessionPrefix } from "@/lib/payoutSession"
 
 export function PayoutLinkGenerator({ adminKey, onIssued }: { adminKey: string; onIssued: () => void }) {
   const [text, setText] = useState("")
   const [links, setLinks] = useState<PayoutLink[]>([])
+  const [manualCopy, setManualCopy] = useState<{ value: string; label: string } | null>(null)
+  const prefix = usePayoutSessionPrefix()
+  const isActive = usePayoutSessionIsActive()
 
   const generate = useMutation({
-    mutationFn: (handles: string[]) => payoutAdmin.links(adminKey, handles),
+    mutationKey: [...prefix, "issue-links"],
+    retry: false,
+    mutationFn: (handles: string[]) => {
+      if (!isActive()) throw new Error("Payout session closed")
+      return payoutAdmin.links(adminKey, handles)
+    },
     onSuccess: (res) => {
+      if (!isActive()) return
       setLinks(res.links)
+      setManualCopy(null)
       if (res.skipped.length) toast.error(`Skipped: ${res.skipped.join(", ")}`)
       onIssued()
     },
-    onError: (e) => toast.error(e instanceof Error ? e.message : "Couldn't generate links"),
+    onError: (e) => { if (isActive()) toast.error(e instanceof Error ? e.message : "Couldn't generate links") },
   })
 
   const copy = async (value: string, what: string) => {
+    if (!isActive()) return
     try {
       await navigator.clipboard.writeText(value)
+      if (!isActive()) return
+      setManualCopy(null)
       toast.success(`${what} copied`)
     } catch {
+      if (!isActive()) return
+      setManualCopy({ value, label: what })
       toast.error("Clipboard blocked — select and copy manually")
     }
   }
@@ -32,11 +48,8 @@ export function PayoutLinkGenerator({ adminKey, onIssued }: { adminKey: string; 
   return (
     <section className="rounded-xl bg-rt-bg-card border border-white/8 p-4 space-y-3">
       <h2 className="text-sm font-semibold text-rt-fg">Payment-info links</h2>
-      <p className="text-xs text-rt-fg-tertiary">
-        Paste handles (one per line or comma-separated). Existing links are reused; each link is private to that
-        creator — only send it in their DM.
-      </p>
       <textarea
+        aria-label="Creator handles"
         value={text}
         onChange={(e) => setText(e.target.value)}
         rows={3}
@@ -73,6 +86,16 @@ export function PayoutLinkGenerator({ adminKey, onIssued }: { adminKey: string; 
             </li>
           ))}
         </ul>
+      )}
+      {manualCopy && (
+        <textarea
+          aria-label={`${manualCopy.label} to copy manually`}
+          readOnly
+          value={manualCopy.value}
+          onFocus={(event) => event.currentTarget.select()}
+          rows={3}
+          className="w-full rounded-md border border-white/10 bg-rt-bg-black px-3 py-2 text-xs text-rt-fg"
+        />
       )}
     </section>
   )

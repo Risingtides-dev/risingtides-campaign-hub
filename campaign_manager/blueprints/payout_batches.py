@@ -6,6 +6,7 @@
   POST /api/payouts/admin/batches/<id>/approve     {confirm_total} -> sends PayPal/Venmo
   POST /api/payouts/admin/batches/<id>/cancel      draft only
   POST /api/payouts/admin/batches/<id>/sync        pull PayPal status, mark paid
+  POST /api/payouts/admin/batches/<id>/reconcile   verify original PayPal receipt with GET only
   POST /api/payouts/admin/items/<id>/remove        draft only
   POST /api/payouts/admin/items/<id>/mark-paid     Cash App / other, after paying by hand
 
@@ -116,6 +117,17 @@ def sync_batch(batch_id: int):
             return json_response({"error": "PayPal isn't connected yet."}, 400)
         return json_response(batches.batch_dict(batches.sync(session, batch_id, client)))
     return _run("sync batch", go)
+
+
+@payout_batches_bp.post("/api/payouts/admin/batches/<int:batch_id>/reconcile")
+def reconcile_batch(batch_id: int):
+    def go(session):
+        client = _paypal_client()
+        if client is None:
+            return json_response({"error": "PayPal isn't configured yet."}, 400)
+        batch = batches.reconcile(session, batch_id, request_body().get("paypal_batch_id"), client)
+        return json_response(batches.batch_dict(batch))
+    return _run("reconcile batch", go)
 
 
 @payout_batches_bp.post("/api/payouts/admin/items/<int:item_id>/remove")

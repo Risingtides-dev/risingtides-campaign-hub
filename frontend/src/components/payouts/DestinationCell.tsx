@@ -3,6 +3,7 @@
 import { useState } from "react"
 import { toast } from "sonner"
 import { METHOD_LABEL, PAYOUT_METHODS, guessMethod, payoutAdmin } from "@/lib/payouts"
+import { usePayoutSessionIsActive } from "@/lib/payoutSession"
 import type { PayoutMethod, QueueRow } from "@/lib/payouts"
 
 const ISSUE_TEXT: Record<string, { text: string; cls: string }> = {
@@ -18,20 +19,23 @@ interface Props {
 }
 
 export function DestinationCell({ row, adminKey, onSaved }: Props) {
+  const isActive = usePayoutSessionIsActive()
   const [editing, setEditing] = useState(false)
   const [method, setMethod] = useState<PayoutMethod>(row.method || guessMethod(row.booking_destination))
   const [value, setValue] = useState(row.destination || row.booking_destination)
   const [saving, setSaving] = useState(false)
 
   const save = async (m: PayoutMethod, v: string) => {
+    if (!isActive()) return
     setSaving(true)
     try {
       await payoutAdmin.setDestination(adminKey, row.username, m, v)
+      if (!isActive()) return
       toast.success(`Saved @${row.handle}'s payment info`)
       setEditing(false)
       onSaved()
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Couldn't save")
+      if (isActive()) toast.error(e instanceof Error ? e.message : "Couldn't save")
     } finally {
       setSaving(false)
     }
@@ -47,6 +51,8 @@ export function DestinationCell({ row, adminKey, onSaved }: Props) {
         }}
       >
         <select
+          aria-label={`Payment method for @${row.handle}`}
+          disabled={saving}
           value={method}
           onChange={(e) => setMethod(e.target.value as PayoutMethod)}
           className="rounded border border-white/10 bg-rt-bg-black px-1.5 py-1 text-xs text-rt-fg"
@@ -58,6 +64,8 @@ export function DestinationCell({ row, adminKey, onSaved }: Props) {
           ))}
         </select>
         <input
+          aria-label={`Payment destination for @${row.handle}`}
+          disabled={saving}
           value={value}
           onChange={(e) => setValue(e.target.value)}
           autoFocus
@@ -66,7 +74,11 @@ export function DestinationCell({ row, adminKey, onSaved }: Props) {
         <button type="submit" disabled={saving} className="text-xs text-rt-green hover:underline">
           {saving ? "Saving…" : "Save"}
         </button>
-        <button type="button" onClick={() => setEditing(false)} className="text-xs text-rt-fg-tertiary">
+        <button type="button" disabled={saving} onClick={() => {
+          setMethod(row.method || guessMethod(row.booking_destination))
+          setValue(row.destination || row.booking_destination)
+          setEditing(false)
+        }} className="text-xs text-rt-fg-tertiary">
           Cancel
         </button>
       </form>
@@ -96,7 +108,7 @@ export function DestinationCell({ row, adminKey, onSaved }: Props) {
         </div>
       )}
       <button type="button" onClick={() => setEditing(true)} className="text-rt-fg-tertiary hover:text-rt-fg">
-        ✎ {row.destination ? "Edit" : "Add"}
+        {row.destination ? "Edit" : "Add"}
       </button>
     </div>
   )
