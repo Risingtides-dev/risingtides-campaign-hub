@@ -1803,8 +1803,13 @@ def api_paypal(username: str):
 # -------------------------------------------------------------------
 @campaigns_bp.get("/api/last-rate/<username>")
 def api_last_rate(username: str):
+    platform = request.args.get("platform")
+    if platform is not None:
+        platform = platform.strip().lower()
+        if platform not in {"tiktok", "instagram"}:
+            return jsonify({"error": "platform must be tiktok or instagram"}), 400
     name = username.strip().lstrip("@")
-    last = _db.get_last_rate(name) if _db.is_active() else None
+    last = _db.get_last_rate(name, platform=platform) if _db.is_active() else None
     return jsonify({"last_rate": last})
 
 

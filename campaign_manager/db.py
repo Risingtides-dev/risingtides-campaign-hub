@@ -1623,25 +1623,37 @@ def get_all_paypal() -> Dict[str, str]:
 
 # ── Rate Memory ───────────────────────────────────────────────────────
 
-def get_last_rate(username: str) -> Optional[Dict]:
+def get_last_rate(username: str, platform: Optional[str] = None) -> Optional[Dict]:
     """The most recent booking with a real rate for this username, or None.
 
     Derived from the creators table rather than a separate memory table, so an
     edited rate is remembered too. Ordered by added_date — save_creators
     deletes and re-inserts a campaign's rows, so ids don't track booking order.
+    An explicit platform restricts rate evidence to that platform; omitted
+    platforms preserve the legacy most-recent booking across all platforms.
     """
+    selected_platform = str(platform).strip().lower() if platform is not None else None
+    if selected_platform is not None and selected_platform not in {"tiktok", "instagram"}:
+        raise ValueError("platform must be tiktok or instagram")
     if not username:
         return None
+    name = username.strip().lstrip("@").strip().lower()
+    if not name:
+        return None
     with get_session() as s:
-        row = (
+        whitespace = " \t\n\r\v\f"
+        stored_name = func.lower(func.trim(func.ltrim(func.trim(Creator.username, whitespace), "@"), whitespace))
+        stored_platform = func.lower(func.coalesce(func.nullif(func.trim(Creator.platform), ""), "tiktok"))
+        query = (
             s.query(Creator, Campaign.title)
             .join(Campaign, Creator.campaign_id == Campaign.id)
-            .filter(func.lower(Creator.username) == username.lower())
+            .filter(stored_name == name)
             .filter(Creator.total_rate > 0)
             .filter(Creator.status != "removed")
-            .order_by(desc(Creator.added_date), desc(Creator.id))
-            .first()
         )
+        if selected_platform is not None:
+            query = query.filter(stored_platform == selected_platform)
+        row = query.order_by(desc(Creator.added_date), desc(Creator.id)).first()
         if not row:
             return None
         cr, title = row
@@ -1650,6 +1662,7 @@ def get_last_rate(username: str) -> Optional[Dict]:
             "posts_owed": cr.posts_owed or 0,
             "campaign": title or "",
             "added_date": cr.added_date or "",
+            "platform": str(cr.platform or "tiktok").strip().lower() or "tiktok",
         }
 
 
