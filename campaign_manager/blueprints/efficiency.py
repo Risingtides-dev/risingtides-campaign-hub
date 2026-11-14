@@ -208,7 +208,8 @@ def get_creator_leaderboard():
                 session.query(Campaign.id).filter(Campaign.created_at >= cutoff_date)
             )
         ).all()
-        unique_usernames = set(c.username for c in all_db_creators)
+        # Normalise handles so @creator and creator merge to one record.
+        unique_usernames = {c.username.lstrip("@").lower() for c in all_db_creators}
         all_metrics = [
             m
             for m in [

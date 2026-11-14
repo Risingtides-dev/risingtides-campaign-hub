@@ -8,6 +8,7 @@ from sqlalchemy import and_, func
 from sqlalchemy.orm import Session
 
 from campaign_manager.models import Campaign, Creator, MatchedVideo
+from campaign_manager.utils.helpers import build_round_end_by_slug, video_in_round
 
 
 class CreatorTier(str, Enum):
@@ -80,23 +81,30 @@ def calculate_creator_metrics(
     session: Session,
     creator_username: str,
     days: int = 90,
+    *,
+    round_ends: Optional[Dict] = None,
 ) -> Optional[CreatorMetrics]:
     """
     Calculate comprehensive metrics for a single creator.
 
     Args:
         session: SQLAlchemy session
-        creator_username: Creator's username
+        creator_username: Creator's username (normalized to stripped/lowercase)
         days: Analysis window (default 90 days)
+        round_ends: Pre-built {slug -> {sound_id -> end_date|None}} map from
+            build_round_end_by_slug. If None, computed here via a full Campaign
+            fetch (correct for the single-creator API path).
 
     Returns:
         CreatorMetrics or None if no campaigns found
     """
     cutoff_date = datetime.now() - timedelta(days=days)
+    # Normalize once; both booking lookup and video account lookup use this form.
+    norm = creator_username.lstrip("@").lower()
 
-    # Get all creator bookings in analysis window
+    # Normalize Creator username lookup to match @handle and bare handle alike.
     creators = session.query(Creator).filter(
-        Creator.username == creator_username,
+        func.lower(func.replace(Creator.username, "@", "")) == norm,
         Creator.campaign_id.in_(
             session.query(Campaign.id).filter(Campaign.created_at >= cutoff_date)
         )
@@ -120,7 +128,28 @@ def calculate_creator_metrics(
     # (5544 videos attributed vs 462 actually theirs), corrupting the tier
     # rankings this page drives budget decisions from.
     campaign_ids = [c.campaign_id for c in creators]
-    norm = creator_username.lstrip("@").lower()
+
+    # Build a campaign-id → Campaign map for round-eligibility checks below.
+    campaign_map: Dict[int, Campaign] = {}
+    for c in creators:
+        if c.campaign and c.campaign_id not in campaign_map:
+            campaign_map[c.campaign_id] = c.campaign
+
+    # Build round-end windows if the caller didn't supply them (standalone path).
+    if round_ends is None:
+        all_cams = session.query(Campaign).all()
+        round_ends = build_round_end_by_slug([
+            {
+                "slug": cam.slug,
+                "sound_id": cam.sound_id,
+                "additional_sounds": cam.additional_sounds,
+                "start_date": cam.start_date,
+                "created_at": cam.created_at.isoformat() if cam.created_at else "",
+                "completion_status": cam.completion_status or "",
+            }
+            for cam in all_cams
+        ])
+
     videos = session.query(MatchedVideo).filter(
         and_(
             MatchedVideo.campaign_id.in_(campaign_ids),
@@ -130,9 +159,17 @@ def calculate_creator_metrics(
         )
     ).all()
 
-    total_views = sum(v.views for v in videos)
+    # Apply campaign round eligibility: exclude videos whose post date falls
+    # outside the campaign's sound/date window (e.g. a video stored in campaign
+    # A's rows but posted after campaign B started on the same sound).
+    round_qualified = [
+        v for v in videos
+        if _video_in_campaign_round(v, campaign_map, round_ends)
+    ]
+
+    total_views = sum(v.views for v in round_qualified)
     # Engagement is likes-only: MatchedVideo has no comments column.
-    total_engagement = sum(v.likes for v in videos)
+    total_engagement = sum(v.likes for v in round_qualified)
 
     # No fabricated fallback (was: len(videos) * 50000). If a creator's matched
     # posts have 0 recorded views, report 0 — inventing 50k/post produced
@@ -168,6 +205,29 @@ def calculate_creator_metrics(
         pricing_gap_pct=0.0,  # Will be recalculated
         last_booked=last_booked,
         platform=platform,
+    )
+
+
+def _video_in_campaign_round(
+    v: MatchedVideo,
+    campaign_map: Dict[int, Any],
+    round_ends: Dict,
+) -> bool:
+    """Return True when v's post date falls within its campaign's round window."""
+    campaign = campaign_map.get(v.campaign_id)
+    if campaign is None:
+        return False
+    start = getattr(campaign, "start_date", "") or ""
+    end_dict = round_ends.get(campaign.slug)
+    return video_in_round(
+        {
+            "timestamp": v.timestamp or "",
+            "upload_date": v.upload_date or "",
+            "music_id": v.music_id or "",
+            "extracted_sound_id": v.extracted_sound_id or "",
+        },
+        start,
+        end_date=end_dict,
     )
 
 
@@ -258,19 +318,35 @@ def generate_efficiency_report(
     """
     cutoff_date = datetime.now() - timedelta(days=days)
 
-    # Get all unique creators in analysis window
+    # Build round-end windows once for the whole report to avoid N+1 queries.
+    all_cams = session.query(Campaign).all()
+    round_ends = build_round_end_by_slug([
+        {
+            "slug": cam.slug,
+            "sound_id": cam.sound_id,
+            "additional_sounds": cam.additional_sounds,
+            "start_date": cam.start_date,
+            "created_at": cam.created_at.isoformat() if cam.created_at else "",
+            "completion_status": cam.completion_status or "",
+        }
+        for cam in all_cams
+    ])
+
+    # Get all unique creators in analysis window.
+    # Normalise (@handle → handle) before deduplication so a creator booked
+    # under different handle forms in different campaigns maps to one record.
     all_creators = session.query(Creator).filter(
         Creator.campaign_id.in_(
             session.query(Campaign.id).filter(Campaign.created_at >= cutoff_date)
         )
     ).all()
 
-    unique_usernames = set(c.username for c in all_creators)
+    unique_usernames = {c.username.lstrip("@").lower() for c in all_creators}
 
     # Calculate metrics for each creator
     all_metrics = []
     for username in unique_usernames:
-        metrics = calculate_creator_metrics(session, username, days)
+        metrics = calculate_creator_metrics(session, username, days, round_ends=round_ends)
         if metrics:
             all_metrics.append(metrics)
 
