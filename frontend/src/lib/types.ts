@@ -669,6 +669,7 @@ export interface TargetSound {
   artist: string
   song: string
   campaign_slug: string
+  campaign_title: string
   post_count: number
   freshness: SoundFreshness
 }
@@ -692,6 +693,7 @@ export interface SoundFitResponse {
   artist: string
   song: string
   campaign_slug: string
+  campaign_title?: string
   creators: SoundFitCreator[]
 }
 

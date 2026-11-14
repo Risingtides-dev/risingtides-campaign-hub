@@ -312,10 +312,13 @@ function RebookView({ onPickCreator }: { onPickCreator: (a: string) => void }) {
 }
 
 function SoundFitView({ onPickCreator }: { onPickCreator: (a: string) => void }) {
-  const { data: soundsData, isLoading: soundsLoading } = useSounds()
+  const { data: soundsData, isLoading: soundsLoading, isError: soundsError } = useSounds()
   const [soundQuery, setSoundQuery] = useState("")
   const [picked, setPicked] = useState<TargetSound | null>(null)
-  const { data: fit, isLoading: fitLoading } = useSoundFit(picked?.sound_id ?? null)
+  const { data: fit, isLoading: fitLoading, isError: fitError } = useSoundFit(
+    picked?.sound_id ?? null,
+    picked?.campaign_slug ?? null,
+  )
 
   const sounds = useMemo(() => {
     const list = soundsData?.sounds ?? []
@@ -345,11 +348,17 @@ function SoundFitView({ onPickCreator }: { onPickCreator: (a: string) => void })
           {soundsLoading && (
             <div className="px-2 py-8 text-center text-xs text-rt-fg-tertiary">Loading sounds…</div>
           )}
+          {soundsError && (
+            <div className="px-2 py-8 text-center text-xs text-rt-red">
+              Couldn't load sounds — try refreshing.
+            </div>
+          )}
           {sounds.map((s) => {
-            const active = picked?.sound_id === s.sound_id
+            // Key by campaign_slug so rounds sharing a sound_id are distinct.
+            const active = picked?.campaign_slug === s.campaign_slug
             return (
               <button
-                key={s.sound_id}
+                key={s.campaign_slug}
                 onClick={() => setPicked(s)}
                 className={`w-full rounded-lg px-3 py-2 text-left transition-colors ${
                   active ? "bg-rt-magenta/12 border border-rt-magenta/30" : "border border-transparent hover:bg-white/[0.03]"
@@ -410,6 +419,13 @@ function SoundFitView({ onPickCreator }: { onPickCreator: (a: string) => void })
             {fitLoading && (
               <div className="px-5 py-16 text-center text-sm text-rt-fg-tertiary">
                 Computing fit…
+              </div>
+            )}
+
+            {fitError && (
+              <div className="rounded-xl border border-rt-red/30 bg-rt-red/10 px-4 py-6 text-center">
+                <div className="text-[13px] font-medium text-rt-red">Couldn't load fit ranking</div>
+                <div className="mt-1 text-[12px] text-rt-fg-tertiary">The request failed — try again.</div>
               </div>
             )}
 

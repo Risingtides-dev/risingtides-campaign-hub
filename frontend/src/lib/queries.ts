@@ -925,10 +925,10 @@ export function useSounds() {
   })
 }
 
-export function useSoundFit(soundId: string | null) {
+export function useSoundFit(soundId: string | null, campaignSlug?: string | null) {
   return useQuery({
-    queryKey: ["intelligence", "sound-fit", soundId],
-    queryFn: () => api.getSoundFit(soundId as string),
+    queryKey: ["intelligence", "sound-fit", soundId, campaignSlug ?? null],
+    queryFn: () => api.getSoundFit(soundId as string, campaignSlug ?? undefined),
     enabled: !!soundId,
     staleTime: 5 * 60 * 1000,
   })

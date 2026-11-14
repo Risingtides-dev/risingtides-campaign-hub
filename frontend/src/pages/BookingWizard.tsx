@@ -24,7 +24,7 @@ export default function BookingWizard() {
   const [picked, setPicked] = useState<TargetSound | null>(null)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [booking, setBooking] = useState(false)
-  const { data: fit, isLoading: fitLoading } = useSoundFit(picked?.sound_id ?? null)
+  const { data: fit, isLoading: fitLoading } = useSoundFit(picked?.sound_id ?? null, picked?.campaign_slug ?? null)
 
   // default rate/posts per creator from the network roster (for the budget tally)
   const rateByCreator = useMemo(() => {
@@ -142,10 +142,11 @@ export default function BookingWizard() {
                 <div className="px-2 py-8 text-center text-xs text-rt-fg-tertiary">Loading sounds…</div>
               )}
               {sounds.map((s) => {
-                const active = picked?.sound_id === s.sound_id
+                // Key by campaign_slug so rounds sharing a sound_id are distinct.
+                const active = picked?.campaign_slug === s.campaign_slug
                 return (
                   <button
-                    key={s.sound_id}
+                    key={s.campaign_slug}
                     onClick={() => pickSound(s)}
                     className={`w-full rounded-lg px-3 py-2 text-left transition-colors ${
                       active ? "border border-rt-magenta/30 bg-rt-magenta/12" : "border border-transparent hover:bg-white/[0.03]"

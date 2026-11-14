@@ -103,12 +103,17 @@ def breaker_leaderboard(
     """Rank creators by sound-breaking ability across all tracked posts.
 
     Returns a list of BreakerRow dicts, sorted by the chosen lens score desc.
+    Creator identities are normalized: `@Handle`, `handle`, and `Handle` all
+    merge into one row keyed as `@handle` (lowercase, always with @-prefix).
     """
-    # Aggregate per account in SQL for the cheap stats; pull per-post views for
-    # median (cheap at this scale — ~10k rows total).
+    # Normalize account to lowercase-stripped form for grouping so that
+    # @Handle / handle / Handle / "  @HANDLE  " all count as one identity.
+    norm_expr = func.ltrim(func.lower(func.trim(MatchedVideo.account)), "@")
+
+    # Aggregate per normalized account in SQL; pull per-post views for median.
     rows = (
         session.query(
-            MatchedVideo.account.label("account"),
+            norm_expr.label("norm_account"),
             func.count().label("posts"),
             func.coalesce(func.avg(MatchedVideo.views), 0).label("avg_views"),
             func.max(MatchedVideo.views).label("peak_views"),
@@ -123,8 +128,8 @@ def breaker_leaderboard(
         )
         .filter(MatchedVideo.dismissed_at.is_(None))
         .filter(MatchedVideo.views > 0)
-        .filter(MatchedVideo.account != "")
-        .group_by(MatchedVideo.account)
+        .filter(func.trim(MatchedVideo.account) != "")
+        .group_by(norm_expr)
         .having(func.count() >= min_posts)
         .all()
     )
@@ -139,12 +144,13 @@ def breaker_leaderboard(
         viral_rate = round(100.0 * int(r.viral_posts) / posts, 1) if posts else 0.0
         sounds = int(r.distinct_sounds or 0)
         millionaires = int(r.millionaires or 0)
+        norm_key = r.norm_account or ""
         result.append(
             BreakerRow(
-                account=r.account,
+                account=f"@{norm_key}",  # canonical display form
                 posts=posts,
                 avg_views=round(avg_views),
-                median_views=medians.get(r.account, 0),
+                median_views=medians.get(norm_key, 0),
                 peak_views=int(r.peak_views or 0),
                 viral_rate=viral_rate,
                 millionaires=millionaires,
@@ -167,17 +173,22 @@ def breaker_leaderboard(
 
 
 def _account_medians(session: Session, min_posts: int) -> Dict[str, int]:
-    """Compute per-account median views (small dataset, done in Python)."""
+    """Compute per-account median views (small dataset, done in Python).
+
+    Keys are normalized (lowercase, no leading @) to match the grouping in
+    breaker_leaderboard.
+    """
+    norm_expr = func.ltrim(func.lower(func.trim(MatchedVideo.account)), "@")
     rows = (
-        session.query(MatchedVideo.account, MatchedVideo.views)
+        session.query(norm_expr, MatchedVideo.views)
         .filter(MatchedVideo.dismissed_at.is_(None))
         .filter(MatchedVideo.views > 0)
-        .filter(MatchedVideo.account != "")
+        .filter(func.trim(MatchedVideo.account) != "")
         .all()
     )
     buckets: Dict[str, List[int]] = {}
-    for account, views in rows:
-        buckets.setdefault(account, []).append(int(views or 0))
+    for norm_account, views in rows:
+        buckets.setdefault(norm_account or "", []).append(int(views or 0))
     return {
         acct: _median(vals)
         for acct, vals in buckets.items()
@@ -276,13 +287,20 @@ def creator_drilldown(
     (shares + comments — the sound-spread signal labels care about) from the
     campaigns this creator appears in. This is a slower network call, so it's
     opt-in.
+
+    Account lookup is case-insensitive and @ prefix-agnostic so that
+    @Handle / handle / Handle all resolve to the same creator.
     """
-    norm = account if account.startswith("@") else f"@{account}"
+    # Normalize to consistent lookup key (lowercase, no @).
+    norm_key = account.lstrip("@").lower().strip()
+    norm_expr = func.ltrim(func.lower(func.trim(MatchedVideo.account)), "@")
+    # Canonical display form used in the returned dict.
+    norm = f"@{norm_key}"
 
     videos = (
         session.query(MatchedVideo, Campaign)
         .join(Campaign, MatchedVideo.campaign_id == Campaign.id)
-        .filter(MatchedVideo.account == norm)
+        .filter(norm_expr == norm_key)
         .filter(MatchedVideo.dismissed_at.is_(None))
         .filter(MatchedVideo.views > 0)
         .all()
@@ -503,6 +521,10 @@ def _distribution(views: List[int]) -> List[Dict[str, Any]]:
 def list_sounds(session: Session, limit: int = 300) -> List[Dict[str, Any]]:
     """Sounds available to target, tagged with how saturated each one is.
 
+    Returns one entry per campaign slug — campaigns/rounds that happen to
+    share a sound_id are distinct entries so each one is individually
+    targetable in the picker.
+
     `post_count` + `freshness` let the picker flag the BOOKING scenario:
     a "fresh" sound (few/no posts yet) is one you're picking creators for
     BEFORE it takes off — fit relies on artist + general-breaker signal, not
@@ -514,6 +536,7 @@ def list_sounds(session: Session, limit: int = 300) -> List[Dict[str, Any]]:
             Campaign.artist.label("artist"),
             Campaign.song.label("song"),
             Campaign.slug.label("slug"),
+            Campaign.title.label("title"),
         )
         .filter(Campaign.sound_id != "")
         .all()
@@ -529,22 +552,24 @@ def list_sounds(session: Session, limit: int = 300) -> List[Dict[str, Any]]:
         .all()
     )
 
-    seen: Dict[str, Dict[str, Any]] = {}
+    # Key by campaign slug — each round is a distinct picker entry even when
+    # multiple campaigns share the same sound_id.
+    result: List[Dict[str, Any]] = []
     for r in rows:
-        if r.sound_id in seen:
-            continue
         n = int(post_counts.get(r.sound_id, 0))
-        seen[r.sound_id] = {
+        result.append({
             "sound_id": r.sound_id,
             "artist": r.artist or "",
             "song": r.song or "",
             "campaign_slug": r.slug,
+            "campaign_title": r.title or "",
             "post_count": n,
             "freshness": "fresh" if n < 5 else "warm" if n < 40 else "saturated",
-        }
+        })
+
     # Fresh sounds first (that's where the picker adds the most value), then by activity.
     return sorted(
-        seen.values(),
+        result,
         key=lambda s: (0 if s["freshness"] == "fresh" else 1, -s["post_count"]),
     )[:limit]
 
@@ -560,8 +585,13 @@ def sound_fit(
     session: Session,
     sound_id: str,
     limit: int = 40,
+    campaign_slug: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Rank creators by fit for a specific target sound.
+
+    If `campaign_slug` is provided the target campaign must own that sound_id;
+    if the slug doesn't match, None is returned (keeps existing callers
+    compatible — they omit the parameter and get the first campaign as before).
 
     fit_score = balanced breaker score
                 + up to 25, scaled by their VELOCITY on this exact sound
@@ -572,11 +602,10 @@ def sound_fit(
     from collapsing to the base ranking. A creator who hit 150K on the sound
     ranks far above one who hit 26 views, even though both "broke" it.
     """
-    target = (
-        session.query(Campaign)
-        .filter(Campaign.sound_id == sound_id)
-        .first()
-    )
+    q = session.query(Campaign).filter(Campaign.sound_id == sound_id)
+    if campaign_slug:
+        q = q.filter(Campaign.slug == campaign_slug)
+    target = q.first()
     if target is None:
         return None
     artist = (target.artist or "").strip().lower()
@@ -584,16 +613,20 @@ def sound_fit(
     # General breaker scores (the base ability).
     base = {r["account"]: r for r in breaker_leaderboard(session, lens="balanced", limit=1000)}
 
+    # Normalize expression for consistent account identity across all lookups.
+    norm_expr = func.ltrim(func.lower(func.trim(MatchedVideo.account)), "@")
+
     # Per-creator AVG VIEWS on this exact sound (not just presence).
+    # Keys are normalized (no @, lowercase) to match the leaderboard.
     exact_perf: Dict[str, float] = {
         a: float(avg or 0)
         for a, avg in session.query(
-            MatchedVideo.account, func.avg(MatchedVideo.views)
+            norm_expr, func.avg(MatchedVideo.views)
         )
         .filter(MatchedVideo.extracted_sound_id == sound_id)
         .filter(MatchedVideo.dismissed_at.is_(None))
         .filter(MatchedVideo.views > 0)
-        .group_by(MatchedVideo.account)
+        .group_by(norm_expr)
         .all()
     }
 
@@ -611,21 +644,23 @@ def sound_fit(
             artist_perf = {
                 a: float(avg or 0)
                 for a, avg in session.query(
-                    MatchedVideo.account, func.avg(MatchedVideo.views)
+                    norm_expr, func.avg(MatchedVideo.views)
                 )
                 .filter(MatchedVideo.extracted_sound_id.in_(artist_sound_ids))
                 .filter(MatchedVideo.dismissed_at.is_(None))
                 .filter(MatchedVideo.views > 0)
-                .group_by(MatchedVideo.account)
+                .group_by(norm_expr)
                 .all()
             }
 
     ranked: List[Dict[str, Any]] = []
     for account, row in base.items():
+        # account is canonical "@handle"; strip @ for the normalized-key lookup.
+        lookup_key = account.lstrip("@").lower()
         fit = row["score_balanced"]
         reasons = []
-        on_sound = exact_perf.get(account)
-        on_artist = artist_perf.get(account)
+        on_sound = exact_perf.get(lookup_key)
+        on_artist = artist_perf.get(lookup_key)
 
         if on_sound is not None:
             mult = _perf_mult(on_sound)
@@ -658,6 +693,7 @@ def sound_fit(
         "artist": target.artist or "",
         "song": target.song or "",
         "campaign_slug": target.slug,
+        "campaign_title": target.title or "",
         "creators": ranked[:limit],
     }
 

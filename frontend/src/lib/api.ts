@@ -232,9 +232,9 @@ export const api = {
     request<{ sounds: TargetSound[] }>("/api/intelligence/sounds"),
   getRebookSuggestions: () =>
     request<{ suggestions: RebookSuggestion[] }>("/api/intelligence/rebook-suggestions"),
-  getSoundFit: (soundId: string) =>
+  getSoundFit: (soundId: string, campaignSlug?: string) =>
     request<SoundFitResponse>(
-      `/api/intelligence/sound-fit/${encodeURIComponent(soundId)}`
+      `/api/intelligence/sound-fit/${encodeURIComponent(soundId)}${campaignSlug ? `?campaign=${encodeURIComponent(campaignSlug)}` : ""}`
     ),
   updateCreatorNiches: (username: string, niches: string[]) =>
     request<ApiOk & { updated: number; niches: string[] }>(

@@ -74,10 +74,16 @@ def get_rebook_suggestions():
 
 @creator_intelligence_bp.get("/api/intelligence/sound-fit/<sound_id>")
 def get_sound_fit(sound_id: str):
-    """Rank creators by fit for a specific target sound."""
+    """Rank creators by fit for a specific target sound.
+
+    Optional query param:
+      - campaign: campaign slug — when provided, restricts to that specific
+        campaign/round; returns 404 if the campaign doesn't own the sound.
+    """
+    campaign_slug = request.args.get("campaign") or None
     session = _db.get_session()
     try:
-        data = sound_fit(session, sound_id)
+        data = sound_fit(session, sound_id, campaign_slug=campaign_slug)
         if data is None:
             return jsonify({"error": "sound not found"}), 404
         return jsonify(data)
