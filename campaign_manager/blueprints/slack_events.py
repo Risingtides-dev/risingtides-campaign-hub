@@ -7,6 +7,11 @@ required during Slack app setup.
 from __future__ import annotations
 
 import logging
+import hashlib
+import hmac
+import os
+import re
+import time
 
 from flask import Blueprint, jsonify, request
 
@@ -18,6 +23,32 @@ slack_events_bp = Blueprint("slack_events", __name__, url_prefix="/api/webhooks/
 @slack_events_bp.post("/events")
 def slack_events():
     """Handle Slack Events API requests."""
+    secret = os.environ.get("SLACK_SIGNING_SECRET")
+    if not secret:
+        log.warning("Slack event refused: signing secret unconfigured")
+        return jsonify({"error": "Slack signing unavailable"}), 503
+
+    timestamp = request.headers.get("X-Slack-Request-Timestamp", "")
+    signature = request.headers.get("X-Slack-Signature", "")
+    # Unix seconds fit in 12 digits until the year 33658; anything longer is not
+    # a Slack timestamp, and float arithmetic on it would raise OverflowError.
+    valid_timestamp = re.fullmatch(r"[0-9]{1,12}", timestamp)
+    valid_signature = re.fullmatch(r"v0=[0-9a-f]{64}", signature)
+    try:
+        timely = valid_timestamp is not None and abs(time.time() - int(timestamp)) <= 300
+    except (ValueError, OverflowError):
+        timely = False
+    if not timely or valid_signature is None:
+        log.warning("Slack event refused: invalid signature headers")
+        return jsonify({"error": "Invalid Slack signature"}), 401
+
+    raw_body = request.get_data(cache=True)
+    base = b"v0:" + timestamp.encode() + b":" + raw_body
+    expected = "v0=" + hmac.new(secret.encode(), base, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        log.warning("Slack event refused: invalid signature")
+        return jsonify({"error": "Invalid Slack signature"}), 401
+
     body = request.get_json(silent=True) or {}
 
     log.info("Slack event received: type=%s", body.get("type", "unknown"))

@@ -6,10 +6,15 @@ import requests as http_requests
 from flask import Blueprint, current_app, jsonify, request
 
 from campaign_manager import db
+from campaign_manager.utils.hub_auth import guard_mutating_methods
 
 log = logging.getLogger(__name__)
 
 outreach_bp = Blueprint("outreach", __name__)
+# Every write here can DM creators, create bookings or edit the roster
+# (security-fix-1112 CH2-F4): require the Hub write key. ManyChat's External
+# Request must send X-Hub-Write-Key too. Reads are unchanged.
+outreach_bp.before_request(guard_mutating_methods)
 
 
 # ── Network CRUD ─────────────────────────────────────────────────────

@@ -25,6 +25,7 @@ from datetime import datetime
 from flask import Blueprint, current_app, jsonify, request
 
 from campaign_manager import db as _db
+from campaign_manager.utils.hub_auth import require_hub_write_key
 from campaign_manager.services import creator_library as lib
 from campaign_manager.services.creator_library_refresh import refresh_creator_stats
 from campaign_manager.services.creator_library_stats import DEFAULT_WINDOW, WINDOWS
@@ -79,6 +80,7 @@ def list_creators():
 
 
 @creator_library_bp.post("/api/library/creators")
+@require_hub_write_key
 def add_creator():
     """Add someone scouted off-platform, before any booking exists."""
     data = request.get_json(silent=True) or {}
@@ -125,6 +127,7 @@ def add_creator():
 
 
 @creator_library_bp.patch("/api/library/creators/<path:username>")
+@require_hub_write_key
 def patch_creator(username: str):
     """Update rate memory, the slow flag, notes or PayPal.
 

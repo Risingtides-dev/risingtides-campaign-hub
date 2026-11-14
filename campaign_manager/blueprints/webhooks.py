@@ -1,4 +1,6 @@
 """Webhook endpoints for external integrations."""
+import hmac
+import os
 from datetime import datetime
 
 from flask import Blueprint, jsonify, request
@@ -7,6 +9,30 @@ from campaign_manager import db as _db
 from campaign_manager.utils.helpers import slugify, extract_sound_id
 
 webhooks_bp = Blueprint("webhooks", __name__, url_prefix="/api/webhooks")
+
+NOTION_WEBHOOK_HEADER = "X-Notion-Webhook-Secret"
+MIN_NOTION_WEBHOOK_SECRET_LENGTH = 32
+
+
+def _notion_webhook_denied():
+    """Shared-secret check for the campaign intake webhook (security-fix-1112 CH-F1).
+
+    The payload is pre-extracted by n8n / Make / a manual caller, not Notion's
+    native signed webhook, so there is no Notion signature to verify. The
+    caller must send NOTION_WEBHOOK_SECRET in X-Notion-Webhook-Secret; an unset
+    or short secret fails closed.
+    """
+    secret = (os.environ.get("NOTION_WEBHOOK_SECRET") or "").strip()
+    if len(secret) < MIN_NOTION_WEBHOOK_SECRET_LENGTH:
+        return jsonify({
+            "error": "Notion webhook is disabled until a strong NOTION_WEBHOOK_SECRET "
+                     f"({MIN_NOTION_WEBHOOK_SECRET_LENGTH}+ characters) is set.",
+            "code": "notion_webhook_unconfigured",
+        }), 503
+    supplied = request.headers.get(NOTION_WEBHOOK_HEADER, "")
+    if not hmac.compare_digest(supplied.encode("utf-8", "surrogateescape"), secret.encode()):
+        return jsonify({"error": f"{NOTION_WEBHOOK_HEADER} required.", "code": "unauthorized"}), 401
+    return None
 
 
 @webhooks_bp.post("/slack/sounds")
@@ -36,7 +62,12 @@ def notion_webhook():
 
     This endpoint receives pre-extracted campaign data and creates a new campaign.
     The caller is responsible for extracting fields from Notion's API format.
+    The caller must send the NOTION_WEBHOOK_SECRET in X-Notion-Webhook-Secret.
     """
+    denied = _notion_webhook_denied()
+    if denied is not None:
+        return denied
+
     data = request.get_json()
     if not data:
         return jsonify({"error": "JSON body required"}), 400

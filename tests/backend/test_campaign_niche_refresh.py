@@ -291,7 +291,6 @@ def _put(client, slug, body, headers=None):
 
 def test_captions_written_back_go_to_the_crm_page_first_and_are_then_stored(db, client, monkeypatch):
     monkeypatch.setenv('NOTION_API_KEY', 'test-only')
-    monkeypatch.delenv('HUB_WRITE_KEY', raising=False)
     db.save_campaign('active', {'title': 'Active', 'notion_page_id': 'crm-active',
                                 'internal_captions': 'old line'})
     response = Mock(status_code=200)
@@ -352,18 +351,20 @@ def test_a_campaign_without_a_crm_page_keeps_its_captions_here_only(db, client, 
     patched.assert_not_called()
 
 
-def test_the_write_back_checks_its_key_when_one_is_set(db, client, monkeypatch):
-    monkeypatch.setenv('HUB_WRITE_KEY', 'shared-secret')
+def test_the_write_back_checks_its_key_when_one_is_set(db, anon_client, monkeypatch):
+    # security-fix-1112 CH-F4: the key is now mandatory (unset/short -> 503);
+    # see test_security_fix_1112_app_write_gate.py for the fail-closed cases.
+    client = anon_client
+    monkeypatch.setenv('HUB_WRITE_KEY', 'shared-secret-test-key-not-real-0000')
     db.save_campaign('manual', {'title': 'Manual'})
     assert _put(client, 'manual', {'internal_captions': 'x', 'expected': None}).status_code == 401
     assert _put(client, 'manual', {'internal_captions': 'x', 'expected': None},
                 {'X-Hub-Write-Key': 'wrong'}).status_code == 401
     assert _put(client, 'manual', {'internal_captions': 'x', 'expected': None},
-                {'X-Hub-Write-Key': 'shared-secret'}).status_code == 200
+                {'X-Hub-Write-Key': 'shared-secret-test-key-not-real-0000'}).status_code == 200
 
 
 def test_the_write_back_refuses_bad_bodies_by_name(db, client, monkeypatch):
-    monkeypatch.delenv('HUB_WRITE_KEY', raising=False)
     db.save_campaign('manual', {'title': 'Manual'})
     assert _put(client, 'manual', {'internal_captions': 'x'}).status_code == 400
     assert _put(client, 'manual', {'internal_captions': 5, 'expected': None}).status_code == 400

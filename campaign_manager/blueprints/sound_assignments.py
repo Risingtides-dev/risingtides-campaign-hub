@@ -13,7 +13,12 @@ from urllib.parse import urlencode
 import requests
 from flask import Blueprint, current_app, jsonify, request
 
+from campaign_manager.utils.hub_auth import guard_mutating_methods
+
 sound_assignments_bp = Blueprint("sound_assignments", __name__, url_prefix="/api/sound-assignments")
+# Writes forward the Hub's Content Lab key, so the caller must hold the Hub
+# write key first (security-fix-1112 CH2-F3). Reads are unchanged.
+sound_assignments_bp.before_request(guard_mutating_methods)
 
 
 def _lab_url(path: str, query: dict | None = None) -> str:
