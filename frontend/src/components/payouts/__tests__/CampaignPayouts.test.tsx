@@ -72,11 +72,11 @@ describe("CampaignPayouts", () => {
   it("Pay adds one booking; Confirm & pay confirms then adds", async () => {
     const fetchFn = setup()
     await screen.findByText("Live Song")
-    await userEvent.click(screen.getByRole("button", { name: "Pay $100" }))
+    await userEvent.click(screen.getByRole("button", { name: "Add $100" }))
     expect(bodies(fetchFn, "/batches/add-booking")[0]).toEqual({ slug: "live", username: "owed", platform: "tiktok" })
 
     const vetRow = screen.getByText("@vet").closest("tr")!
-    await userEvent.click(within(vetRow).getByRole("button", { name: "Confirm & pay" }))
+    await userEvent.click(within(vetRow).getByRole("button", { name: "Confirm & add" }))
     expect(bodies(fetchFn, "/bookings/mark").at(-1)).toMatchObject({ username: "vet", action: "confirm" })
     expect(bodies(fetchFn, "/batches/add-booking").at(-1)).toMatchObject({ username: "vet" })
   })

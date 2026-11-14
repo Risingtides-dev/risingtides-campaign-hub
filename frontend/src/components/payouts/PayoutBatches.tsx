@@ -7,6 +7,30 @@ import { toast } from "sonner"
 import { METHOD_LABEL, money, payoutAdmin } from "@/lib/payouts"
 import type { BatchItem, PayoutBatch } from "@/lib/payouts"
 
+function batchHeadlineAndAmount(batch: PayoutBatch): { headline: string; amount: number } {
+  const date = new Date(batch.approved_at || batch.created_at).toLocaleDateString()
+  if (batch.status === "draft") return { headline: "Today's payments", amount: batch.totals.all }
+  if (batch.status === "sending") return { headline: "Sending — use Refresh PayPal status to reconcile", amount: batch.totals.api }
+  if (batch.status === "sent") return { headline: `Sent ${date} — waiting on PayPal`, amount: batch.totals.api }
+  // closed: derive from actual item outcomes
+  const live = batch.items.filter((i) => i.status !== "removed")
+  const apiItems = live.filter((i) => i.lane === "api")
+  const paid = live.filter((i) => i.status === "succeeded")
+  const sandbox = live.filter((i) => i.status === "sandbox_ok")
+  const failed = live.filter((i) => i.status === "failed")
+  const paidAmount = Math.round(paid.reduce((s, i) => s + i.amount, 0) * 100) / 100
+  if (sandbox.length > 0 && sandbox.length === apiItems.length && paid.length === 0 && failed.length === 0) {
+    return { headline: `Sandbox test ${date} — no real money sent`, amount: 0 }
+  }
+  if (paid.length === 0 && failed.length > 0) {
+    return { headline: `Failed ${date} — nothing paid`, amount: 0 }
+  }
+  if (failed.length > 0) {
+    return { headline: `Partial ${date} — ${failed.length} failed`, amount: paidAmount }
+  }
+  return { headline: `Paid ${date}`, amount: paidAmount }
+}
+
 const ITEM_STATUS: Record<BatchItem["status"], { label: string; cls: string }> = {
   queued: { label: "In draft", cls: "text-rt-fg-tertiary" },
   pending: { label: "Sending", cls: "text-rt-amber" },
@@ -103,23 +127,27 @@ function BatchCard({ batch, adminKey, paypalConnected }: { batch: PayoutBatch; a
   const remove = useMutation({ mutationFn: (id: number) => payoutAdmin.removeItem(adminKey, id), ...opts })
   const markPaid = useMutation({ mutationFn: (id: number) => payoutAdmin.markItemPaid(adminKey, id), ...opts })
 
-  const draft = batch.status === "draft" || batch.status === "sending"
+  const isDraft = batch.status === "draft"
   const api = batch.items.filter((i) => i.lane === "api")
   const manual = batch.items.filter((i) => i.lane === "manual")
-  const tableProps = { draft: batch.status === "draft", onRemove: remove.mutate, onMarkPaid: markPaid.mutate }
+  const tableProps = { draft: isDraft, onRemove: remove.mutate, onMarkPaid: markPaid.mutate }
+
+  const { headline, amount } = batchHeadlineAndAmount(batch)
+  // Send is only valid for a current draft with connected PayPal and exact total typed.
+  const sendReady = paypalConnected && typed.trim() === batch.totals.api.toFixed(2)
+  // Show Refresh for sent/sending batches or closed api-lane batches (reversals/claims can still arrive).
+  const showRefresh = api.length > 0 && (batch.status === "sent" || batch.status === "sending" || batch.status === "closed")
 
   return (
     <div className="rounded-xl bg-rt-bg-card border border-white/8 p-4 space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="text-sm font-semibold text-rt-fg">
-          {draft
-            ? "Today's payments"
-            : batch.status === "sent"
-              ? `Sent ${new Date(batch.approved_at || batch.created_at).toLocaleDateString()} — waiting on PayPal`
-              : `Paid ${new Date(batch.approved_at || batch.created_at).toLocaleDateString()}`}
-          {batch.paypal_env === "sandbox" && <span className="ml-2 text-xs text-rt-amber">SANDBOX — test money</span>}
+          {headline}
+          {batch.paypal_env === "sandbox" && batch.status !== "closed" && (
+            <span className="ml-2 text-xs text-rt-amber">SANDBOX — test money</span>
+          )}
         </div>
-        <div className="text-sm text-rt-fg">{money(batch.totals.all)}</div>
+        <div className="text-sm text-rt-fg">{money(amount)}</div>
       </div>
       {batch.error && <p className="text-sm text-rt-red">{batch.error}</p>}
 
@@ -136,7 +164,7 @@ function BatchCard({ batch, adminKey, paypalConnected }: { batch: PayoutBatch; a
         <ItemTable items={manual} {...tableProps} />
       </div>}
 
-      {draft && api.length === 0 && manual.length > 0 && (
+      {isDraft && api.length === 0 && manual.length > 0 && (
         <div className="flex flex-wrap items-center gap-3 rounded-lg border border-rt-magenta/30 p-3">
           <button
             type="button"
@@ -147,18 +175,16 @@ function BatchCard({ batch, adminKey, paypalConnected }: { batch: PayoutBatch; a
             Start paying these by hand
           </button>
           <span className="text-xs text-rt-fg-tertiary">Then pay each one in Cash App and click "I sent it".</span>
-          {batch.status === "draft" && (
-            <button type="button" onClick={() => cancel.mutate()} className="text-sm text-rt-fg-tertiary hover:underline">
-              Clear today's payments
-            </button>
-          )}
+          <button type="button" onClick={() => cancel.mutate()} className="text-sm text-rt-fg-tertiary hover:underline">
+            Clear today's payments
+          </button>
         </div>
       )}
 
-      {draft && api.length > 0 && (
+      {isDraft && api.length > 0 && (
         <div className="rounded-lg border border-rt-magenta/30 p-3 space-y-2">
-          {api.length > 0 && !paypalConnected ? (
-            <p className="text-sm text-rt-amber">PayPal isn't connected yet — remove PayPal/Venmo items or connect PayPal to send.</p>
+          {!paypalConnected ? (
+            <p className="text-sm text-rt-amber">PayPal isn't connected — remove PayPal/Venmo items or connect PayPal to send.</p>
           ) : (
             <p className="text-sm text-rt-fg-secondary">
               To send, type the PayPal/Venmo total to confirm: <b className="text-rt-fg">{batch.totals.api.toFixed(2)}</b>
@@ -174,22 +200,20 @@ function BatchCard({ batch, adminKey, paypalConnected }: { batch: PayoutBatch; a
             />
             <button
               type="button"
-              disabled={!typed || approve.isPending}
+              disabled={!sendReady || approve.isPending}
               onClick={() => approve.mutate()}
               className="rounded-md bg-rt-magenta px-4 py-1.5 text-sm font-semibold text-white disabled:opacity-40"
             >
               {approve.isPending ? "Sending…" : `Send ${money(batch.totals.api)}`}
             </button>
-            {batch.status === "draft" && (
-              <button type="button" onClick={() => cancel.mutate()} className="text-sm text-rt-fg-tertiary hover:underline">
-                Clear today's payments
-              </button>
-            )}
+            <button type="button" onClick={() => cancel.mutate()} className="text-sm text-rt-fg-tertiary hover:underline">
+              Clear today's payments
+            </button>
           </div>
         </div>
       )}
 
-      {batch.status === "sent" && api.length > 0 && (
+      {showRefresh && (
         <button type="button" onClick={() => sync.mutate()} disabled={sync.isPending}
           className="text-sm text-rt-magenta hover:underline">
           {sync.isPending ? "Checking PayPal…" : "Refresh PayPal status"}

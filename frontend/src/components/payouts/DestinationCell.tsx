@@ -66,7 +66,15 @@ export function DestinationCell({ row, adminKey, onSaved }: Props) {
         <button type="submit" disabled={saving} className="text-xs text-rt-green hover:underline">
           {saving ? "Saving…" : "Save"}
         </button>
-        <button type="button" onClick={() => setEditing(false)} className="text-xs text-rt-fg-tertiary">
+        <button
+          type="button"
+          onClick={() => {
+            setMethod(row.method || guessMethod(row.booking_destination))
+            setValue(row.destination || row.booking_destination)
+            setEditing(false)
+          }}
+          className="text-xs text-rt-fg-tertiary"
+        >
           Cancel
         </button>
       </form>

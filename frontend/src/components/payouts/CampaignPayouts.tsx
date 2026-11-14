@@ -62,7 +62,7 @@ function RowButtons({ r, a }: { r: QueueRow; a: Actions }) {
           onClick={() => a.confirm(r, true)}
           className={`${btn} bg-rt-magenta text-white`}
         >
-          Confirm &amp; pay
+          Confirm &amp; add
         </button>
       </div>
     )
@@ -76,7 +76,7 @@ function RowButtons({ r, a }: { r: QueueRow; a: Actions }) {
         onClick={() => a.pay(r)}
         className={`${btn} bg-rt-magenta text-white`}
       >
-        Pay {money(r.amount)}
+        Add {money(r.amount)}
       </button>
     )
   }
