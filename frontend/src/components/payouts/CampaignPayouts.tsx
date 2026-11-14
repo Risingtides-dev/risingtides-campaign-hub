@@ -7,15 +7,17 @@ import { toast } from "sonner"
 import { money, payoutAdmin } from "@/lib/payouts"
 import type { QueueRow } from "@/lib/payouts"
 import { DestinationCell } from "./DestinationCell"
+import { usePayoutSessionIsActive, usePayoutSessionPrefix } from "@/lib/payoutSession"
 import { RowMenu } from "./RowMenu"
 
 type Filter = "action" | "posting" | "all"
 
 function statusOf(r: QueueRow): { text: string; cls: string } {
+  if (r.booking_issue || r.reason === "ambiguous_booking") return { text: "Booking needs review", cls: "text-rt-red" }
   if (r.payment) {
     const s = r.payment.item_status
-    if (s === "queued") return { text: "In today's payments", cls: "text-rt-magenta" }
-    if (s === "pending") return { text: "Payment sending", cls: "text-rt-amber" }
+    if (s === "queued") return { text: "Queued in batch", cls: "text-rt-magenta" }
+    if (s === "pending") return { text: "Payment pending", cls: "text-rt-amber" }
     if (s === "unclaimed") return { text: "Sent — waiting for them to claim", cls: "text-rt-amber" }
     return { text: "Payment refunded/reversed — check PayPal", cls: "text-rt-red" }
   }
@@ -27,9 +29,9 @@ function statusOf(r: QueueRow): { text: string; cls: string } {
 }
 
 const needsAction = (r: QueueRow) =>
-  !r.payment && (r.reason === "trusted_unconfirmed" || ["posts_complete", "trusted_confirmed", "manual"].includes(r.reason))
+  !r.payment && (Boolean(r.booking_issue) || r.reason === "ambiguous_booking" || r.reason === "trusted_unconfirmed" || ["posts_complete", "trusted_confirmed", "manual"].includes(r.reason))
 
-const isOwed = (r: QueueRow) => !r.payment && ["posts_complete", "trusted_confirmed", "manual"].includes(r.reason)
+const isOwed = (r: QueueRow) => !r.booking_issue && !r.payment && ["posts_complete", "trusted_confirmed", "manual"].includes(r.reason)
 
 interface Actions {
   pay: (r: QueueRow) => void
@@ -39,12 +41,13 @@ interface Actions {
 }
 
 function RowButtons({ r, a }: { r: QueueRow; a: Actions }) {
+  if (r.booking_issue || r.reason === "ambiguous_booking") return null
   const btn = "rounded-md px-3 py-1 text-xs font-semibold disabled:opacity-40"
   const payable = !r.destination_issue && r.amount > 0
   if (r.payment?.item_status === "queued") {
     return (
       <button type="button" disabled={a.busy} onClick={() => a.removeFromToday(r)} className="text-xs text-rt-fg-tertiary hover:underline">
-        Remove from today
+        Remove from batch
       </button>
     )
   }
@@ -62,7 +65,7 @@ function RowButtons({ r, a }: { r: QueueRow; a: Actions }) {
           onClick={() => a.confirm(r, true)}
           className={`${btn} bg-rt-magenta text-white`}
         >
-          Confirm &amp; pay
+          Confirm &amp; queue
         </button>
       </div>
     )
@@ -76,7 +79,7 @@ function RowButtons({ r, a }: { r: QueueRow; a: Actions }) {
         onClick={() => a.pay(r)}
         className={`${btn} bg-rt-magenta text-white`}
       >
-        Pay {money(r.amount)}
+        Queue {money(r.amount)}
       </button>
     )
   }
@@ -118,7 +121,7 @@ function CampaignCard({ title, rows, adminKey, a, refresh }: {
             {rows.map((r) => {
               const st = statusOf(r)
               return (
-                <tr key={`${r.username}-${r.platform}`} className="border-t border-white/5 align-top hover:bg-white/[0.03]">
+                <tr key={r.booking_id ?? `${r.username}-${r.platform}`} className="border-t border-white/5 align-top hover:bg-white/[0.03]">
                   <td className="px-4 py-2.5">
                     <div className="text-rt-fg">@{r.handle}</div>
                     <div className="text-[11px] text-rt-fg-tertiary">
@@ -156,30 +159,44 @@ function CampaignCard({ title, rows, adminKey, a, refresh }: {
 
 export function CampaignPayouts({ adminKey }: { adminKey: string }) {
   const qc = useQueryClient()
+  const prefix = usePayoutSessionPrefix()
+  const isActive = usePayoutSessionIsActive()
   const [filter, setFilter] = useState<Filter>("action")
   const queue = useQuery({
-    queryKey: ["payouts", "queue", adminKey],
-    queryFn: () => payoutAdmin.queue(adminKey),
+    queryKey: [...prefix, "queue"],
+    queryFn: async ({ signal }) => {
+      if (!isActive() || signal.aborted) throw new Error("Payout session ended")
+      const result = await payoutAdmin.queue(adminKey, signal)
+      if (!isActive() || signal.aborted) throw new Error("Payout session ended")
+      return result
+    },
     retry: false,
   })
-  const refresh = () => qc.invalidateQueries({ queryKey: ["payouts"] })
-  const onError = (e: unknown) => toast.error(e instanceof Error ? e.message : "Request failed")
+  const refresh = () => isActive() ? qc.invalidateQueries({ queryKey: prefix }) : Promise.resolve()
+  const onError = (error: unknown) => { if (isActive()) toast.error(error instanceof Error ? error.message : "Request failed") }
 
   const pay = useMutation({
-    mutationFn: (r: QueueRow) => payoutAdmin.addBooking(adminKey, r),
+    mutationKey: [...prefix, "queue-booking"],
+    retry: false,
+    mutationFn: (r: QueueRow) => isActive() ? payoutAdmin.addBooking(adminKey, r) : Promise.reject(new Error("Payout session ended")),
     onSuccess: (_d, r) => {
-      toast.success(`@${r.handle} added to today's payments`)
+      if (!isActive()) return
+      toast.success(`@${r.handle} queued in batch`)
       refresh()
     },
     onError,
   })
   const confirm = useMutation({
+    mutationKey: [...prefix, "confirm-booking"],
+    retry: false,
     mutationFn: async ({ r, thenPay }: { r: QueueRow; thenPay: boolean }) => {
+      if (!isActive()) throw new Error("Payout session ended")
       await payoutAdmin.markBooking(adminKey, r, "confirm")
-      if (thenPay) await payoutAdmin.addBooking(adminKey, r)
+      if (thenPay && isActive()) await payoutAdmin.addBooking(adminKey, r)
     },
     onSuccess: (_d, { r, thenPay }) => {
-      toast.success(thenPay ? `@${r.handle} confirmed and added to today's payments` : `@${r.handle} confirmed`)
+      if (!isActive()) return
+      toast.success(thenPay ? `@${r.handle} confirmed and queued in batch` : `@${r.handle} confirmed`)
       refresh()
     },
     onError: (e) => {
@@ -188,7 +205,9 @@ export function CampaignPayouts({ adminKey }: { adminKey: string }) {
     },
   })
   const removeFromToday = useMutation({
-    mutationFn: (r: QueueRow) => payoutAdmin.removeItem(adminKey, r.payment!.item_id),
+    mutationKey: [...prefix, "unqueue-booking"],
+    retry: false,
+    mutationFn: (r: QueueRow) => isActive() ? payoutAdmin.removeItem(adminKey, r.payment!.item_id) : Promise.reject(new Error("Payout session ended")),
     onSuccess: refresh,
     onError,
   })
@@ -208,8 +227,8 @@ export function CampaignPayouts({ adminKey }: { adminKey: string }) {
     return [...bySlug.entries()].sort(([, a], [, b]) => b.start.localeCompare(a.start))
   }, [queue.data, filter])
 
-  if (queue.isLoading) return <p className="text-sm text-rt-fg-tertiary">Loading…</p>
-  if (queue.error) return <p className="text-sm text-rt-red">{queue.error.message}</p>
+  if (queue.isLoading) return <p role="status" className="text-sm text-rt-fg-tertiary">Loading bookings…</p>
+  if (queue.error) return <p role="alert" className="text-sm text-rt-red">{queue.error.message}</p>
   const q = queue.data
   if (!q) return null
 
@@ -236,10 +255,6 @@ export function CampaignPayouts({ adminKey }: { adminKey: string }) {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold text-rt-fg">Creators by campaign</h2>
-          <p className="text-xs text-rt-fg-tertiary">
-            New creators are owed once all posts are in. Trusted creators ({q.trusted_min_campaigns}+ campaigns) are
-            paid up front — confirm they accepted, then pay.
-          </p>
         </div>
         <div className="text-right">
           <div className="text-xl font-semibold text-rt-fg">{money(owedTotal)} owed</div>

@@ -8,22 +8,24 @@ Safety rails:
     built aborts the send.
   - A booking can sit in only one open item, and drops out of the queue
     while it does, so it can't be paid twice.
-  - PayPal's sender_batch_id makes a retried send idempotent.
+  - A persisted attempt is dispatched once; unknown outcomes are held for
+    exact original-receipt reconciliation with GET, never another POST.
 """
 from __future__ import annotations
 
 import math
 import uuid
 from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
 
-from sqlalchemy import func, select, text, update
+from sqlalchemy import select, text
 
 from campaign_manager.models import (
     Campaign, Creator, CreatorProfile, OPEN_PAYOUT_ITEM_STATUSES, PayoutBatch, PayoutItem,
 )
 from campaign_manager.services.creator_library import normalize_username
-from campaign_manager.services.payout_readiness import booking_state, build_queue
-from campaign_manager.services.paypal_payouts import PayPalError
+from campaign_manager.services.payout_readiness import booking_state, build_queue, find_booking
+from campaign_manager.services.paypal_payouts import PayPalError, validate_provider_id
 
 API_METHODS = ("paypal", "venmo")
 OPEN_ITEM_STATUSES = OPEN_PAYOUT_ITEM_STATUSES
@@ -37,6 +39,10 @@ _PAYPAL_FAILED = {"FAILED", "RETURNED", "BLOCKED", "DENIED", "CANCELED"}
 # Money was delivered then pulled back -> a human decides; never auto-requeue.
 _PAYPAL_REVIEW = {"REFUNDED", "REVERSED"}
 _PAYPAL_UNCLAIMED = {"UNCLAIMED"}
+_PAYPAL_PENDING = {"PENDING", "ONHOLD", "NEW"}
+_KNOWN_ITEM_STATUSES = _PAYPAL_SUCCESS | _PAYPAL_FAILED | _PAYPAL_REVIEW | _PAYPAL_UNCLAIMED | _PAYPAL_PENDING
+_BATCH_STATUSES = {"PENDING", "PROCESSING", "SUCCESS", "DENIED", "CANCELED"}
+_UNKNOWN_SEND = "Payment outcome is unknown. Reconcile the original PayPal receipt before any further payment; this attempt will not be sent again."
 
 
 class BatchError(ValueError):
@@ -92,7 +98,7 @@ def _draft(session, *, create: bool) -> PayoutBatch | None:
     existing = _open_batch(session)
     if existing is not None:
         if existing.status == "sending":
-            raise BatchError("Today's payments are being sent — wait for that to finish.")
+            raise BatchError("Today's payments have an unresolved send. Reconcile the original receipt first.")
         return existing
     if not create:
         return None
@@ -162,9 +168,11 @@ def _payable_amount(amount) -> bool:
 
 
 def _get(session, batch_id: int, *, lock: bool = False) -> PayoutBatch:
-    batch = session.get(PayoutBatch, batch_id, with_for_update=lock)
+    batch = session.get(PayoutBatch, batch_id, with_for_update=lock, populate_existing=lock)
     if batch is None:
         raise BatchError("Batch not found.")
+    if lock:
+        session.expire(batch, ["items"])
     return batch
 
 
@@ -173,15 +181,17 @@ def _live_items(batch, lane=None):
 
 
 def remove_item(session, item_id: int) -> None:
-    item = session.get(PayoutItem, item_id)
-    if item is None or item.batch.status != "draft":
+    _lock(session)
+    item = session.get(PayoutItem, item_id, with_for_update=True, populate_existing=True)
+    if item is None or _get(session, item.batch_id, lock=True).status != "draft":
         raise BatchError("Only items in a draft batch can be removed.")
     item.status = "removed"
     session.commit()
 
 
 def cancel_draft(session, batch_id: int) -> None:
-    batch = _get(session, batch_id)
+    _lock(session)
+    batch = _get(session, batch_id, lock=True)
     if batch.status != "draft":
         raise BatchError("Only a draft batch can be cancelled.")
     batch.status = "cancelled"
@@ -194,7 +204,8 @@ def _check_destinations_unchanged(session, items) -> None:
     for item in items:
         profile = session.get(CreatorProfile, item.username)
         current = (profile.payout_method, profile.payout_destination) if profile else ("", "")
-        if current != (item.method, item.destination) or (profile and profile.payout_change_flagged):
+        if (current != (item.method, item.destination) or not profile
+                or profile.payout_change_flagged or not profile.payout_confirmed_by_creator):
             raise BatchError(
                 f"@{item.username}'s payment details changed after this batch was built. "
                 "Remove them or cancel and rebuild the batch."
@@ -208,7 +219,7 @@ def _check_bookings_still_payable(session, items) -> None:
         booking, campaign, state = booking_state(session, item.campaign_id, item.username, item.platform)
         who = f"@{item.username} ({item.campaign_title})"
         if booking is None or campaign is None:
-            raise BatchError(f"{who}: booking no longer exists. Remove it from the batch.")
+            raise BatchError(f"{who}: booking is missing or ambiguous. Remove it from the batch.")
         if (campaign.completion_status or "none") == "completed":
             raise BatchError(f"{who}: campaign was marked finished. Remove it from the batch.")
         if state == "paid":
@@ -229,7 +240,9 @@ def approve(session, batch_id: int, confirm_total, client) -> PayoutBatch:
     allowed if the batch has no PayPal/Venmo items)."""
     _lock(session)
     batch = _get(session, batch_id, lock=True)
-    if batch.status not in ("draft", "sending"):
+    if batch.status == "sending":
+        raise BatchError(_UNKNOWN_SEND)
+    if batch.status != "draft":
         raise BatchError("This batch was already approved.")
     api_items = _live_items(batch, "api")
     expected = round(sum(i.amount for i in api_items), 2)
@@ -243,26 +256,38 @@ def approve(session, batch_id: int, confirm_total, client) -> PayoutBatch:
     _check_bookings_still_payable(session, _live_items(batch))
     if api_items and client is None:
         raise BatchError("PayPal isn't connected yet, so PayPal/Venmo items can't be sent.")
-
-    batch.approved_at = batch.approved_at or datetime.now()
     if api_items:
-        batch.status = "sending"  # survives a crash mid-call; a retry reuses sender_batch_id
+        prepare = getattr(client, "prepare_payout", None)
+        if callable(prepare):
+            prepare()  # OAuth failure leaves the draft untouched; no funds POST happened.
+
+    batch.approved_at = datetime.now()
+    if api_items:
+        if client.env not in ("live", "sandbox"):
+            raise BatchError("Invalid PayPal environment.")
+        batch.status = "sending"
         batch.paypal_env = client.env
+        # Commit the immutable attempt before crossing the provider boundary.
         session.commit()
         try:
-            resp = client.create_payout(batch.sender_batch_id, api_items)
-        except PayPalError as exc:
-            batch.error = str(exc)
+            response = client.create_payout(batch.sender_batch_id, api_items)
+        except Exception:
+            response = None
+        # Reconciliation may have completed while the create response was in
+        # flight. Never overwrite its settlement or downgrade its item states.
+        _lock(session)
+        session.expire_all()
+        batch = _get(session, batch_id, lock=True)
+        if batch.status != "sending" or batch.paypal_batch_id:
+            return batch
+        try:
+            provider_id = _verify_header(response, batch)
+        except BatchError:
+            batch.error = _UNKNOWN_SEND
             session.commit()
-            raise BatchError(f"{exc} Nothing was marked paid. You can retry safely.") from None
-        header = resp.get("batch_header") or {}
-        paypal_batch_id = header.get("payout_batch_id") or ""
-        if not paypal_batch_id or str(header.get("batch_status", "")).upper() == "DENIED":
-            batch.error = f"PayPal didn't accept the batch (status: {header.get('batch_status') or 'unknown'})."
-            session.commit()
-            raise BatchError(batch.error + " Check PayPal before retrying.")
-        batch.paypal_batch_id = paypal_batch_id
-        for item in api_items:
+            raise BatchError(_UNKNOWN_SEND) from None
+        batch.paypal_batch_id = provider_id
+        for item in _live_items(batch, "api"):
             item.status = "pending"
     for item in _live_items(batch, "manual"):
         item.status = "pending"
@@ -272,22 +297,104 @@ def approve(session, batch_id: int, confirm_total, client) -> PayoutBatch:
     return batch
 
 
-def _mark_booking_paid(session, item: PayoutItem, when: datetime) -> None:
-    """In-place UPDATE (never save_creators, which rewrites every row)."""
-    handle = func.lower(func.trim(Creator.username))
-    result = session.execute(
-        update(Creator)
-        .where(Creator.campaign_id == item.campaign_id)
-        .where(handle.in_([item.username, f"@{item.username}"]))
-        .where(func.lower(func.coalesce(Creator.platform, "tiktok")) == item.platform)
-        .where(func.coalesce(Creator.status, "active") != "removed")
-        .values(paid="yes", payment_date=when.date().isoformat())
-        .execution_options(synchronize_session=False)
-    )
-    if result.rowcount == 0:
-        # Booking was renamed/removed after the draft. Money still went out —
-        # keep the item as paid, but tell Jake to mark the booking by hand.
-        item.error = "Paid, but the booking wasn't found to mark paid — mark it paid in the campaign."
+def _cents(value) -> Decimal:
+    try:
+        number = Decimal(str(value))
+        if not number.is_finite() or number <= 0:
+            raise InvalidOperation
+        cents = number.quantize(Decimal("0.01"))
+        if number != cents:
+            raise InvalidOperation
+        return cents
+    except (InvalidOperation, ValueError, TypeError):
+        raise BatchError("Payment receipt has an invalid amount.") from None
+
+
+def _valid_provider_id(value) -> str:
+    try:
+        return validate_provider_id(value)
+    except PayPalError:
+        raise BatchError("Enter a valid original PayPal batch ID.") from None
+
+
+def _verify_header(data, batch, requested_id=None) -> str:
+    if not isinstance(data, dict) or not isinstance(data.get("batch_header"), dict):
+        raise BatchError("PayPal receipt is missing its batch header.")
+    header = data["batch_header"]
+    provider_id = _valid_provider_id(header.get("payout_batch_id"))
+    sender = header.get("sender_batch_header")
+    status = header.get("batch_status")
+    if (not isinstance(sender, dict) or sender.get("sender_batch_id") != batch.sender_batch_id
+            or (requested_id is not None and provider_id != requested_id)
+            or not isinstance(status, str) or status not in _BATCH_STATUSES):
+        raise BatchError("PayPal receipt does not match the original batch.")
+    return provider_id
+
+
+def _verify_receipt(data, batch, requested_id) -> list[tuple]:
+    """Validate the entire API lane before applying any financial state."""
+    _verify_header(data, batch, requested_id)
+    expected = {f"item-{item.id}": item for item in _live_items(batch, "api")}
+    rows = data.get("items")
+    if not expected or not isinstance(rows, list) or len(rows) != len(expected):
+        raise BatchError("PayPal receipt has incomplete or unexpected items.")
+    reported_count = data.get("total_items")
+    if reported_count is not None and (
+            isinstance(reported_count, bool) or not isinstance(reported_count, int)
+            or reported_count != len(rows)):
+        raise BatchError("PayPal receipt's item count is incomplete or inconsistent.")
+    seen, provider_ids, verified = set(), set(), []
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("payout_item"), dict):
+            raise BatchError("PayPal receipt contains an invalid item.")
+        payout = row["payout_item"]
+        identity = payout.get("sender_item_id")
+        if not isinstance(identity, str) or identity not in expected or identity in seen:
+            raise BatchError("PayPal receipt has duplicate or unexpected item identities.")
+        item = expected[identity]
+        provider_item_id = _valid_provider_id(row.get("payout_item_id"))
+        if provider_item_id in provider_ids or (item.provider_item_id and item.provider_item_id != provider_item_id):
+            raise BatchError("PayPal receipt changed an item's provider identity.")
+        amount = payout.get("amount")
+        expected_type = "USER_HANDLE" if item.method == "venmo" else "EMAIL"
+        wallet = payout.get("recipient_wallet", "PAYPAL" if item.method == "paypal" else "")
+        expected_wallet = "VENMO" if item.method == "venmo" else "PAYPAL"
+        status = row.get("transaction_status")
+        if (not isinstance(amount, dict)
+                or amount.get("currency") != (item.currency or "USD")
+                or _cents(amount.get("value")) != _cents(f"{item.amount:.2f}")
+                or payout.get("receiver") != item.destination
+                or payout.get("recipient_type") != expected_type
+                or not isinstance(wallet, str) or wallet.upper() != expected_wallet
+                or not isinstance(status, str) or status not in _KNOWN_ITEM_STATUSES):
+            raise BatchError("PayPal receipt does not match the original amount, destination or wallet.")
+        if data["batch_header"]["batch_status"] in {"DENIED", "CANCELED"} and status not in _PAYPAL_FAILED:
+            raise BatchError("PayPal receipt has conflicting batch and payment outcomes.")
+        seen.add(identity)
+        provider_ids.add(provider_item_id)
+        verified.append((item, row))
+    return verified
+
+
+def _mark_booking_paid(session, item: PayoutItem, when: datetime) -> bool:
+    """Settle one unchanged canonical obligation; never choose or update aliases."""
+    booking = find_booking(session, item.campaign_id, item.username, item.platform, lock=True)
+    if booking is None:
+        item.error = "Payment delivered, but the booking is missing or ambiguous. Reconcile the booking before any further payment."
+        return False
+    try:
+        unchanged = _cents(booking.total_rate) == _cents(f"{item.amount:.2f}")
+    except BatchError:
+        unchanged = False
+    if not unchanged:
+        item.error = "Payment delivered, but the booking amount changed. Reconcile the outstanding obligation before any further payment."
+        return False
+    if str(booking.paid or "").strip().lower() == "yes":
+        item.error = "Payment delivered, but the booking was already marked paid. Reconcile possible duplicate payment; existing history was preserved."
+        return False
+    booking.paid = "yes"
+    booking.payment_date = when.date().isoformat()
+    return True
 
 
 def _settle(session, item: PayoutItem, succeeded: bool) -> None:
@@ -298,59 +405,84 @@ def _settle(session, item: PayoutItem, succeeded: bool) -> None:
         # and release the booking back to the queue.
         item.status = "sandbox_ok"
         return
-    item.status = "succeeded"
-    item.paid_at = datetime.now()
-    _mark_booking_paid(session, item, item.paid_at)
+    item.paid_at = item.paid_at or datetime.now()
+    item.status = "succeeded" if _mark_booking_paid(session, item, item.paid_at) else "review"
 
 
 def mark_manual_paid(session, item_id: int) -> None:
-    item = session.get(PayoutItem, item_id)
+    _lock(session)
+    item = session.get(PayoutItem, item_id, with_for_update=True, populate_existing=True)
     if item is None or item.lane != "manual":
         raise BatchError("Only Cash App / other items are marked paid by hand.")
-    if item.batch.status not in ("sent", "closed") or item.status != "pending":
+    batch = _get(session, item.batch_id, lock=True)
+    if batch.status not in ("sent", "closed") or item.status != "pending":
         raise BatchError("Approve the batch first, then mark each manual payment as sent.")
     _settle(session, item, True)
-    _maybe_close(item.batch)
+    _maybe_close(batch)
     session.commit()
 
 
 def _maybe_close(batch) -> None:
     if all(i.status in ("succeeded", "sandbox_ok", "failed", "removed") for i in batch.items):
         batch.status = "closed"
+    elif batch.status == "closed":
+        batch.status = "sent"  # a later reversal requires review
 
 
-def sync(session, batch_id: int, client) -> PayoutBatch:
-    """Pull per-item status from PayPal; mark successful bookings paid.
-    Failed items go back to the queue for the next batch."""
-    batch = _get(session, batch_id)
-    if not batch.paypal_batch_id:
-        raise BatchError("This batch has no PayPal batch id — check PayPal directly.")
-    if client.env != batch.paypal_env:
-        raise BatchError(f"This batch was sent in PayPal {batch.paypal_env}, but the Hub is now on {client.env}.")
-    data = client.get_batch(batch.paypal_batch_id)
-    by_id = {f"item-{i.id}": i for i in batch.items}
-    for row in data.get("items") or []:
-        sender_item_id = ((row.get("payout_item") or {}).get("sender_item_id")) or ""
-        item = by_id.get(sender_item_id)
-        if item is None or item.status in ("succeeded", "sandbox_ok", "removed", "failed", "review"):
-            continue  # settled already; a failed item may have been requeued
-        status = str(row.get("transaction_status") or "").upper()
+def reconcile(session, batch_id: int, paypal_batch_id, client) -> PayoutBatch:
+    """Bind and reconcile an original provider receipt using GET only."""
+    provider_id = _valid_provider_id(paypal_batch_id)
+    _lock(session)
+    batch = _get(session, batch_id, lock=True)
+    if batch.status not in ("sending", "sent", "closed"):
+        raise BatchError("Approve the batch before reconciling its original receipt.")
+    if client is None or client.env != batch.paypal_env:
+        raise BatchError(f"Use the original PayPal {batch.paypal_env} environment to reconcile this payment.")
+    if batch.paypal_batch_id and batch.paypal_batch_id != provider_id:
+        raise BatchError("This batch is already bound to a different PayPal receipt.")
+    data = client.get_batch(provider_id)
+    verified = _verify_receipt(data, batch, provider_id)
+    # No binding, timestamps, item status or paid flags change until every
+    # header and item has matched the immutable original snapshot.
+    batch.paypal_batch_id = provider_id
+    for item, row in verified:
+        status = row["transaction_status"]
+        if item.status in ("removed", "failed"):
+            continue  # failed items may already belong to a later payment
         item.provider_status = status
-        item.provider_item_id = row.get("payout_item_id") or item.provider_item_id
-        if status in _PAYPAL_SUCCESS:
+        item.provider_item_id = row["payout_item_id"]
+        if status in _PAYPAL_REVIEW:
+            item.status = "review"
+            item.error = f"PayPal says {status} — reconcile the original payment before paying again."
+        elif item.status in ("succeeded", "sandbox_ok", "review"):
+            if item.status == "succeeded" and status not in _PAYPAL_SUCCESS:
+                item.status = "review"
+                item.error = "PayPal changed a settled payment's outcome. Reconcile it before paying again."
+        elif status in _PAYPAL_SUCCESS:
             _settle(session, item, True)
         elif status in _PAYPAL_FAILED:
             item.status = "failed"
-            item.error = ((row.get("errors") or {}).get("message") or status)[:500]
-        elif status in _PAYPAL_REVIEW:
-            item.status = "review"
-            item.error = f"PayPal says {status} — check PayPal before paying again."
+            item.error = f"PayPal reports {status}."
         elif status in _PAYPAL_UNCLAIMED:
             item.status = "unclaimed"
+        else:
+            item.status = "pending"
+    for item in _live_items(batch, "manual"):
+        if item.status == "queued":
+            item.status = "pending"
+    batch.status = "sent"
+    batch.error = ""
     batch.last_synced_at = datetime.now()
     _maybe_close(batch)
     session.commit()
     return batch
+
+
+def sync(session, batch_id: int, client) -> PayoutBatch:
+    batch = _get(session, batch_id)
+    if not batch.paypal_batch_id:
+        raise BatchError("Reconcile this payment with its original PayPal batch ID; it will not be sent again.")
+    return reconcile(session, batch_id, batch.paypal_batch_id, client)
 
 
 def batch_dict(batch: PayoutBatch) -> dict:
@@ -360,6 +492,8 @@ def batch_dict(batch: PayoutBatch) -> dict:
         "id": batch.id,
         "status": batch.status,
         "paypal_env": batch.paypal_env or "",
+        "paypal_batch_id": batch.paypal_batch_id or "",
+        "sender_batch_id": batch.sender_batch_id,
         "created_at": batch.created_at.isoformat() if batch.created_at else "",
         "approved_at": batch.approved_at.isoformat() if batch.approved_at else "",
         "last_synced_at": batch.last_synced_at.isoformat() if batch.last_synced_at else "",

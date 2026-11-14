@@ -15,7 +15,7 @@ risk paying people twice.
 """
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime
 
 from sqlalchemy import func, select
@@ -32,7 +32,7 @@ def _is_paid(booking: Creator) -> bool:
 
 
 def _platform(booking: Creator) -> str:
-    return (booking.platform or "tiktok").lower()
+    return str(booking.platform or "tiktok").strip().lower() or "tiktok"
 
 
 def delivered_campaign_counts(session) -> dict[str, int]:
@@ -106,8 +106,11 @@ def build_queue(session) -> dict:
     profiles = {p.username: p for p in session.execute(select(CreatorProfile)).scalars()}
     marks = _marks(session)
     groups: dict[str, list] = {"ready": [], "awaiting_confirmation": [], "not_ready": [], "in_batch": []}
+    bookings = _active_bookings(session)
+    identities = Counter((campaign.id, normalize_username(booking.username), _platform(booking))
+                         for booking, campaign in bookings)
 
-    for booking, campaign in _active_bookings(session):
+    for booking, campaign in bookings:
         user = normalize_username(booking.username)
         profile = profiles.get(user)
         override = (profile.trust_override or "") if profile else ""
@@ -116,6 +119,9 @@ def build_queue(session) -> dict:
         state, reason = classify(booking, marks.get(key), trusted)
         if state == "paid":
             continue
+        ambiguous = identities[key] != 1
+        if ambiguous:
+            state, reason = "not_ready", "ambiguous_booking"
         payment = in_batch.get(key)
         if payment is not None:
             # Already in a payment (never offered again — no paying twice).
@@ -124,6 +130,8 @@ def build_queue(session) -> dict:
             state = "in_batch"
         groups[state].append({
             "slug": campaign.slug,
+            "booking_id": booking.id,
+            "booking_issue": "ambiguous" if ambiguous else "",
             "campaign_id": campaign.id,
             "campaign": campaign.title or campaign.slug,
             "start_date": campaign.start_date or "",
@@ -163,17 +171,20 @@ def build_queue(session) -> dict:
     }
 
 
-def find_booking(session, campaign_id: int, username: str, platform: str):
-    """The active booking row for (campaign, creator, platform), or None."""
-    user, plat = normalize_username(username), (platform or "tiktok").lower()
-    handle = func.lower(func.trim(Creator.username))
-    return session.execute(
+def find_booking(session, campaign_id: int, username: str, platform: str, *, lock: bool = False):
+    """Exactly one canonical booking; missing or ambiguous identities fail closed."""
+    user, plat = normalize_username(username), str(platform or "tiktok").strip().lower() or "tiktok"
+    query = (
         select(Creator)
         .where(Creator.campaign_id == campaign_id)
-        .where(handle.in_([user, f"@{user}"]))
-        .where(func.lower(func.coalesce(Creator.platform, "tiktok")) == plat)
         .where(func.coalesce(Creator.status, "active") != "removed")
-    ).scalars().first()
+        .execution_options(populate_existing=True)
+    )
+    if lock:
+        query = query.with_for_update()
+    matches = [row for row in session.execute(query).scalars()
+               if normalize_username(row.username) == user and _platform(row) == plat]
+    return matches[0] if len(matches) == 1 else None
 
 
 def booking_state(session, campaign_id, username: str, platform: str):

@@ -1,0 +1,11 @@
+time: [22:06] [13-11-26] America/New_York
+agent: [Codex desktop] [GPT-6] [root with booking_efficiency, booking_wizard and creator_intelligence agents]
+worktree: [codex/payout-readiness-20261113] creator-tools-repair/risingtides-campaign-hub
+type: [bug report]: GitHub issues #297, #298 and #299
+area: [backend] [frontend] [testing] [review] [gh actions]
+
+Repair payout readiness defects reproduced using fake providers and disposable SQLite: unknown sends could be replayed across environments/accounts, later reversals were ignored, alias bookings or edited amounts could mark the wrong obligations paid, and the interface mislabeled failed/test batches. Persist one attempt, never replay a funds POST, reconcile original receipts by GET with complete identity/amount/destination proof, and hold ambiguous settlement for review while retaining paid history and duplicate reservations. OAuth preflight leaves a draft intact when no funds POST began. No schema change.
+
+Payout UI now uses factual outcomes and guarded draft approval. After an approval error, only a newly initiated DB status read can clear the hold when it proves the exact batch remains draft. Lock ends the opaque session, purges its financial caches and generated links, blocks deferred dispatch and suppresses late callbacks. Clipboard failure preserves manual-copy data without another issuance. New frontend CI runs the full suite and build with read-only permissions and pinned official actions.
+
+Verification before publication:139 payout/protocol tests and133 existing consumers passed;28 payout component cases and11 session cases passed. Independent reviewers reproduced and then cleared denied-header, incomplete-count and late-create/reconcile controls, and reviewed the session/amount fixes. The initial local full-suite attempts hit unrelated wall-clock timeouts under load near150; bounded focused checks passed and hosted full gates remain pending. Disposable browser read confirms failed history now says Failed batch. No real provider request, payment, production record change, credential configuration or manual deployment occurred. Provider rehearsal and live operational acceptance are separate from these source fixes. Root AGENTS updated; existing child index/events guidance intentionally unchanged because ownership is unchanged.
