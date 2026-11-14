@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { api } from "./api"
-import type { ScrapeStatus, JobScrapeStatus, BreakerLens, LibraryWindow, CreatorRef, CampaignDetail } from "./types"
+import type { ScrapeStatus, JobScrapeStatus, BreakerLens, LibraryWindow, LibraryPlatform, CreatorRef, CampaignDetail } from "./types"
 
 // Query keys
 export const keys = {
@@ -925,10 +925,10 @@ export function useSounds() {
   })
 }
 
-export function useSoundFit(soundId: string | null) {
+export function useSoundFit(soundId: string | null, campaignSlug?: string, limit?: number) {
   return useQuery({
-    queryKey: ["intelligence", "sound-fit", soundId],
-    queryFn: () => api.getSoundFit(soundId as string),
+    queryKey: ["intelligence", "sound-fit", soundId, campaignSlug ?? null, limit ?? 40],
+    queryFn: () => api.getSoundFit(soundId as string, campaignSlug, limit),
     enabled: !!soundId,
     staleTime: 5 * 60 * 1000,
   })
@@ -1010,18 +1010,23 @@ export function useScrapeJobStatus(jobId: string | null) {
 
 export const libraryKeys = {
   all: ["library"] as const,
-  creators: (window: LibraryWindow) => ["library", "creators", window] as const,
+  creators: (window: LibraryWindow, platform?: LibraryPlatform) => platform
+    ? ["library", "creators", window, platform] as const
+    : ["library", "creators", window] as const,
   niches: ["library", "niches"] as const,
-  rate: (username: string) => ["library", "rate", username] as const,
+  rate: (username: string, platform?: LibraryPlatform) => platform
+    ? ["library", "rate", username, platform] as const
+    : ["library", "rate", username] as const,
 }
 
-export function useLibrary(window: LibraryWindow = "w60") {
+export function useLibrary(window: LibraryWindow = "w60", platform?: LibraryPlatform) {
   return useQuery({
-    queryKey: libraryKeys.creators(window),
-    queryFn: () => api.getLibrary(window),
+    queryKey: libraryKeys.creators(window, platform),
+    queryFn: () => api.getLibrary(window, platform),
     // Windows are cheap to switch between and the payload is a few hundred
     // rows; keeping previous data avoids a full-page spinner on every toggle.
-    placeholderData: (prev) => prev,
+    // Rates from another platform must never stand in while this one loads.
+    placeholderData: (prev, previousQuery) => previousQuery?.queryKey[3] === platform ? prev : undefined,
   })
 }
 
@@ -1032,10 +1037,10 @@ export function useNiches() {
   })
 }
 
-export function useLibraryRate(username: string, enabled = true) {
+export function useLibraryRate(username: string, enabled = true, platform?: LibraryPlatform) {
   return useQuery({
-    queryKey: libraryKeys.rate(username),
-    queryFn: () => api.getLibraryRate(username),
+    queryKey: libraryKeys.rate(username, platform),
+    queryFn: () => api.getLibraryRate(username, platform),
     enabled: enabled && Boolean(username),
   })
 }
