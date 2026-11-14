@@ -39,6 +39,37 @@ _PAYPAL_REVIEW = {"REFUNDED", "REVERSED"}
 _PAYPAL_UNCLAIMED = {"UNCLAIMED"}
 
 
+def _validate_receipt(item: "PayoutItem", payout_item_data: dict) -> bool:
+    """Return True only if the PayPal receipt exactly matches what we dispatched.
+
+    Verifies receiver address, recipient wallet, currency, and cent-exact amount.
+    Missing or partial fields count as a mismatch — a partial receipt must not settle.
+    """
+    receiver = payout_item_data.get("receiver")
+    amt = payout_item_data.get("amount") or {}
+    value = amt.get("value")
+    currency = amt.get("currency")
+    wallet = payout_item_data.get("recipient_wallet")
+
+    if receiver is None or value is None or currency is None or wallet is None:
+        return False
+    if receiver.lower() != (item.destination or "").lower():
+        return False
+    if currency.upper() != (item.currency or "USD").upper():
+        return False
+    try:
+        receipt_cents = round(float(value) * 100)
+        item_cents = round(item.amount * 100)
+    except (TypeError, ValueError):
+        return False
+    if receipt_cents != item_cents:
+        return False
+    expected_wallet = "Venmo" if item.method == "venmo" else "PayPal"
+    if wallet != expected_wallet:
+        return False
+    return True
+
+
 class BatchError(ValueError):
     """Message is safe to show Jake."""
 
@@ -229,8 +260,22 @@ def approve(session, batch_id: int, confirm_total, client) -> PayoutBatch:
     allowed if the batch has no PayPal/Venmo items)."""
     _lock(session)
     batch = _get(session, batch_id, lock=True)
+    # Bug 1a: once a PayPal batch was accepted (paypal_batch_id set), never
+    # POST again — reconcile via Sync only.  Check this before the status guard
+    # so "sent" batches produce the specific "dispatched" message.
+    if batch.paypal_batch_id:
+        raise BatchError(
+            "This batch was already dispatched to PayPal. Use Sync to check its status."
+        )
     if batch.status not in ("draft", "sending"):
         raise BatchError("This batch was already approved.")
+    # Bug 1b: freeze the env on first dispatch; a different env after a failed
+    # send means the client/account changed — refuse rather than re-POST.
+    if batch.paypal_env and client and client.env != batch.paypal_env:
+        raise BatchError(
+            f"This batch was started in PayPal {batch.paypal_env}. "
+            f"Cannot re-send on {client.env} — use Sync to reconcile the original batch."
+        )
     api_items = _live_items(batch, "api")
     expected = round(sum(i.amount for i in api_items), 2)
     try:
@@ -273,21 +318,37 @@ def approve(session, batch_id: int, confirm_total, client) -> PayoutBatch:
 
 
 def _mark_booking_paid(session, item: PayoutItem, when: datetime) -> None:
-    """In-place UPDATE (never save_creators, which rewrites every row)."""
+    """In-place UPDATE by primary key (never save_creators, which rewrites every row).
+
+    Resolves to exactly one Creator row before writing to prevent a bulk UPDATE
+    from touching both 'alice' and '@alice' on the same campaign/platform (bug 3).
+    """
     handle = func.lower(func.trim(Creator.username))
-    result = session.execute(
-        update(Creator)
+    rows = session.execute(
+        select(Creator.id)
         .where(Creator.campaign_id == item.campaign_id)
         .where(handle.in_([item.username, f"@{item.username}"]))
         .where(func.lower(func.coalesce(Creator.platform, "tiktok")) == item.platform)
         .where(func.coalesce(Creator.status, "active") != "removed")
-        .values(paid="yes", payment_date=when.date().isoformat())
-        .execution_options(synchronize_session=False)
-    )
-    if result.rowcount == 0:
+    ).all()
+    if not rows:
         # Booking was renamed/removed after the draft. Money still went out —
         # keep the item as paid, but tell Jake to mark the booking by hand.
         item.error = "Paid, but the booking wasn't found to mark paid — mark it paid in the campaign."
+        return
+    if len(rows) > 1:
+        # Both 'alice' and '@alice' exist; can't auto-resolve — operator decides.
+        item.error = (
+            "Paid, but multiple bookings match the same username — "
+            "mark the correct one paid in the campaign."
+        )
+        return
+    session.execute(
+        update(Creator)
+        .where(Creator.id == rows[0][0])
+        .values(paid="yes", payment_date=when.date().isoformat())
+        .execution_options(synchronize_session=False)
+    )
 
 
 def _settle(session, item: PayoutItem, succeeded: bool) -> None:
@@ -297,6 +358,18 @@ def _settle(session, item: PayoutItem, succeeded: bool) -> None:
         # Sandbox rehearsal: record it, but never mark real bookings paid,
         # and release the booking back to the queue.
         item.status = "sandbox_ok"
+        return
+    # Bug 4: verify the frozen obligation amount still matches the current booking
+    # rate. A rate edit after approval must not silently mark a mismatched
+    # obligation paid; hold for operator review instead.
+    booking, _, _ = booking_state(session, item.campaign_id, item.username, item.platform)
+    if booking is not None and round(float(booking.total_rate or 0), 2) != round(item.amount, 2):
+        item.status = "review"
+        item.error = (
+            f"Rate changed from ${item.amount:,.2f} to "
+            f"${float(booking.total_rate or 0):,.2f} after payment — "
+            "verify then mark paid by hand."
+        )
         return
     item.status = "succeeded"
     item.paid_at = datetime.now()
@@ -332,19 +405,43 @@ def sync(session, batch_id: int, client) -> PayoutBatch:
     for row in data.get("items") or []:
         sender_item_id = ((row.get("payout_item") or {}).get("sender_item_id")) or ""
         item = by_id.get(sender_item_id)
-        if item is None or item.status in ("succeeded", "sandbox_ok", "removed", "failed", "review"):
-            continue  # settled already; a failed item may have been requeued
+        if item is None or item.status in ("sandbox_ok", "removed", "failed"):
+            continue  # fully terminal; nothing more to do
+        # Items already in review stay in review.
+        if item.status == "review":
+            continue
         status = str(row.get("transaction_status") or "").upper()
+        # Bug 2: a succeeded item can still be REVERSED — don't skip it.
+        # For already-settled items, only reversals matter.
+        if item.status == "succeeded" and status not in _PAYPAL_REVIEW:
+            continue
         item.provider_status = status
         item.provider_item_id = row.get("payout_item_id") or item.provider_item_id
+        payout_item_data = row.get("payout_item") or {}
         if status in _PAYPAL_SUCCESS:
-            _settle(session, item, True)
+            if not _validate_receipt(item, payout_item_data):
+                item.status = "review"
+                item.error = (
+                    "Receipt mismatch (destination/amount/currency/wallet) — "
+                    "verify before settling."
+                )
+            else:
+                _settle(session, item, True)
         elif status in _PAYPAL_FAILED:
             item.status = "failed"
             item.error = ((row.get("errors") or {}).get("message") or status)[:500]
         elif status in _PAYPAL_REVIEW:
-            item.status = "review"
-            item.error = f"PayPal says {status} — check PayPal before paying again."
+            if item.status == "succeeded":
+                # Bug 2: payment was delivered then reversed — preserve historical
+                # paid evidence on the booking; hold item for operator review.
+                item.status = "review"
+                item.error = (
+                    f"PayPal says {status} after SUCCESS — "
+                    "hold for operator review without requeueing."
+                )
+            else:
+                item.status = "review"
+                item.error = f"PayPal says {status} — check PayPal before paying again."
         elif status in _PAYPAL_UNCLAIMED:
             item.status = "unclaimed"
     batch.last_synced_at = datetime.now()

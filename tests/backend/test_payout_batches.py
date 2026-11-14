@@ -19,17 +19,30 @@ class FakePayPal:
         self.created = []
         self.statuses = {}
         self.fail_create = None
+        self._sent_items = {}  # item.id -> PayoutItem, for receipt fields
 
     def create_payout(self, sender_batch_id, items):
         if self.fail_create:
             raise self.fail_create
         self.created.append((sender_batch_id, [(i.username, i.method, i.amount) for i in items]))
+        self._sent_items = {i.id: i for i in items}
         return {"batch_header": self.header or {"payout_batch_id": "PB-1", "batch_status": "PENDING"}}
+
+    def _receipt_fields(self, item_id):
+        """Return the receipt fields matching what was dispatched, for validation."""
+        item = self._sent_items.get(item_id)
+        if item is None:
+            return {}
+        return {
+            "receiver": item.destination,
+            "recipient_wallet": "Venmo" if item.method == "venmo" else "PayPal",
+            "amount": {"value": f"{item.amount:.2f}", "currency": item.currency or "USD"},
+        }
 
     def get_batch(self, _paypal_batch_id):
         return {"items": [
             {"transaction_status": st, "payout_item_id": f"PI-{iid}",
-             "payout_item": {"sender_item_id": f"item-{iid}"},
+             "payout_item": {"sender_item_id": f"item-{iid}", **self._receipt_fields(iid)},
              **({"errors": {"message": "Receiver is ineligible"}} if st == "FAILED" else {})}
             for iid, st in self.statuses.items()
         ]}
@@ -328,3 +341,178 @@ def test_pay_everyone_adds_to_existing_draft(client, paypal, seeded):
     everyone = _post(client, "/api/payouts/admin/batches").json
     assert everyone["id"] == first["id"]
     assert sorted(i["username"] for i in everyone["items"]) == ["ca", "pp", "vm"]
+
+
+# ── Bug 1a: no double dispatch once PayPal accepted the batch ──────────────────
+
+def test_no_double_dispatch_after_successful_post(client, paypal, seeded):
+    """Once paypal_batch_id is set, approve must refuse another POST."""
+    draft = _post(client, "/api/payouts/admin/batches").json
+    bid = draft["id"]
+    sent = _approve(client, bid).json
+    assert sent["status"] == "sent"
+    assert len(paypal.created) == 1
+
+    resp = _approve(client, bid)
+    assert resp.status_code == 400
+    assert "dispatched" in resp.json["error"]
+    # PayPal was NOT called a second time.
+    assert len(paypal.created) == 1
+
+
+# ── Bug 1b: env frozen after first (failed) dispatch ──────────────────────────
+
+def test_env_frozen_after_failed_send_blocks_switch(app, client, seeded):
+    """After a network failure mid-send, switching env must be refused."""
+    fake_live = FakePayPal(env="live")
+    app.config.update(PAYOUT_ADMIN_KEY=ADMIN_KEY, PAYPAL_CLIENT_FACTORY=lambda: fake_live)
+    draft = _post(client, "/api/payouts/admin/batches").json
+    bid = draft["id"]
+
+    # First attempt fails: batch is now "sending", paypal_env="live", no batch_id.
+    fake_live.fail_create = PayPalError("network error")
+    _approve(client, bid)
+    assert fake_live.created == []
+
+    # Switch the factory to sandbox while the live batch is still in-flight.
+    fake_sandbox = FakePayPal(env="sandbox")
+    app.config.update(PAYPAL_CLIENT_FACTORY=lambda: fake_sandbox)
+    resp = _approve(client, bid)
+    assert resp.status_code == 400
+    assert "live" in resp.json["error"]
+    # Sandbox was never called.
+    assert fake_sandbox.created == []
+
+    # Retrying with the original live client succeeds.
+    fake_live.fail_create = None
+    app.config.update(PAYPAL_CLIENT_FACTORY=lambda: fake_live)
+    result = _approve(client, bid)
+    assert result.json["status"] == "sent"
+    assert len(fake_live.created) == 1
+
+
+# ── Bug 2: REVERSED after SUCCESS moves item to review ────────────────────────
+
+def test_reversed_after_success_moves_to_review(client, paypal, seeded):
+    """A REVERSED status arriving after SUCCESS holds for review; booking stays paid."""
+    draft = _post(client, "/api/payouts/admin/batches").json
+    bid = draft["id"]
+    sent = _approve(client, bid).json
+    pp = next(i["id"] for i in sent["items"] if i["username"] == "pp")
+
+    # First sync: PayPal says SUCCESS.
+    paypal.statuses = {pp: "SUCCESS"}
+    synced1 = _post(client, f"/api/payouts/admin/batches/{bid}/sync").json
+    assert next(i for i in synced1["items"] if i["id"] == pp)["status"] == "succeeded"
+    assert _paid("pp")[0] == "yes"
+
+    # Second sync: PayPal now says REVERSED.
+    paypal.statuses = {pp: "REVERSED"}
+    synced2 = _post(client, f"/api/payouts/admin/batches/{bid}/sync").json
+    item = next(i for i in synced2["items"] if i["id"] == pp)
+    assert item["status"] == "review"
+    assert "REVERSED" in item["error"]
+    # Historical paid evidence is preserved — booking stays paid.
+    assert _paid("pp")[0] == "yes"
+    # Not requeued (review is an open status).
+    assert "pp" not in _ready(client)
+
+
+# ── Bug 3: alias ambiguity holds settlement rather than updating multiple rows ─
+
+def test_alias_dedup_holds_on_multiple_matches(db, seeded):
+    """If both 'alice' and '@alice' exist on the same campaign/platform, settlement
+    sets an error rather than marking both rows paid."""
+    from campaign_manager.models import PayoutBatch
+    from campaign_manager.services.payout_batches import _mark_booking_paid
+    from datetime import datetime
+
+    with db.get_session() as s:
+        cid = s.query(Creator).filter_by(username="pp").one().campaign_id
+        # Both normalized ('alice') and @-prefixed ('@alice') rows exist.
+        s.add(Creator(campaign_id=cid, username="alice", platform="tiktok",
+                      posts_owed=1, posts_done=1, total_rate=100, paid="no"))
+        s.add(Creator(campaign_id=cid, username="@alice", platform="tiktok",
+                      posts_owed=1, posts_done=1, total_rate=100, paid="no"))
+        batch = PayoutBatch(status="sent", sender_batch_id="alias-test-batch",
+                            paypal_env="live")
+        s.add(batch)
+        s.flush()
+        item = PayoutItem(batch_id=batch.id, campaign_id=cid, username="alice",
+                          platform="tiktok", amount=100, currency="USD",
+                          method="paypal", destination="alice@example.com",
+                          lane="api", status="pending")
+        s.add(item)
+        s.commit()
+        item_id = item.id
+
+    with db.get_session() as s:
+        item = s.get(PayoutItem, item_id)
+        _mark_booking_paid(s, item, datetime.now())
+        # Neither row should be marked paid; item gets an error note.
+        assert item.error
+        assert "multiple" in item.error
+        alices = s.query(Creator).filter(
+            Creator.campaign_id == item.campaign_id,
+            Creator.platform == "tiktok",
+        ).filter(Creator.username.in_(["alice", "@alice"])).all()
+        assert all(c.paid != "yes" for c in alices)
+
+
+# ── Bug 4: rate edit after approval holds settlement for review ────────────────
+
+def test_rate_change_after_send_holds_for_review(client, paypal, seeded):
+    """If the booking rate is edited after the batch is approved, sync holds for
+    operator review rather than marking a mismatched amount paid."""
+    draft = _post(client, "/api/payouts/admin/batches").json
+    bid = draft["id"]
+    _approve(client, bid)
+
+    # Edit the rate after the payment was sent (item still pending).
+    with _db.get_session() as s:
+        s.query(Creator).filter_by(username="pp").one().total_rate = 150
+        s.commit()
+
+    pp = next(i["id"] for i in _post(client, "/api/payouts/admin/batches").json.get("items", [])
+              or client.get("/api/payouts/admin/batches", headers=ADMIN).json["batches"][0]["items"]
+              if i["username"] == "pp")
+    # Re-fetch pp item id from the sent batch.
+    batch_data = client.get("/api/payouts/admin/batches", headers=ADMIN).json["batches"][0]
+    pp_id = next(i["id"] for i in batch_data["items"] if i["username"] == "pp")
+
+    paypal.statuses = {pp_id: "SUCCESS"}
+    synced = _post(client, f"/api/payouts/admin/batches/{bid}/sync").json
+    item = next(i for i in synced["items"] if i["id"] == pp_id)
+    assert item["status"] == "review"
+    assert "150" in item["error"]
+    assert _paid("pp")[0] == "no"
+    # Not requeued.
+    assert "pp" not in _ready(client)
+
+
+# ── Receipt mismatch guard: wrong destination/amount/currency never settles ───
+
+def test_mismatched_receipt_no_settlement(client, paypal, seeded):
+    """A PayPal receipt with a tampered destination is held for review, not settled."""
+    draft = _post(client, "/api/payouts/admin/batches").json
+    bid = draft["id"]
+    sent = _approve(client, bid).json
+    pp_id = next(i["id"] for i in sent["items"] if i["username"] == "pp")
+
+    # Tamper with the receipt's receiver address before the sync lookup.
+    original_receipt = paypal._receipt_fields
+
+    def tampered_receipt(item_id):
+        fields = original_receipt(item_id)
+        if fields:
+            fields = {**fields, "receiver": "attacker@evil.com"}
+        return fields
+
+    paypal._receipt_fields = tampered_receipt
+
+    paypal.statuses = {pp_id: "SUCCESS"}
+    synced = _post(client, f"/api/payouts/admin/batches/{bid}/sync").json
+    item = next(i for i in synced["items"] if i["id"] == pp_id)
+    assert item["status"] == "review"
+    assert "mismatch" in item["error"]
+    assert _paid("pp")[0] == "no"
