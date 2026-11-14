@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react"
+import { useState, useRef } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -10,7 +10,7 @@ import {
 } from "@/components/ui/select"
 import { Plus, Loader2 } from "lucide-react"
 import { api } from "@/lib/api"
-import type { LastRate } from "@/lib/types"
+import type { LastRate, LibraryPlatform } from "@/lib/types"
 import { CreatorAutocomplete } from "@/components/CreatorAutocomplete"
 
 interface AddCreatorFormProps {
@@ -24,16 +24,9 @@ interface AddCreatorFormProps {
   isPending: boolean
 }
 
-// Intelligence verdict for the handle being booked. The Booking Wizard already
-// ranks by fit — this closes the OTHER door, the manual add that historically
-// re-booked known-cold creators 40-50 times with nobody noticing.
-//   cold    → tracked history says they don't break sounds; booking needs an
-//             explicit "book anyway" tick (soft gate — diversity trials of
-//             UNKNOWN creators stay frictionless by design).
-//   breaker → proven sound-breaker, book with confidence.
-//   trial   → no tracked history; that's what trials are for.
+// TikTok history informs the existing optional cold-history booking override.
 type IntelVerdict = {
-  kind: "cold" | "breaker" | "neutral" | "trial"
+  kind: "cold" | "breaker" | "neutral" | "trial" | "unavailable"
   posts?: number
   avgViews?: number
   viralRate?: number
@@ -70,6 +63,10 @@ function verdictFor(intel: {
   return { kind: "neutral", ...base }
 }
 
+const normalizeHandle = (value: string) => value.trim().replace(/^@+/, "").replace(/\/+$/, "").toLowerCase()
+
+type LookupIdentity = { name: string; platform: LibraryPlatform }
+
 const DEFAULT_POSTS_OWED = "5"
 const DEFAULT_TOTAL_RATE = "100"
 
@@ -81,70 +78,115 @@ export function AddCreatorForm({ onAdd, isPending }: AddCreatorFormProps) {
   const [postsOwed, setPostsOwed] = useState(DEFAULT_POSTS_OWED)
   const [totalRate, setTotalRate] = useState(DEFAULT_TOTAL_RATE)
   const [paypalEmail, setPaypalEmail] = useState("")
-  const [platform, setPlatform] = useState("tiktok")
+  const [platform, setPlatform] = useState<LibraryPlatform>("tiktok")
   const [lookingUpPaypal, setLookingUpPaypal] = useState(false)
   const [verdict, setVerdict] = useState<IntelVerdict | null>(null)
   const [bookAnyway, setBookAnyway] = useState(false)
   const [lastRate, setLastRate] = useState<LastRate | null>(null)
-  // Once the price or post count is typed by hand, a lookup must never clobber it.
+  const [rateUnavailable, setRateUnavailable] = useState(false)
+  // Identity objects are request generations: editing away and back still
+  // invalidates responses from the earlier attempt at the same handle.
+  const identityRef = useRef<LookupIdentity>({ name: "", platform: "tiktok" })
+  const latestLookupRef = useRef<LookupIdentity | null>(null)
   const rateTouchedRef = useRef(false)
-  // Guards against a slow lookup for a previous handle landing after a newer one.
-  const latestLookupRef = useRef("")
+  const paypalTouchedRef = useRef(false)
+  const paypalValueRef = useRef("")
 
-  const lookupIntel = useCallback(async (name: string) => {
+  function changeIdentity(name: string, nextPlatform: LibraryPlatform) {
+    const normalized = normalizeHandle(name)
+    if (identityRef.current.name === normalized && identityRef.current.platform === nextPlatform) return
+    identityRef.current = { name: normalized, platform: nextPlatform }
+    latestLookupRef.current = null
     setVerdict(null)
     setBookAnyway(false)
-    try {
-      const intel = await api.getCreatorIntel(name)
-      setVerdict(verdictFor(intel))
-    } catch {
-      // 404 = no tracked posts = a genuinely new creator. Trials are the
-      // lifeblood of roster diversity - zero friction, say so positively.
-      setVerdict({ kind: "trial" })
+    setLastRate(null)
+    setRateUnavailable(false)
+    setLookingUpPaypal(false)
+    if (!rateTouchedRef.current) {
+      setTotalRate(DEFAULT_TOTAL_RATE)
+      setPostsOwed(DEFAULT_POSTS_OWED)
     }
-  }, [])
-
-  const lookupLastRate = useCallback(async (name: string) => {
-    let last: LastRate | null = null
-    try {
-      last = (await api.getLastRate(name)).last_rate
-    } catch {
-      // Silently fail - rate lookup is optional, the defaults still work
+    if (!paypalTouchedRef.current) {
+      paypalValueRef.current = ""
+      setPaypalEmail("")
     }
-    if (latestLookupRef.current !== name) return
-    setLastRate(last)
-    if (rateTouchedRef.current) return
-    setTotalRate(last ? String(last.total_rate) : DEFAULT_TOTAL_RATE)
-    setPostsOwed(last && last.posts_owed > 0 ? String(last.posts_owed) : DEFAULT_POSTS_OWED)
-  }, [])
+  }
 
-  // onSelect passes the picked handle; onBlur relies on the typed value.
-  const lookupCreator = useCallback(async (selected?: string) => {
-    const name = (selected ?? username).replace(/^@/, "").trim()
-    if (!name || name === latestLookupRef.current) return
-    latestLookupRef.current = name
-    void lookupIntel(name)
-    void lookupLastRate(name)
-    if (paypalEmail.trim()) return
+  function changeUsername(value: string) {
+    setUsername(value)
+    changeIdentity(value, identityRef.current.platform)
+  }
 
+  async function lookupIntel(identity: LookupIdentity) {
+    if (identity.platform !== "tiktok") return
+    try {
+      const intel = await api.getCreatorIntel(identity.name)
+      if (identityRef.current === identity) setVerdict(verdictFor(intel))
+    } catch (error) {
+      if (identityRef.current !== identity) return
+      const notFound = typeof error === "object" && error !== null && "status" in error && error.status === 404
+      setVerdict({ kind: notFound ? "trial" : "unavailable" })
+    }
+  }
+
+  async function lookupLastRate(identity: LookupIdentity) {
+    try {
+      const last = (await api.getLastRate(identity.name, identity.platform)).last_rate
+      if (identityRef.current !== identity) return
+      // An older server or mismatched response cannot prove platform ownership.
+      if (last && last.platform?.trim().toLowerCase() !== identity.platform) {
+        setRateUnavailable(true)
+        return
+      }
+      setLastRate(last)
+      if (rateTouchedRef.current) return
+      setTotalRate(last ? String(last.total_rate) : DEFAULT_TOTAL_RATE)
+      setPostsOwed(last && last.posts_owed > 0 ? String(last.posts_owed) : DEFAULT_POSTS_OWED)
+    } catch {
+      if (identityRef.current === identity) setRateUnavailable(true)
+    }
+  }
+
+  async function lookupPaypal(identity: LookupIdentity) {
+    if (paypalTouchedRef.current || paypalValueRef.current.trim()) return
     setLookingUpPaypal(true)
     try {
-      const data = await api.getPaypal(name)
-      if (data.paypal && !paypalEmail.trim()) {
+      const data = await api.getPaypal(identity.name)
+      if (identityRef.current === identity && !paypalTouchedRef.current && !paypalValueRef.current.trim() && data.paypal) {
+        paypalValueRef.current = data.paypal
         setPaypalEmail(data.paypal)
       }
     } catch {
-      // Silently fail - paypal lookup is optional
+      // Optional contact lookup does not block a manual booking.
     } finally {
-      setLookingUpPaypal(false)
+      if (identityRef.current === identity) setLookingUpPaypal(false)
     }
-  }, [username, paypalEmail, lookupIntel, lookupLastRate])
+  }
+
+  // Autocomplete selection and its delayed blur may both fire; only one
+  // lookup generation runs for the current normalized handle and platform.
+  function lookupCreator(selected?: string) {
+    if (selected !== undefined) changeUsername(selected)
+    const identity = identityRef.current
+    if (!identity.name || latestLookupRef.current === identity) return
+    latestLookupRef.current = identity
+    void lookupIntel(identity)
+    void lookupLastRate(identity)
+    void lookupPaypal(identity)
+  }
+
+  function changePlatform(value: string) {
+    if (value !== "tiktok" && value !== "instagram") return
+    setPlatform(value)
+    changeIdentity(identityRef.current.name, value)
+    lookupCreator()
+  }
 
   const coldBlocked = verdict?.kind === "cold" && !bookAnyway
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    const cleanUsername = username.replace(/^@/, "").trim()
+    const cleanUsername = identityRef.current.name
     if (!cleanUsername || coldBlocked) return
 
     onAdd({
@@ -165,7 +207,12 @@ export function AddCreatorForm({ onAdd, isPending }: AddCreatorFormProps) {
     setBookAnyway(false)
     setLastRate(null)
     rateTouchedRef.current = false
-    latestLookupRef.current = ""
+    latestLookupRef.current = null
+    identityRef.current = { name: "", platform: "tiktok" }
+    paypalTouchedRef.current = false
+    paypalValueRef.current = ""
+    setRateUnavailable(false)
+    setLookingUpPaypal(false)
   }
 
   return (
@@ -176,7 +223,7 @@ export function AddCreatorForm({ onAdd, isPending }: AddCreatorFormProps) {
           <label className="block text-rt-fg-tertiary text-[13px] mb-1">Username</label>
           <CreatorAutocomplete
             value={username}
-            onChange={setUsername}
+            onChange={changeUsername}
             onSelect={lookupCreator}
             onBlur={() => void lookupCreator()}
             className="w-full sm:w-[160px]"
@@ -184,8 +231,8 @@ export function AddCreatorForm({ onAdd, isPending }: AddCreatorFormProps) {
         </div>
         <div className="w-full sm:w-auto">
           <label className="block text-rt-fg-tertiary text-[13px] mb-1">Platform</label>
-          <Select value={platform} onValueChange={setPlatform}>
-            <SelectTrigger className="w-full sm:w-[120px] h-9 text-[13px]">
+          <Select value={platform} onValueChange={changePlatform}>
+            <SelectTrigger aria-label="Platform" className="w-full sm:w-[120px] h-9 text-[13px]">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -199,6 +246,7 @@ export function AddCreatorForm({ onAdd, isPending }: AddCreatorFormProps) {
           <Input
             type="number"
             min="1"
+            aria-label="Posts Owed"
             value={postsOwed}
             onChange={(e) => {
               rateTouchedRef.current = true
@@ -213,6 +261,7 @@ export function AddCreatorForm({ onAdd, isPending }: AddCreatorFormProps) {
           <Input
             type="number"
             step="0.01"
+            aria-label="Price ($)"
             value={totalRate}
             onChange={(e) => {
               rateTouchedRef.current = true
@@ -231,8 +280,13 @@ export function AddCreatorForm({ onAdd, isPending }: AddCreatorFormProps) {
           </label>
           <Input
             type="email"
+            aria-label="PayPal"
             value={paypalEmail}
-            onChange={(e) => setPaypalEmail(e.target.value)}
+            onChange={(e) => {
+              paypalTouchedRef.current = true
+              paypalValueRef.current = e.target.value
+              setPaypalEmail(e.target.value)
+            }}
             placeholder="email@example.com"
             className="w-full sm:w-[200px]"
           />
@@ -257,20 +311,23 @@ export function AddCreatorForm({ onAdd, isPending }: AddCreatorFormProps) {
             {lastRate.added_date && <> ({lastRate.added_date})</>}
           </div>
         )}
+        {rateUnavailable && (
+          <div role="status" className="w-full text-[12px] text-rt-fg-tertiary">Rate history unavailable.</div>
+        )}
         {verdict && (
           <div className="w-full text-[12px] leading-5">
             {verdict.kind === "cold" && (
               <div className="rounded-[8px] border border-red-500/40 bg-red-500/10 px-3 py-2 text-red-300">
                 <span className="font-semibold">Cold history:</span>{" "}
                 {verdict.posts} tracked posts · avg {fmtViews(verdict.avgViews ?? 0)} views ·{" "}
-                {verdict.viralRate}% viral. This creator has never broken a sound.
+                {verdict.viralRate}% viral.
                 <label className="mt-1 flex items-center gap-2 text-red-200">
                   <input
                     type="checkbox"
                     checked={bookAnyway}
                     onChange={(e) => setBookAnyway(e.target.checked)}
                   />
-                  Book anyway (deliberate choice, not autopilot)
+                  Book anyway
                 </label>
               </div>
             )}
@@ -286,9 +343,12 @@ export function AddCreatorForm({ onAdd, isPending }: AddCreatorFormProps) {
                 {verdict.viralRate}% viral
               </span>
             )}
+            {verdict.kind === "unavailable" && (
+              <span role="status" className="text-rt-fg-tertiary">Creator analysis unavailable.</span>
+            )}
             {verdict.kind === "trial" && (
               <span className="text-rt-fg-tertiary">
-                No tracked history — new-creator trial. That&apos;s the bench working.
+                No tracked TikTok history.
               </span>
             )}
           </div>

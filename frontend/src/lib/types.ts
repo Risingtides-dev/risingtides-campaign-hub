@@ -336,6 +336,7 @@ export interface CreatorVideo {
 
 /** Most recent booking with a real rate for a creator, used to pre-fill the add form. */
 export interface LastRate {
+  platform?: string
   total_rate: number
   posts_owed: number
   campaign: string
