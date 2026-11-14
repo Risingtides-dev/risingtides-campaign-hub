@@ -1,13 +1,15 @@
 """Booking efficiency optimization: ROI analysis, creator valuation, pricing insights."""
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, field
 from enum import Enum
+from statistics import median
 
-from sqlalchemy import and_, func
 from sqlalchemy.orm import Session
 
 from campaign_manager.models import Campaign, Creator, MatchedVideo
+from campaign_manager.services.creator_library import normalize_username
+from campaign_manager.utils.helpers import build_round_end_by_slug, video_in_round
 
 
 class CreatorTier(str, Enum):
@@ -16,8 +18,8 @@ class CreatorTier(str, Enum):
     HIGH_VALUE = "high_value"    # 10-25% by ROI
     SOLID = "solid"              # 25-50% by ROI
     STANDARD = "standard"        # 50-75% by ROI
-    UNDERVALUED = "undervalued"  # 75-90% by ROI (good deals)
-    OVERPRICED = "overpriced"    # Bottom 10% by ROI
+    UNDERVALUED = "undervalued"  # Legacy wire name: 75-90% by ROI
+    OVERPRICED = "overpriced"    # Legacy wire name: bottom 10% by ROI
 
 
 @dataclass
@@ -74,101 +76,98 @@ class BookingEfficiencyReport:
     # Insights
     efficiency_index: float  # 0-100 scale, higher = better ROI distribution
     largest_efficiency_gaps: List[Dict[str, Any]]  # creators with biggest price vs performance mismatches
+    # Full ranked cohort shared by report, leaderboard, single-creator and insights.
+    creators: List[CreatorMetrics] = field(default_factory=list)
+
+
+def _platform(value: str) -> str:
+    return str(value or "tiktok").strip().lower() or "tiktok"
+
+
+def calculate_cohort_metrics(session: Session, days: int = 90) -> List[CreatorMetrics]:
+    """Paid bookings on campaigns created in the last ``days`` days.
+
+    Outcomes are the campaign's eligible stored posts, regardless of when a
+    scraper first observed them. ``first_seen_at`` is an ingestion timestamp,
+    not a booking or publication date. All campaigns (including completed or
+    older successors) participate in the round ownership calculation.
+    """
+    cutoff_date = datetime.now() - timedelta(days=days)
+    campaigns = session.query(Campaign).all()
+    by_id = {campaign.id: campaign for campaign in campaigns}
+    round_ends = build_round_end_by_slug(c.to_meta_dict() for c in campaigns)
+    creators = session.query(Creator).join(Campaign).filter(
+        Campaign.created_at >= cutoff_date,
+    ).all()
+    if not creators:
+        return []
+
+    bookings = {}
+    for creator in creators:
+        identity = (normalize_username(creator.username), _platform(creator.platform))
+        if identity[0]:
+            bookings.setdefault(identity, []).append(creator)
+
+    campaign_ids = {creator.campaign_id for creator in creators}
+    videos_by_booking = {}
+    videos = session.query(MatchedVideo).filter(
+        MatchedVideo.campaign_id.in_(campaign_ids),
+        MatchedVideo.dismissed_at.is_(None),
+    ).all()
+    for video in videos:
+        campaign = by_id[video.campaign_id]
+        if not video_in_round(video.to_dict(), campaign.start_date,
+                              end_date=round_ends.get(campaign.slug), exclude_dismissed=True):
+            continue
+        key = (normalize_username(video.account), _platform(video.platform), video.campaign_id)
+        videos_by_booking.setdefault(key, []).append(video)
+
+    result = []
+    for (username, platform), rows in sorted(bookings.items()):
+        total_spend = sum(row.total_rate or 0 for row in rows)
+        if total_spend <= 0:
+            continue
+        total_bookings = sum(row.posts_owed or 0 for row in rows)
+        owned_campaigns = {row.campaign_id for row in rows}
+        # One query result per stored post, even when legacy booking aliases
+        # normalize to the same creator on the same campaign.
+        posts = [video for campaign_id in owned_campaigns
+                 for video in videos_by_booking.get((username, platform, campaign_id), [])]
+        total_views = sum(video.views or 0 for video in posts)
+        total_engagement = sum(video.likes or 0 for video in posts)
+        last_booked = max((by_id[campaign_id].created_at for campaign_id in owned_campaigns
+                           if by_id[campaign_id].created_at is not None), default=None)
+        result.append(CreatorMetrics(
+            creator_username=username,
+            total_campaigns=len(owned_campaigns),
+            total_bookings=total_bookings,
+            total_spend=total_spend,
+            total_views=total_views,
+            total_engagement=total_engagement,
+            roi_ratio=total_views / total_spend,
+            cost_per_view=total_spend / total_views if total_views > 0 else float("inf"),
+            cost_per_engagement=total_spend / total_engagement if total_engagement > 0 else float("inf"),
+            engagement_rate=total_engagement / total_views if total_views > 0 else 0,
+            avg_post_rate=total_spend / total_bookings if total_bookings > 0 else 0,
+            tier=CreatorTier.SOLID,
+            pricing_gap_pct=0.0,
+            last_booked=last_booked.isoformat() if last_booked is not None else None,
+            platform=platform,
+        ))
+    return result
 
 
 def calculate_creator_metrics(
     session: Session,
     creator_username: str,
     days: int = 90,
+    platform: str = "tiktok",
 ) -> Optional[CreatorMetrics]:
-    """
-    Calculate comprehensive metrics for a single creator.
-
-    Args:
-        session: SQLAlchemy session
-        creator_username: Creator's username
-        days: Analysis window (default 90 days)
-
-    Returns:
-        CreatorMetrics or None if no campaigns found
-    """
-    cutoff_date = datetime.now() - timedelta(days=days)
-
-    # Get all creator bookings in analysis window
-    creators = session.query(Creator).filter(
-        Creator.username == creator_username,
-        Creator.campaign_id.in_(
-            session.query(Campaign.id).filter(Campaign.created_at >= cutoff_date)
-        )
-    ).all()
-
-    if not creators:
-        return None
-
-    # Aggregate metrics
-    total_campaigns = len(set(c.campaign_id for c in creators))
-    total_bookings = sum(c.posts_owed for c in creators)
-    total_spend = sum(c.total_rate for c in creators)
-
-    if total_spend == 0:
-        return None
-
-    # CAMP-85: attribute only THIS creator's posts, not every video across
-    # their campaigns. The account is stored '@handle'; username is bare.
-    # Without this filter a creator on a 50-creator campaign was credited with
-    # all 51 creators' views — verified ~12x inflation for @theelliebarker
-    # (5544 videos attributed vs 462 actually theirs), corrupting the tier
-    # rankings this page drives budget decisions from.
-    campaign_ids = [c.campaign_id for c in creators]
-    norm = creator_username.lstrip("@").lower()
-    videos = session.query(MatchedVideo).filter(
-        and_(
-            MatchedVideo.campaign_id.in_(campaign_ids),
-            MatchedVideo.first_seen_at >= cutoff_date,
-            func.lower(func.replace(MatchedVideo.account, "@", "")) == norm,
-            MatchedVideo.dismissed_at.is_(None),  # exclude false-positive matches
-        )
-    ).all()
-
-    total_views = sum(v.views for v in videos)
-    # Engagement is likes-only: MatchedVideo has no comments column.
-    total_engagement = sum(v.likes for v in videos)
-
-    # No fabricated fallback (was: len(videos) * 50000). If a creator's matched
-    # posts have 0 recorded views, report 0 — inventing 50k/post produced
-    # phantom ROI and polluted the over/undervalued tiers.
-
-    # Calculate derived metrics
-    roi_ratio = total_views / total_spend if total_spend > 0 else 0
-    cost_per_view = total_spend / total_views if total_views > 0 else float('inf')
-    cost_per_engagement = total_spend / total_engagement if total_engagement > 0 else float('inf')
-    engagement_rate = total_engagement / total_views if total_views > 0 else 0
-    avg_post_rate = total_spend / total_bookings if total_bookings > 0 else 0
-
-    # Get last booking date
-    last_creator = max(creators, key=lambda c: c.campaign.created_at if c.campaign else datetime.min)
-    last_booked = last_creator.campaign.created_at.isoformat() if last_creator.campaign else None
-
-    # Determine platform (use most common)
-    platform = max(set(c.platform for c in creators)) or "tiktok"
-
-    return CreatorMetrics(
-        creator_username=creator_username,
-        total_campaigns=total_campaigns,
-        total_bookings=total_bookings,
-        total_spend=total_spend,
-        total_views=total_views,
-        total_engagement=total_engagement,
-        roi_ratio=roi_ratio,
-        cost_per_view=cost_per_view,
-        cost_per_engagement=cost_per_engagement,
-        engagement_rate=engagement_rate,
-        avg_post_rate=avg_post_rate,
-        tier=CreatorTier.SOLID,  # Will be recalculated during ranking
-        pricing_gap_pct=0.0,  # Will be recalculated
-        last_booked=last_booked,
-        platform=platform,
-    )
+    """Find a normalized, platform-specific creator in the ranked cohort."""
+    identity = (normalize_username(creator_username), _platform(platform))
+    ranked = rank_creators_by_efficiency(calculate_cohort_metrics(session, days))
+    return next((row for row in ranked
+                 if (row.creator_username, row.platform) == identity), None)
 
 
 def rank_creators_by_efficiency(
@@ -223,21 +222,19 @@ def rank_creators_by_efficiency(
 
         result.append(metrics)
 
-    # Calculate pricing gaps (vs tier average)
-    tier_avg_rates = {}
-    for tier in CreatorTier:
-        tier_creators = [m for m in result if m.tier == tier]
-        if tier_creators:
-            avg_rate = sum(m.avg_post_rate for m in tier_creators) / len(tier_creators)
-            tier_avg_rates[tier] = avg_rate
-
-    # Assign pricing gaps
+    # Compare rates only within the same platform and ROI band. A TikTok
+    # booking and an Instagram booking are different rate markets.
+    rates_by_cohort = {}
     for metrics in result:
-        tier_avg = tier_avg_rates.get(metrics.tier, metrics.avg_post_rate)
-        if tier_avg > 0:
-            metrics.pricing_gap_pct = ((metrics.avg_post_rate - tier_avg) / tier_avg) * 100
-        else:
-            metrics.pricing_gap_pct = 0.0
+        if metrics.total_bookings > 0:
+            rates_by_cohort.setdefault((metrics.tier, metrics.platform), []).append(metrics.avg_post_rate)
+    for metrics in result:
+        cohort_rates = rates_by_cohort.get((metrics.tier, metrics.platform), [])
+        cohort_average = sum(cohort_rates) / len(cohort_rates) if cohort_rates else 0
+        metrics.pricing_gap_pct = (
+            (metrics.avg_post_rate - cohort_average) / cohort_average * 100
+            if cohort_average > 0 and metrics.total_bookings > 0 else 0.0
+        )
 
     return result
 
@@ -258,24 +255,8 @@ def generate_efficiency_report(
     """
     cutoff_date = datetime.now() - timedelta(days=days)
 
-    # Get all unique creators in analysis window
-    all_creators = session.query(Creator).filter(
-        Creator.campaign_id.in_(
-            session.query(Campaign.id).filter(Campaign.created_at >= cutoff_date)
-        )
-    ).all()
-
-    unique_usernames = set(c.username for c in all_creators)
-
-    # Calculate metrics for each creator
-    all_metrics = []
-    for username in unique_usernames:
-        metrics = calculate_creator_metrics(session, username, days)
-        if metrics:
-            all_metrics.append(metrics)
-
-    # Rank and tier
-    ranked = rank_creators_by_efficiency(all_metrics)
+    # Compute once so every reader uses the same identities and attribution.
+    ranked = rank_creators_by_efficiency(calculate_cohort_metrics(session, days))
 
     # Aggregate stats
     total_spend = sum(m.total_spend for m in ranked)
@@ -283,8 +264,7 @@ def generate_efficiency_report(
     total_engagement = sum(m.total_engagement for m in ranked)
 
     avg_roi = sum(m.roi_ratio for m in ranked) / len(ranked) if ranked else 0
-    sorted_rois = sorted([m.roi_ratio for m in ranked])
-    median_roi = sorted_rois[len(sorted_rois) // 2] if sorted_rois else 0
+    median_roi = median(m.roi_ratio for m in ranked) if ranked else 0
 
     # Averages over the finite entries only — `if ranked` alone isn't enough:
     # when EVERY creator has inf unit cost (spend but zero tracked views,
@@ -292,8 +272,9 @@ def generate_efficiency_report(
     # the old expression raised ZeroDivisionError.
     finite_cpv = [m.cost_per_view for m in ranked if m.cost_per_view != float('inf')]
     finite_cpe = [m.cost_per_engagement for m in ranked if m.cost_per_engagement != float('inf')]
-    avg_cost_per_view = sum(finite_cpv) / len(finite_cpv) if finite_cpv else 0
-    avg_cost_per_engagement = sum(finite_cpe) / len(finite_cpe) if finite_cpe else 0
+    no_unit_cost = float("inf") if ranked else 0
+    avg_cost_per_view = sum(finite_cpv) / len(finite_cpv) if finite_cpv else no_unit_cost
+    avg_cost_per_engagement = sum(finite_cpe) / len(finite_cpe) if finite_cpe else no_unit_cost
 
     # Tier distribution
     creators_by_tier = {}
@@ -304,11 +285,11 @@ def generate_efficiency_report(
     # Top performers (elite + high value)
     top_performers = [m for m in ranked if m.tier in (CreatorTier.ELITE, CreatorTier.HIGH_VALUE)][:10]
 
-    # Undervalued deals (high tier performance at low cost)
-    undervalued = [m for m in ranked if m.tier == CreatorTier.UNDERVALUED][:10]
-
-    # Overpriced (low tier performance at high cost)
-    overpriced = [m for m in ranked if m.tier == CreatorTier.OVERPRICED][:10]
+    # ROI percentile labels alone do not prove a discount or premium. A
+    # pricing opportunity must have the corresponding measured gap; keep the
+    # two lists disjoint and never call zero recorded delivery a proven deal.
+    undervalued = [m for m in ranked if m.pricing_gap_pct < -20 and m.total_views > 0][:10]
+    overpriced = [m for m in ranked if m.pricing_gap_pct > 20][:10]
 
     # Efficiency index (0-100, higher = better)
     # Measures how well pricing aligns with performance
@@ -321,6 +302,7 @@ def generate_efficiency_report(
     largest_gaps = [
         {
             "username": m.creator_username,
+            "platform": m.platform,
             "tier": m.tier.value,
             "pricing_gap_pct": round(m.pricing_gap_pct, 1),
             "avg_post_rate": round(m.avg_post_rate, 2),
@@ -347,4 +329,5 @@ def generate_efficiency_report(
         overpriced_creators=overpriced,
         efficiency_index=efficiency_index,
         largest_efficiency_gaps=largest_gaps,
+        creators=ranked,
     )

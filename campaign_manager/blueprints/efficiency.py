@@ -3,7 +3,7 @@ import math
 from typing import Optional
 
 from flask import Blueprint, request, jsonify
-from sqlalchemy.orm import Session
+from werkzeug.exceptions import BadRequest
 
 from campaign_manager import db as _db
 from campaign_manager.services.booking_efficiency import (
@@ -17,41 +17,8 @@ efficiency_bp = Blueprint("efficiency", __name__)
 
 @efficiency_bp.get("/api/efficiency/report")
 def get_efficiency_report():
-    """
-    Get comprehensive booking efficiency report.
-
-    Query params:
-        - days: Analysis window in days (default 90)
-
-    Returns:
-        {
-            "report_date": "2026-06-05T...",
-            "analysis_period_days": 90,
-            "total_creators_analyzed": 45,
-            "total_campaigns": 12,
-            "total_spend": 125000.0,
-            "total_views": 5200000,
-            "total_engagement": 320000,
-            "avg_roi": 41600.0,
-            "median_roi": 38000.0,
-            "avg_cost_per_view": 0.024,
-            "avg_cost_per_engagement": 0.39,
-            "creators_by_tier": {
-                "elite": 4,
-                "high_value": 9,
-                "solid": 11,
-                "standard": 11,
-                "undervalued": 5,
-                "overpriced": 5
-            },
-            "top_performers": [...],
-            "undervalued_deals": [...],
-            "overpriced_creators": [...],
-            "efficiency_index": 78.5,
-            "largest_efficiency_gaps": [...]
-        }
-    """
-    days = request.args.get("days", 90, type=int)
+    """Return booking efficiency for campaigns opened in the last 1-3650 days."""
+    days = _analysis_days()
 
     session = _db.get_session()
     try:
@@ -91,36 +58,13 @@ def get_efficiency_report():
 
 @efficiency_bp.get("/api/efficiency/creator/<username>")
 def get_creator_efficiency(username: str):
-    """
-    Get efficiency metrics for a single creator.
-
-    Query params:
-        - days: Analysis window in days (default 90)
-
-    Returns:
-        {
-            "creator_username": "influencer123",
-            "total_campaigns": 5,
-            "total_bookings": 12,
-            "total_spend": 8500.0,
-            "total_views": 425000,
-            "total_engagement": 28000,
-            "roi_ratio": 50000.0,
-            "cost_per_view": 0.02,
-            "cost_per_engagement": 0.304,
-            "engagement_rate": 0.066,
-            "avg_post_rate": 708.33,
-            "tier": "high_value",
-            "pricing_gap_pct": -5.2,
-            "last_booked": "2026-05-15T...",
-            "platform": "tiktok"
-        }
-    """
-    days = request.args.get("days", 90, type=int)
+    """Return ranked creator metrics; platform defaults to TikTok, independently of Instagram."""
+    days = _analysis_days()
 
     session = _db.get_session()
     try:
-        metrics = calculate_creator_metrics(session, username, days=days)
+        metrics = calculate_creator_metrics(session, username, days=days,
+                                            platform=request.args.get("platform", "tiktok"))
 
         if not metrics:
             return jsonify({"error": f"No booking data found for {username}"}), 404
@@ -132,31 +76,8 @@ def get_creator_efficiency(username: str):
 
 @efficiency_bp.get("/api/efficiency/leaderboard")
 def get_creator_leaderboard():
-    """
-    Get ranked leaderboard of creators by efficiency tier.
-
-    Query params:
-        - days: Analysis window in days (default 90)
-        - tier: Filter by tier (elite, high_value, solid, standard, undervalued, overpriced)
-        - limit: Max creators per tier (default 20)
-        - sort: Sort field (roi_ratio, cost_per_view, engagement_rate, avg_post_rate)
-
-    Returns:
-        {
-            "report_date": "2026-06-05T...",
-            "analysis_period_days": 90,
-            "elite": [
-                {...creator...},
-                {...creator...}
-            ],
-            "high_value": [...],
-            "solid": [...],
-            "standard": [...],
-            "undervalued": [...],
-            "overpriced": [...]
-        }
-    """
-    days = request.args.get("days", 90, type=int)
+    """Return the same ranked cohort, optionally filtered by tier and sort field."""
+    days = _analysis_days()
     tier_filter = request.args.get("tier", None)
     limit = request.args.get("limit", 20, type=int)
     sort_by = request.args.get("sort", "roi_ratio")
@@ -177,47 +98,10 @@ def get_creator_leaderboard():
             "overpriced": [],
         }
 
-        # Group all creators by tier
-        all_creators = (
-            report.top_performers
-            + report.undervalued_deals
-            + report.overpriced_creators
-        )
-
-        # Add any remaining creators (from original report generation)
-        tier_to_list = {
-            "elite": leaderboard["elite"],
-            "high_value": leaderboard["high_value"],
-            "solid": leaderboard["solid"],
-            "standard": leaderboard["standard"],
-            "undervalued": leaderboard["undervalued"],
-            "overpriced": leaderboard["overpriced"],
-        }
-
-        # Re-fetch full list for complete leaderboard
-        from campaign_manager.services.booking_efficiency import (
-            calculate_creator_metrics,
-            rank_creators_by_efficiency,
-        )
-        from campaign_manager.models import Creator, Campaign
-        from datetime import datetime, timedelta
-
-        cutoff_date = datetime.now() - timedelta(days=days)
-        all_db_creators = session.query(Creator).filter(
-            Creator.campaign_id.in_(
-                session.query(Campaign.id).filter(Campaign.created_at >= cutoff_date)
-            )
-        ).all()
-        unique_usernames = set(c.username for c in all_db_creators)
-        all_metrics = [
-            m
-            for m in [
-                calculate_creator_metrics(session, username, days)
-                for username in unique_usernames
-            ]
-            if m
-        ]
-        all_metrics = rank_creators_by_efficiency(all_metrics)
+        tier_to_list = {tier: leaderboard[tier] for tier in (
+            "elite", "high_value", "solid", "standard", "undervalued", "overpriced",
+        )}
+        all_metrics = list(report.creators)
 
         # Sort by requested field
         sort_mapping = {
@@ -226,8 +110,9 @@ def get_creator_leaderboard():
             "engagement_rate": lambda m: m.engagement_rate,
             "avg_post_rate": lambda m: m.avg_post_rate,
         }
-        sort_func = sort_mapping.get(sort_by, sort_mapping["roi_ratio"])
-        all_metrics.sort(key=sort_func, reverse=(sort_by == "roi_ratio"))
+        if sort_by not in sort_mapping:
+            sort_by = "roi_ratio"
+        all_metrics.sort(key=sort_mapping[sort_by], reverse=sort_by in ("roi_ratio", "engagement_rate"))
 
         # Group by tier
         for creator in all_metrics:
@@ -244,37 +129,8 @@ def get_creator_leaderboard():
 
 @efficiency_bp.get("/api/efficiency/insights")
 def get_efficiency_insights():
-    """
-    Get AI-ready insights for booking optimization.
-
-    Query params:
-        - days: Analysis window in days (default 90)
-
-    Returns:
-        {
-            "analysis_period_days": 90,
-            "key_findings": [
-                {
-                    "category": "pricing_opportunity",
-                    "severity": "high",
-                    "finding": "5 creators are overpriced by >20% vs tier average",
-                    "creators": ["user1", "user2", ...],
-                    "recommendation": "Renegotiate rates or reallocate budget to similar creators at lower rates"
-                },
-                ...
-            ],
-            "recommendations": [
-                {
-                    "action": "reallocate_budget",
-                    "from": ["overpriced_user1"],
-                    "to": ["undervalued_user1"],
-                    "potential_uplift_views": 250000,
-                    "projected_savings": 5000.0
-                }
-            ]
-        }
-    """
-    days = request.args.get("days", 90, type=int)
+    """Return measured pricing findings without unsupported future savings forecasts."""
+    days = _analysis_days()
 
     session = _db.get_session()
     try:
@@ -283,70 +139,42 @@ def get_efficiency_insights():
         key_findings = []
         recommendations = []
 
-        # Finding 1: Pricing misalignment
-        high_gap_creators = [
-            m
-            for m in (
-                report.top_performers
-                + report.undervalued_deals
-                + report.overpriced_creators
-            )
-            if abs(m.pricing_gap_pct) > 20
-        ]
-        if high_gap_creators:
-            overpriced = [m for m in high_gap_creators if m.pricing_gap_pct > 20]
-            if overpriced:
-                key_findings.append(
-                    {
-                        "category": "pricing_opportunity",
-                        "severity": "high",
-                        "finding": f"{len(overpriced)} creators are overpriced by >20% vs tier average",
-                        "creators": [m.creator_username for m in overpriced],
-                        "recommendation": "Renegotiate rates or reallocate budget to similar performers at lower rates",
-                    }
-                )
-
-        # Finding 2: Undervalued opportunities
-        if report.undervalued_deals:
-            key_findings.append(
-                {
-                    "category": "undervalued_opportunity",
-                    "severity": "medium",
-                    "finding": f"{len(report.undervalued_deals)} creators deliver solid ROI at discounted rates",
-                    "creators": [m.creator_username for m in report.undervalued_deals],
-                    "recommendation": "Increase bookings with these creators before market adjusts pricing",
-                }
-            )
-
-        # Finding 3: Elite performer concentration
-        if report.top_performers:
-            top_5_spend = sum(m.total_spend for m in report.top_performers[:5])
-            pct_of_total = (top_5_spend / report.total_spend * 100) if report.total_spend > 0 else 0
-            key_findings.append(
-                {
-                    "category": "elite_concentration",
-                    "severity": "low",
-                    "finding": f"Top 5 elite creators account for {pct_of_total:.1f}% of spend",
-                    "creators": [m.creator_username for m in report.top_performers[:5]],
-                    "recommendation": "Consider spreading bookings to reduce dependency on single creators",
-                }
-            )
-
-        # Recommendation: Reallocation strategy
+        # Use the same disjoint, sign-checked price opportunities as the
+        # report. Rank percentile alone never establishes a pricing premium.
         overpriced = report.overpriced_creators
         undervalued = report.undervalued_deals
-        if overpriced and undervalued:
-            overpriced_spend = sum(m.total_spend for m in overpriced[:3])
-            potential_views = sum(m.total_views for m in undervalued[:3])
-            recommendations.append(
-                {
-                    "action": "reallocate_budget",
-                    "from": [m.creator_username for m in overpriced[:3]],
-                    "to": [m.creator_username for m in undervalued[:3]],
-                    "potential_uplift_views": int(potential_views * 0.25),  # Conservative 25% uplift
-                    "projected_savings": round(overpriced_spend * 0.15, 2),  # 15% savings
-                }
-            )
+        if overpriced:
+            key_findings.append({
+                "category": "pricing_opportunity",
+                "severity": "high",
+                "finding": f"{len(overpriced)} creators have rates >20% above their ROI cohort average",
+                "creators": [_creator_label(m) for m in overpriced],
+                "recommendation": "Review rates against similarly performing creators before rebooking",
+            })
+        if undervalued:
+            key_findings.append({
+                "category": "undervalued_opportunity",
+                "severity": "medium",
+                "finding": f"{len(undervalued)} creators have recorded views and rates >20% below their ROI cohort average",
+                "creators": [_creator_label(m) for m in undervalued],
+                "recommendation": "Review recent delivery and availability before increasing bookings",
+            })
+
+        top = report.top_performers[:5]
+        top_spend = sum(m.total_spend for m in top)
+        pct_of_total = top_spend / report.total_spend * 100 if report.total_spend > 0 else 0
+        if top and any(m.total_views > 0 for m in top) and pct_of_total >= 50:
+            key_findings.append({
+                "category": "elite_concentration",
+                "severity": "low",
+                "finding": f"Top {len(top)} performers account for {pct_of_total:.1f}% of spend",
+                "creators": [_creator_label(m) for m in top],
+                "recommendation": "Review delivery dependency before concentrating more bookings",
+            })
+
+        # Recorded outcomes do not support the previous fixed 25% uplift and
+        # 15% savings predictions. Keep the compatible recommendations list
+        # empty until a defensible projection model exists.
 
         return jsonify(
             {
@@ -358,6 +186,22 @@ def get_efficiency_insights():
         )
     finally:
         session.close()
+
+
+def _creator_label(metrics: CreatorMetrics) -> str:
+    return (metrics.creator_username if metrics.platform == "tiktok"
+            else f"{metrics.creator_username} ({metrics.platform})")
+
+
+def _analysis_days() -> int:
+    """Reject impossible windows before date arithmetic or database work."""
+    try:
+        days = int(request.args.get("days", "90"))
+    except (TypeError, ValueError):
+        raise BadRequest("days must be an integer between 1 and 3650")
+    if not 1 <= days <= 3650:
+        raise BadRequest("days must be an integer between 1 and 3650")
+    return days
 
 
 def _num(value: float, digits: int) -> Optional[float]:

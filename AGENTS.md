@@ -12,6 +12,7 @@ Campaign CRM integration, campaign delivery reporting, and creator operations.
 
 ## Local Contracts
 
+- Booking Efficiency analyzes paid bookings on campaigns created in the selected 1–3650-day period. Outcomes follow canonical campaign-round date/sound ownership, independent of scraper `first_seen_at`; normalized handles remain separate by platform. Report, leaderboard, creator details and insights share the ranked cohort. Pricing opportunities require rates more than 20% above or below the same-platform ROI-band average; legacy wire tier names are performance percentiles, not proof of a price premium or discount. A paid cohort without measured delivery has null aggregate unit costs. Historical outcomes alone do not establish projected savings or uplift.
 - `docs/rollup-endpoints-contract.md` owns the creator, team, and RT-tracker rollup response design. It specifies `stale_since: null` for `source: "api"` or `"empty"`; cached/scraper rollups use the earliest contributing fallback timestamp, excluding empty campaigns.
 - Railway startup requires a non-whitespace `SECRET_KEY`; preserve any configured nonblank key byte-for-byte so Flask sessions use the same signing key across processes and restarts. Local development may generate an ephemeral key when none is configured.
 - Public `/health` reports `db_target` using the same SQLAlchemy URL grammar as database initialization, exposing only the scheme and host. Credentials, port, path and query stay private; absent URLs return an empty target; unparseable URLs or URLs containing multiple raw `@` separators return `set` because the parsed host may contain a password fragment. This conservative diagnostic fallback also applies when the extra `@` is in a query; it never changes the database connection.
@@ -56,10 +57,12 @@ Campaign CRM integration, campaign delivery reporting, and creator operations.
 
 ## Work Guidance
 
+- Keep UI controls minimal and use a single menu or accordion for secondary actions. No UI emojis, AI sparkle icons, marketing copy, or redundant instructional labels; preserve concise labels required to identify data, choices and actions.
 - Record meaningful repository work in a new unique `events/YYYY-MM-DD-HHMM-<branch-slug>.md` on the work branch. The legacy root `events.md` is frozen history; never append to or edit an existing event entry.
 
 ## Verification
 
+- Run `python -m pytest -q tests/backend/test_booking_efficiency_attribution.py tests/backend/test_efficiency_json_safe.py tests/backend/test_creator_platform.py` for efficiency identity, round ownership, pricing consistency, undefined costs and bounded cohort queries. Run `cd frontend && npm test -- --maxWorkers=2` and `npm run build` for frontend regressions and production compilation.
 - Run `SCRAPER_TEST_PYTHON=/path/to/healthy/python python -m pytest -q tests/test_scraper_runtime_lock.py tests/test_scraper_runtime_guard.py` for synthetic stale-lock, held-lock source pinning, and runtime guard behavior. The held-lock positive case skips if no Python with healthy pip is supplied or found. Tests must not invoke a real scrape or provider.
 - Python checks run with `python -m pytest`, using `pyproject.toml` discovery for `tests/backend/` and the root scheduler, scrape-task, runtime-guard, and yt-dlp regressions; `.github/workflows/backend-tests.yml` runs the same suite on pull requests and pushes to `main`. The focused scrape lease and receipt checks run with `pytest -q tests/test_scheduler_job_lease.py tests/test_local_runner_skip.py tests/backend/test_local_agent_dispatch.py tests/backend/test_db.py::TestCronLog`; set `TEST_POSTGRES_DATABASE_URL` to a disposable PostgreSQL URL for the real advisory-lock capacity regression.
 - Run `python -m pytest -q tests/backend/test_campaign_stats.py tests/backend/test_blueprints_campaigns.py tests/backend/test_db.py` for campaign-list fallback query counts, timestamp parity, source failure behavior, route behavior, and database regressions.

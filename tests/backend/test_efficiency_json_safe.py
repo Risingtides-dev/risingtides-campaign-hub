@@ -62,8 +62,9 @@ class TestEfficiencyJsonSafe:
         resp = client.get("/api/efficiency/report")
         assert resp.status_code == 200
         report = json.loads(resp.data)
-        assert report["avg_cost_per_view"] == 0
-        assert report["avg_cost_per_engagement"] == 0
+        # Real spend with no measured delivery is unknown unit cost, never free.
+        assert report["avg_cost_per_view"] is None
+        assert report["avg_cost_per_engagement"] is None
 
     def test_leaderboard_is_json_safe_too(self, db, client):
         _seed_spend_no_views(db)

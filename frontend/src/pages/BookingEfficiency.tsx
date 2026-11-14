@@ -34,8 +34,8 @@ const TIER_LABELS = {
   high_value: "High Value",
   solid: "Solid",
   standard: "Standard",
-  undervalued: "Undervalued",
-  overpriced: "Overpriced",
+  undervalued: "Lower ROI",
+  overpriced: "Lowest ROI",
 };
 
 interface EfficiencyMetrics {
@@ -111,7 +111,7 @@ interface InsightsData {
 // Null-safe number formatting: metrics arrive as null when the unit cost
 // is undefined (division by zero server-side). Render an em dash.
 function fmt(v: number | null | undefined, f: (n: number) => string): string {
-  return v == null ? "\u2014" : f(v);
+  return v == null || !Number.isFinite(v) ? "\u2014" : f(v);
 }
 
 export default function BookingEfficiency() {
@@ -128,7 +128,7 @@ export default function BookingEfficiency() {
   });
 
   // Fetch insights
-  const { data: insights } = useQuery<InsightsData>({
+  const { data: insights, isError: insightsError } = useQuery<InsightsData>({
     queryKey: ["efficiency-insights", days],
     queryFn: async () => {
       const res = await fetch(`${API_BASE}/api/efficiency/insights?days=${days}`);
@@ -172,7 +172,7 @@ export default function BookingEfficiency() {
   if (reportError) {
     return (
       <div className="flex items-center justify-center h-96">
-        <div className="mx-auto max-w-md rounded-xl border border-rt-red/30 bg-rt-red/10 px-4 py-4 text-center">
+        <div role="alert" className="mx-auto max-w-md rounded-xl border border-rt-red/30 bg-rt-red/10 px-4 py-4 text-center">
           <div className="flex items-center justify-center gap-2 text-rt-red">
             <AlertCircle size={18} />
             <span className="text-[14px] font-medium">Couldn't load efficiency report</span>
@@ -202,10 +202,10 @@ export default function BookingEfficiency() {
       <div className="flex items-start justify-between">
         <div>
           <h1 className="text-3xl font-bold">Booking Efficiency</h1>
-          <p className="text-rt-fg-secondary">ROI analysis & creator valuation</p>
+          <p className="text-rt-fg-secondary">Campaigns opened in the selected period</p>
         </div>
         <Select value={days.toString()} onValueChange={(v) => setDays(parseInt(v))}>
-          <SelectTrigger className="w-40">
+          <SelectTrigger aria-label="Analysis period" className="w-40">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -315,14 +315,15 @@ export default function BookingEfficiency() {
         {/* Top Performers */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-lg">Elite Performers</CardTitle>
+            <CardTitle className="text-lg">Top Performers</CardTitle>
             <CardDescription>Highest ROI creators</CardDescription>
           </CardHeader>
           <CardContent className="space-y-2">
+            {report.top_performers.length === 0 && <p className="text-sm text-rt-fg-tertiary">No performers in this period.</p>}
             {report.top_performers.slice(0, 5).map((creator) => (
-              <div key={creator.creator_username} className="flex items-start justify-between py-2 border-b">
+              <div key={`${creator.platform}:${creator.creator_username}`} className="flex items-start justify-between py-2 border-b">
                 <div>
-                  <p className="font-medium text-sm">{creator.creator_username}</p>
+                  <p className="font-medium text-sm">{creator.creator_username}{creator.platform === "instagram" && " · Instagram"}</p>
                   <p className="text-xs text-rt-fg-tertiary">{fmt(creator.avg_post_rate, (n) => `$${n.toFixed(0)}`)}/post</p>
                 </div>
                 <Badge className="bg-rt-green/15 text-rt-green">
@@ -340,10 +341,11 @@ export default function BookingEfficiency() {
             <CardDescription>High performance, low cost</CardDescription>
           </CardHeader>
           <CardContent className="space-y-2">
+            {report.undervalued_deals.length === 0 && <p className="text-sm text-rt-fg-tertiary">No discounted creators in this period.</p>}
             {report.undervalued_deals.slice(0, 5).map((creator) => (
-              <div key={creator.creator_username} className="flex items-start justify-between py-2 border-b">
+              <div key={`${creator.platform}:${creator.creator_username}`} className="flex items-start justify-between py-2 border-b">
                 <div>
-                  <p className="font-medium text-sm">{creator.creator_username}</p>
+                  <p className="font-medium text-sm">{creator.creator_username}{creator.platform === "instagram" && " · Instagram"}</p>
                   <p className="text-xs text-rt-fg-tertiary">{fmt(creator.avg_post_rate, (n) => `$${n.toFixed(0)}`)}/post</p>
                 </div>
                 <Badge className="bg-cyan-100 text-cyan-800">
@@ -361,10 +363,11 @@ export default function BookingEfficiency() {
             <CardDescription>High cost, lower ROI</CardDescription>
           </CardHeader>
           <CardContent className="space-y-2">
+            {report.overpriced_creators.length === 0 && <p className="text-sm text-rt-fg-tertiary">No overpriced creators in this period.</p>}
             {report.overpriced_creators.slice(0, 5).map((creator) => (
-              <div key={creator.creator_username} className="flex items-start justify-between py-2 border-b">
+              <div key={`${creator.platform}:${creator.creator_username}`} className="flex items-start justify-between py-2 border-b">
                 <div>
-                  <p className="font-medium text-sm">{creator.creator_username}</p>
+                  <p className="font-medium text-sm">{creator.creator_username}{creator.platform === "instagram" && " · Instagram"}</p>
                   <p className="text-xs text-rt-fg-tertiary">{fmt(creator.avg_post_rate, (n) => `$${n.toFixed(0)}`)}/post</p>
                 </div>
                 <Badge className="bg-rt-red/15 text-rt-red">
@@ -377,7 +380,8 @@ export default function BookingEfficiency() {
       </div>
 
       {/* Insights Section */}
-      {insights && (
+      {insightsError && <p role="alert" className="text-sm text-rt-red">Couldn't load efficiency insights.</p>}
+      {insights && !insightsError && (
         <Tabs defaultValue="insights" className="w-full">
           <TabsList>
             <TabsTrigger value="insights">Key Findings</TabsTrigger>
@@ -399,7 +403,7 @@ export default function BookingEfficiency() {
                     finding.severity === "high"
                       ? "border-rt-red/30 bg-rt-red/10"
                       : finding.severity === "medium"
-                        ? "border-yellow-200 bg-yellow-50"
+                        ? "border-rt-amber/30 bg-rt-amber/10"
                         : "border-rt-purple/30 bg-rt-purple/10"
                   }
                 >
