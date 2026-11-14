@@ -1,15 +1,16 @@
 import { useMemo, useState } from "react"
 import { useNavigate } from "react-router-dom"
-import { Search, Music, Zap, Check, ArrowRight, Loader2 } from "lucide-react"
+import { useQueryClient } from "@tanstack/react-query"
+import { Search, Music, Zap, Check, ArrowRight, Loader2, AlertCircle } from "lucide-react"
 import { toast } from "sonner"
-import { useSounds, useSoundFit, useNetwork } from "@/lib/queries"
+import { useSounds, useSoundFit, useNetwork, useLibrary } from "@/lib/queries"
+import { keys } from "@/lib/queries"
 import { api } from "@/lib/api"
-import type { TargetSound, SoundFitCreator, NetworkCreator } from "@/lib/types"
+import type { TargetSound, SoundFitCreator } from "@/lib/types"
 
 /* ============================================================
-   BOOKING WIZARD (CAMP-83)
+   BOOKING WIZARD (CAMP-83 / issue-284)
    Fresh sound → best-fit creators → select → book into outreach.
-   Turns the shipped sound-fit intelligence into the actual action.
    ============================================================ */
 
 function fmtMoney(v: number): string {
@@ -18,34 +19,51 @@ function fmtMoney(v: number): string {
 
 export default function BookingWizard() {
   const navigate = useNavigate()
+  const qc = useQueryClient()
   const { data: soundsData, isLoading: soundsLoading } = useSounds()
-  const { data: network } = useNetwork()
+  const { data: network, isError: networkError } = useNetwork()
+  // "wall" window includes all historical bookings — the widest rate memory available.
+  const { data: library, isError: libraryError } = useLibrary("wall")
   const [soundQuery, setSoundQuery] = useState("")
   const [picked, setPicked] = useState<TargetSound | null>(null)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [booking, setBooking] = useState(false)
-  const { data: fit, isLoading: fitLoading } = useSoundFit(picked?.sound_id ?? null)
+  const { data: fit, isLoading: fitLoading, isError: fitError } = useSoundFit(picked?.sound_id ?? null)
 
-  // default rate/posts per creator from the network roster (for the budget tally)
+  // Rate map: library is the base (every creator we've ever booked), network overrides where set.
+  // Posts default to 1 for library-only entries; network entries carry an explicit default_posts.
+  // Never includes $0 or null rates — a creator with no known rate stays unselectable.
   const rateByCreator = useMemo(() => {
     const m = new Map<string, { rate: number; posts: number }>()
-    ;(network ?? []).forEach((c: NetworkCreator) =>
-      m.set(c.username.toLowerCase(), { rate: c.default_rate, posts: c.default_posts })
-    )
+    ;(library?.creators ?? []).forEach((c) => {
+      if (c.rate !== null && c.rate > 0) {
+        m.set(c.key, { rate: c.rate, posts: 1 })
+      }
+    })
+    ;(network ?? []).forEach((c) => {
+      if (c.default_rate > 0) {
+        m.set(c.username.toLowerCase(), { rate: c.default_rate, posts: c.default_posts })
+      }
+    })
     return m
-  }, [network])
+  }, [library, network])
 
   const sounds = useMemo(() => {
     const list = soundsData?.sounds ?? []
     if (!soundQuery.trim()) return list
     const q = soundQuery.toLowerCase()
-    return list.filter((s) => s.artist.toLowerCase().includes(q) || s.song.toLowerCase().includes(q))
+    return list.filter(
+      (s) =>
+        s.artist.toLowerCase().includes(q) ||
+        s.song.toLowerCase().includes(q) ||
+        s.campaign_title.toLowerCase().includes(q),
+    )
   }, [soundsData, soundQuery])
 
   const creators = fit?.creators ?? []
   const maxFit = creators.length ? Math.max(...creators.map((c) => c.fit_score)) : 1
 
-  // Budget tally for the current selection, using network default rate × posts.
+  // Budget tally for the current selection.
   const tally = useMemo(() => {
     let cost = 0
     let posts = 0
@@ -70,15 +88,13 @@ export default function BookingWizard() {
 
   function pickSound(s: TargetSound) {
     setPicked(s)
-    setSelected(new Set()) // reset selection when changing sound
+    setSelected(new Set())
   }
 
   async function book() {
     if (!picked || selected.size === 0) return
     setBooking(true)
     try {
-      // Only book creators that have a real network rate (the UI already
-      // blocks selecting rate-less ones; this is the belt-and-suspenders).
       const payload = Array.from(selected)
         .map((acct) => {
           const r = rateByCreator.get(acct.replace(/^@/, "").toLowerCase())
@@ -87,11 +103,14 @@ export default function BookingWizard() {
         })
         .filter((x): x is { username: string; rate: number; posts: number } => x !== null)
       if (payload.length === 0) {
-        toast.error("None of the selected creators have a network rate set.")
+        toast.error("None of the selected creators have a known rate.")
         setBooking(false)
         return
       }
       const res = await api.addToOutreach(picked.campaign_slug, payload)
+      // Invalidate the outreach list and campaign detail so they reflect the new additions.
+      qc.invalidateQueries({ queryKey: keys.outreach(picked.campaign_slug) })
+      qc.invalidateQueries({ queryKey: keys.campaign(picked.campaign_slug) })
       toast.success(`Added ${res.added ?? payload.length} creator${payload.length !== 1 ? "s" : ""} to ${picked.song} outreach`)
       navigate(`/campaign/${picked.campaign_slug}/outreach`)
     } catch (e) {
@@ -100,6 +119,8 @@ export default function BookingWizard() {
       setBooking(false)
     }
   }
+
+  const rateLoadError = networkError && libraryError
 
   return (
     <div className="relative min-h-screen rt-grain">
@@ -125,6 +146,13 @@ export default function BookingWizard() {
           </p>
         </header>
 
+        {rateLoadError && (
+          <div className="mb-4 flex items-center gap-2 rounded-lg border border-rt-amber/30 bg-rt-amber/8 px-4 py-3 text-sm text-rt-amber">
+            <AlertCircle className="h-4 w-4 shrink-0" />
+            Could not load creator rates. Refresh the page to retry.
+          </div>
+        )}
+
         <div className="grid grid-cols-[300px_1fr] gap-6">
           {/* Step 1: sound picker */}
           <div className="rounded-2xl border border-white/8 bg-rt-bg-raised/60 p-3 backdrop-blur">
@@ -141,11 +169,14 @@ export default function BookingWizard() {
               {soundsLoading && (
                 <div className="px-2 py-8 text-center text-xs text-rt-fg-tertiary">Loading sounds…</div>
               )}
+              {!soundsLoading && sounds.length === 0 && (
+                <div className="px-2 py-8 text-center text-xs text-rt-fg-tertiary">No sounds found.</div>
+              )}
               {sounds.map((s) => {
-                const active = picked?.sound_id === s.sound_id
+                const active = picked?.sound_id === s.sound_id && picked?.campaign_slug === s.campaign_slug
                 return (
                   <button
-                    key={s.sound_id}
+                    key={`${s.sound_id}:${s.campaign_slug}`}
                     onClick={() => pickSound(s)}
                     className={`w-full rounded-lg px-3 py-2 text-left transition-colors ${
                       active ? "border border-rt-magenta/30 bg-rt-magenta/12" : "border border-transparent hover:bg-white/[0.03]"
@@ -160,6 +191,9 @@ export default function BookingWizard() {
                       )}
                     </div>
                     <div className="truncate text-xs text-rt-fg-tertiary">{s.artist || "—"}</div>
+                    {s.campaign_title && (
+                      <div className="truncate text-[10px] text-rt-fg-tertiary/60">{s.campaign_title}</div>
+                    )}
                   </button>
                 )
               })}
@@ -186,6 +220,9 @@ export default function BookingWizard() {
                       {picked.song} <span className="text-rt-fg-tertiary">·</span>{" "}
                       <span className="rt-gradient-text">{picked.artist}</span>
                     </h2>
+                    {picked.campaign_title && (
+                      <div className="text-xs text-rt-fg-tertiary">{picked.campaign_title}</div>
+                    )}
                   </div>
                   {/* live budget tally */}
                   <div className="rounded-xl border border-white/8 bg-rt-bg-card/60 px-4 py-2 text-right">
@@ -200,7 +237,14 @@ export default function BookingWizard() {
                   <div className="px-5 py-16 text-center text-sm text-rt-fg-tertiary">Ranking creators…</div>
                 )}
 
-                {fit && (
+                {fitError && (
+                  <div className="flex items-center gap-2 rounded-xl border border-rt-amber/30 bg-rt-amber/8 px-5 py-4 text-sm text-rt-amber">
+                    <AlertCircle className="h-4 w-4 shrink-0" />
+                    Could not load creator rankings. Try picking the sound again.
+                  </div>
+                )}
+
+                {fit && !fitError && (
                   <div className="overflow-hidden rounded-2xl border border-white/8 bg-rt-bg-raised/60 backdrop-blur">
                     <div className="grid grid-cols-[2.5rem_1fr_4.5rem_4rem_1fr] gap-3 border-b border-white/8 px-5 py-3 text-[10px] uppercase tracking-[0.16em] text-rt-fg-tertiary">
                       <span></span>
@@ -209,6 +253,11 @@ export default function BookingWizard() {
                       <span className="text-right">Rate</span>
                       <span>Why</span>
                     </div>
+                    {creators.length === 0 && (
+                      <div className="px-5 py-10 text-center text-sm text-rt-fg-tertiary">
+                        No creator data for this sound yet.
+                      </div>
+                    )}
                     {creators.slice(0, 40).map((c) => (
                       <WizardRow
                         key={c.account}
@@ -225,7 +274,7 @@ export default function BookingWizard() {
                 {/* Book CTA */}
                 <div className="mt-5 flex items-center justify-end gap-3">
                   <span className="text-xs text-rt-fg-tertiary">
-                    Books into <span className="text-rt-fg-secondary">{picked.song}</span>'s outreach
+                    Books into <span className="text-rt-fg-secondary">{picked.campaign_title || picked.song}</span>'s outreach
                   </span>
                   <button
                     disabled={selected.size === 0 || booking}
@@ -263,14 +312,12 @@ function WizardRow({
   onToggle: () => void
 }) {
   const heat = Math.max(6, (c.fit_score / maxFit) * 100)
-  // Bookable only if the creator has a network rate — otherwise booking them
-  // would silently use $0, which is wrong data. Block selection + explain.
   const bookable = !!rate
   return (
     <button
       onClick={bookable ? onToggle : undefined}
       disabled={!bookable}
-      title={bookable ? undefined : "Not in your network — add them on the Outreach Hub to set a rate before booking"}
+      title={bookable ? undefined : "No rate on file — add this creator to the Creator Library or Outreach Hub first"}
       className={`grid w-full grid-cols-[2.5rem_1fr_4.5rem_4rem_1fr] items-center gap-3 border-b border-white/5 px-5 py-3 text-left transition-colors ${
         !bookable
           ? "cursor-not-allowed opacity-50"

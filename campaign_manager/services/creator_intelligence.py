@@ -514,6 +514,7 @@ def list_sounds(session: Session, limit: int = 300) -> List[Dict[str, Any]]:
             Campaign.artist.label("artist"),
             Campaign.song.label("song"),
             Campaign.slug.label("slug"),
+            Campaign.title.label("title"),
         )
         .filter(Campaign.sound_id != "")
         .all()
@@ -529,22 +530,25 @@ def list_sounds(session: Session, limit: int = 300) -> List[Dict[str, Any]]:
         .all()
     )
 
-    seen: Dict[str, Dict[str, Any]] = {}
+    # Return one entry per campaign so the picker can target the exact round.
+    # Previously deduplicated by sound_id, which silently routed bookings into
+    # whichever campaign happened to be first in the query — wrong for multi-
+    # round campaigns that share a sound.
+    results: List[Dict[str, Any]] = []
     for r in rows:
-        if r.sound_id in seen:
-            continue
         n = int(post_counts.get(r.sound_id, 0))
-        seen[r.sound_id] = {
+        results.append({
             "sound_id": r.sound_id,
             "artist": r.artist or "",
             "song": r.song or "",
             "campaign_slug": r.slug,
+            "campaign_title": r.title or "",
             "post_count": n,
             "freshness": "fresh" if n < 5 else "warm" if n < 40 else "saturated",
-        }
+        })
     # Fresh sounds first (that's where the picker adds the most value), then by activity.
     return sorted(
-        seen.values(),
+        results,
         key=lambda s: (0 if s["freshness"] == "fresh" else 1, -s["post_count"]),
     )[:limit]
 
