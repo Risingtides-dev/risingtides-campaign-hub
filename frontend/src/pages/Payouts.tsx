@@ -1,7 +1,7 @@
 // Hub admin page for creator payout details. Gated by PAYOUT_ADMIN_KEY
 // because the Hub itself has no login. Changed destinations are flagged at
 // the top until reviewed — the dashboard flag is the change alert.
-import { useMemo, useState } from "react"
+import { useMemo, useRef, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { PAYOUT_METHODS, PayoutApiError, payoutAdmin } from "@/lib/payouts"
@@ -60,33 +60,50 @@ function Tile({ label, value, tone = "text-rt-fg" }: { label: string; value: num
 }
 
 export default function Payouts() {
-  const [adminKey, setAdminKey] = useState(() => sessionStorage.getItem(KEY_STORAGE) ?? "")
+  // Key lives in a ref — never goes into React Query cache keys.
+  const adminKeyRef = useRef(sessionStorage.getItem(KEY_STORAGE) ?? "")
+  // Increments on each unlock so each session gets a distinct cache identity.
+  // Zero means locked. The global 5-minute staleTime / refetchOnMount:false
+  // only suppress refetches for KNOWN cache keys; a new nonce = a new key =
+  // always a fresh server round-trip, regardless of which key was used before.
+  const [sessionNonce, setSessionNonce] = useState(() => (adminKeyRef.current ? 1 : 0))
   const [search, setSearch] = useState("")
   const [openHistory, setOpenHistory] = useState<string | null>(null)
   const [tab, setTab] = useState<"pay" | "info">("pay")
+  // Tracks rotate results whose clipboard write was denied; shown inline for
+  // manual copy. Cleared on lock so links don't survive session end.
+  const [rotatedLinks, setRotatedLinks] = useState<Record<string, string>>({})
   const qc = useQueryClient()
 
   const overview = useQuery({
-    queryKey: ["payouts", "overview", adminKey],
-    queryFn: () => payoutAdmin.overview(adminKey),
-    enabled: Boolean(adminKey),
+    queryKey: ["payouts", "overview", sessionNonce],
+    queryFn: () => payoutAdmin.overview(adminKeyRef.current),
+    enabled: sessionNonce > 0,
     retry: false,
   })
 
   const forgetKey = () => {
     sessionStorage.removeItem(KEY_STORAGE)
-    setAdminKey("")
+    adminKeyRef.current = ""
+    setSessionNonce(0)
+    setRotatedLinks({})
+    // Cancel in-flight payout requests so a deferred response arriving after
+    // Lock cannot repopulate the cache, then remove all payout cache entries
+    // so a future re-unlock always authenticates fresh with the server.
+    void qc.cancelQueries({ queryKey: ["payouts"] })
+    qc.removeQueries({ queryKey: ["payouts"] })
   }
   const saveKey = (k: string) => {
     sessionStorage.setItem(KEY_STORAGE, k)
-    setAdminKey(k)
+    adminKeyRef.current = k
+    setSessionNonce((n) => n + 1)
   }
 
   const refresh = () => qc.invalidateQueries({ queryKey: ["payouts"] })
   const onError = (e: unknown) => toast.error(e instanceof Error ? e.message : "Request failed")
 
   const clearFlag = useMutation({
-    mutationFn: (u: string) => payoutAdmin.clearFlag(adminKey, u),
+    mutationFn: (u: string) => payoutAdmin.clearFlag(adminKeyRef.current, u),
     onSuccess: () => {
       toast.success("Marked reviewed")
       refresh()
@@ -94,10 +111,18 @@ export default function Payouts() {
     onError,
   })
   const rotate = useMutation({
-    mutationFn: (u: string) => payoutAdmin.rotate(adminKey, u),
+    mutationFn: (u: string) => payoutAdmin.rotate(adminKeyRef.current, u),
     onSuccess: async (res) => {
-      await navigator.clipboard.writeText(res.link).catch(() => undefined)
-      toast.success(`New link for @${res.username} copied — the old one no longer works`)
+      const copied = await navigator.clipboard.writeText(res.link).then(
+        () => true,
+        () => false,
+      )
+      if (copied) {
+        toast.success(`New link for @${res.username} copied — the old one no longer works`)
+      } else {
+        setRotatedLinks((prev) => ({ ...prev, [res.username]: res.link }))
+        toast.error("Clipboard blocked — copy the new link below before leaving this page")
+      }
       refresh()
     },
     onError,
@@ -109,7 +134,7 @@ export default function Payouts() {
     return q ? all.filter((r) => r.username.includes(q)) : all
   }, [overview.data, search])
 
-  if (!adminKey) return <div className="p-6"><KeyGate onKey={saveKey} /></div>
+  if (sessionNonce === 0) return <div className="p-6"><KeyGate onKey={saveKey} /></div>
 
   const err = overview.error
   const authFailed = err instanceof PayoutApiError && [401, 503].includes(err.status)
@@ -162,8 +187,8 @@ export default function Payouts() {
         </button>
       )}
 
-      {tab === "pay" && s && <PayoutBatches adminKey={adminKey} />}
-      {tab === "pay" && s && <CampaignPayouts adminKey={adminKey} />}
+      {tab === "pay" && s && <PayoutBatches adminKey={adminKeyRef.current} sessionNonce={sessionNonce} />}
+      {tab === "pay" && s && <CampaignPayouts adminKey={adminKeyRef.current} sessionNonce={sessionNonce} />}
 
       {tab === "info" && s && (
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
@@ -181,7 +206,7 @@ export default function Payouts() {
             {flagged.length} changed destination{flagged.length === 1 ? "" : "s"} — check with the creator before paying
           </h2>
           {flagged.map((r) => (
-            <div key={r.username} className="rounded-lg bg-rt-bg-card p-3">
+            <div key={r.username} className="rounded-lg bg-rt-bg-card p-3 space-y-2">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-sm text-rt-fg">@{r.handle}</span>
                 <div className="flex gap-3">
@@ -195,13 +220,25 @@ export default function Payouts() {
                   </button>
                 </div>
               </div>
-              <PayoutHistory adminKey={adminKey} username={r.username} />
+              {rotatedLinks[r.username] && (
+                <div>
+                  <p className="text-xs text-rt-fg-tertiary mb-1">New link (clipboard blocked — copy manually):</p>
+                  <input
+                    readOnly
+                    value={rotatedLinks[r.username]}
+                    aria-label={`New payout link for @${r.handle}`}
+                    className="w-full rounded-md border border-white/10 bg-rt-bg-black px-2 py-1 text-xs font-mono text-rt-fg"
+                    onFocus={(e) => e.target.select()}
+                  />
+                </div>
+              )}
+              <PayoutHistory adminKey={adminKeyRef.current} username={r.username} sessionNonce={sessionNonce} />
             </div>
           ))}
         </section>
       )}
 
-      {tab === "info" && <PayoutLinkGenerator adminKey={adminKey} onIssued={refresh} />}
+      {tab === "info" && <PayoutLinkGenerator adminKey={adminKeyRef.current} onIssued={refresh} />}
 
       {tab === "info" && <section className="space-y-3">
         <input
@@ -241,7 +278,7 @@ export default function Payouts() {
                       </button>
                       {openHistory === r.username && (
                         <div className="text-left mt-2 min-w-[280px]">
-                          <PayoutHistory adminKey={adminKey} username={r.username} />
+                          <PayoutHistory adminKey={adminKeyRef.current} username={r.username} sessionNonce={sessionNonce} />
                         </div>
                       )}
                     </td>

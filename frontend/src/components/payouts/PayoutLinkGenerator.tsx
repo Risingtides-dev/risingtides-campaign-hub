@@ -23,7 +23,7 @@ export function PayoutLinkGenerator({ adminKey, onIssued }: { adminKey: string; 
       await navigator.clipboard.writeText(value)
       toast.success(`${what} copied`)
     } catch {
-      toast.error("Clipboard blocked — select and copy manually")
+      toast.error("Clipboard blocked — select the link below and copy manually")
     }
   }
 
@@ -55,21 +55,30 @@ export function PayoutLinkGenerator({ adminKey, onIssued }: { adminKey: string; 
       {links.length > 0 && (
         <ul className="divide-y divide-white/5">
           {links.map((l) => (
-            <li key={l.username} className="py-2 flex flex-wrap items-center justify-between gap-2">
-              <span className="text-sm text-rt-fg">
-                @{l.handle}
-                {l.has_destination && <span className="ml-2 text-xs text-rt-fg-tertiary">(has details on file)</span>}
-              </span>
-              <span className="flex gap-3">
-                <button type="button" className="text-xs text-rt-magenta hover:underline"
-                  onClick={() => copy(dmFor(l.link), "DM")}>
-                  Copy DM
-                </button>
-                <button type="button" className="text-xs text-rt-fg-secondary hover:underline"
-                  onClick={() => copy(l.link, "Link")}>
-                  Copy link
-                </button>
-              </span>
+            <li key={l.username} className="py-2 space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-sm text-rt-fg">
+                  @{l.handle}
+                  {l.has_destination && <span className="ml-2 text-xs text-rt-fg-tertiary">(has details on file)</span>}
+                </span>
+                <span className="flex gap-3">
+                  <button type="button" className="text-xs text-rt-magenta hover:underline"
+                    onClick={() => copy(dmFor(l.link), "DM")}>
+                    Copy DM
+                  </button>
+                  <button type="button" className="text-xs text-rt-fg-secondary hover:underline"
+                    onClick={() => copy(l.link, "Link")}>
+                    Copy link
+                  </button>
+                </span>
+              </div>
+              <input
+                readOnly
+                value={l.link}
+                aria-label={`Payout link for @${l.handle}`}
+                className="w-full rounded-md border border-white/10 bg-rt-bg-black px-2 py-1 text-xs font-mono text-rt-fg-secondary"
+                onFocus={(e) => e.target.select()}
+              />
             </li>
           ))}
         </ul>

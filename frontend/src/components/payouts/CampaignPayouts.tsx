@@ -154,11 +154,11 @@ function CampaignCard({ title, rows, adminKey, a, refresh }: {
   )
 }
 
-export function CampaignPayouts({ adminKey }: { adminKey: string }) {
+export function CampaignPayouts({ adminKey, sessionNonce = 1 }: { adminKey: string; sessionNonce?: number }) {
   const qc = useQueryClient()
   const [filter, setFilter] = useState<Filter>("action")
   const queue = useQuery({
-    queryKey: ["payouts", "queue", adminKey],
+    queryKey: ["payouts", "queue", sessionNonce],
     queryFn: () => payoutAdmin.queue(adminKey),
     retry: false,
   })

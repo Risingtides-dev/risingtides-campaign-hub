@@ -20,9 +20,17 @@ function describe(e: PayoutEvent) {
   return to
 }
 
-export function PayoutHistory({ adminKey, username }: { adminKey: string; username: string }) {
+export function PayoutHistory({
+  adminKey,
+  username,
+  sessionNonce = 1,
+}: {
+  adminKey: string
+  username: string
+  sessionNonce?: number
+}) {
   const q = useQuery({
-    queryKey: ["payouts", "events", adminKey, username],
+    queryKey: ["payouts", "events", sessionNonce, username],
     queryFn: () => payoutAdmin.events(adminKey, username),
   })
   if (q.isLoading) return <p className="text-xs text-rt-fg-tertiary mt-2">Loading history…</p>

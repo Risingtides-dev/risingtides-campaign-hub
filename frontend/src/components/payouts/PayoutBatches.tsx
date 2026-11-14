@@ -199,11 +199,11 @@ function BatchCard({ batch, adminKey, paypalConnected }: { batch: PayoutBatch; a
   )
 }
 
-export function PayoutBatches({ adminKey }: { adminKey: string }) {
+export function PayoutBatches({ adminKey, sessionNonce = 1 }: { adminKey: string; sessionNonce?: number }) {
   const qc = useQueryClient()
   const [showHistory, setShowHistory] = useState(false)
   const data = useQuery({
-    queryKey: ["payouts", "batches", adminKey],
+    queryKey: ["payouts", "batches", sessionNonce],
     queryFn: () => payoutAdmin.batches(adminKey),
     retry: false,
   })
