@@ -1623,8 +1623,13 @@ def get_all_paypal() -> Dict[str, str]:
 
 # ── Rate Memory ───────────────────────────────────────────────────────
 
-def get_last_rate(username: str) -> Optional[Dict]:
+def get_last_rate(username: str, platform: Optional[str] = None) -> Optional[Dict]:
     """The most recent booking with a real rate for this username, or None.
+
+    When ``platform`` is given, only bookings for that platform are considered,
+    so TikTok rates don't pre-fill Instagram booking forms and vice-versa.
+    Legacy callers that omit ``platform`` continue to get the most recent
+    booking across all platforms.
 
     Derived from the creators table rather than a separate memory table, so an
     edited rate is remembered too. Ordered by added_date — save_creators
@@ -1633,15 +1638,16 @@ def get_last_rate(username: str) -> Optional[Dict]:
     if not username:
         return None
     with get_session() as s:
-        row = (
+        q = (
             s.query(Creator, Campaign.title)
             .join(Campaign, Creator.campaign_id == Campaign.id)
             .filter(func.lower(Creator.username) == username.lower())
             .filter(Creator.total_rate > 0)
             .filter(Creator.status != "removed")
-            .order_by(desc(Creator.added_date), desc(Creator.id))
-            .first()
         )
+        if platform:
+            q = q.filter(func.lower(Creator.platform) == platform.lower())
+        row = q.order_by(desc(Creator.added_date), desc(Creator.id)).first()
         if not row:
             return None
         cr, title = row

@@ -1804,7 +1804,8 @@ def api_paypal(username: str):
 @campaigns_bp.get("/api/last-rate/<username>")
 def api_last_rate(username: str):
     name = username.strip().lstrip("@")
-    last = _db.get_last_rate(name) if _db.is_active() else None
+    platform = request.args.get("platform") or None
+    last = _db.get_last_rate(name, platform=platform) if _db.is_active() else None
     return jsonify({"last_rate": last})
 
 

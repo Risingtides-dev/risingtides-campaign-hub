@@ -9,7 +9,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Plus, Loader2 } from "lucide-react"
-import { api } from "@/lib/api"
+import { api, ApiError } from "@/lib/api"
 import type { LastRate } from "@/lib/types"
 import { CreatorAutocomplete } from "@/components/CreatorAutocomplete"
 
@@ -33,7 +33,7 @@ interface AddCreatorFormProps {
 //   breaker → proven sound-breaker, book with confidence.
 //   trial   → no tracked history; that's what trials are for.
 type IntelVerdict = {
-  kind: "cold" | "breaker" | "neutral" | "trial"
+  kind: "cold" | "breaker" | "neutral" | "trial" | "unavailable"
   posts?: number
   avgViews?: number
   viralRate?: number
@@ -45,17 +45,25 @@ const COLD_MAX_AVG_VIEWS = 15_000
 const BREAKER_VIRAL_RATE = 5
 const BREAKER_AVG_VIEWS = 50_000
 
-function verdictFor(intel: {
-  posts: number
-  avg_views: number
-  viral_rate: number
-  score_balanced: number
-}): IntelVerdict {
+function verdictFor(
+  intel: {
+    posts: number
+    avg_views: number
+    viral_rate: number
+    score_balanced: number
+  },
+  platform: string,
+): IntelVerdict {
   const base = {
     posts: intel.posts,
     avgViews: intel.avg_views,
     viralRate: intel.viral_rate,
     score: intel.score_balanced,
+  }
+  // TikTok sound-breaking evidence (viral_rate, avg_views thresholds) is
+  // derived from TikTok sound posts and must not classify Instagram bookings.
+  if (platform !== "tiktok") {
+    return { kind: "neutral", ...base }
   }
   if (
     intel.posts >= COLD_MIN_POSTS &&
@@ -91,23 +99,31 @@ export function AddCreatorForm({ onAdd, isPending }: AddCreatorFormProps) {
   // Guards against a slow lookup for a previous handle landing after a newer one.
   const latestLookupRef = useRef("")
 
-  const lookupIntel = useCallback(async (name: string) => {
+  const lookupIntel = useCallback(async (name: string, platform: string) => {
     setVerdict(null)
     setBookAnyway(false)
     try {
       const intel = await api.getCreatorIntel(name)
-      setVerdict(verdictFor(intel))
-    } catch {
-      // 404 = no tracked posts = a genuinely new creator. Trials are the
-      // lifeblood of roster diversity - zero friction, say so positively.
-      setVerdict({ kind: "trial" })
+      // Guard: discard if a newer handle started a lookup while this was in flight.
+      if (latestLookupRef.current !== name) return
+      setVerdict(verdictFor(intel, platform))
+    } catch (err) {
+      if (latestLookupRef.current !== name) return
+      // Only a genuine not-found (404) means no tracked history — trials are
+      // the lifeblood of roster diversity, zero friction. Any other failure
+      // (transport error, 5xx) is not evidence of a new creator.
+      if (err instanceof ApiError && err.status === 404) {
+        setVerdict({ kind: "trial" })
+      } else {
+        setVerdict({ kind: "unavailable" })
+      }
     }
   }, [])
 
-  const lookupLastRate = useCallback(async (name: string) => {
+  const lookupLastRate = useCallback(async (name: string, platform: string) => {
     let last: LastRate | null = null
     try {
-      last = (await api.getLastRate(name)).last_rate
+      last = (await api.getLastRate(name, platform)).last_rate
     } catch {
       // Silently fail - rate lookup is optional, the defaults still work
     }
@@ -123,8 +139,8 @@ export function AddCreatorForm({ onAdd, isPending }: AddCreatorFormProps) {
     const name = (selected ?? username).replace(/^@/, "").trim()
     if (!name || name === latestLookupRef.current) return
     latestLookupRef.current = name
-    void lookupIntel(name)
-    void lookupLastRate(name)
+    void lookupIntel(name, platform)
+    void lookupLastRate(name, platform)
     if (paypalEmail.trim()) return
 
     setLookingUpPaypal(true)
@@ -138,7 +154,7 @@ export function AddCreatorForm({ onAdd, isPending }: AddCreatorFormProps) {
     } finally {
       setLookingUpPaypal(false)
     }
-  }, [username, paypalEmail, lookupIntel, lookupLastRate])
+  }, [username, platform, paypalEmail, lookupIntel, lookupLastRate])
 
   const coldBlocked = verdict?.kind === "cold" && !bookAnyway
 
@@ -184,7 +200,18 @@ export function AddCreatorForm({ onAdd, isPending }: AddCreatorFormProps) {
         </div>
         <div className="w-full sm:w-auto">
           <label className="block text-rt-fg-tertiary text-[13px] mb-1">Platform</label>
-          <Select value={platform} onValueChange={setPlatform}>
+          <Select
+            value={platform}
+            onValueChange={(p) => {
+              setPlatform(p)
+              const name = username.replace(/^@/, "").trim()
+              if (!name) return
+              // Re-fetch intel and last-rate keyed to the new platform.
+              latestLookupRef.current = name
+              void lookupIntel(name, p)
+              void lookupLastRate(name, p)
+            }}
+          >
             <SelectTrigger className="w-full sm:w-[120px] h-9 text-[13px]">
               <SelectValue />
             </SelectTrigger>
@@ -289,6 +316,11 @@ export function AddCreatorForm({ onAdd, isPending }: AddCreatorFormProps) {
             {verdict.kind === "trial" && (
               <span className="text-rt-fg-tertiary">
                 No tracked history — new-creator trial. That&apos;s the bench working.
+              </span>
+            )}
+            {verdict.kind === "unavailable" && (
+              <span className="text-rt-fg-tertiary">
+                Creator intelligence unavailable right now.
               </span>
             )}
           </div>

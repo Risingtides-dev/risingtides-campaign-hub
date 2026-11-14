@@ -90,3 +90,73 @@ class TestLastRate:
         client.post("/api/campaign/sam_barber_fever_dream/creator/beaujenkins/remove")
 
         assert client.get("/api/last-rate/beaujenkins").get_json() == {"last_rate": None}
+
+
+class TestLastRatePlatform:
+    """Platform isolation — TikTok rates must not pre-fill Instagram forms."""
+
+    def test_platform_tiktok_returns_tiktok_booking(self, client):
+        _create(client, "TT Campaign")
+        client.post(
+            "/api/campaign/tt_campaign/creator/add",
+            json={"username": "jetblue", "posts_owed": 2, "total_rate": 400, "platform": "tiktok"},
+        )
+        last = client.get("/api/last-rate/jetblue?platform=tiktok").get_json()["last_rate"]
+        assert last is not None
+        assert last["total_rate"] == 400
+
+    def test_platform_instagram_returns_instagram_booking(self, client):
+        _create(client, "IG Campaign")
+        client.post(
+            "/api/campaign/ig_campaign/creator/add",
+            json={"username": "jetblue", "posts_owed": 1, "total_rate": 250, "platform": "instagram"},
+        )
+        last = client.get("/api/last-rate/jetblue?platform=instagram").get_json()["last_rate"]
+        assert last is not None
+        assert last["total_rate"] == 250
+
+    def test_platform_filter_excludes_other_platform(self, client, db):
+        """A creator with only a TikTok booking gets null when queried for Instagram."""
+        _create(client, "TT Only")
+        client.post(
+            "/api/campaign/tt_only/creator/add",
+            json={"username": "jetblue", "posts_owed": 2, "total_rate": 400, "platform": "tiktok"},
+        )
+        last = client.get("/api/last-rate/jetblue?platform=instagram").get_json()["last_rate"]
+        assert last is None
+
+    def test_no_platform_param_returns_most_recent_across_platforms(self, client, db):
+        """Legacy callers without ?platform= still get the most recent booking."""
+        _create(client, "TT Old")
+        _create(client, "IG New")
+        client.post(
+            "/api/campaign/tt_old/creator/add",
+            json={"username": "jetblue", "posts_owed": 2, "total_rate": 300, "platform": "tiktok"},
+        )
+        client.post(
+            "/api/campaign/ig_new/creator/add",
+            json={"username": "jetblue", "posts_owed": 1, "total_rate": 350, "platform": "instagram"},
+        )
+        _set_added_date(db, "jetblue", "tt_old", "2026-08-01")
+        _set_added_date(db, "jetblue", "ig_new", "2026-09-10")
+
+        last = client.get("/api/last-rate/jetblue").get_json()["last_rate"]
+        assert last["total_rate"] == 350
+
+    def test_platform_most_recent_within_platform_wins(self, client, db):
+        """When multiple bookings exist for the same platform, most recent wins."""
+        _create(client, "TT Old Campaign")
+        _create(client, "TT New Campaign")
+        client.post(
+            "/api/campaign/tt_old_campaign/creator/add",
+            json={"username": "jetblue", "posts_owed": 2, "total_rate": 200, "platform": "tiktok"},
+        )
+        client.post(
+            "/api/campaign/tt_new_campaign/creator/add",
+            json={"username": "jetblue", "posts_owed": 3, "total_rate": 500, "platform": "tiktok"},
+        )
+        _set_added_date(db, "jetblue", "tt_old_campaign", "2026-07-01")
+        _set_added_date(db, "jetblue", "tt_new_campaign", "2026-09-15")
+
+        last = client.get("/api/last-rate/jetblue?platform=tiktok").get_json()["last_rate"]
+        assert last["total_rate"] == 500

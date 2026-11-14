@@ -211,8 +211,10 @@ export const api = {
   getPaypal: (username: string) =>
     request<{ paypal: string }>(`/api/paypal/${username}`),
 
-  getLastRate: (username: string) =>
-    request<{ last_rate: LastRate | null }>(`/api/last-rate/${username}`),
+  getLastRate: (username: string, platform?: string) =>
+    request<{ last_rate: LastRate | null }>(
+      `/api/last-rate/${username}${platform ? `?platform=${encodeURIComponent(platform)}` : ""}`
+    ),
 
   // Creator Database
   getCreators: () => request<CreatorSummary[]>("/api/creators"),
