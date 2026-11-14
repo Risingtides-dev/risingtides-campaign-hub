@@ -669,6 +669,8 @@ export interface TargetSound {
   artist: string
   song: string
   campaign_slug: string
+  round?: string
+  start_date?: string
   post_count: number
   freshness: SoundFreshness
 }
@@ -857,6 +859,8 @@ export interface LibraryNiche {
   count: number
   created_at: string
 }
+
+export type LibraryPlatform = "tiktok" | "instagram"
 
 export interface LibraryCreator {
   /** Display casing. */

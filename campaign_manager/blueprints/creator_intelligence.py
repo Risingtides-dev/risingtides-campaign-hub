@@ -32,8 +32,8 @@ def get_breakers():
     lens = request.args.get("lens", "balanced")
     if lens not in VALID_LENSES:
         lens = "balanced"
-    limit = request.args.get("limit", 100, type=int)
-    min_posts = request.args.get("min_posts", 5, type=int)
+    limit = max(1, min(request.args.get("limit", 100, type=int), 1000))
+    min_posts = max(1, request.args.get("min_posts", 5, type=int))
 
     session = _db.get_session()
     try:
@@ -62,7 +62,7 @@ def get_sounds():
 def get_rebook_suggestions():
     """Proven breakers who are under-booked — the 're-book' list (CAMP-87)."""
     try:
-        limit = min(int(request.args.get("limit", 25)), 100)
+        limit = max(1, min(int(request.args.get("limit", 25)), 100))
     except (TypeError, ValueError):
         limit = 25
     session = _db.get_session()
@@ -75,9 +75,11 @@ def get_rebook_suggestions():
 @creator_intelligence_bp.get("/api/intelligence/sound-fit/<sound_id>")
 def get_sound_fit(sound_id: str):
     """Rank creators by fit for a specific target sound."""
+    campaign_slug = request.args.get("campaign_slug")
+    limit = max(1, min(request.args.get("limit", 40, type=int), 1000))
     session = _db.get_session()
     try:
-        data = sound_fit(session, sound_id)
+        data = sound_fit(session, sound_id, limit=limit, campaign_slug=campaign_slug)
         if data is None:
             return jsonify({"error": "sound not found"}), 404
         return jsonify(data)

@@ -1,11 +1,11 @@
 """Creator Library API — the roster, its niche vocabulary, and rate memory.
 
 Endpoints:
-  GET    /api/library/creators?window=w60
+  GET    /api/library/creators?window=w60&platform=tiktok
   POST   /api/library/creators                  add a scouted creator
   PATCH  /api/library/creators/<username>       rate / slow / note / paypal
   PUT    /api/library/creators/<username>/niches
-  GET    /api/library/creators/<username>/rate  booking auto-fill
+  GET    /api/library/creators/<username>/rate?platform=tiktok  booking auto-fill
 
   GET    /api/library/niches
   POST   /api/library/niches                    create (get-or-create)
@@ -31,6 +31,7 @@ from campaign_manager.services.creator_library_stats import DEFAULT_WINDOW, WIND
 from campaign_manager.services.creator_library_view import (
     build_library,
     rate_for_booking,
+    _requested_platform,
 )
 
 log = logging.getLogger(__name__)
@@ -62,12 +63,16 @@ def list_creators():
     window = request.args.get("window", DEFAULT_WINDOW)
     if window not in WINDOWS:
         window = DEFAULT_WINDOW
+    try:
+        platform = _requested_platform(request.args.get("platform"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
 
     session = _session()
     if session is None:
         return _requires_db()
     try:
-        rows = build_library(session, window=window)
+        rows = build_library(session, window=window, platform=platform)
         return jsonify({
             "window": window,
             "windows": list(WINDOWS.keys()),
@@ -187,11 +192,15 @@ def set_creator_niches(username: str):
 @creator_library_bp.get("/api/library/creators/<path:username>/rate")
 def creator_rate(username: str):
     """What this creator should cost on the next booking, and why."""
+    try:
+        platform = _requested_platform(request.args.get("platform"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
     session = _session()
     if session is None:
         return _requires_db()
     try:
-        return jsonify(rate_for_booking(session, username))
+        return jsonify(rate_for_booking(session, username, platform=platform))
     finally:
         session.close()
 

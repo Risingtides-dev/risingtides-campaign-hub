@@ -7,7 +7,7 @@ import {
   XAxis,
   Tooltip as RTooltip,
 } from "recharts"
-import { Search, Zap, TrendingUp, Layers, Radio, X, Music, Users, Repeat, Clock } from "lucide-react"
+import { Search, Zap, TrendingUp, Layers, X, Music, Users, Repeat, Clock } from "lucide-react"
 import {
   useBreakers,
   useCreatorIntel,
@@ -23,6 +23,7 @@ import type {
   TargetSound,
   SoundFitCreator,
 } from "@/lib/types"
+import { campaignRoundLabels } from "@/lib/soundLabels"
 
 /* ============================================================
    CREATOR INTELLIGENCE — "Mission Control for Sound Warfare"
@@ -42,8 +43,8 @@ function fmtViews(v: number): string {
 }
 
 const TIMING_STYLE: Record<SoundTiming, { label: string; cls: string }> = {
-  scout: { label: "⚡ SCOUT", cls: "text-rt-magenta border-rt-magenta/40 bg-rt-magenta/10" },
-  early: { label: "⚡ early", cls: "text-rt-green border-rt-green/40 bg-rt-green/10" },
+  scout: { label: "Scout", cls: "text-rt-magenta border-rt-magenta/40 bg-rt-magenta/10" },
+  early: { label: "Early", cls: "text-rt-green border-rt-green/40 bg-rt-green/10" },
   mid: { label: "· mid", cls: "text-rt-fg-tertiary border-white/10 bg-white/5" },
   late: { label: "late", cls: "text-rt-amber border-rt-amber/30 bg-rt-amber/5" },
   unknown: { label: "—", cls: "text-rt-fg-tertiary border-white/5 bg-transparent" },
@@ -60,12 +61,12 @@ export default function CreatorIntelligence() {
   const [lens, setLens] = useState<BreakerLens>("balanced")
   const [query, setQuery] = useState("")
   const [selected, setSelected] = useState<string | null>(null)
-  const { data, isLoading } = useBreakers(lens)
+  const { data, isLoading, isError, refetch } = useBreakers(lens)
 
   const rows = useMemo(() => {
     const list = data?.breakers ?? []
     if (!query.trim()) return list
-    const q = query.toLowerCase()
+    const q = query.trim().toLowerCase()
     return list.filter((r) => r.account.toLowerCase().includes(q))
   }, [data, query])
 
@@ -85,20 +86,9 @@ export default function CreatorIntelligence() {
       <div className="relative z-10 mx-auto max-w-[1200px] px-6 py-10">
         {/* ---- Header ---- */}
         <header className="mb-8">
-          <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.22em] text-rt-fg-tertiary">
-            <Radio className="h-3 w-3 text-rt-magenta rt-pulse" />
+          <h1 className="font-display text-3xl font-bold leading-none">
             Creator Intelligence
-          </div>
-          <h1 className="mt-2 font-display text-4xl font-bold leading-none">
-            Who <span className="rt-gradient-text">Breaks Sounds</span>
           </h1>
-          <p className="mt-2 max-w-xl text-sm text-rt-fg-secondary">
-            {mode === "creators"
-              ? `Ranked by velocity per post, not follower vanity. The lens decides what "best" means — breakout odds, proven scale, or a confidence-weighted blend.`
-              : mode === "sound"
-              ? `Pick a sound and see the creators most likely to break it — ranked by proven breaker ability, boosted for those who've broken this sound or this artist before.`
-              : `Proven breakers you're under-booking — high velocity, reliable delivery, but few recent bookings. The ones worth re-booking before someone else does.`}
-          </p>
 
           {/* Mode toggle: creator-first vs sound-first vs re-book */}
           <div className="mt-5 inline-flex rounded-xl border border-white/8 bg-rt-bg-raised p-1">
@@ -180,7 +170,9 @@ export default function CreatorIntelligence() {
             </div>
           )}
 
-          {!isLoading && rows.length === 0 && (
+          {isError && <AnalysisError message="Couldn't load creator rankings." onRetry={() => void refetch()} />}
+
+          {!isLoading && !isError && rows.length === 0 && (
             <div className="px-5 py-16 text-center text-sm text-rt-fg-tertiary">
               No creators match.
             </div>
@@ -231,7 +223,7 @@ export default function CreatorIntelligence() {
         </div>
 
         <p className="mt-4 text-center text-[11px] text-rt-fg-tertiary">
-          {data?.count ?? 0} creators · min {data?.min_posts ?? 5} tracked posts · click any row to drill in
+          {data?.count ?? 0} creators · min {data?.min_posts ?? 5} tracked posts
         </p>
         </>
         )}
@@ -248,7 +240,7 @@ export default function CreatorIntelligence() {
    SOUND-FIT VIEW — sound-first entry point
    ============================================================ */
 function RebookView({ onPickCreator }: { onPickCreator: (a: string) => void }) {
-  const { data, isLoading } = useRebookSuggestions()
+  const { data, isLoading, isError, refetch } = useRebookSuggestions()
   const rows = data?.suggestions ?? []
   const maxOpp = rows.length ? Math.max(...rows.map((r) => r.opportunity_score)) : 1
 
@@ -273,7 +265,8 @@ function RebookView({ onPickCreator }: { onPickCreator: (a: string) => void }) {
       {isLoading && (
         <div className="px-5 py-16 text-center text-sm text-rt-fg-tertiary">Finding under-booked breakers…</div>
       )}
-      {!isLoading && rows.length === 0 && (
+      {isError && <AnalysisError message="Couldn't load re-book suggestions." onRetry={() => void refetch()} />}
+      {!isLoading && !isError && rows.length === 0 && (
         <div className="px-5 py-16 text-center text-sm text-rt-fg-tertiary">No suggestions right now.</div>
       )}
       {!isLoading &&
@@ -312,15 +305,16 @@ function RebookView({ onPickCreator }: { onPickCreator: (a: string) => void }) {
 }
 
 function SoundFitView({ onPickCreator }: { onPickCreator: (a: string) => void }) {
-  const { data: soundsData, isLoading: soundsLoading } = useSounds()
+  const { data: soundsData, isLoading: soundsLoading, isError: soundsError, refetch: refetchSounds } = useSounds()
   const [soundQuery, setSoundQuery] = useState("")
   const [picked, setPicked] = useState<TargetSound | null>(null)
-  const { data: fit, isLoading: fitLoading } = useSoundFit(picked?.sound_id ?? null)
+  const { data: fit, isLoading: fitLoading, isError: fitError, refetch: refetchFit } = useSoundFit(picked?.sound_id ?? null, picked?.campaign_slug)
+  const roundLabels = useMemo(() => campaignRoundLabels(soundsData?.sounds ?? []), [soundsData])
 
   const sounds = useMemo(() => {
     const list = soundsData?.sounds ?? []
     if (!soundQuery.trim()) return list
-    const q = soundQuery.toLowerCase()
+    const q = soundQuery.trim().toLowerCase()
     return list.filter(
       (s) => s.artist.toLowerCase().includes(q) || s.song.toLowerCase().includes(q)
     )
@@ -329,7 +323,7 @@ function SoundFitView({ onPickCreator }: { onPickCreator: (a: string) => void })
   const maxFit = fit?.creators.length ? Math.max(...fit.creators.map((c) => c.fit_score)) : 1
 
   return (
-    <div className="grid grid-cols-[300px_1fr] gap-6">
+    <div className="grid gap-6 lg:grid-cols-[300px_minmax(0,1fr)]">
       {/* ---- Sound picker (left) ---- */}
       <div className="rounded-2xl border border-white/8 bg-rt-bg-raised/60 p-3 backdrop-blur">
         <div className="mb-2 flex items-center gap-2 rounded-lg border border-white/8 bg-rt-bg-black px-3 py-2">
@@ -345,11 +339,16 @@ function SoundFitView({ onPickCreator }: { onPickCreator: (a: string) => void })
           {soundsLoading && (
             <div className="px-2 py-8 text-center text-xs text-rt-fg-tertiary">Loading sounds…</div>
           )}
+          {soundsError && <AnalysisError message="Couldn't load sounds." onRetry={() => void refetchSounds()} />}
+          {!soundsLoading && !soundsError && sounds.length === 0 && (
+            <div className="px-2 py-8 text-center text-xs text-rt-fg-tertiary">No sounds match.</div>
+          )}
           {sounds.map((s) => {
-            const active = picked?.sound_id === s.sound_id
+            const active = picked?.campaign_slug === s.campaign_slug
             return (
               <button
-                key={s.sound_id}
+                key={s.campaign_slug}
+                aria-pressed={active}
                 onClick={() => setPicked(s)}
                 className={`w-full rounded-lg px-3 py-2 text-left transition-colors ${
                   active ? "bg-rt-magenta/12 border border-rt-magenta/30" : "border border-transparent hover:bg-white/[0.03]"
@@ -365,6 +364,7 @@ function SoundFitView({ onPickCreator }: { onPickCreator: (a: string) => void })
                 </div>
                 <div className="truncate text-xs text-rt-fg-tertiary">
                   {s.artist || "—"}
+                  {roundLabels.has(s.campaign_slug) && <span> · {roundLabels.get(s.campaign_slug)}</span>}
                   {s.post_count > 0 && <span className="text-rt-fg-tertiary/60"> · {s.post_count} posts</span>}
                 </div>
               </button>
@@ -394,23 +394,17 @@ function SoundFitView({ onPickCreator }: { onPickCreator: (a: string) => void })
                 {picked.song} <span className="text-rt-fg-tertiary">·</span>{" "}
                 <span className="rt-gradient-text">{picked.artist}</span>
               </h2>
-              {picked.freshness === "fresh" && (
-                <p className="mt-2 flex items-start gap-1.5 text-xs text-rt-green">
-                  <span className="rounded border border-rt-green/40 bg-rt-green/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide">
-                    fresh sound
-                  </span>
-                  <span className="text-rt-fg-tertiary">
-                    Pre-breakout — ranking leans on artist history + general breaker ability,
-                    since few creators have posted it yet. This is the booking sweet spot.
-                  </span>
-                </p>
-              )}
             </div>
 
             {fitLoading && (
               <div className="px-5 py-16 text-center text-sm text-rt-fg-tertiary">
                 Computing fit…
               </div>
+            )}
+
+            {fitError && <AnalysisError message="Couldn't load sound fit." onRetry={() => void refetchFit()} />}
+            {!fitLoading && !fitError && fit?.creators.length === 0 && (
+              <div className="px-5 py-16 text-center text-sm text-rt-fg-tertiary">No qualifying creators for this sound.</div>
             )}
 
             {fit && (
@@ -515,7 +509,7 @@ function ModeBtn({
    ============================================================ */
 function CreatorDrawer({ account, onClose }: { account: string; onClose: () => void }) {
   const { data, isLoading, isError, error } = useCreatorIntel(account)
-  const { data: outcomeData, isLoading: outcomesLoading } = useCreatorOutcomes(account, true)
+  const { data: outcomeData, isLoading: outcomesLoading, isError: outcomesError, refetch: refetchOutcomes } = useCreatorOutcomes(account, true)
   const outcomes = outcomeData?.outcomes ?? null
 
   return (
@@ -587,13 +581,10 @@ function CreatorDrawer({ account, onClose }: { account: string; onClose: () => v
                   Pulling live outcome data…
                 </div>
               )}
-              {!outcomesLoading && !outcomes && (
+              {outcomesError && <AnalysisError message="Couldn't load outcome data." onRetry={() => void refetchOutcomes()} />}
+              {!outcomesLoading && !outcomesError && !outcomes && (
                 <div className="mt-3 rounded-xl border border-white/6 bg-rt-bg-card/40 px-4 py-5 text-center text-xs text-rt-fg-tertiary">
                   No Cobrand submissions for this creator.
-                  <div className="mt-1 text-[10px] text-rt-fg-tertiary/60">
-                    Outcome data exists for ~5% of campaigns (Cobrand-tracked only) —
-                    most originals are scrape-tracked without it.
-                  </div>
                 </div>
               )}
               {outcomes && (
@@ -696,6 +687,15 @@ function CreatorDrawer({ account, onClose }: { account: string; onClose: () => v
           </div>
         )}
       </aside>
+    </div>
+  )
+}
+
+function AnalysisError({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <div role="alert" className="px-5 py-8 text-center text-sm text-rt-red">
+      {message}{" "}
+      <button type="button" onClick={onRetry} className="underline underline-offset-4">Retry</button>
     </div>
   )
 }

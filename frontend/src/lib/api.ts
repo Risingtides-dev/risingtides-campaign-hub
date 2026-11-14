@@ -47,6 +47,7 @@ import type {
   LibraryRate,
   LibraryRefreshStatus,
   LibraryWindow,
+  LibraryPlatform,
   SoundFitResponse,
 } from "./types"
 
@@ -232,10 +233,15 @@ export const api = {
     request<{ sounds: TargetSound[] }>("/api/intelligence/sounds"),
   getRebookSuggestions: () =>
     request<{ suggestions: RebookSuggestion[] }>("/api/intelligence/rebook-suggestions"),
-  getSoundFit: (soundId: string) =>
-    request<SoundFitResponse>(
-      `/api/intelligence/sound-fit/${encodeURIComponent(soundId)}`
-    ),
+  getSoundFit: (soundId: string, campaignSlug?: string, limit?: number) => {
+    const params = new URLSearchParams()
+    if (campaignSlug) params.set("campaign_slug", campaignSlug)
+    if (limit !== undefined) params.set("limit", String(limit))
+    const query = params.size ? `?${params}` : ""
+    return request<SoundFitResponse>(
+      `/api/intelligence/sound-fit/${encodeURIComponent(soundId)}${query}`
+    )
+  },
   updateCreatorNiches: (username: string, niches: string[]) =>
     request<ApiOk & { updated: number; niches: string[] }>(
       `/api/creators/${username}/niches`,
@@ -624,8 +630,8 @@ export const api = {
   // ── Creator Library ──────────────────────────────────────────────────
   // `key` (lowercased username) is the join key everywhere below; it is
   // encoded because handles legitimately contain dots and underscores.
-  getLibrary: (window: LibraryWindow = "w60") =>
-    request<LibraryResponse>(`/api/library/creators?window=${window}`),
+  getLibrary: (window: LibraryWindow = "w60", platform?: LibraryPlatform) =>
+    request<LibraryResponse>(`/api/library/creators?window=${window}${platform ? `&platform=${platform}` : ""}`),
   addLibraryCreator: (data: {
     username: string
     rate?: number | null
@@ -649,9 +655,9 @@ export const api = {
       `/api/library/creators/${encodeURIComponent(username)}/niches`,
       { method: "PUT", body: JSON.stringify({ niches }) }
     ),
-  getLibraryRate: (username: string) =>
+  getLibraryRate: (username: string, platform?: LibraryPlatform) =>
     request<LibraryRate>(
-      `/api/library/creators/${encodeURIComponent(username)}/rate`
+      `/api/library/creators/${encodeURIComponent(username)}/rate${platform ? `?platform=${platform}` : ""}`
     ),
 
   getNiches: () =>

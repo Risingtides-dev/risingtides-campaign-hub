@@ -23,10 +23,12 @@ from datetime import datetime
 from math import sqrt
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import case, func
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from campaign_manager.models import Campaign, Creator, MatchedVideo
+from campaign_manager.services.creator_library import normalize_username
+from campaign_manager.utils.helpers import build_round_end_by_slug, video_in_round
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +39,10 @@ MILLION = 1_000_000
 MIN_POSTS = 5
 
 Lens = str  # "ceiling" | "volume" | "balanced"
+
+
+def _tiktok(column):
+    return func.lower(func.coalesce(func.nullif(func.trim(column), ""), "tiktok")) == "tiktok"
 
 
 @dataclass
@@ -94,95 +100,75 @@ def _score_balanced(viral_rate: float, avg_views: float, posts: int, sounds: int
     )
 
 
+def _eligible_posts(session: Session, campaigns=None):
+    """One round-qualified, deduplicated TikTok cohort per analysis request."""
+    if campaigns is None:
+        campaigns = session.query(Campaign).all()
+    by_id = {camp.id: camp for camp in campaigns}
+    round_ends = build_round_end_by_slug(camp.to_meta_dict() for camp in campaigns)
+    rows = session.query(MatchedVideo).filter(
+        MatchedVideo.dismissed_at.is_(None),
+        MatchedVideo.views > 0,
+        _tiktok(MatchedVideo.platform),
+    ).all()
+    unique = {}
+    for video in rows:
+        camp = by_id.get(video.campaign_id)
+        account = normalize_username(video.account)
+        if camp is None or not account or not video_in_round(
+            video.to_dict(), camp.start_date,
+            end_date=round_ends.get(camp.slug), exclude_dismissed=True,
+        ):
+            continue
+        # Historical imports can store one physical post on several campaigns.
+        # Keep empty-URL rows separate, and prefer the newest eligible campaign
+        # deterministically when legacy undated campaigns overlap.
+        identity = (account, video.url) if video.url else (account, video.id)
+        previous = unique.get(identity)
+        order = (camp.created_at or datetime.min, camp.slug, video.id)
+        if previous is None or order > previous[0]:
+            unique[identity] = (order, video, camp)
+    return [(video, camp) for _, video, camp in unique.values()]
+
+
+def _sound_id(video, camp):
+    return video.extracted_sound_id or video.music_id or camp.sound_id or "unknown"
+
+
 def breaker_leaderboard(
     session: Session,
     lens: Lens = "balanced",
-    limit: int = 100,
+    limit: Optional[int] = 100,
     min_posts: int = MIN_POSTS,
+    *,
+    _posts=None,
 ) -> List[Dict[str, Any]]:
-    """Rank creators by sound-breaking ability across all tracked posts.
-
-    Returns a list of BreakerRow dicts, sorted by the chosen lens score desc.
-    """
-    # Aggregate per account in SQL for the cheap stats; pull per-post views for
-    # median (cheap at this scale — ~10k rows total).
-    rows = (
-        session.query(
-            MatchedVideo.account.label("account"),
-            func.count().label("posts"),
-            func.coalesce(func.avg(MatchedVideo.views), 0).label("avg_views"),
-            func.max(MatchedVideo.views).label("peak_views"),
-            func.sum(MatchedVideo.views).label("total_views"),
-            func.count(func.distinct(MatchedVideo.extracted_sound_id)).label("distinct_sounds"),
-            func.sum(
-                case((MatchedVideo.views >= VIRAL_THRESHOLD, 1), else_=0)
-            ).label("viral_posts"),
-            func.sum(
-                case((MatchedVideo.views >= MILLION, 1), else_=0)
-            ).label("millionaires"),
-        )
-        .filter(MatchedVideo.dismissed_at.is_(None))
-        .filter(MatchedVideo.views > 0)
-        .filter(MatchedVideo.account != "")
-        .group_by(MatchedVideo.account)
-        .having(func.count() >= min_posts)
-        .all()
-    )
-
-    # Per-account median needs the raw views; fetch once and bucket.
-    medians = _account_medians(session, min_posts)
-
-    result: List[BreakerRow] = []
-    for r in rows:
-        posts = int(r.posts)
-        avg_views = float(r.avg_views or 0)
-        viral_rate = round(100.0 * int(r.viral_posts) / posts, 1) if posts else 0.0
-        sounds = int(r.distinct_sounds or 0)
-        millionaires = int(r.millionaires or 0)
-        result.append(
-            BreakerRow(
-                account=r.account,
-                posts=posts,
-                avg_views=round(avg_views),
-                median_views=medians.get(r.account, 0),
-                peak_views=int(r.peak_views or 0),
-                viral_rate=viral_rate,
-                millionaires=millionaires,
-                distinct_sounds=sounds,
-                total_views=int(r.total_views or 0),
-                score_ceiling=_score_ceiling(viral_rate, avg_views),
-                score_volume=_score_volume(millionaires, posts, sounds),
-                score_balanced=_score_balanced(viral_rate, avg_views, posts, sounds),
-            )
-        )
-
-    key = {
-        "ceiling": lambda x: x.score_ceiling,
-        "volume": lambda x: x.score_volume,
-        "balanced": lambda x: x.score_balanced,
-    }.get(lens, lambda x: x.score_balanced)
-
-    result.sort(key=key, reverse=True)
+    """Rank normalized TikTok creators over their eligible distinct posts."""
+    posts = _eligible_posts(session) if _posts is None else _posts
+    buckets = {}
+    for video, camp in posts:
+        buckets.setdefault(normalize_username(video.account), []).append((video, camp))
+    result = []
+    for account, rows in buckets.items():
+        if len(rows) < max(1, min_posts):
+            continue
+        views = [int(video.views or 0) for video, _ in rows]
+        count = len(views)
+        avg_views = sum(views) / count
+        viral_rate = round(100.0 * sum(v >= VIRAL_THRESHOLD for v in views) / count, 1)
+        sounds = len({_sound_id(video, camp) for video, camp in rows} - {"unknown"})
+        millionaires = sum(v >= MILLION for v in views)
+        result.append(BreakerRow(
+            account=f"@{account}", posts=count, avg_views=round(avg_views),
+            median_views=_median(views), peak_views=max(views), viral_rate=viral_rate,
+            millionaires=millionaires, distinct_sounds=sounds, total_views=sum(views),
+            score_ceiling=_score_ceiling(viral_rate, avg_views),
+            score_volume=_score_volume(millionaires, count, sounds),
+            score_balanced=_score_balanced(viral_rate, avg_views, count, sounds),
+        ))
+    score = {"ceiling": "score_ceiling", "volume": "score_volume"}.get(lens, "score_balanced")
+    result.sort(key=lambda row: (-getattr(row, score), row.account))
     return [asdict(row) for row in result[:limit]]
-
-
-def _account_medians(session: Session, min_posts: int) -> Dict[str, int]:
-    """Compute per-account median views (small dataset, done in Python)."""
-    rows = (
-        session.query(MatchedVideo.account, MatchedVideo.views)
-        .filter(MatchedVideo.dismissed_at.is_(None))
-        .filter(MatchedVideo.views > 0)
-        .filter(MatchedVideo.account != "")
-        .all()
-    )
-    buckets: Dict[str, List[int]] = {}
-    for account, views in rows:
-        buckets.setdefault(account, []).append(int(views or 0))
-    return {
-        acct: _median(vals)
-        for acct, vals in buckets.items()
-        if len(vals) >= min_posts
-    }
 
 
 def rebook_suggestions(
@@ -206,32 +192,32 @@ def rebook_suggestions(
 
     # 2. Booking history per creator: how many campaigns, posts owed vs done,
     #    and when they were last booked (Campaign.created_at).
-    booking_rows = (
-        session.query(
-            Creator.username.label("username"),
-            func.count(func.distinct(Creator.campaign_id)).label("campaigns_booked"),
-            func.coalesce(func.sum(Creator.posts_owed), 0).label("posts_owed"),
-            func.coalesce(func.sum(Creator.posts_done), 0).label("posts_done"),
-            func.max(Campaign.created_at).label("last_booked"),
-        )
-        .join(Campaign, Campaign.id == Creator.campaign_id)
-        .filter(Creator.status != "removed")
-        .group_by(Creator.username)
-        .all()
-    )
-    booking_by_user: Dict[str, Any] = {
-        (b.username or "").lstrip("@").lower(): b for b in booking_rows
-    }
+    booking_rows = session.query(Creator, Campaign).join(
+        Campaign, Campaign.id == Creator.campaign_id,
+    ).filter(Creator.status != "removed", _tiktok(Creator.platform)).all()
+    booking_by_user = {}
+    for creator, camp in booking_rows:
+        key = normalize_username(creator.username)
+        booking = booking_by_user.setdefault(key, {
+            "campaigns": set(), "posts_owed": 0, "posts_done": 0, "last_booked": None,
+        })
+        booking["campaigns"].add(camp.id)
+        booking["posts_owed"] += creator.posts_owed or 0
+        booking["posts_done"] += creator.posts_done or 0
+        if camp.created_at is not None and (
+            booking["last_booked"] is None or camp.created_at > booking["last_booked"]
+        ):
+            booking["last_booked"] = camp.created_at
 
     now = datetime.now()
     suggestions: List[Dict[str, Any]] = []
     for b in breakers:
-        key = (b["account"] or "").lstrip("@").lower()
+        key = normalize_username(b["account"])
         bk = booking_by_user.get(key)
-        campaigns_booked = int(bk.campaigns_booked) if bk else 0
-        posts_owed = int(bk.posts_owed) if bk else 0
-        posts_done = int(bk.posts_done) if bk else 0
-        last_booked = bk.last_booked if bk else None
+        campaigns_booked = len(bk["campaigns"]) if bk else 0
+        posts_owed = int(bk["posts_owed"]) if bk else 0
+        posts_done = int(bk["posts_done"]) if bk else 0
+        last_booked = bk["last_booked"] if bk else None
         days_since = (now - last_booked).days if last_booked else None
         # Reliability: did they deliver what they owed? (caps at 1.0)
         repeat_rate = round(min(posts_done / posts_owed, 1.0), 2) if posts_owed else 0.0
@@ -240,7 +226,7 @@ def rebook_suggestions(
         # or gone cold. Score the OPPORTUNITY: high breaker score, low bookings,
         # long since last booked, reliable when booked.
         breaker_score = b["score_balanced"]
-        recency_boost = min((days_since or 365) / 90.0, 2.0)   # colder = higher
+        recency_boost = min((days_since if days_since is not None else 365) / 90.0, 2.0)
         scarcity_boost = 2.0 if campaigns_booked <= 2 else (1.0 if campaigns_booked <= 5 else 0.4)
         opportunity = round(breaker_score * (0.5 + 0.25 * recency_boost + 0.25 * scarcity_boost) * (0.6 + 0.4 * repeat_rate), 1)
 
@@ -277,16 +263,13 @@ def creator_drilldown(
     campaigns this creator appears in. This is a slower network call, so it's
     opt-in.
     """
-    norm = account if account.startswith("@") else f"@{account}"
+    key = normalize_username(account)
+    if not key:
+        return None
+    norm = f"@{key}"
 
-    videos = (
-        session.query(MatchedVideo, Campaign)
-        .join(Campaign, MatchedVideo.campaign_id == Campaign.id)
-        .filter(MatchedVideo.account == norm)
-        .filter(MatchedVideo.dismissed_at.is_(None))
-        .filter(MatchedVideo.views > 0)
-        .all()
-    )
+    videos = [(video, camp) for video, camp in _eligible_posts(session)
+              if normalize_username(video.account) == key]
     if not videos:
         return None
 
@@ -296,11 +279,11 @@ def creator_drilldown(
     millionaires = sum(1 for x in all_views if x >= MILLION)
 
     # Per-sound rollup, with lifecycle timing vs the campaign start_date.
-    sounds: Dict[str, Dict[str, Any]] = {}
+    sounds: Dict[tuple, Dict[str, Any]] = {}
     for v, camp in videos:
-        sid = v.extracted_sound_id or camp.sound_id or "unknown"
+        sid = _sound_id(v, camp)
         bucket = sounds.setdefault(
-            sid,
+            (sid, camp.slug),
             {
                 "sound_id": sid,
                 "sound_title": v.extracted_song_title or camp.song or "",
@@ -321,6 +304,7 @@ def creator_drilldown(
             bucket["days_after_start"] = days if prev is None else min(prev, days)
 
     sound_list = sorted(sounds.values(), key=lambda s: s["peak_views"], reverse=True)
+    distinct_sounds = len({s["sound_id"] for s in sound_list} - {"unknown"})
     for s in sound_list:
         d = s["days_after_start"]
         # "scout" = posted before the campaign officially started (on the sound
@@ -340,17 +324,17 @@ def creator_drilldown(
         "peak_views": max(all_views),
         "viral_rate": round(100.0 * viral / posts, 1),
         "millionaires": millionaires,
-        "distinct_sounds": len(sounds),
+        "distinct_sounds": distinct_sounds,
         "early_adopter_rate": round(
-            100.0 * sum(1 for s in sound_list if s["timing"] in ("scout", "early")) / len(sound_list), 1
-        ) if sound_list else 0.0,
+            100.0 * len({s["sound_id"] for s in sound_list if s["sound_id"] != "unknown" and s["timing"] in ("scout", "early")}) / distinct_sounds, 1
+        ) if distinct_sounds else 0.0,
         "sounds": sound_list,
         "view_distribution": _distribution(all_views),
         "score_balanced": _score_balanced(
             round(100.0 * viral / posts, 1),
             sum(all_views) / posts,
             posts,
-            len(sounds),
+            distinct_sounds,
         ),
         "outcomes": None,
     }
@@ -508,43 +492,31 @@ def list_sounds(session: Session, limit: int = 300) -> List[Dict[str, Any]]:
     BEFORE it takes off — fit relies on artist + general-breaker signal, not
     on-sound proof. A "saturated" sound already has broad coverage.
     """
-    rows = (
-        session.query(
-            Campaign.sound_id.label("sound_id"),
-            Campaign.artist.label("artist"),
-            Campaign.song.label("song"),
-            Campaign.slug.label("slug"),
-        )
-        .filter(Campaign.sound_id != "")
-        .all()
-    )
+    campaigns = session.query(Campaign).order_by(
+        Campaign.created_at.desc(), Campaign.slug,
+    ).all()
+    rows = [camp for camp in campaigns if camp.sound_id]
+    post_counts = {}
+    for video, camp in _eligible_posts(session, campaigns):
+        sid = _sound_id(video, camp)
+        post_counts[sid] = post_counts.get(sid, 0) + 1
 
-    # Per-sound matched-post counts (how broadly the sound has been posted).
-    post_counts = dict(
-        session.query(MatchedVideo.extracted_sound_id, func.count())
-        .filter(MatchedVideo.extracted_sound_id != "")
-        .filter(MatchedVideo.dismissed_at.is_(None))
-        .filter(MatchedVideo.views > 0)
-        .group_by(MatchedVideo.extracted_sound_id)
-        .all()
-    )
-
-    seen: Dict[str, Dict[str, Any]] = {}
+    sounds: List[Dict[str, Any]] = []
     for r in rows:
-        if r.sound_id in seen:
-            continue
         n = int(post_counts.get(r.sound_id, 0))
-        seen[r.sound_id] = {
+        sounds.append({
             "sound_id": r.sound_id,
             "artist": r.artist or "",
             "song": r.song or "",
             "campaign_slug": r.slug,
+            "round": r.round or "",
+            "start_date": r.start_date or "",
             "post_count": n,
             "freshness": "fresh" if n < 5 else "warm" if n < 40 else "saturated",
-        }
+        })
     # Fresh sounds first (that's where the picker adds the most value), then by activity.
     return sorted(
-        seen.values(),
+        sounds,
         key=lambda s: (0 if s["freshness"] == "fresh" else 1, -s["post_count"]),
     )[:limit]
 
@@ -560,6 +532,7 @@ def sound_fit(
     session: Session,
     sound_id: str,
     limit: int = 40,
+    campaign_slug: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Rank creators by fit for a specific target sound.
 
@@ -572,53 +545,31 @@ def sound_fit(
     from collapsing to the base ranking. A creator who hit 150K on the sound
     ranks far above one who hit 26 views, even though both "broke" it.
     """
-    target = (
-        session.query(Campaign)
-        .filter(Campaign.sound_id == sound_id)
-        .first()
-    )
-    if target is None:
+    campaigns = session.query(Campaign).all()
+    targets = [camp for camp in campaigns if camp.sound_id == sound_id
+               and (campaign_slug is None or camp.slug == campaign_slug)]
+    if not targets:
         return None
+    target = max(targets, key=lambda camp: (camp.created_at or datetime.min, camp.slug))
     artist = (target.artist or "").strip().lower()
-
-    # General breaker scores (the base ability).
-    base = {r["account"]: r for r in breaker_leaderboard(session, lens="balanced", limit=1000)}
-
-    # Per-creator AVG VIEWS on this exact sound (not just presence).
-    exact_perf: Dict[str, float] = {
-        a: float(avg or 0)
-        for a, avg in session.query(
-            MatchedVideo.account, func.avg(MatchedVideo.views)
-        )
-        .filter(MatchedVideo.extracted_sound_id == sound_id)
-        .filter(MatchedVideo.dismissed_at.is_(None))
-        .filter(MatchedVideo.views > 0)
-        .group_by(MatchedVideo.account)
-        .all()
-    }
-
-    # Per-creator avg views across this artist's OTHER sounds.
-    artist_perf: Dict[str, float] = {}
-    if artist:
-        artist_sound_ids = {
-            sid for (sid,) in session.query(Campaign.sound_id)
-            .filter(func.lower(Campaign.artist) == artist)
-            .filter(Campaign.sound_id != "")
-            .filter(Campaign.sound_id != sound_id)
-            .all()
-        }
-        if artist_sound_ids:
-            artist_perf = {
-                a: float(avg or 0)
-                for a, avg in session.query(
-                    MatchedVideo.account, func.avg(MatchedVideo.views)
-                )
-                .filter(MatchedVideo.extracted_sound_id.in_(artist_sound_ids))
-                .filter(MatchedVideo.dismissed_at.is_(None))
-                .filter(MatchedVideo.views > 0)
-                .group_by(MatchedVideo.account)
-                .all()
-            }
+    posts = _eligible_posts(session, campaigns)
+    base = {row["account"]: row for row in breaker_leaderboard(
+        session, lens="balanced", limit=None, _posts=posts,
+    )}
+    exact_views = {}
+    artist_views = {}
+    artist_sound_ids = {camp.sound_id for camp in campaigns
+                        if artist and (camp.artist or "").strip().lower() == artist
+                        and camp.sound_id and camp.sound_id != sound_id}
+    for video, camp in posts:
+        account = f"@{normalize_username(video.account)}"
+        sid = _sound_id(video, camp)
+        if sid == sound_id:
+            exact_views.setdefault(account, []).append(video.views)
+        elif sid in artist_sound_ids:
+            artist_views.setdefault(account, []).append(video.views)
+    exact_perf = {account: sum(views) / len(views) for account, views in exact_views.items()}
+    artist_perf = {account: sum(views) / len(views) for account, views in artist_views.items()}
 
     ranked: List[Dict[str, Any]] = []
     for account, row in base.items():
