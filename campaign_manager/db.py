@@ -1072,9 +1072,20 @@ def _is_round_sibling(other, meta: Dict) -> bool:
     """True when ``other`` is another round of the same artist+song as ``meta``.
 
     The Notion intake path only relaxes the duplicate-sound guard for a repeat
-    booking: the same artist and song, arriving under a different round or a
-    different CRM page. Any other sound reuse (a different song) is refused.
+    booking: another row in the same base-slug round family with the same
+    artist and song, arriving under a different round or CRM page. An
+    unrelated title cannot borrow the sound just because the artist and song
+    happen to match.
     """
+    base_slug = meta.get("_round_base_slug")
+    other_slug = other.slug or ""
+    prefix = f"{base_slug}_round_" if base_slug else ""
+    if not base_slug or not (other_slug == base_slug or (
+        other_slug.startswith(prefix) and
+        other_slug[len(prefix):].isdigit() and
+        int(other_slug[len(prefix):]) >= 2
+    )):
+        return False
     other_artist = (other.artist or "").strip().lower()
     other_song = (other.song or "").strip().lower()
     meta_artist = (meta.get("artist") or "").strip().lower()
@@ -1227,6 +1238,8 @@ def save_campaign(slug: str, meta: Dict, *, expected_official_sound: Optional[st
                 # or any other new page keeps the one-sound-per-campaign guard.
                 allow_round_sibling_sound = allow_round_sibling_sound and round_path
                 meta = {**meta, "slug": slug}
+                if allow_round_sibling_sound:
+                    meta["_round_base_slug"] = base
             candidate_url = _canonical_sound_url(meta.get("official_sound") or "")
             guarded_sound_write = candidate_url is not None and expected_official_sound is not None
             if guarded_sound_write and s.bind and s.bind.dialect.name == "postgresql":

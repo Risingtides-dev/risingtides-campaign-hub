@@ -523,6 +523,33 @@ def test_different_title_dated_new_page_reusing_sound_is_refused(client, db, pat
     assert db.get_campaign_slugs() == ["big_moochie_grape_still_signed_to_dolph"]
 
 
+@pytest.mark.parametrize("path", ["webhook", "sync"])
+def test_round_path_cannot_reuse_unrelated_title_sound(client, db, path):
+    """An existing base slug does not make every same-song sound its sibling."""
+    base = "big_moochie_grape_still_signed_to_dolph"
+    base_sound = "https://www.tiktok.com/music/base-2234567890123456789"
+    assert _post_webhook(client, "page-r1", sound=base_sound).status_code == 201
+    unrelated = _entry("page-other-title", title="Retyped campaign title",
+                       sound=SOUND, start_date="2026-10-28")
+    unrelated["slug"] = "retyped_campaign_title"
+    assert db.save_campaign(unrelated["slug"], unrelated,
+                            expected_official_sound="") == "updated"
+
+    if path == "webhook":
+        response = _post_webhook(client, "page-r2", round_value="Round 2",
+                                 sound=SOUND, start_date="2026-11-03")
+        assert response.status_code == 409, response.get_json()
+        assert response.get_json()["code"] == "duplicate"
+    else:
+        candidate = _entry("page-r2", round_value="Round 2", sound=SOUND,
+                           start_date="2026-11-03")
+        body = _post_sync(client, [candidate]).get_json()
+        assert any(row["reason"] == "duplicate sound URL" for row in body["skipped"]), body
+
+    assert db.get_campaign(f"{base}_round_2") is None
+    assert db.get_campaign(unrelated["slug"])["official_sound"] == SOUND
+
+
 def test_occupied_explicit_round_takes_next_free_slug_and_keeps_crm_label(client, db, caplog):
     """Two different CRM pages both labelled 'Round 2': the second is still a
     paid booking. It gets the next free round slug, keeps the CRM label
