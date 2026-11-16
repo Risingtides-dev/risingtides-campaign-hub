@@ -10,6 +10,7 @@ import {
 } from "@tanstack/react-table"
 import { ArrowUpDown, ArrowUp, ArrowDown, Pencil, Trash2, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { CopyButton } from "./CopyButton"
 import { Input } from "@/components/ui/input"
 import {
   Table,
@@ -437,6 +438,9 @@ export function CreatorsTable({
           return (
             <div className="flex items-center gap-2">
               <span className="text-[13px]">{c.paypal_email || "\u2014"}</span>
+              {c.paypal_email && (
+                <CopyButton value={c.paypal_email} label={`Copy @${c.username}'s PayPal`} />
+              )}
               <PaidToggle creator={c} onToggle={onTogglePaid} />
             </div>
           )

@@ -1,7 +1,6 @@
 import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
-import { CopyButton } from "./CopyButton"
 import { METHOD_LABEL, money, payoutAdmin } from "@/lib/payouts"
 import { usePayoutSessionIsActive, usePayoutSessionPrefix } from "@/lib/payoutSession"
 import type { BatchItem, PayoutBatch } from "@/lib/payouts"
@@ -82,7 +81,6 @@ function ItemRow({ item, draft, busy, paypalEnv, manualEnabled, onRemove, onMark
         <button type="button" className="font-mono hover:text-rt-fg" onClick={() => void copy(item.destination)} title="Copy">
           {item.destination}
         </button>
-        <CopyButton value={item.destination} label={`Copy @${item.username}'s payment info`} />
       </td>
       <td className="px-3 py-2 text-right text-rt-fg whitespace-nowrap">
         <button type="button" onClick={() => void copy(item.amount.toFixed(2))} title="Copy amount">

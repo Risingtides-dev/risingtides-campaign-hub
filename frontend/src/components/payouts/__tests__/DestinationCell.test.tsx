@@ -41,22 +41,3 @@ describe("DestinationCell", () => {
     expect(toast.success).not.toHaveBeenCalled()
   })
 })
-
-describe("DestinationCell copy button", () => {
-  it("copies the PayPal email in one click", async () => {
-    const user = userEvent.setup()
-    const writeText = vi.spyOn(navigator.clipboard, "writeText")
-    render(<DestinationCell row={row} adminKey="synthetic-key" onSaved={vi.fn()} />)
-    await user.click(screen.getByRole("button", { name: "Copy @alice's payment info" }))
-    expect(writeText).toHaveBeenCalledWith("original@example.invalid")
-    expect(toast.success).toHaveBeenCalledWith("Copied original@example.invalid")
-  })
-
-  it("copies the booking email too", async () => {
-    const user = userEvent.setup()
-    const writeText = vi.spyOn(navigator.clipboard, "writeText")
-    render(<DestinationCell row={{ ...row, destination: "", booking_destination: "booked@example.invalid" }} adminKey="synthetic-key" onSaved={vi.fn()} />)
-    await user.click(screen.getByRole("button", { name: "Copy @alice's booking payment info" }))
-    expect(writeText).toHaveBeenCalledWith("booked@example.invalid")
-  })
-})

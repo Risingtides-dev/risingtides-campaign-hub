@@ -2,7 +2,6 @@
 // inline, and offers the old booking email as a one-click "Use this".
 import { useState } from "react"
 import { toast } from "sonner"
-import { CopyButton } from "./CopyButton"
 import { METHOD_LABEL, PAYOUT_METHODS, guessMethod, payoutAdmin } from "@/lib/payouts"
 import { usePayoutSessionIsActive } from "@/lib/payoutSession"
 import type { PayoutMethod, QueueRow } from "@/lib/payouts"
@@ -91,15 +90,13 @@ export function DestinationCell({ row, adminKey, onSaved }: Props) {
     <div className="text-xs">
       {row.destination ? (
         <span className="text-rt-fg-secondary">
-          {METHOD_LABEL[row.method] ?? row.method} <span className="font-mono">{row.destination}</span>{" "}
-          <CopyButton value={row.destination} label={`Copy @${row.handle}'s payment info`} />
+          {METHOD_LABEL[row.method] ?? row.method} <span className="font-mono">{row.destination}</span>
         </span>
       ) : null}
       {issue && <div className={issue.cls}>{issue.text}</div>}
       {row.booking_destination && (
         <div className="text-rt-fg-tertiary">
           On booking: <span className="font-mono">{row.booking_destination}</span>{" "}
-          <CopyButton value={row.booking_destination} label={`Copy @${row.handle}'s booking payment info`} />{" "}
           <button
             type="button"
             disabled={saving}

@@ -1,5 +1,5 @@
-// One-click copy icon for payment details (PayPal emails, Venmo/Cash App
-// handles) so Jake never has to highlight text to copy it.
+// One-click copy icon for a creator's PayPal email in the campaign creators
+// table, so Jake never has to highlight text to copy it.
 import { useEffect, useState } from "react"
 import { Check, Copy } from "lucide-react"
 import { toast } from "sonner"
