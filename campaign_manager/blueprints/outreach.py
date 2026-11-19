@@ -30,6 +30,8 @@ def add_to_network():
     try:
         creator = db.add_network_creator(data)
         return jsonify({"ok": True, "creator": creator})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         if "unique" in str(e).lower() or "duplicate" in str(e).lower():
             return jsonify({"error": f"@{data['username']} is already in the network"}), 409
@@ -40,7 +42,10 @@ def add_to_network():
 def edit_network_creator(username):
     """Edit a network creator."""
     data = request.get_json(force=True)
-    result = db.update_network_creator(username, data)
+    try:
+        result = db.update_network_creator(username, data)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     if not result:
         return jsonify({"error": "Creator not found"}), 404
     return jsonify({"ok": True, "creator": result})
@@ -91,7 +96,10 @@ def add_to_outreach(slug):
 
     data = request.get_json(force=True)
     creators = data if isinstance(data, list) else data.get("creators", [])
-    added = db.add_outreach_messages(campaign_id, creators)
+    try:
+        added = db.add_outreach_messages(campaign_id, creators)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     return jsonify({"ok": True, "added": len(added), "messages": added})
 
 

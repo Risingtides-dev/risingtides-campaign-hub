@@ -2170,6 +2170,54 @@ def reap_orphaned_cron_logs(threshold_minutes: int = 30) -> List[int]:
     return reaped
 
 
+# ── Network / Outreach input validation ───────────────────────────────
+
+import math as _math
+
+
+def _normalize_handle(value) -> str:
+    """Strip whitespace and leading @ then lowercase; raise ValueError if empty."""
+    if not isinstance(value, str):
+        raise ValueError("username must be a string")
+    normalized = value.strip().lstrip("@").strip().lower()
+    if not normalized:
+        raise ValueError("username must be a non-empty handle")
+    return normalized
+
+
+def _validate_rate(value, label: str = "rate") -> float:
+    """Return a finite non-negative float; reject booleans, nonfinite, negative."""
+    if isinstance(value, bool):
+        raise ValueError(f"{label} must be a number, not a boolean")
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{label} must be a numeric value")
+    if not _math.isfinite(v):
+        raise ValueError(f"{label} must be a finite number (got {value!r})")
+    if v < 0:
+        raise ValueError(f"{label} must be >= 0 (got {value!r})")
+    return v
+
+
+def _validate_posts(value, label: str = "posts") -> int:
+    """Return a positive integer; reject booleans, fractional, non-positive."""
+    if isinstance(value, bool):
+        raise ValueError(f"{label} must be an integer, not a boolean")
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{label} must be a numeric value")
+    if not _math.isfinite(f):
+        raise ValueError(f"{label} must be a finite number")
+    if f != int(f):
+        raise ValueError(f"{label} must be a whole number (got {value!r})")
+    v = int(f)
+    if v <= 0:
+        raise ValueError(f"{label} must be a positive integer (got {v!r})")
+    return v
+
+
 # ── Network Creators ─────────────────────────────────────────────────
 
 def get_network_creators() -> List[Dict]:
@@ -2190,15 +2238,21 @@ def get_network_creator(username: str) -> Optional[Dict]:
 
 def add_network_creator(data: Dict) -> Dict:
     """Add a creator to the network. Returns the created record."""
+    username = _normalize_handle(data.get("username", ""))
+    default_rate = _validate_rate(data.get("default_rate", 0), "default_rate")
+    default_posts = _validate_posts(data.get("default_posts", 1), "default_posts")
+    niches = data.get("niches", [])
+    if not isinstance(niches, list):
+        raise ValueError("niches must be a list")
     with get_session() as s:
         c = NetworkCreator(
-            username=data["username"].strip().lstrip("@").lower(),
+            username=username,
             platform=data.get("platform", "tiktok"),
-            default_rate=float(data.get("default_rate", 0)),
-            default_posts=int(data.get("default_posts", 1)),
+            default_rate=default_rate,
+            default_posts=default_posts,
             paypal_email=data.get("paypal_email", ""),
             manychat_subscriber_id=data.get("manychat_subscriber_id", ""),
-            niches=data.get("niches", []),
+            niches=niches,
             notes=data.get("notes", ""),
             added_at=datetime.now(),
         )
@@ -2210,6 +2264,14 @@ def add_network_creator(data: Dict) -> Dict:
 
 def update_network_creator(username: str, data: Dict) -> Optional[Dict]:
     """Update a network creator's fields."""
+    if "default_rate" in data:
+        data = {**data, "default_rate": _validate_rate(data["default_rate"], "default_rate")}
+    if "default_posts" in data:
+        data = {**data, "default_posts": _validate_posts(data["default_posts"], "default_posts")}
+    if "username" in data:
+        data = {**data, "username": _normalize_handle(data["username"])}
+    if "niches" in data and not isinstance(data["niches"], list):
+        raise ValueError("niches must be a list")
     with get_session() as s:
         c = s.query(NetworkCreator).filter(
             NetworkCreator.username.ilike(username)
@@ -2254,21 +2316,37 @@ def get_outreach_message(campaign_id: int, username: str) -> Optional[Dict]:
 
 
 def add_outreach_messages(campaign_id: int, creators: List[Dict]) -> List[Dict]:
-    """Add draft outreach messages for a list of creators."""
+    """Add draft outreach messages for a list of creators.
+
+    Validates every entry before any write so the batch is atomic: if any
+    item is malformed the whole call raises ValueError and nothing is stored.
+    """
+    if not isinstance(creators, list):
+        raise ValueError("creators must be a list")
+    normalized = []
+    for i, cr in enumerate(creators):
+        if not isinstance(cr, dict):
+            raise ValueError(
+                f"each creator must be an object (index {i} is {type(cr).__name__})"
+            )
+        username = _normalize_handle(cr.get("username", ""))
+        rate = _validate_rate(cr.get("rate", 0), "rate")
+        posts = _validate_posts(cr.get("posts", 1), "posts")
+        normalized.append({"username": username, "rate": rate, "posts": posts})
+
     added = []
     with get_session() as s:
-        for cr in creators:
-            username = cr["username"].strip().lstrip("@").lower()
+        for item in normalized:
             existing = s.query(OutreachMessage).filter_by(
-                campaign_id=campaign_id, username=username
+                campaign_id=campaign_id, username=item["username"]
             ).first()
             if existing:
                 continue
             m = OutreachMessage(
                 campaign_id=campaign_id,
-                username=username,
-                rate_offered=float(cr.get("rate", 0)),
-                posts_offered=int(cr.get("posts", 1)),
+                username=item["username"],
+                rate_offered=item["rate"],
+                posts_offered=item["posts"],
                 status="draft",
             )
             s.add(m)
