@@ -141,11 +141,13 @@ def send_outreach(slug):
         if not msg:
             continue
 
+        rate_val = float(msg["rate_offered"])
+        rate_str = f"{rate_val:.2f}".rstrip("0").rstrip(".")
         personalized = message_template\
             .replace("{creator}", username)\
             .replace("{artist}", campaign.get("artist", ""))\
             .replace("{song}", campaign.get("song", ""))\
-            .replace("{rate}", str(int(msg["rate_offered"])))\
+            .replace("{rate}", rate_str)\
             .replace("{posts}", str(msg["posts_offered"]))
 
         if nc and nc.get("manychat_subscriber_id"):
