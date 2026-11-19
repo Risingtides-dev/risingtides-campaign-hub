@@ -25,11 +25,15 @@ def list_network():
 def add_to_network():
     """Add a creator to the network."""
     data = request.get_json(force=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "creator must be an object"}), 400
     if not data.get("username"):
         return jsonify({"error": "username is required"}), 400
     try:
         creator = db.add_network_creator(data)
         return jsonify({"ok": True, "creator": creator})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         if "unique" in str(e).lower() or "duplicate" in str(e).lower():
             return jsonify({"error": f"@{data['username']} is already in the network"}), 409
@@ -40,7 +44,10 @@ def add_to_network():
 def edit_network_creator(username):
     """Edit a network creator."""
     data = request.get_json(force=True)
-    result = db.update_network_creator(username, data)
+    try:
+        result = db.update_network_creator(username, data)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     if not result:
         return jsonify({"error": "Creator not found"}), 404
     return jsonify({"ok": True, "creator": result})
@@ -90,8 +97,11 @@ def add_to_outreach(slug):
         return jsonify({"error": "Campaign not found"}), 404
 
     data = request.get_json(force=True)
-    creators = data if isinstance(data, list) else data.get("creators", [])
-    added = db.add_outreach_messages(campaign_id, creators)
+    creators = data if isinstance(data, list) else data.get("creators", []) if isinstance(data, dict) else None
+    try:
+        added = db.add_outreach_messages(campaign_id, creators)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     return jsonify({"ok": True, "added": len(added), "messages": added})
 
 
@@ -149,6 +159,8 @@ def send_outreach(slug):
             .replace("{posts}", str(msg["posts_offered"]))
 
         if nc and nc.get("manychat_subscriber_id"):
+            if not db.claim_outreach_delivery(campaign_id, username, personalized):
+                continue  # another request already owns this draft's attempt
             # Send via ManyChat API if key is configured
             mc_success = False
             if manychat_key:
@@ -167,21 +179,17 @@ def send_outreach(slug):
                         timeout=10,
                     )
                     if mc_resp.status_code == 200:
-                        mc_success = True
                         mc_data = mc_resp.json()
+                        mc_success = True
                         log.info("ManyChat sent to %s: %s", username, mc_data)
                     else:
                         log.warning("ManyChat error for %s: %s %s", username, mc_resp.status_code, mc_resp.text)
                         errors.append({"username": username, "error": f"ManyChat API error: {mc_resp.status_code}"})
                 except Exception as e:
-                    log.error("ManyChat request failed for %s: %s", username, e)
-                    errors.append({"username": username, "error": f"ManyChat request failed: {str(e)}"})
+                    log.error("ManyChat delivery outcome unknown for %s", username)
+                    errors.append({"username": username, "error": "Delivery outcome unknown; reconcile before retry"})
+            db.finish_outreach_delivery(campaign_id, username, mc_success)
             if mc_success:
-                db.update_outreach_message(campaign_id, username, {
-                    "status": "sent",
-                    "message_text": personalized,
-                    "sent_at": datetime.now(),
-                })
                 sent.append(username)
         else:
             errors.append({"username": username, "error": "No ManyChat subscriber ID"})

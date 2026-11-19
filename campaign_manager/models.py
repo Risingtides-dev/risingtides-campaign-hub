@@ -459,7 +459,7 @@ class OutreachMessage(Base):
     rate_offered = Column(Float, default=0.0)
     posts_offered = Column(Integer, default=1)
     message_text = Column(Text, default="")
-    status = Column(String(20), default="draft", index=True)  # draft|sent|responded|accepted|declined|expired
+    status = Column(String(20), default="draft", index=True)  # draft|sending|unknown|sent|responded|accepted|declined|expired
     sent_at = Column(DateTime, nullable=True)
     responded_at = Column(DateTime, nullable=True)
     manychat_message_id = Column(String(100), default="")

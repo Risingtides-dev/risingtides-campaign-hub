@@ -379,7 +379,7 @@ export interface OutreachMessage {
   rate_offered: number
   posts_offered: number
   message_text: string
-  status: "draft" | "sent" | "responded" | "accepted" | "declined" | "expired" | "posted" | "verified"
+  status: "draft" | "sending" | "unknown" | "sent" | "responded" | "accepted" | "declined" | "expired" | "posted" | "verified"
   sent_at: string
   responded_at: string
   manychat_message_id: string
