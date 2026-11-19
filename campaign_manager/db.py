@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+import math
 from contextlib import contextmanager
 from pathlib import Path
 import tempfile
@@ -2172,6 +2173,46 @@ def reap_orphaned_cron_logs(threshold_minutes: int = 30) -> List[int]:
 
 # ── Network Creators ─────────────────────────────────────────────────
 
+def _outreach_username(value):
+    if not isinstance(value, str) or not value.strip().lstrip("@") or len(value.strip().lstrip("@")) > 255:
+        raise ValueError("username must be a nonempty handle of at most 255 characters")
+    return value.strip().lstrip("@").lower()
+
+
+def _outreach_rate(value, field):
+    try:
+        rate = float(value)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError(f"{field} must be a finite nonnegative amount") from None
+    if isinstance(value, bool) or not math.isfinite(rate) or rate < 0:
+        raise ValueError(f"{field} must be a finite nonnegative amount")
+    return rate
+
+
+def _outreach_posts(value, field):
+    try:
+        count = int(value)
+        exact = float(value) == count
+    except (TypeError, ValueError, OverflowError):
+        exact = False
+        count = 0
+    if isinstance(value, bool) or not exact or not 1 <= count <= 2147483647:
+        raise ValueError(f"{field} must be a positive integer")
+    return count
+
+
+def _network_data(data):
+    if not isinstance(data, dict):
+        raise ValueError("creator must be an object")
+    values = dict(data)
+    if "username" in values:
+        values["username"] = _outreach_username(values["username"])
+    if "default_rate" in values:
+        values["default_rate"] = _outreach_rate(values["default_rate"], "default_rate")
+    if "default_posts" in values:
+        values["default_posts"] = _outreach_posts(values["default_posts"], "default_posts")
+    return values
+
 def get_network_creators() -> List[Dict]:
     """Get all creators in the network roster."""
     with get_session() as s:
@@ -2190,6 +2231,8 @@ def get_network_creator(username: str) -> Optional[Dict]:
 
 def add_network_creator(data: Dict) -> Dict:
     """Add a creator to the network. Returns the created record."""
+    data = _network_data(data)
+    data["username"] = _outreach_username(data.get("username"))
     with get_session() as s:
         c = NetworkCreator(
             username=data["username"].strip().lstrip("@").lower(),
@@ -2210,6 +2253,7 @@ def add_network_creator(data: Dict) -> Dict:
 
 def update_network_creator(username: str, data: Dict) -> Optional[Dict]:
     """Update a network creator's fields."""
+    data = _network_data(data)
     with get_session() as s:
         c = s.query(NetworkCreator).filter(
             func.lower(NetworkCreator.username) == username.strip().lstrip("@").lower()
@@ -2255,6 +2299,12 @@ def get_outreach_message(campaign_id: int, username: str) -> Optional[Dict]:
 
 def add_outreach_messages(campaign_id: int, creators: List[Dict]) -> List[Dict]:
     """Add draft outreach messages for a list of creators."""
+    if not isinstance(creators, list) or any(not isinstance(cr, dict) for cr in creators):
+        raise ValueError("creators must be a list of objects")
+    # Validate the whole batch before opening a write transaction.
+    creators = [dict(cr, username=_outreach_username(cr.get("username")),
+                     rate=_outreach_rate(cr.get("rate", 0), "rate"),
+                     posts=_outreach_posts(cr.get("posts", 1), "posts")) for cr in creators]
     added = []
     with get_session() as s:
         for cr in creators:
@@ -2318,6 +2368,26 @@ def mark_outreach_sent(campaign_id: int, usernames: List[str], message_text: str
                 sent.append(m.username)
         s.commit()
     return sent
+
+
+def claim_outreach_delivery(campaign_id: int, username: str, message_text: str) -> bool:
+    """Commit the row's single send attempt before contacting the provider."""
+    with get_session() as s:
+        changed = s.query(OutreachMessage).filter_by(
+            campaign_id=campaign_id, username=username, status="draft",
+        ).update({"status": "sending", "message_text": message_text}, synchronize_session=False)
+        s.commit()
+        return changed == 1
+
+
+def finish_outreach_delivery(campaign_id: int, username: str, confirmed: bool):
+    """Unknown attempts stay reserved; they never become retryable drafts."""
+    with get_session() as s:
+        s.query(OutreachMessage).filter_by(
+            campaign_id=campaign_id, username=username, status="sending",
+        ).update({"status": "sent" if confirmed else "unknown",
+                  "sent_at": datetime.now() if confirmed else None}, synchronize_session=False)
+        s.commit()
 
 
 def confirm_outreach(campaign_id: int, username: str) -> Optional[Dict]:
