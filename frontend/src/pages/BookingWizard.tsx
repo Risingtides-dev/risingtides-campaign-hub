@@ -132,8 +132,8 @@ export default function BookingWizard() {
     const payload = creators.filter((c) => selected.has(handle(c.account))).map((c) => {
       const username = handle(c.account)
       const rate = rateByCreator.get(username)
-      return rate ? { username, rate: rate.totalRate, posts: rate.posts } : null
-    }).filter((c): c is { username: string; rate: number; posts: number } => c !== null)
+      return rate ? { username, rate: rate.totalRate, posts: rate.posts, platform: "tiktok" as const } : null
+    }).filter((c): c is { username: string; rate: number; posts: number; platform: "tiktok" } => c !== null)
     if (payload.length !== selected.size) {
       setSelected(new Set(payload.map((c) => c.username)))
       toast.error("Creator rates changed. Check your selection before booking.")

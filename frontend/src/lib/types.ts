@@ -376,6 +376,7 @@ export interface OutreachMessage {
   id: number
   campaign_id: number
   username: string
+  platform?: "tiktok" | "instagram" | null
   rate_offered: number
   posts_offered: number
   message_text: string

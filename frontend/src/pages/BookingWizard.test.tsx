@@ -64,7 +64,7 @@ describe("Booking Wizard", () => {
     await userEvent.click(screen.getByRole("button", { name: /@ALIce/ }))
     expect(screen.getByText(/1 selected · 1 posts/)).toBeInTheDocument()
     await userEvent.click(screen.getByRole("button", { name: "Book 1 to outreach" }))
-    expect(mocks.add).toHaveBeenCalledWith("round-one", [{ username: "alice", rate: 25, posts: 1 }])
+    expect(mocks.add).toHaveBeenCalledWith("round-one", [{ username: "alice", rate: 25, posts: 1, platform: "tiktok" }])
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["outreach", "round-one"] })
     expect(mocks.success).toHaveBeenCalledWith("Added 1 creator to Song outreach")
     expect(mocks.navigate).toHaveBeenCalledWith("/campaign/round-one/outreach")
@@ -76,7 +76,7 @@ describe("Booking Wizard", () => {
     await selectAlice()
     expect(screen.getByText("$75")).toBeInTheDocument()
     await userEvent.click(screen.getByRole("button", { name: "Book 1 to outreach" }))
-    expect(mocks.add).toHaveBeenCalledWith("round-one", [{ username: "alice", rate: 75, posts: 3 }])
+    expect(mocks.add).toHaveBeenCalledWith("round-one", [{ username: "alice", rate: 75, posts: 3, platform: "tiktok" }])
   })
   it("uses a genuine network rate when no library rate exists", async () => {
     mocks.library.mockReturnValue(result({ creators: [rate({ rate: null, rate_source: "none" })] }))
@@ -85,7 +85,7 @@ describe("Booking Wizard", () => {
     await pick()
     await selectAlice()
     await userEvent.click(screen.getByRole("button", { name: "Book 1 to outreach" }))
-    expect(mocks.add).toHaveBeenCalledWith("round-one", [{ username: "alice", rate: 10, posts: 3 }])
+    expect(mocks.add).toHaveBeenCalledWith("round-one", [{ username: "alice", rate: 10, posts: 3, platform: "tiktok" }])
   })
   it("preserves a network total quote instead of multiplying it by the post count", async () => {
     mocks.library.mockReturnValue(result({ creators: [] }))
@@ -96,7 +96,7 @@ describe("Booking Wizard", () => {
     expect(screen.getByText("$75")).toBeInTheDocument()
     expect(screen.getByRole("button", { name: /@Alice/ })).toHaveTextContent("$25")
     await userEvent.click(screen.getByRole("button", { name: "Book 1 to outreach" }))
-    expect(mocks.add).toHaveBeenCalledWith("round-one", [{ username: "alice", rate: 75, posts: 3 }])
+    expect(mocks.add).toHaveBeenCalledWith("round-one", [{ username: "alice", rate: 75, posts: 3, platform: "tiktok" }])
   })
   it("can deselect a creator whose rate disappears and still book the valid selection", async () => {
     mocks.library.mockReturnValue(result({ creators: [rate(), rate({ key: "bob", username: "Bob" })] }))
@@ -114,7 +114,7 @@ describe("Booking Wizard", () => {
     expect(invalid).toBeDisabled()
     expect(invalid).toHaveAttribute("aria-pressed", "false")
     await userEvent.click(screen.getByRole("button", { name: "Book 1 to outreach" }))
-    expect(mocks.add).toHaveBeenCalledWith("round-one", [{ username: "bob", rate: 25, posts: 1 }])
+    expect(mocks.add).toHaveBeenCalledWith("round-one", [{ username: "bob", rate: 25, posts: 1, platform: "tiktok" }])
   })
   it("prunes a vanished recommendation on review instead of permanently blocking the remaining selection", async () => {
     mocks.library.mockReturnValue(result({ creators: [rate(), rate({ key: "bob", username: "Bob" })] }))
@@ -129,7 +129,7 @@ describe("Booking Wizard", () => {
     expect(mocks.add).not.toHaveBeenCalled()
     expect(mocks.error).toHaveBeenCalledWith(expect.stringContaining("Check your selection"))
     await userEvent.click(screen.getByRole("button", { name: "Book 1 to outreach" }))
-    expect(mocks.add).toHaveBeenCalledWith("round-one", [{ username: "bob", rate: 25, posts: 1 }])
+    expect(mocks.add).toHaveBeenCalledWith("round-one", [{ username: "bob", rate: 25, posts: 1, platform: "tiktok" }])
   })
   it.each([0, -10, Number.NaN, Number.POSITIVE_INFINITY, null])("blocks invalid explicit library rate %s rather than reviving a network rate", async (value) => {
     mocks.library.mockReturnValue(result({ creators: [rate({ rate: value, rate_source: "override" })] }))
@@ -164,7 +164,7 @@ describe("Booking Wizard", () => {
     expect(screen.getByRole("button", { name: "Book to outreach" })).toBeDisabled()
     await selectAlice()
     await userEvent.click(screen.getByRole("button", { name: "Book 1 to outreach" }))
-    expect(mocks.add).toHaveBeenCalledWith("round-two", [{ username: "alice", rate: 25, posts: 1 }])
+    expect(mocks.add).toHaveBeenCalledWith("round-two", [{ username: "alice", rate: 25, posts: 1, platform: "tiktok" }])
   })
   it("labels identically named rounds and keeps their identity after filtering", async () => {
     const first = { ...sound, round: "1", start_date: "2026-10-01" }
@@ -182,7 +182,7 @@ describe("Booking Wizard", () => {
     expect(mocks.fit).toHaveBeenLastCalledWith("123", "round-two", 1000)
     await selectAlice()
     await userEvent.click(screen.getByRole("button", { name: "Book 1 to outreach" }))
-    expect(mocks.add).toHaveBeenCalledWith("round-two", [{ username: "alice", rate: 25, posts: 1 }])
+    expect(mocks.add).toHaveBeenCalledWith("round-two", [{ username: "alice", rate: 25, posts: 1, platform: "tiktok" }])
   })
   it("reports zero additions as already present without claiming a new booking", async () => {
     mocks.add.mockResolvedValue({ ok: true, added: 0 })
