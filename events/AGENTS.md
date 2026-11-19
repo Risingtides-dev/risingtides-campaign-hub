@@ -2,16 +2,16 @@
 
 ## Purpose
 
-Append-only chronological record of meaningful Campaign Hub repository work.
+Preserved historical dated Campaign Hub work receipts.
 
 ## Ownership
 
-- Each work branch owns its newly created event file; the root AGENTS.md owns current contracts.
+- The root AGENTS.md owns current contracts and canonical root `events.md` owns new chronological entries.
 
 ## Local Contracts
 
-- Create one new `YYYY-MM-DD-HHMM-<branch-slug>.md` per event, with time, agent, worktree, type, area, outcome, verification, and release limitations.
-- Never modify or remove an existing event file. Read history as frozen root `events.md` followed by `events/*.md` in filename order.
+- Preserve existing dated receipts unchanged. Do not create new dated event files.
+- New work appends only to canonical repository-root `events.md`, with 24-hour time and branch attribution; preserve existing locks and hold pending receipts in task scratch when ledger ownership is unavailable.
 
 ## Work Guidance
 
@@ -19,6 +19,6 @@ Append-only chronological record of meaningful Campaign Hub repository work.
 
 ## Verification
 
-- Check that the new filename is unique and `git diff --check` passes.
+- `git diff --check`; verify existing dated receipt files remain unchanged.
 
 ## Child devlog Index

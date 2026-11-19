@@ -111,14 +111,14 @@ def remove_from_outreach(slug):
 
 @outreach_bp.route("/api/campaign/<slug>/outreach/send", methods=["POST"])
 def send_outreach(slug):
-    """Send all draft outreach messages via ManyChat.
-
-    For now this marks drafts as 'sent' and stores the message text.
-    ManyChat integration will be added when the webhook is set up.
-    """
+    """Send draft outreach messages through the configured ManyChat provider."""
     campaign_id = db.get_campaign_id(slug)
     if not campaign_id:
         return jsonify({"error": "Campaign not found"}), 404
+
+    manychat_key = current_app.config.get("MANYCHAT_API_KEY", "")
+    if not isinstance(manychat_key, str) or not manychat_key.strip():
+        return jsonify({"ok": False, "error": "Outreach delivery is not configured", "sent": [], "errors": []}), 503
 
     data = request.get_json(force=True)
     message_template = data.get("message_template", "")
@@ -145,12 +145,11 @@ def send_outreach(slug):
             .replace("{creator}", username)\
             .replace("{artist}", campaign.get("artist", ""))\
             .replace("{song}", campaign.get("song", ""))\
-            .replace("{rate}", str(int(msg["rate_offered"])))\
+            .replace("{rate}", f'{msg["rate_offered"]:.2f}')\
             .replace("{posts}", str(msg["posts_offered"]))
 
         if nc and nc.get("manychat_subscriber_id"):
             # Send via ManyChat API if key is configured
-            manychat_key = current_app.config.get("MANYCHAT_API_KEY", "")
             mc_success = False
             if manychat_key:
                 try:
@@ -177,10 +176,6 @@ def send_outreach(slug):
                 except Exception as e:
                     log.error("ManyChat request failed for %s: %s", username, e)
                     errors.append({"username": username, "error": f"ManyChat request failed: {str(e)}"})
-            else:
-                # No API key — mark as sent anyway (manual follow-up)
-                mc_success = True
-
             if mc_success:
                 db.update_outreach_message(campaign_id, username, {
                     "status": "sent",

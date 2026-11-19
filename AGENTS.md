@@ -12,6 +12,7 @@ Campaign CRM integration, campaign delivery reporting, and creator operations.
 
 ## Local Contracts
 
+- Outreach preserves drafts and returns 503 when its delivery provider key is missing or blank; it never reports an unattempted message as sent. Personalized offers preserve the stored total to two decimal places. Network creator read/update/delete and booking-contact lookup compare normalized literal handles, never SQL wildcard patterns.
 - Payout approval authenticates before dispatch, persists one `sending` attempt and its environment, and makes one funds POST. Unknown outcomes stay reserved and are never sent again. Admin reconciliation uses GET of the original receipt and validates batch/sender identity, complete unique item coverage, cent amounts, currency, recipient type, wallet and destinations before any binding or settlement. Contradictory or incomplete evidence changes no financial state. Closed batches remain refreshable for later reversals, which retain paid history and duplicate reservations under review.
 - Payout settlement marks exactly one normalized campaign/handle/platform booking with the unchanged frozen amount. Missing or ambiguous bookings, changed amounts and existing paid history require review rather than broad updates or automatic repayment. API sandbox outcomes never mark real bookings paid; explicit manual-payment acknowledgments remain real payments even in a mixed sandbox batch. Readiness covers active campaigns only; existing person-level destinations and full-booking early-payment amounts remain unchanged.
 - Payout cache identities use a new opaque session per unlock, with fresh access verification before financial data appears. Lock clears the session's queries, mutations and generated links; stale callbacks and deferred mutations cannot dispatch new requests after the session ends. Clipboard failure preserves a selectable replacement link without claiming success or issuing another link. Payout headings distinguish paid, failed, test, pending and review outcomes; configured credentials alone do not establish provider connectivity or live readiness.
@@ -65,10 +66,11 @@ Campaign CRM integration, campaign delivery reporting, and creator operations.
 ## Work Guidance
 
 - Keep UI controls minimal and use a single menu or accordion for secondary actions. No UI emojis, AI sparkle icons, marketing copy, or redundant instructional labels; preserve concise labels required to identify data, choices and actions.
-- Record meaningful repository work in a new unique `events/YYYY-MM-DD-HHMM-<branch-slug>.md` on the work branch. The legacy root `events.md` is frozen history; never append to or edit an existing event entry.
+- Canonical repository-root `events.md` is the single append-only chronological ledger across worktrees and isolated checkouts. Entries use 24-hour `HH:MM` and identify the branch/ref in `worktree:`. Preserve previous bytes, existing locks and historical dated files; create no new dated event files. If ledger ownership is unavailable, keep the receipt in task scratch until append is permitted.
 
 ## Verification
 
+- Run `python -m pytest -q tests/backend/test_outreach_truth.py tests/backend/test_booking_wizard_quote.py tests/backend/test_db.py::TestNetworkCreators` for provider-unavailable draft preservation, cents-safe offers and literal network identity. All external messaging is mocked.
 - Run `python -m pytest -q tests/backend/test_payout_reconciliation.py tests/backend/test_paypal_receipt_protocol.py tests/backend/test_payout_batches.py tests/backend/test_payout_readiness.py tests/backend/test_blueprints_payouts.py` for no-replay approval, original-receipt verification, guarded settlement and payout-route regressions. Use fake providers and disposable databases; these checks never transfer money. Frontend payout regressions cover opaque sessions, lock/deferred-request races, clipboard recovery, mixed manual/sandbox outcomes and post-error status proof.
 - Run `python -m pytest -q tests/backend/test_booking_wizard_quote.py tests/backend/test_last_rate_platform.py tests/backend/test_db.py tests/backend/test_blueprints_campaigns.py` for total-quote consumer behavior, platform-safe manual rate lookup and existing booking/database routes. Frontend booking and manual-form regressions cover missing/invalid rates, identical campaign titles, stale responses and manual edits.
 - Run `python -m pytest -q tests/backend/test_creator_intelligence_identity.py tests/backend/test_creator_library_platform_rates.py tests/backend/test_creator_library_view.py tests/backend/test_blueprints_creator_library.py` for identity, campaign-round selection, eligible-post/query budgets and platform-safe rate provenance.
@@ -88,4 +90,4 @@ Campaign CRM integration, campaign delivery reporting, and creator operations.
 
 ## Child devlog Index
 
-- `events/` — append-only repository work history and unique event-file rules; governed by `events/AGENTS.md`.
+- `events/` — preserved historical dated receipts; governed by `events/AGENTS.md`. New work uses canonical root `events.md`.
