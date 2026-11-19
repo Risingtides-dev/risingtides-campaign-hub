@@ -456,6 +456,7 @@ class OutreachMessage(Base):
     id = Column(Integer, primary_key=True)
     campaign_id = Column(Integer, ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False, index=True)
     username = Column(String(255), nullable=False, index=True)
+    platform = Column(String(20), default="tiktok")
     rate_offered = Column(Float, default=0.0)
     posts_offered = Column(Integer, default=1)
     message_text = Column(Text, default="")
@@ -473,6 +474,7 @@ class OutreachMessage(Base):
             "id": self.id,
             "campaign_id": self.campaign_id,
             "username": self.username or "",
+            "platform": self.platform or "tiktok",
             "rate_offered": self.rate_offered or 0.0,
             "posts_offered": self.posts_offered or 1,
             "message_text": self.message_text or "",
