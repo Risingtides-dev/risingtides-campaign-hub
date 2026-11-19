@@ -754,6 +754,22 @@ def init(database_url: Optional[str] = None):
     except Exception:
         pass
 
+    # Outreach send-atomicity columns (issue #308).
+    try:
+        import sqlalchemy as sa
+        with _SessionLocal() as s:
+            s.execute(sa.text(
+                "ALTER TABLE outreach_messages "
+                "ADD COLUMN IF NOT EXISTS sending_attempt_id VARCHAR(36) NULL"
+            ))
+            s.execute(sa.text(
+                "ALTER TABLE outreach_messages "
+                "ADD COLUMN IF NOT EXISTS failed_at TIMESTAMP NULL"
+            ))
+            s.commit()
+    except Exception:
+        pass
+
     # Backfill stale tracker_url hosts (CAMP-41 / View-Tracker bug). Some
     # campaigns stored tracker_url with the old frontend-tidestracker.vercel.app
     # host, which pins to stale deploys — "View Tracker" sent users to a dead
@@ -2301,6 +2317,35 @@ def update_outreach_message(campaign_id: int, username: str, updates: Dict) -> O
         s.commit()
         s.refresh(m)
         return m.to_dict()
+
+
+def claim_draft_messages(campaign_id: int, attempt_id: str) -> List[str]:
+    """Atomically claim all draft outreach messages for a send attempt.
+
+    Issues a single UPDATE … WHERE status='draft' under a transaction so
+    that only one concurrent send request can win the claim for any given
+    draft.  Returns the usernames claimed by THIS attempt_id; a concurrent
+    caller that loses the race gets an empty list.
+    """
+    import sqlalchemy as sa
+    with get_session() as s:
+        s.execute(
+            sa.text(
+                "UPDATE outreach_messages "
+                "SET status = 'sending', sending_attempt_id = :aid "
+                "WHERE campaign_id = :cid AND status = 'draft'"
+            ),
+            {"cid": campaign_id, "aid": attempt_id},
+        )
+        s.commit()
+        rows = s.execute(
+            sa.text(
+                "SELECT username FROM outreach_messages "
+                "WHERE campaign_id = :cid AND sending_attempt_id = :aid"
+            ),
+            {"cid": campaign_id, "aid": attempt_id},
+        ).fetchall()
+    return [r[0] for r in rows]
 
 
 def mark_outreach_sent(campaign_id: int, usernames: List[str], message_text: str) -> List[str]:
