@@ -2183,7 +2183,7 @@ def get_network_creator(username: str) -> Optional[Dict]:
     """Get a single network creator by username."""
     with get_session() as s:
         c = s.query(NetworkCreator).filter(
-            NetworkCreator.username.ilike(username)
+            func.lower(NetworkCreator.username) == username.strip().lstrip("@").lower()
         ).first()
         return c.to_dict() if c else None
 
@@ -2212,7 +2212,7 @@ def update_network_creator(username: str, data: Dict) -> Optional[Dict]:
     """Update a network creator's fields."""
     with get_session() as s:
         c = s.query(NetworkCreator).filter(
-            NetworkCreator.username.ilike(username)
+            func.lower(NetworkCreator.username) == username.strip().lstrip("@").lower()
         ).first()
         if not c:
             return None
@@ -2228,7 +2228,7 @@ def remove_network_creator(username: str) -> bool:
     """Remove a creator from the network."""
     with get_session() as s:
         count = s.query(NetworkCreator).filter(
-            NetworkCreator.username.ilike(username)
+            func.lower(NetworkCreator.username) == username.strip().lstrip("@").lower()
         ).delete(synchronize_session=False)
         s.commit()
         return count > 0
@@ -2348,7 +2348,7 @@ def confirm_outreach(campaign_id: int, username: str) -> Optional[Dict]:
             )
             # Copy paypal and niches from network creator if available
             nc = s.query(NetworkCreator).filter(
-                NetworkCreator.username.ilike(m.username)
+                func.lower(NetworkCreator.username) == m.username.lower()
             ).first()
             if nc:
                 if nc.paypal_email:
