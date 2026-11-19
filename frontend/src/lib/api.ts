@@ -426,7 +426,7 @@ export const api = {
   getOutreach: (slug: string) =>
     request<OutreachResponse>(`/api/campaign/${slug}/outreach`),
 
-  addToOutreach: (slug: string, creators: Array<{ username: string; rate: number; posts: number }>) =>
+  addToOutreach: (slug: string, creators: Array<{ username: string; rate: number; posts: number; platform?: "tiktok" | "instagram" }>) =>
     request<ApiOk & { added: number }>(`/api/campaign/${slug}/outreach/add`, {
       method: "POST",
       body: JSON.stringify(creators),

@@ -714,7 +714,7 @@ export function useOutreach(slug: string) {
 export function useAddToOutreach(slug: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (creators: Array<{ username: string; rate: number; posts: number }>) =>
+    mutationFn: (creators: Array<{ username: string; rate: number; posts: number; platform?: "tiktok" | "instagram" }>) =>
       api.addToOutreach(slug, creators),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.outreach(slug) }),
   })

@@ -2189,6 +2189,12 @@ def _outreach_rate(value, field):
     return rate
 
 
+def _outreach_platform(value):
+    if not isinstance(value, str) or value.strip().lower() not in ("tiktok", "instagram"):
+        raise ValueError("platform must be tiktok or instagram")
+    return value.strip().lower()
+
+
 def _outreach_posts(value, field):
     try:
         count = int(value)
@@ -2211,6 +2217,8 @@ def _network_data(data):
         values["default_rate"] = _outreach_rate(values["default_rate"], "default_rate")
     if "default_posts" in values:
         values["default_posts"] = _outreach_posts(values["default_posts"], "default_posts")
+    if "platform" in values:
+        values["platform"] = _outreach_platform(values["platform"])
     return values
 
 def get_network_creators() -> List[Dict]:
@@ -2305,6 +2313,9 @@ def add_outreach_messages(campaign_id: int, creators: List[Dict]) -> List[Dict]:
     creators = [dict(cr, username=_outreach_username(cr.get("username")),
                      rate=_outreach_rate(cr.get("rate", 0), "rate"),
                      posts=_outreach_posts(cr.get("posts", 1), "posts")) for cr in creators]
+    for cr in creators:
+        if "platform" in cr:
+            cr["platform"] = _outreach_platform(cr["platform"])
     added = []
     with get_session() as s:
         for cr in creators:
@@ -2314,9 +2325,14 @@ def add_outreach_messages(campaign_id: int, creators: List[Dict]) -> List[Dict]:
             ).first()
             if existing:
                 continue
+            nc = s.query(NetworkCreator).filter(
+                func.lower(NetworkCreator.username) == username,
+            ).first()
+            platform = cr.get("platform") or _outreach_platform(nc.platform if nc else "tiktok")
             m = OutreachMessage(
                 campaign_id=campaign_id,
                 username=username,
+                platform=platform,
                 rate_offered=float(cr.get("rate", 0)),
                 posts_offered=int(cr.get("posts", 1)),
                 status="draft",
@@ -2398,12 +2414,16 @@ def confirm_outreach(campaign_id: int, username: str) -> Optional[Dict]:
         ).first()
         if not m:
             return None
+        if m.status == "accepted":
+            return m.to_dict()
+        if m.platform not in ("tiktok", "instagram"):
+            raise ValueError("The outreach platform is unconfirmed; review the original booking before confirming")
         m.status = "accepted"
         m.responded_at = datetime.now()
 
         # Add creator to campaign if not already there
         existing = s.query(Creator).filter_by(
-            campaign_id=campaign_id, username=m.username
+            campaign_id=campaign_id, username=m.username, platform=m.platform
         ).first()
         if not existing:
             cr = Creator(
@@ -2412,7 +2432,7 @@ def confirm_outreach(campaign_id: int, username: str) -> Optional[Dict]:
                 posts_owed=m.posts_offered,
                 total_rate=m.rate_offered,
                 per_post_rate=m.rate_offered / max(m.posts_offered, 1),
-                platform="tiktok",
+                platform=m.platform,
                 added_date=datetime.now().strftime("%Y-%m-%d"),
                 status="active",
             )

@@ -225,7 +225,10 @@ def confirm_outreach_endpoint(slug):
 
     data = request.get_json(force=True)
     username = data.get("username", "")
-    result = db.confirm_outreach(campaign_id, username)
+    try:
+        result = db.confirm_outreach(campaign_id, username)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 409
     if not result:
         return jsonify({"error": "Outreach message not found"}), 404
     return jsonify({"ok": True, "message": result})
