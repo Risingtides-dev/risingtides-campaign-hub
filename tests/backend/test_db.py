@@ -477,6 +477,40 @@ class TestNetworkCreators:
         assert db.get_network_creator("alice") is None
         assert db.remove_network_creator("alice") is False
 
+    def test_underscore_does_not_wildcard_match(self, db):
+        # a_b and acb are distinct handles; _ must not act as a SQL wildcard.
+        db.add_network_creator({"username": "a_b", "default_rate": 10})
+        db.add_network_creator({"username": "acb", "default_rate": 20})
+        assert db.get_network_creator("a_b")["username"] == "a_b"
+        assert db.get_network_creator("acb")["username"] == "acb"
+
+    def test_underscore_update_does_not_clobber_neighbour(self, db):
+        db.add_network_creator({"username": "a_b", "default_rate": 10})
+        db.add_network_creator({"username": "acb", "default_rate": 20})
+        db.update_network_creator("a_b", {"default_rate": 99})
+        assert db.get_network_creator("a_b")["default_rate"] == 99
+        assert db.get_network_creator("acb")["default_rate"] == 20
+
+    def test_underscore_delete_does_not_delete_neighbour(self, db):
+        db.add_network_creator({"username": "a_b"})
+        db.add_network_creator({"username": "acb"})
+        assert db.remove_network_creator("a_b") is True
+        assert db.get_network_creator("a_b") is None
+        assert db.get_network_creator("acb") is not None
+
+    def test_percent_does_not_match_arbitrary_rows(self, db):
+        db.add_network_creator({"username": "alice"})
+        db.add_network_creator({"username": "bob"})
+        # A literal '%' input must not match any stored handle.
+        assert db.get_network_creator("%") is None
+        assert db.update_network_creator("%", {"default_rate": 1}) is None
+        assert db.remove_network_creator("%") is False
+        assert len(db.get_network_creators()) == 2
+
+    def test_case_insensitive_lookup(self, db):
+        db.add_network_creator({"username": "Alice"})
+        assert db.get_network_creator("ALICE")["username"] == "alice"
+
 
 class TestListCampaignsWithCreatorsCompletionFilter:
     """The `completion` narrowing has to happen IN THE QUERY.
