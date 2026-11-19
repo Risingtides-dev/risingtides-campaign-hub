@@ -114,3 +114,17 @@ def test_valid_zero_quote_and_integral_legacy_count_are_preserved(client, db, qu
     message = db.get_outreach_message(quote, "bob")
     assert message["rate_offered"] == 0
     assert message["posts_offered"] == 2
+
+
+@pytest.mark.parametrize("body", [{"status": "error"}, {}, None, [], "success"])
+def test_http_200_requires_positive_provider_acceptance(app, client, db, quote, monkeypatch, body):
+    from campaign_manager.blueprints import outreach
+    app.config["MANYCHAT_API_KEY"] = "fixture"
+    post = Mock(return_value=Mock(status_code=200, json=lambda: body))
+    monkeypatch.setattr(outreach.http_requests, "post", post)
+    response = client.post('/api/campaign/admission/outreach/send', json={"message_template": "Offer"})
+    assert response.get_json()["sent"] == []
+    assert db.get_outreach_message(quote, "alice")["status"] == "unknown"
+    again = client.post('/api/campaign/admission/outreach/send', json={"message_template": "Offer"})
+    assert again.status_code == 400
+    assert post.call_count == 1

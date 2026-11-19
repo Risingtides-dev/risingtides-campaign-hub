@@ -180,8 +180,11 @@ def send_outreach(slug):
                     )
                     if mc_resp.status_code == 200:
                         mc_data = mc_resp.json()
-                        mc_success = True
-                        log.info("ManyChat sent to %s: %s", username, mc_data)
+                        mc_success = isinstance(mc_data, dict) and mc_data.get("status") == "success"
+                        if mc_success:
+                            log.info("ManyChat accepted outreach for %s", username)
+                        else:
+                            errors.append({"username": username, "error": "Delivery acceptance was not confirmed; reconcile before retry"})
                     else:
                         log.warning("ManyChat error for %s: %s %s", username, mc_resp.status_code, mc_resp.text)
                         errors.append({"username": username, "error": f"ManyChat API error: {mc_resp.status_code}"})
