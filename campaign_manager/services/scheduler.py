@@ -368,6 +368,8 @@ def init_scheduler(
     from campaign_manager.services.notion_sync import (
         get_notion_sync_interval_minutes,
         run_notion_sync,
+        get_crm_sync_interval_minutes,
+        run_crm_sync,
     )
     notion_interval = get_notion_sync_interval_minutes()
     _scheduler.add_job(
@@ -375,6 +377,20 @@ def init_scheduler(
         "interval",
         minutes=notion_interval,
         id="notion_sync",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=300,
+    )
+
+    # CRM sync (issue #257): poll Notion CRM for new campaigns every N minutes.
+    # Default 1 minute, configurable via NOTION_CRM_SYNC_INTERVAL_MINUTES (1–60).
+    crm_interval = get_crm_sync_interval_minutes()
+    _scheduler.add_job(
+        run_crm_sync,
+        "interval",
+        minutes=crm_interval,
+        id="crm_sync",
         replace_existing=True,
         coalesce=True,
         max_instances=1,
@@ -483,10 +499,11 @@ def init_scheduler(
         raise
     log.info(
         "Scheduler started: campaign_refresh enabled=%s at %02d:%02d, internal_scrape at "
-        "%02d:%02d EST, notion_sync every %d minutes, "
+        "%02d:%02d EST, notion_sync every %d minutes, crm_sync every %d minutes, "
         "tides_tracker_pull every %d minutes, "
         "cron_log_janitor every 5 minutes (threshold=%d min)",
-        campaign_refresh_enabled, hour, minute, internal_hour, internal_minute, notion_interval,
+        campaign_refresh_enabled, hour, minute, internal_hour, internal_minute,
+        notion_interval, crm_interval,
         tides_interval, reap_threshold,
     )
 

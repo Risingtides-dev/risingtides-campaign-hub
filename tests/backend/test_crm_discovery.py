@@ -1,0 +1,260 @@
+"""Bounded minute discovery and existing exact-page refresh ownership."""
+from unittest.mock import Mock, patch
+
+import pytest
+
+from campaign_manager.services import notion, notion_sync
+
+
+@pytest.fixture(autouse=True)
+def discovery_state(monkeypatch):
+    monkeypatch.setenv("NOTION_API_KEY", "test-only")
+    monkeypatch.setattr(notion, "_client_discovery_cursor", None)
+    monkeypatch.setattr(notion_sync, "_crm_sync_in_progress", False)
+
+
+def page(page_id, categories=None):
+    props = {"Artist Name": {"title": [{"plain_text": page_id}]}}
+    if categories is not None:
+        props["Content Niche Targets"] = {"multi_select": categories}
+    return {"id": page_id, "properties": props}
+
+
+def response(pages, cursor=None, status=200):
+    result = Mock(status_code=status, text="test response")
+    result.json.return_value = {"results": pages, "has_more": cursor is not None,
+                                "next_cursor": cursor}
+    return result
+
+
+def test_discovery_reaches_page_51_and_wraps_without_extra_requests():
+    first = response([page(str(i)) for i in range(50)], "page-2")
+    second = response([page("new-51", [{"name": "Trucktok"}])])
+    with patch.object(notion, "resolve_data_source_id", return_value="crm"), patch.object(
+            notion.requests, "post", side_effect=[first, second, first]) as post:
+        assert notion.query_new_clients(set(), resume=True)[-1]["notion_page_id"] == "49"
+        assert notion.query_new_clients(set(), resume=True)[0]["content_types"] == ["Trucktok"]
+        notion.query_new_clients(set(), resume=True)
+    assert post.call_count == 3
+    assert "start_cursor" not in post.call_args_list[0].kwargs["json"]
+    assert post.call_args_list[1].kwargs["json"]["start_cursor"] == "page-2"
+    assert "start_cursor" not in post.call_args_list[2].kwargs["json"]
+    assert all(call.kwargs["json"]["page_size"] == 50 for call in post.call_args_list)
+
+
+def test_failed_request_retries_cursor_and_expired_cursor_recovers():
+    notion._client_discovery_cursor = "page-2"
+    with patch.object(notion, "resolve_data_source_id", return_value="crm"), patch.object(
+            notion.requests, "post", side_effect=[response([], status=503),
+            response([], status=400), response([])]) as post:
+        assert notion.query_new_clients(set(), resume=True) == []
+        assert notion._client_discovery_cursor == "page-2"
+        assert notion.query_new_clients(set(), resume=True) == []
+        assert notion._client_discovery_cursor is None
+        notion.query_new_clients(set(), resume=True)
+    assert "start_cursor" not in post.call_args_list[2].kwargs["json"]
+
+
+@pytest.mark.parametrize("categories, expected", [
+    (None, None), ([], []), ([{"id": "unreadable"}], None),
+    ([{"name": "Trucktok"}], ["Trucktok"]),
+])
+def test_discovery_preserves_unknown_vs_empty_categories(categories, expected):
+    with patch.object(notion, "resolve_data_source_id", return_value="crm"), patch.object(
+            notion.requests, "post", return_value=response([page("one", categories)])):
+        assert notion.query_new_clients(set())[0]["content_types"] == expected
+
+
+def test_manual_query_does_not_consume_scheduler_cursor():
+    notion._client_discovery_cursor = "page-2"
+    with patch.object(notion, "resolve_data_source_id", return_value="crm"), patch.object(
+            notion.requests, "post", return_value=response([])) as post:
+        notion.query_new_clients(set())
+    assert "start_cursor" not in post.call_args.kwargs["json"]
+    assert notion._client_discovery_cursor == "page-2"
+
+
+@pytest.mark.parametrize("source_page", ["stored-page", "different-page"])
+@pytest.mark.parametrize("fresh", [None, [], ["Coffee"]])
+def test_minute_tick_cannot_mutate_existing_campaign_or_poll_history(db, source_page, fresh):
+    db.save_campaign("existing", {"title": "Existing", "notion_page_id": "stored-page",
+        "content_types": ["Trucktok"], "internal_captions": "Exact words"})
+    entry = {"slug": "existing", "notion_page_id": source_page,
+             "content_types": fresh, "internal_captions": "replacement"}
+    with patch.object(notion, "query_new_clients", return_value=[entry]) as query, patch.object(
+            notion, "fetch_page_campaign_fields", side_effect=AssertionError("duplicate refresh")), patch.object(
+            db, "get_campaign_notion_links", side_effect=AssertionError("unbounded history scan")):
+        notion_sync.run_crm_sync()
+    query.assert_called_once_with(set(), resume=True)
+    stored = db.get_campaign("existing")
+    assert stored["notion_page_id"] == "stored-page"
+    assert stored["content_types"] == ["Trucktok"]
+    assert stored["internal_captions"] == "Exact words"
+    assert notion_sync._crm_sync_in_progress is False
+
+
+def test_two_minute_ticks_create_client_beyond_fifty_existing_rows(db):
+    for i in range(50):
+        db.save_campaign(str(i), {"title": str(i), "notion_page_id": str(i),
+                                 "content_types": ["Trucktok"]})
+    first = response([page(str(i)) for i in range(50)], "page-2")
+    second = response([page("new-51", [{"name": "Coffee"}])])
+    with patch.object(notion, "resolve_data_source_id", return_value="crm"), patch.object(
+            notion.requests, "post", side_effect=[first, second]) as post:
+        notion_sync.run_crm_sync()
+        assert not db.campaign_exists("new_51")
+        notion_sync.run_crm_sync()
+    stored = db.get_campaign("new_51")
+    assert stored["notion_page_id"] == "new-51"
+    assert stored["content_types"] == ["Coffee"]
+    assert db.get_campaign("0")["content_types"] == ["Trucktok"]
+    assert post.call_count == 2
+
+
+def test_intentional_empty_current_property_never_uses_legacy_categories():
+    crm_page = page("one", [])
+    crm_page["properties"]["Types of Content Creators"] = {"multi_select": [{"name": "Trucktok"}]}
+    with patch.object(notion, "resolve_data_source_id", return_value="crm"), patch.object(
+            notion.requests, "post", return_value=response([crm_page])):
+        assert notion.query_new_clients(set())[0]["content_types"] == []
+
+
+def test_failed_discovery_releases_guard_for_next_tick():
+    with patch("campaign_manager.db.is_active", return_value=True), patch.object(
+            notion, "query_new_clients", side_effect=[RuntimeError("test-only"), []]) as query:
+        notion_sync.run_crm_sync()
+        assert notion_sync._crm_sync_in_progress is False
+        notion_sync.run_crm_sync()
+    assert query.call_count == 2
+
+
+def creation_entry():
+    return {"slug": "creation_race", "title": "Incoming", "artist": "", "song": "",
+            "official_sound": "", "sound_id": "", "start_date": "", "budget": 0,
+            "notion_page_id": "incoming-page", "content_types": ["Coffee"],
+            "internal_captions": "Incoming words"}
+
+
+def test_tick_preserves_campaign_created_after_discovery_precheck(db):
+    existing = {"title": "Manual", "notion_page_id": "manual-page",
+                "content_types": ["Trucktok"], "internal_captions": "Exact words",
+                "stats": {"total_views": 123, "total_likes": 45}}
+    real_exists = db.campaign_exists
+    def insert_after_precheck(slug):
+        assert not real_exists(slug)
+        db.save_campaign(slug, existing)
+        db.save_creators(slug, [{"username": "attached", "posts_owed": 3}])
+        return False
+    with patch.object(notion, "query_new_clients", return_value=[creation_entry()]), patch.object(
+            db, "campaign_exists", side_effect=insert_after_precheck):
+        notion_sync.run_crm_sync()
+    stored = db.get_campaign("creation_race")
+    assert stored["title"] == "Manual"
+    assert stored["notion_page_id"] == "manual-page"
+    assert stored["content_types"] == ["Trucktok"]
+    assert stored["internal_captions"] == "Exact words"
+    assert stored["stats"]["total_views"] == 123
+    assert stored["stats"]["total_likes"] == 45
+    assert db.get_creators("creation_race")[0]["username"] == "attached"
+
+
+def test_tick_preserves_creator_attached_after_campaign_insert(db):
+    real_save = db.save_campaign
+    def attach_after_save(slug, meta, **kwargs):
+        result = real_save(slug, meta, **kwargs)
+        db.save_creators(slug, [{"username": "attached", "posts_owed": 3}])
+        return result
+    with patch.object(notion, "query_new_clients", return_value=[creation_entry()]), patch.object(
+            db, "save_campaign", side_effect=attach_after_save):
+        notion_sync.run_crm_sync()
+    assert db.get_campaign("creation_race")["notion_page_id"] == "incoming-page"
+    assert db.get_creators("creation_race")[0]["username"] == "attached"
+
+
+def test_create_only_conflict_preserves_row_and_legacy_update_still_works(db):
+    db.save_campaign("existing", {"title": "Original"})
+    assert db.save_campaign("existing", {"title": "Overwrite"}, create_only=True) == "conflict"
+    assert db.get_campaign("existing")["title"] == "Original"
+    assert db.save_campaign("existing", {"title": "Intentional update"}) is None
+    assert db.get_campaign("existing")["title"] == "Intentional update"
+
+
+def test_long_crm_row_does_not_starve_later_client_or_repeat_its_warning(db, caplog):
+    poison = page('poison-page')
+    poison['properties']['Artist Name']['title'][0]['plain_text'] = 'private-artist-' + 'x' * 260
+    valid = page('valid-peer', [{'name': 'Coffee'}])
+    with patch.object(notion, 'resolve_data_source_id', return_value='crm'), patch.object(
+            notion.requests, 'post', return_value=response([poison, valid])) as post:
+        notion_sync.run_crm_sync()
+        notion_sync.run_crm_sync()
+    assert post.call_count == 2
+    assert db.get_campaign('valid_peer')['notion_page_id'] == 'valid-peer'
+    assert db.get_campaign('poison_page') is None
+    assert sum('artist or song exceeds 255 chars' in record.message for record in caplog.records) == 1
+    assert 'private-artist-' not in caplog.text
+
+
+def test_one_save_exception_does_not_starve_next_client(db, caplog):
+    poison = creation_entry()
+    poison['slug'] = 'poison_save'
+    poison['notion_page_id'] = 'poison-save-page'
+    valid = creation_entry()
+    valid['slug'] = 'valid_save'
+    valid['notion_page_id'] = 'valid-save-page'
+    real_save = db.save_campaign
+
+    def save_one_poison(slug, meta, **kwargs):
+        if slug == 'poison_save':
+            raise RuntimeError('private CRM content must not be logged')
+        return real_save(slug, meta, **kwargs)
+
+    with patch.object(notion, 'query_new_clients', return_value=[poison, valid]), patch.object(
+            db, 'save_campaign', side_effect=save_one_poison):
+        notion_sync.run_crm_sync()
+        notion_sync.run_crm_sync()
+    assert db.get_campaign('poison_save') is None
+    assert db.get_campaign('valid_save')['notion_page_id'] == 'valid-save-page'
+    assert 'private CRM content' not in caplog.text
+    assert sum('save RuntimeError' in record.message for record in caplog.records) == 1
+
+
+def test_database_outage_stops_page_and_retries_same_cursor_next_tick(db, caplog):
+    from sqlalchemy.exc import OperationalError
+
+    first = response([page('peer-one'), page('peer-two')], cursor='page-2')
+    with patch.object(notion, 'resolve_data_source_id', return_value='crm'), patch.object(
+            notion.requests, 'post', side_effect=[first, first]) as post:
+        with patch.object(db, 'campaign_exists', side_effect=OperationalError(
+                'SELECT private CRM content', {}, RuntimeError('connection lost'))) as exists:
+            notion_sync.run_crm_sync()
+        assert exists.call_count == 1
+        assert notion._client_discovery_cursor is None
+        assert db.get_campaign('peer_one') is None
+        assert db.get_campaign('peer_two') is None
+        notion_sync.run_crm_sync()
+    assert post.call_count == 2
+    assert all('start_cursor' not in call.kwargs['json'] for call in post.call_args_list)
+    assert db.get_campaign('peer_one')['notion_page_id'] == 'peer-one'
+    assert db.get_campaign('peer_two')['notion_page_id'] == 'peer-two'
+    assert 'private CRM content' not in caplog.text
+
+
+def test_pool_exhaustion_stops_page_and_retries_same_cursor_next_tick(db, caplog):
+    from sqlalchemy.exc import TimeoutError as PoolTimeoutError
+
+    first = response([page('pool-one'), page('pool-two')], cursor='page-2')
+    with patch.object(notion, 'resolve_data_source_id', return_value='crm'), patch.object(
+            notion.requests, 'post', side_effect=[first, first]) as post:
+        with patch.object(db, 'campaign_exists', side_effect=PoolTimeoutError(
+                'private CRM content must not be logged')) as exists:
+            notion_sync.run_crm_sync()
+        assert exists.call_count == 1
+        assert notion._client_discovery_cursor is None
+        assert db.get_campaign('pool_one') is None
+        assert db.get_campaign('pool_two') is None
+        notion_sync.run_crm_sync()
+    assert post.call_count == 2
+    assert all('start_cursor' not in call.kwargs['json'] for call in post.call_args_list)
+    assert db.get_campaign('pool_one')['notion_page_id'] == 'pool-one'
+    assert db.get_campaign('pool_two')['notion_page_id'] == 'pool-two'
+    assert 'private CRM content' not in caplog.text

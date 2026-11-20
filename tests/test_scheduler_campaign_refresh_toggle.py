@@ -97,7 +97,7 @@ def test_disabled_campaign_refresh_removes_persisted_due_job_before_resume(tmp_p
         scheduler.init_scheduler(database_url, campaign_refresh_enabled=False)
         assert scheduler._scheduler.running
         assert scheduler._scheduler.get_job("campaign_refresh") is None
-        for retained in ("internal_scrape", "notion_sync", "campaign_niche_refresh",
+        for retained in ("internal_scrape", "notion_sync", "crm_sync", "campaign_niche_refresh",
                          "tides_tracker_pull", "library_stats", "cron_log_janitor"):
             assert scheduler._scheduler.get_job(retained) is not None
         time.sleep(0.15)
