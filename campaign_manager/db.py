@@ -2267,6 +2267,7 @@ def add_outreach_messages(campaign_id: int, creators: List[Dict]) -> List[Dict]:
             m = OutreachMessage(
                 campaign_id=campaign_id,
                 username=username,
+                platform=str(cr.get("platform") or "tiktok").strip().lower() or "tiktok",
                 rate_offered=float(cr.get("rate", 0)),
                 posts_offered=int(cr.get("posts", 1)),
                 status="draft",
@@ -2331,9 +2332,25 @@ def confirm_outreach(campaign_id: int, username: str) -> Optional[Dict]:
         m.status = "accepted"
         m.responded_at = datetime.now()
 
-        # Add creator to campaign if not already there
+        # Resolve platform: stored on the outreach message, then fall back to
+        # the NetworkCreator roster entry (handles pre-migration rows where
+        # OutreachMessage.platform is empty), then hard-default to tiktok.
+        nc = s.query(NetworkCreator).filter(
+            NetworkCreator.username.ilike(m.username)
+        ).first()
+        stored_platform = (m.platform or "").strip().lower()
+        if stored_platform:
+            platform = stored_platform
+        elif nc and (nc.platform or "").strip():
+            platform = nc.platform.strip().lower()
+        else:
+            platform = "tiktok"
+
+        # Add creator to campaign if not already there for this platform.
+        # (campaign_id, username, platform) is the booking identity — a creator
+        # may hold separate TikTok and Instagram rows on the same campaign.
         existing = s.query(Creator).filter_by(
-            campaign_id=campaign_id, username=m.username
+            campaign_id=campaign_id, username=m.username, platform=platform
         ).first()
         if not existing:
             cr = Creator(
@@ -2342,14 +2359,10 @@ def confirm_outreach(campaign_id: int, username: str) -> Optional[Dict]:
                 posts_owed=m.posts_offered,
                 total_rate=m.rate_offered,
                 per_post_rate=m.rate_offered / max(m.posts_offered, 1),
-                platform="tiktok",
+                platform=platform,
                 added_date=datetime.now().strftime("%Y-%m-%d"),
                 status="active",
             )
-            # Copy paypal and niches from network creator if available
-            nc = s.query(NetworkCreator).filter(
-                NetworkCreator.username.ilike(m.username)
-            ).first()
             if nc:
                 if nc.paypal_email:
                     cr.paypal_email = nc.paypal_email
