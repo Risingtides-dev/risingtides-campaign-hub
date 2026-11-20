@@ -9,6 +9,7 @@ import os
 from flask import Blueprint, jsonify, request
 
 from campaign_manager import db as _db
+from campaign_manager.utils.hub_auth import require_hub_write_key
 
 migrate_bp = Blueprint("migrate", __name__, url_prefix="/api/migrate")
 
@@ -152,6 +153,7 @@ def migrate_campaign_full():
 
 
 @migrate_bp.post("/paypal-bulk")
+@require_hub_write_key
 def migrate_paypal_bulk():
     """Import PayPal email memory in bulk.
 
@@ -178,6 +180,7 @@ def migrate_paypal_bulk():
 
 
 @migrate_bp.post("/inbox-bulk")
+@require_hub_write_key
 def migrate_inbox_bulk():
     """Import inbox items in bulk.
 
@@ -204,6 +207,7 @@ def migrate_inbox_bulk():
 
 
 @migrate_bp.post("/internal")
+@require_hub_write_key
 def migrate_internal():
     """Import internal creator data.
 

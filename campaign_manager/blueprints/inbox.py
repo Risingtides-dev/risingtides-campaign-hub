@@ -13,6 +13,7 @@ from typing import Dict, List, Optional
 from flask import Blueprint, jsonify, request
 
 from campaign_manager import db as _db
+from campaign_manager.utils.hub_auth import require_hub_write_key
 from campaign_manager.blueprints.campaigns import (
     get_campaigns,
     remember_paypal,
@@ -185,6 +186,7 @@ def create_inbox_item(
 # 1. POST /api/inbox  -- add an inbox item
 # -------------------------------------------------------------------
 @inbox_bp.post("/api/inbox")
+@require_hub_write_key
 def inbox_add():
     """Open CLAW (or any external agent) posts a parsed booking here."""
     data = request.get_json(silent=True)
@@ -223,6 +225,7 @@ def inbox_list():
 # 3. POST /api/inbox/<item_id>/approve  -- approve inbox item
 # -------------------------------------------------------------------
 @inbox_bp.post("/api/inbox/<item_id>/approve")
+@require_hub_write_key
 def inbox_approve(item_id: str):
     """Approve an inbox item -- adds creators to the campaign."""
     if _db.is_active():
@@ -308,6 +311,7 @@ def inbox_approve(item_id: str):
 # 4. POST /api/inbox/<item_id>/dismiss  -- dismiss inbox item
 # -------------------------------------------------------------------
 @inbox_bp.post("/api/inbox/<item_id>/dismiss")
+@require_hub_write_key
 def inbox_dismiss(item_id: str):
     """Dismiss/reject an inbox item."""
     if _db.is_active():

@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 from flask import Blueprint, current_app, jsonify, request
 
 from campaign_manager import db as _db
+from campaign_manager.utils.hub_auth import hub_write_guard, require_hub_write_key
 
 logger = logging.getLogger(__name__)
 from campaign_manager.utils.helpers import (
@@ -551,17 +552,17 @@ def write_internal_captions(slug: str):
     CRM page first and is stored here only once that write went through.
     The caller sends `expected`, the value it last saw (null when it saw
     none); a stored value that differs answers 409 with the current value,
-    so a stale edit never overwrites a newer one. When HUB_WRITE_KEY is set,
-    the X-Hub-Write-Key header must match it.
+    so a stale edit never overwrites a newer one. The X-Hub-Write-Key header
+    must match HUB_WRITE_KEY; an unset or short key refuses (503).
     """
     from campaign_manager.services.notion import (
         MAX_INTERNAL_CAPTIONS,
         write_page_internal_captions,
     )
 
-    write_key = (os.environ.get("HUB_WRITE_KEY") or "").strip()
-    if write_key and request.headers.get("X-Hub-Write-Key", "") != write_key:
-        return jsonify({"error": "X-Hub-Write-Key does not match"}), 401
+    denied = hub_write_guard()
+    if denied is not None:
+        return denied
 
     data = request.get_json(silent=True)
     if not isinstance(data, dict) or "expected" not in data:
@@ -1540,6 +1541,7 @@ def _find_active_creator(creators: list, username: str, platform: Optional[str])
 
 
 @campaigns_bp.post("/api/campaign/<slug>/creator/add")
+@require_hub_write_key
 def add_creator(slug: str):
     if _db.is_active():
         if not _db.campaign_exists(slug):
@@ -1628,6 +1630,7 @@ def add_creator(slug: str):
 # 8. POST /api/campaign/<slug>/creator/<username>/edit
 # -------------------------------------------------------------------
 @campaigns_bp.post("/api/campaign/<slug>/creator/<username>/edit")
+@require_hub_write_key
 def edit_creator(slug: str, username: str):
     if _db.is_active():
         creators = _db.get_creators(slug)
@@ -1703,6 +1706,7 @@ def edit_creator(slug: str, username: str):
 # 9. POST /api/campaign/<slug>/creator/<username>/toggle-paid
 # -------------------------------------------------------------------
 @campaigns_bp.post("/api/campaign/<slug>/creator/<username>/toggle-paid")
+@require_hub_write_key
 def toggle_paid(slug: str, username: str):
     if _db.is_active():
         creators = _db.get_creators(slug)
@@ -1734,6 +1738,7 @@ def toggle_paid(slug: str, username: str):
 # 10. POST /api/campaign/<slug>/creator/<username>/remove
 # -------------------------------------------------------------------
 @campaigns_bp.post("/api/campaign/<slug>/creator/<username>/remove")
+@require_hub_write_key
 def remove_creator(slug: str, username: str):
     if _db.is_active():
         creators = _db.get_creators(slug)
@@ -1762,6 +1767,7 @@ def remove_creator(slug: str, username: str):
 #      (handles usernames with slashes or other URL-unsafe chars)
 # -------------------------------------------------------------------
 @campaigns_bp.post("/api/campaign/<slug>/creator/remove")
+@require_hub_write_key
 def remove_creator_by_body(slug: str):
     data = request.get_json(silent=True) or {}
     username = data.get("username", "")

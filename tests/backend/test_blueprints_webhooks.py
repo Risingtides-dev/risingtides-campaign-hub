@@ -5,8 +5,24 @@ from unittest.mock import patch
 
 import pytest
 
+from tests.backend.conftest import TEST_HUB_WRITE_KEY
+
 
 pytestmark = pytest.mark.integration
+
+# security-fix-1112 CH-F1: the Notion intake webhook now needs its shared
+# secret; these tests exercise the authenticated caller (fake value).
+NOTION_WEBHOOK_SECRET = "test-key-not-real-notion-0000000000"
+
+
+@pytest.fixture
+def client(app, monkeypatch):
+    monkeypatch.setenv("NOTION_WEBHOOK_SECRET", NOTION_WEBHOOK_SECRET)
+    test_client = app.test_client()
+    test_client.environ_base["HTTP_X_NOTION_WEBHOOK_SECRET"] = NOTION_WEBHOOK_SECRET
+    # /notion/sync and /slack/sounds are behind the app-wide Hub write gate.
+    test_client.environ_base["HTTP_X_HUB_WRITE_KEY"] = TEST_HUB_WRITE_KEY
+    return test_client
 
 
 class TestNotionWebhook:

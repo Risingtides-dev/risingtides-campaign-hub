@@ -130,6 +130,13 @@ def create_app(config=None):
     from campaign_manager.utils import creator_host
     creator_host.install(app)
 
+    # App-wide auth gate (security-fix-1112): every POST/PUT/PATCH/DELETE needs
+    # HUB_WRITE_KEY in X-Hub-Write-Key (fails closed when unset) unless the
+    # route has its own fail-closed auth. Reads are unchanged unless
+    # HUB_READ_KEY_REQUIRED=true; the Worker's two reads stay open regardless.
+    from campaign_manager.utils import hub_auth
+    hub_auth.install_write_gate(app)
+
     # Initialize database
     db.init(app.config.get("DATABASE_URL"))
 

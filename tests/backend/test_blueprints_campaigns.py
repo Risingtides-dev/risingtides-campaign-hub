@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import pytest
 
+from tests.backend.conftest import TEST_HUB_WRITE_KEY
+
 
 pytestmark = pytest.mark.integration
 
@@ -227,6 +229,7 @@ class TestCreateCampaign:
                 response = thread_client.post(
                     "/api/campaign/create",
                     json={"title": title, "official_sound": url},
+                    headers={"X-Hub-Write-Key": TEST_HUB_WRITE_KEY},
                 )
                 return response.status_code, response.get_json()
 
