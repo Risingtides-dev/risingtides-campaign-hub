@@ -463,6 +463,15 @@ def init_scheduler(
         kwargs={"threshold_minutes": reap_threshold},
     )
 
+    # Expired source limits are removed by the existing single scheduler owner,
+    # with a per-tick time budget rather than extra work on each login.
+    _scheduler.add_job(
+        run_sound_operator_login_janitor,
+        "interval", minutes=5,
+        id="sound_operator_login_janitor", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=300,
+    )
+
     try:
         if campaign_refresh_enabled:
             _scheduler.start()
@@ -489,6 +498,17 @@ def init_scheduler(
         campaign_refresh_enabled, hour, minute, internal_hour, internal_minute, notion_interval,
         tides_interval, reap_threshold,
     )
+
+
+def run_sound_operator_login_janitor():
+    """Prune 24-hour inactive login sources on the scheduler owner."""
+    from campaign_manager.blueprints.sound_assignments import prune_sound_operator_login_state
+    try:
+        removed = prune_sound_operator_login_state()
+        if removed:
+            log.info("Sound operator login janitor removed %d inactive rows", removed)
+    except Exception:
+        log.exception("Sound operator login janitor failed")
 
 
 def run_cron_log_janitor(threshold_minutes: int = 30):

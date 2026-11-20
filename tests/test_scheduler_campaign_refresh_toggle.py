@@ -98,7 +98,8 @@ def test_disabled_campaign_refresh_removes_persisted_due_job_before_resume(tmp_p
         assert scheduler._scheduler.running
         assert scheduler._scheduler.get_job("campaign_refresh") is None
         for retained in ("internal_scrape", "notion_sync", "campaign_niche_refresh",
-                         "tides_tracker_pull", "library_stats", "cron_log_janitor"):
+                         "tides_tracker_pull", "library_stats", "cron_log_janitor",
+                         "sound_operator_login_janitor"):
             assert scheduler._scheduler.get_job(retained) is not None
         time.sleep(0.15)
         assert not fired.exists()

@@ -115,6 +115,14 @@ def create_app(config=None):
     app.config.from_object(Config)
     if config:
         app.config.update(config)
+    # Operator cookies are scoped to this origin and expire after inactivity.
+    from datetime import timedelta
+    app.config.update(
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SAMESITE="Strict",
+        SESSION_COOKIE_SECURE=(bool(app.config.get("IS_RAILWAY")) or not (app.config.get("TESTING") or app.config.get("DEBUG"))),
+        PERMANENT_SESSION_LIFETIME=timedelta(minutes=30),
+    )
 
     # Initialize CORS
     CORS(app, origins=app.config["CORS_ORIGINS"])
