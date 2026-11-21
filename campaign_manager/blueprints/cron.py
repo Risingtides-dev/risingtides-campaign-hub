@@ -4,6 +4,8 @@ Provides status, logs, and manual trigger for the daily scraping scheduler.
 """
 from __future__ import annotations
 
+import hmac
+import os
 import threading
 import logging
 
@@ -46,6 +48,19 @@ def cron_log_detail(log_id: int):
 @cron_bp.route("/api/cron/trigger", methods=["POST"])
 def cron_trigger():
     """Manually trigger a job. Body: {"job_type": "campaign_refresh"|"internal_scrape"}"""
+    write_key = (os.environ.get("HUB_WRITE_KEY") or "").strip()
+    if not write_key:
+        return jsonify({
+            "error": "Manual cron trigger is disabled until HUB_WRITE_KEY is configured.",
+            "code": "cron_auth_unconfigured",
+        }), 503
+    supplied_key = request.headers.get("X-Hub-Write-Key", "")
+    if not hmac.compare_digest(supplied_key, write_key):
+        return jsonify({
+            "error": "X-Hub-Write-Key does not match.",
+            "code": "unauthorized",
+        }), 401
+
     data = request.get_json(silent=True) or {}
     job_type = data.get("job_type", "")
 
