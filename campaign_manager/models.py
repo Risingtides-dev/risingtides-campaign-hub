@@ -460,8 +460,13 @@ class OutreachMessage(Base):
     rate_offered = Column(Float, default=0.0)
     posts_offered = Column(Integer, default=1)
     message_text = Column(Text, default="")
-    status = Column(String(20), default="draft", index=True)  # draft|sent|responded|accepted|declined|expired
+    # draft → sending → sent|failed; also responded|accepted|declined|expired
+    status = Column(String(20), default="draft", index=True)
+    # UUID set atomically when a send request claims this draft; prevents
+    # concurrent requests from dispatching the same message twice.
+    sending_attempt_id = Column(String(36), nullable=True)
     sent_at = Column(DateTime, nullable=True)
+    failed_at = Column(DateTime, nullable=True)
     responded_at = Column(DateTime, nullable=True)
     manychat_message_id = Column(String(100), default="")
     reply_text = Column(Text, default="")
@@ -480,6 +485,7 @@ class OutreachMessage(Base):
             "message_text": self.message_text or "",
             "status": self.status or "draft",
             "sent_at": self.sent_at.isoformat() if self.sent_at else "",
+            "failed_at": self.failed_at.isoformat() if self.failed_at else "",
             "responded_at": self.responded_at.isoformat() if self.responded_at else "",
             "manychat_message_id": self.manychat_message_id or "",
             "reply_text": self.reply_text or "",

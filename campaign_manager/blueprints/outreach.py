@@ -1,5 +1,6 @@
 """Network creator roster and campaign outreach endpoints."""
 import logging
+import uuid
 from datetime import datetime
 
 import requests as http_requests
@@ -113,8 +114,10 @@ def remove_from_outreach(slug):
 def send_outreach(slug):
     """Send all draft outreach messages via ManyChat.
 
-    For now this marks drafts as 'sent' and stores the message text.
-    ManyChat integration will be added when the webhook is set up.
+    Uses an atomic DB claim (status draft → sending) before any network
+    dispatch so that concurrent requests cannot deliver the same message
+    twice, and a transport exception cannot leave a row in a state that
+    an automatic retry would re-dispatch.
     """
     campaign_id = db.get_campaign_id(slug)
     if not campaign_id:
@@ -124,18 +127,19 @@ def send_outreach(slug):
     message_template = data.get("message_template", "")
     campaign = db.get_campaign(slug)
 
-    # Get all draft messages
-    messages = db.get_outreach_messages(campaign_id)
-    draft_usernames = [m["username"] for m in messages if m["status"] == "draft"]
+    # Atomically claim all draft messages for this attempt. Any concurrent
+    # request that arrives while we hold the claim will find zero drafts and
+    # return 400 — it cannot double-send.
+    attempt_id = str(uuid.uuid4())
+    claimed_usernames = db.claim_draft_messages(campaign_id, attempt_id)
 
-    if not draft_usernames:
+    if not claimed_usernames:
         return jsonify({"error": "No draft messages to send"}), 400
 
     sent = []
     errors = []
 
-    for username in draft_usernames:
-        # Personalize template
+    for username in claimed_usernames:
         nc = db.get_network_creator(username)
         msg = db.get_outreach_message(campaign_id, username)
         if not msg:
@@ -149,7 +153,6 @@ def send_outreach(slug):
             .replace("{posts}", str(msg["posts_offered"]))
 
         if nc and nc.get("manychat_subscriber_id"):
-            # Send via ManyChat API if key is configured
             manychat_key = current_app.config.get("MANYCHAT_API_KEY", "")
             mc_success = False
             if manychat_key:
@@ -169,16 +172,19 @@ def send_outreach(slug):
                     )
                     if mc_resp.status_code == 200:
                         mc_success = True
-                        mc_data = mc_resp.json()
-                        log.info("ManyChat sent to %s: %s", username, mc_data)
+                        log.info("ManyChat sent to %s: %s", username, mc_resp.json())
                     else:
                         log.warning("ManyChat error for %s: %s %s", username, mc_resp.status_code, mc_resp.text)
                         errors.append({"username": username, "error": f"ManyChat API error: {mc_resp.status_code}"})
                 except Exception as e:
+                    # Transport failure (timeout, connection reset, etc.). The row
+                    # is already in 'sending' — do NOT revert to 'draft' so this
+                    # attempt is not silently re-queued. The operator can inspect
+                    # rows in 'failed' and re-queue deliberately.
                     log.error("ManyChat request failed for %s: %s", username, e)
                     errors.append({"username": username, "error": f"ManyChat request failed: {str(e)}"})
             else:
-                # No API key — mark as sent anyway (manual follow-up)
+                # No API key — treat as sent (manual follow-up path).
                 mc_success = True
 
             if mc_success:
@@ -188,7 +194,19 @@ def send_outreach(slug):
                     "sent_at": datetime.now(),
                 })
                 sent.append(username)
+            else:
+                # Provider rejected or transport failed: mark failed, not draft.
+                db.update_outreach_message(campaign_id, username, {
+                    "status": "failed",
+                    "failed_at": datetime.now(),
+                })
         else:
+            # No subscriber ID — cannot dispatch; mark failed so it won't
+            # block future attempts that might have subscriber IDs.
+            db.update_outreach_message(campaign_id, username, {
+                "status": "failed",
+                "failed_at": datetime.now(),
+            })
             errors.append({"username": username, "error": "No ManyChat subscriber ID"})
 
     return jsonify({"ok": True, "sent": sent, "errors": errors})
