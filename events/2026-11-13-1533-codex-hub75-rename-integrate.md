@@ -1,0 +1,9 @@
+_________________________________________________________________________________
+time: [15:33] [11-13-26] EST UTC-05:00
+agent: [claude] [opus 5.5]
+worktree: [codex/hub75-rename]
+type: [merge]: current main into the guarded tracker rename
+area: [backend], [testing]
+
+Merged main ecab1f3 into this draft as 7d494c5. The only conflict was AGENTS.md, where main's tracker delivery-status contract and this branch's display-name contract sit side by side; both are kept verbatim and the diff against main is insertion-only. trackers.py auto-merged: main changed only sync_tracker_status and its current_app import, while this branch changes update_tracker, _hydrate and the display-name resolver, and main does not touch services/tidestracker.py. The full Python suite on that tree ran under heavy host load: 1,210 passed, 9 skipped, 7 failed. Rerun alone, the scrape-start debounce test passed; the remaining five are the same subprocess-timeout tests that fail on main ecab1f3 in this environment (tests/test_scheduler_job_lease.py::test_local_file_lock_rejects_second_process and four in tests/test_scraper_runtime_lock.py; rerun result 34 passed, 5 failed, 4 skipped). Hosted CI on the pushed head is the clean signal. The frontend tree is byte-identical to main's (tree 6407baa), which builds with tsc and vite and passes its vitest files alone with a 30-second timeout. Release holds are unchanged: keep draft. Browser renames still have no credential path; the shared operator session in its own draft PR provides one, after which the rename branch can take require_operator_or_service_key. TidesTracker production parity and the revision-zero name inventory remain open. No merge, deployment, tracker write or production request was made.
+_________________________________________________________________________________
