@@ -120,6 +120,10 @@ def send_outreach(slug):
     if not campaign_id:
         return jsonify({"error": "Campaign not found"}), 404
 
+    manychat_key = current_app.config.get("MANYCHAT_API_KEY", "")
+    if not manychat_key:
+        return jsonify({"error": "ManyChat is not configured", "sent": [], "errors": []}), 503
+
     data = request.get_json(force=True)
     message_template = data.get("message_template", "")
     campaign = db.get_campaign(slug)
@@ -149,37 +153,31 @@ def send_outreach(slug):
             .replace("{posts}", str(msg["posts_offered"]))
 
         if nc and nc.get("manychat_subscriber_id"):
-            # Send via ManyChat API if key is configured
-            manychat_key = current_app.config.get("MANYCHAT_API_KEY", "")
             mc_success = False
-            if manychat_key:
-                try:
-                    mc_resp = http_requests.post(
-                        "https://api.manychat.com/fb/sending/sendContent",
-                        headers={
-                            "Authorization": f"Bearer {manychat_key}",
-                            "Content-Type": "application/json",
-                        },
-                        json={
-                            "subscriber_id": nc["manychat_subscriber_id"],
-                            "data": {"version": "v2", "content": {"messages": [{"type": "text", "text": personalized}]}},
-                            "message_tag": "CONFIRMED_EVENT_UPDATE",
-                        },
-                        timeout=10,
-                    )
-                    if mc_resp.status_code == 200:
-                        mc_success = True
-                        mc_data = mc_resp.json()
-                        log.info("ManyChat sent to %s: %s", username, mc_data)
-                    else:
-                        log.warning("ManyChat error for %s: %s %s", username, mc_resp.status_code, mc_resp.text)
-                        errors.append({"username": username, "error": f"ManyChat API error: {mc_resp.status_code}"})
-                except Exception as e:
-                    log.error("ManyChat request failed for %s: %s", username, e)
-                    errors.append({"username": username, "error": f"ManyChat request failed: {str(e)}"})
-            else:
-                # No API key — mark as sent anyway (manual follow-up)
-                mc_success = True
+            try:
+                mc_resp = http_requests.post(
+                    "https://api.manychat.com/fb/sending/sendContent",
+                    headers={
+                        "Authorization": f"Bearer {manychat_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "subscriber_id": nc["manychat_subscriber_id"],
+                        "data": {"version": "v2", "content": {"messages": [{"type": "text", "text": personalized}]}},
+                        "message_tag": "CONFIRMED_EVENT_UPDATE",
+                    },
+                    timeout=10,
+                )
+                if mc_resp.status_code == 200:
+                    mc_success = True
+                    mc_data = mc_resp.json()
+                    log.info("ManyChat sent to %s: %s", username, mc_data)
+                else:
+                    log.warning("ManyChat error for %s: %s %s", username, mc_resp.status_code, mc_resp.text)
+                    errors.append({"username": username, "error": f"ManyChat API error: {mc_resp.status_code}"})
+            except Exception as e:
+                log.error("ManyChat request failed for %s: %s", username, e)
+                errors.append({"username": username, "error": f"ManyChat request failed: {str(e)}"})
 
             if mc_success:
                 db.update_outreach_message(campaign_id, username, {
